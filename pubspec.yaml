@@ -1,5 +1,5 @@
 name: streampath
-description: "StreamPath — 现代化 Windows/Linux WebDAV 文件浏览器：高性能目录浏览、字幕自动匹配、外部播放器联动（mpv 等）与播放进度续播。"
+description: "StreamPath — 现代化 Windows WebDAV 文件浏览器：高性能目录浏览、字幕自动匹配、外部播放器联动（mpv 等）与播放进度续播。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
