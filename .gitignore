@@ -1,0 +1,16 @@
+# Flutter / Dart
+.dart_tool/
+build/
+.flutter-plugins-dependencies
+.metadata
+
+# IDE
+.idea/
+*.iml
+
+# 运行时用户数据（配置/缓存/进度/历史/日志）
+stream_path_data/
+
+# 系统
+.DS_Store
+Thumbs.db
