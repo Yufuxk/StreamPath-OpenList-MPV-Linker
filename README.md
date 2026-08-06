@@ -30,6 +30,20 @@ StreamPath 是一个面向 Windows 桌面的 WebDAV 媒体浏览器。它负责�
 
 Windows 开发环境还需要启用 Flutter Windows Desktop 工具链。
 
+## 已测试的 MPV 版本
+
+以下 64 位 MPV 构建均已实测可正常配合 StreamPath 使用（播放、字幕注入、暂停/恢复、续播）：
+
+| 版本 | 构建 |
+|---|---|
+| 0.34.0 | `mpv-0.34.0-x86_64` |
+| 0.41.0 | `mpv-v0.41.0-x86_64-pc-windows-msvc` |
+| 0.41.0-460-g2f6561947 | mpv-config 版（`built on Apr 14 2026`，libplacebo v7.362.0，FFmpeg N-123957） |
+| lazy 260510 | `mpv-lazy-20260510-noVS` |
+| shinchiro 260610 | `mpv-x86_64-20260610-git-304426c` |
+
+> **32 位 MPV 不适用**：实测无法正常播放签名链接，启动后立即闪退，请使用 64 位构建。
+
 ## 运行与构建
 
 在项目根目录安装依赖：
