@@ -489,10 +489,11 @@ class ExternalPlayerService {
     }
   }
 
-  /// 探测进程是否存活（Windows 用 tasklist；其他平台用 kill -0）。
+  /// 探测进程是否存活（Windows 用 tasklist 精确比对 PID）。
   ///
   /// PID 按行精确比对（`/FO CSV` 第二列为 PID），避免
   /// `stdout.contains(pid)` 子串误命中（如映像名含数字）。
+  /// 非 Windows 分支为防御性保留（当前仅支持 Windows）。
   Future<bool> _isProcessAlive(int pid) async {
     try {
       final result = await Process.run(

@@ -10,9 +10,8 @@ import '../models/playback_progress.dart';
 
 /// 播放进度 SQLite 存储（按视频 URL 记录播放位置，支持续播）。
 ///
-/// 桌面平台（Windows/Linux）使用 `sqflite_common_ffi` 实现，
-/// 数据库文件位于应用支持目录下的 `streampath.db`；
-/// `sqlite3_flutter_libs` 会在构建时自动打包 sqlite3 动态库。
+/// 桌面平台使用 `sqflite_common_ffi` 实现，数据库文件位于应用支持目录下的
+/// `streampath.db`；`sqlite3_flutter_libs` 会在构建时自动打包 sqlite3 动态库。
 class PlaybackProgressService {
   PlaybackProgressService._(this._db);
 
@@ -26,8 +25,8 @@ class PlaybackProgressService {
   ///  - 桌面平台切换 databaseFactory 为 FFI 实现；
   ///  - 建表（version 1）。
   static Future<PlaybackProgressService> create() async {
-    // 桌面（Windows/Linux）无默认实现，必须使用 ffi。
-    if (Platform.isWindows || Platform.isLinux) {
+    // 桌面（Windows）无默认实现，必须使用 ffi。
+    if (Platform.isWindows) {
       databaseFactory = databaseFactoryFfi;
     }
 
@@ -41,10 +40,7 @@ class PlaybackProgressService {
     String dbPath, {
     DatabaseFactory? factory,
   }) async {
-    final f = factory ??
-        (Platform.isWindows || Platform.isLinux
-            ? databaseFactoryFfi
-            : databaseFactory);
+    final f = factory ?? (Platform.isWindows ? databaseFactoryFfi : databaseFactory);
 
     try {
       final db = await f.openDatabase(

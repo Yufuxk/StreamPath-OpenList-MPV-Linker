@@ -4,7 +4,7 @@
 
 ## 1. 项目定位
 
-StreamPath 是 Flutter 桌面端 WebDAV 媒体浏览器，当前目标平台为 Windows 和 Linux。核心职责不是自行解码媒体，而是完成以下工作：
+StreamPath 是 Flutter Windows 桌面端 WebDAV 媒体浏览器。核心职责不是自行解码媒体，而是完成以下工作：
 
 1. 读取和缓存 WebDAV 目录。
 2. 对文件进行稳定显示排序。
@@ -48,7 +48,6 @@ lib/
     state/                      AppState 服务装配
     widgets/                    文件项和剪贴板菜单
 windows/                        Windows runner 与剪贴板原生通道
-linux/                          Linux GTK runner
 test/                           单元、组件和真实 MPV 会话测试
 stream_path_data/               运行时数据，不属于源码
 ```
@@ -351,7 +350,7 @@ duration
 
 Windows runner 注册 `WM_CLIPBOARDUPDATE`，通过 `streampath/clipboard` MethodChannel 通知 Dart。文本由 `super_clipboard` 读取，应用内历史最多保留五条。
 
-`ClipboardHistoryFix` 只在 Windows 安装，用于识别 Win+V 产生但被 Flutter 引擎吞掉部分按键的合成序列，并注入等价粘贴。Debug 模式可写诊断日志。Linux 不启用该键盘修复。
+`ClipboardHistoryFix` 只在 Windows 安装，用于识别 Win+V 产生但被 Flutter 引擎吞掉部分按键的合成序列，并注入等价粘贴。Debug 模式可写诊断日志。
 
 ## 14. 测试策略
 

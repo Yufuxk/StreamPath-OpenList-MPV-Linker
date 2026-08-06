@@ -41,8 +41,8 @@ class AppPaths {
 
   /// 定位项目根目录。
   ///
-  /// 从可执行文件路径推算（`<项目根>/build/windows/x64/runner/<Debug|Release>/`
-  /// 或 Linux 的 `build/linux/x64/...`，取 `build` 段之前的部分）；
+  /// 从可执行文件路径推算（`<项目根>/build/windows/x64/runner/<Debug|Release>/`，
+  /// 取 `build` 段之前的部分）；
   /// 推算失败时回退当前工作目录。
   static String projectRoot() {
     final exe = Platform.resolvedExecutable;

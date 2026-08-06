@@ -1,6 +1,6 @@
 # StreamPath
 
-StreamPath 是一个面向 Windows 和 Linux 桌面的 WebDAV 媒体浏览器。它负责浏览远程目录、组织播放列表、匹配同目录字幕、调用外部播放器，并保存播放进度与继续播放记录。
+StreamPath 是一个面向 Windows 桌面的 WebDAV 媒体浏览器。它负责浏览远程目录、组织播放列表、匹配同目录字幕、调用外部播放器，并保存播放进度与继续播放记录。
 
 项目默认针对 mpv 做完整增强；其他外部播放器可以播放直链，但不一定支持播放列表、字幕脚本、状态同步和进度回写等能力。
 
@@ -24,11 +24,11 @@ StreamPath 是一个面向 Windows 和 Linux 桌面的 WebDAV 媒体浏览器。
 ## 环境要求
 
 - Flutter：使用支持 `pubspec.yaml` 中 Dart SDK `^3.12.2` 的版本。
-- 桌面平台：Windows 10/11 或 Linux。
+- 桌面平台：Windows 10/11。
 - WebDAV 服务：支持 `PROPFIND`，当前认证方式为 Basic Authentication。
 - 推荐播放器：mpv。
 
-Windows 开发环境还需要启用 Flutter Windows Desktop 工具链。Linux 构建需要 Flutter Linux Desktop 与 GTK 开发依赖。
+Windows 开发环境还需要启用 Flutter Windows Desktop 工具链。
 
 ## 运行与构建
 
@@ -48,12 +48,6 @@ Windows 构建（统一使用 Debug 模式，产物位于 `build\windows\x64\run
 
 ```powershell
 flutter build windows --debug
-```
-
-Linux 开发运行：
-
-```bash
-flutter run -d linux
 ```
 
 > 当前 [build.ps1](build.ps1) 只包含 Windows 开发运行命令。[run-d.ps1](run-d.ps1) 含开发者本机绝对路径，不适合作为其他环境的通用启动脚本。
@@ -218,7 +212,7 @@ mpv 的字幕注入由 Lua 脚本完成，因此启动参数中的 `{subfile}` �
 
 ## Windows 剪贴板支持
 
-Windows 输入框右键菜单会显示最近五条应用内剪贴板历史，并提供粘贴当前剪贴板与清空历史。Windows 11 的 Win+V 合成按键兼容逻辑只在 Windows 启用；Linux 使用普通 Flutter 剪贴板行为。Linux 输入框虽然也会挂载同样的剪贴板历史右键菜单，但历史数据只由 Windows 原生通道填充，因此该功能可能不适用于 Linux（Linux 下菜单恒显示"剪贴板历史为空"）。
+Windows 输入框右键菜单会显示最近五条应用内剪贴板历史，并提供粘贴当前剪贴板与清空历史。Windows 11 的 Win+V 合成按键兼容逻辑只在 Windows 启用。
 
 ## 常见问题
 
