@@ -58,13 +58,16 @@ Windows 开发运行：
 flutter run -d windows
 ```
 
-Windows 构建（统一使用 Debug 模式，产物位于 `build\windows\x64\runner\Debug\`）：
+Windows 构建（产物位于 `build\windows\x64\runner\<Debug|Release>\`）：
 
 ```powershell
 flutter build windows --debug
 ```
 
-> 当前 [build.ps1](build.ps1) 只包含 Windows 开发运行命令。[run-d.ps1](run-d.ps1) 含开发者本机绝对路径，不适合作为其他环境的通用启动脚本。
+> 提供了通用型脚本（放在项目根目录即可，不受外部路径影响）：
+> - [run.ps1](run.ps1) — 选择 Debug 或 Release 模式后运行；
+> - [build.ps1](build.ps1) — 选择 Debug 或 Release 模式后构建；
+> - [cleanup.ps1](cleanup.ps1) — 清理缓存/日志/进度等运行时数据（保留配置）。
 
 ## 首次连接
 
@@ -265,5 +268,4 @@ flutter test
 
 ## 已知维护事项
 
-- [scripts/fix-cargokit-symlinks.ps1](scripts/fix-cargokit-symlinks.ps1) 当前包含未解决的 Git 合并冲突标记，修复前不要执行。
-- [run-d.ps1](run-d.ps1) 使用开发者本机绝对路径，需要改为当前环境路径后才能使用。
+- [scripts/fix-cargokit-symlinks.ps1](scripts/fix-cargokit-symlinks.ps1) 修复 cargokit 在 Windows 下 `resolve_symlinks.ps1` 的 `Get-Item` 噪声错误；幂等，仅在需要时执行（需写入 pub cache）。
