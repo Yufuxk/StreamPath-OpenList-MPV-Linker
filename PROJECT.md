@@ -412,6 +412,5 @@ flutter build windows --debug
 ## 17. 当前已知维护事项
 
 - 提供了通用型脚本（放在项目根目录即可）：[run.ps1](run.ps1) / [build.ps1](build.ps1) 启动后选择 Debug 或 Release 再运行/构建；[cleanup.ps1](cleanup.ps1) 清理运行时数据。
-- [scripts/fix-cargokit-symlinks.ps1](scripts/fix-cargokit-symlinks.ps1) 修复 cargokit 在 Windows 下 `resolve_symlinks.ps1` 的 `Get-Item` 噪声错误；幂等，仅在需要时执行（需写入 Pub Cache，本身也应评审后再运行）。
 - 数据根路径依赖标准 `build/...` 布局或当前工作目录。若未来制作安装包，应明确改为稳定的便携目录或系统应用数据目录策略。
 - `MpvSessionController` 的 JSON-RPC named pipe 能力目前主要用于测试和扩展；稳定的暂停/恢复主通道仍是每会话命令文件加 Lua 轮询。

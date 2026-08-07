@@ -266,6 +266,3 @@ flutter test
 
 当前测试覆盖目录解析与缓存、排序、字幕匹配、STRM、播放器参数、MPV 会话、进度和播放历史、配置迁移、文件列表组件及 Windows 剪贴板逻辑。
 
-## 已知维护事项
-
-- [scripts/fix-cargokit-symlinks.ps1](scripts/fix-cargokit-symlinks.ps1) 修复 cargokit 在 Windows 下 `resolve_symlinks.ps1` 的 `Get-Item` 噪声错误；幂等，仅在需要时执行（需写入 pub cache）。
