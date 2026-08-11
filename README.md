@@ -28,7 +28,7 @@ STRM、匹配外挂字幕、启动 MPV 等外部播放器，并将播放进度�
 - Windows 10 或 Windows 11 x64。
 - 一个可访问的 WebDAV 地址和用户名（推荐为Openlist）；服务器未设置密码时密码框留空。
 - MPV 或其他接受 URL 参数的外部播放器。推荐使用已实测的 MPV 版本。
-- 额外注意事项：播放 Strm 文件时建议在 Openlist 的 Strm 存储设置中开启 `启用签名` 选项。建议在 MPV 配置文件中中完全注释或删除 IPC 的配置代码，保证软件的 IPC 功能能够正常运行（如 `input-ipc-server=` 字样）。
+- 额外注意事项：播放 Strm 文件时建议在 Openlist 的 Strm 存储设置中开启 `启用签名` 选项。建议在 MPV 配置文件中完全注释或删除 IPC 的配置代码，保证软件的 IPC 功能能够正常运行（如 `input-ipc-server=` 字样）。
 
 ## 快速使用
 
