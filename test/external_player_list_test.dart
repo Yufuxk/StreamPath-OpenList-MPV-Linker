@@ -24,19 +24,20 @@ void main() {
     args: ['--sub-file={subfile}', '{url}', '--start={start}'],
   );
 
-  const playlistPath =
-      r'C:\tmp\sp-test\streampath-playlist.m3u';
+  const playlistPath = r'C:\tmp\sp-test\streampath-playlist.m3u';
 
   group('buildListArgs 播放列表参数', () {
     test('多集输出 --playlist 指向 m3u（无 --sub-file/--start/逐 URL）', () {
       final args = service.buildListArgs(
         config: config,
-        authHeader: null,
         playlistPath: playlistPath,
       );
       expect(args, ['--playlist=$playlistPath']);
-      expect(args.any((a) => a.contains('http://h/')), isFalse,
-          reason: 'URL 在 m3u 文件中，不进参数');
+      expect(
+        args.any((a) => a.contains('http://h/')),
+        isFalse,
+        reason: 'URL 在 m3u 文件中，不进参数',
+      );
       expect(args.any((a) => a.contains('--sub-file')), isFalse);
       expect(args.any((a) => a.contains('--start')), isFalse);
     });
@@ -44,7 +45,6 @@ void main() {
     test('有字幕时列表参数仍不含 --sub-file（由脚本注入）', () {
       final args = service.buildListArgs(
         config: config,
-        authHeader: null,
         playlistPath: playlistPath,
       );
       expect(args, ['--playlist=$playlistPath']);
@@ -53,36 +53,18 @@ void main() {
     test('playlistStart>0 时输出 --playlist-start（播放起点）', () {
       final args = service.buildListArgs(
         config: config,
-        authHeader: null,
         playlistPath: playlistPath,
         playlistStart: 1,
       );
-      expect(args, [
-        '--playlist=$playlistPath',
-        '--playlist-start=1',
-      ]);
+      expect(args, ['--playlist=$playlistPath', '--playlist-start=1']);
     });
 
     test('playlistStart=0 时不输出 --playlist-start', () {
       final args = service.buildListArgs(
         config: config,
-        authHeader: null,
         playlistPath: playlistPath,
       );
       expect(args, ['--playlist=$playlistPath']);
-    });
-
-    test('认证 header 全局注入一次', () {
-      final args = service.buildListArgs(
-        config: config,
-        authHeader: 'Basic eHl6',
-        playlistPath: playlistPath,
-      );
-      expect(args.first, '--http-header-fields=Authorization: Basic eHl6');
-      expect(args, [
-        '--http-header-fields=Authorization: Basic eHl6',
-        '--playlist=$playlistPath',
-      ]);
     });
 
     test('静态模板项全局注入；{url} 项不再逐集展开', () {
@@ -93,7 +75,6 @@ void main() {
       );
       final args = service.buildListArgs(
         config: staticConfig,
-        authHeader: null,
         playlistPath: playlistPath,
       );
       expect(args, [

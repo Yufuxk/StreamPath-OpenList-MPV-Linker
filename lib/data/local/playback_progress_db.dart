@@ -10,8 +10,8 @@ import '../models/playback_progress.dart';
 
 /// 播放进度 SQLite 存储（按视频 URL 记录播放位置，支持续播）。
 ///
-/// 桌面平台使用 `sqflite_common_ffi` 实现，数据库文件位于应用支持目录下的
-/// `streampath.db`；`sqlite3_flutter_libs` 会在构建时自动打包 sqlite3 动态库。
+/// Windows 使用 `sqflite_common_ffi`，数据库保存在便携 `cache/` 目录；
+/// sqlite3 动态库由 `sqlite3` Native Assets 随构建产物打包。
 class PlaybackProgressService {
   PlaybackProgressService._(this._db);
 
@@ -30,7 +30,7 @@ class PlaybackProgressService {
       databaseFactory = databaseFactoryFfi;
     }
 
-    final dir = await AppPaths.dataDirectory();
+    final dir = await AppPaths.cacheDirectory(); // streampath.db
     return open(p.join(dir.path, _dbFileName));
   }
 
@@ -40,7 +40,8 @@ class PlaybackProgressService {
     String dbPath, {
     DatabaseFactory? factory,
   }) async {
-    final f = factory ?? (Platform.isWindows ? databaseFactoryFfi : databaseFactory);
+    final f =
+        factory ?? (Platform.isWindows ? databaseFactoryFfi : databaseFactory);
 
     try {
       final db = await f.openDatabase(
@@ -57,7 +58,8 @@ class PlaybackProgressService {
               )
             ''');
             await db.execute(
-                'CREATE INDEX idx_progress_updated ON $_table (updated_at)');
+              'CREATE INDEX idx_progress_updated ON $_table (updated_at)',
+            );
           },
         ),
       );
@@ -102,6 +104,18 @@ class PlaybackProgressService {
       return PlaybackProgress.fromRow(rows.first);
     } on DatabaseException catch (e) {
       throw AppException.storage('读取播放进度失败：$e', e);
+    }
+  }
+
+  /// 删除指定媒体的进度记录。
+  ///
+  /// 自然播放完成或用户明确回到 0 秒时调用，避免旧的正数进度在
+  /// `watch_later` 没有生成新记录时继续被当作续播点。
+  Future<void> deleteProgress(String url) async {
+    try {
+      await _db.delete(_table, where: 'url = ?', whereArgs: [url]);
+    } on DatabaseException catch (e) {
+      throw AppException.storage('删除播放进度失败：$e', e);
     }
   }
 }

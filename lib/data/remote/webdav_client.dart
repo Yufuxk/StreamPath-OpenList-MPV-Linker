@@ -38,13 +38,14 @@ class WebDavClient {
 
   final Dio _dio;
   final Duration connectTimeout;
+  String? _authorizationHeader;
 
   void _applyAuth() {
     if (username != null && username!.isNotEmpty) {
       final token = base64Encode(utf8.encode('$username:${password ?? ''}'));
-      _dio.options.headers[HttpHeaders.authorizationHeader] = 'Basic $token';
+      _authorizationHeader = 'Basic $token';
     } else {
-      _dio.options.headers.remove(HttpHeaders.authorizationHeader);
+      _authorizationHeader = null;
     }
   }
 
@@ -54,13 +55,11 @@ class WebDavClient {
   Future<String> propfind(String path) async {
     final url = joinUrl(baseUrl, path);
     try {
-      final response = await _dio.request<String>(
-        url,
-        options: Options(
-          method: 'PROPFIND',
-          headers: const {'Depth': '1'},
-          responseType: ResponseType.plain,
-        ),
+      final response = await _requestFollowingRedirects<String>(
+        url: url,
+        method: 'PROPFIND',
+        headers: const {'Depth': '1'},
+        responseType: ResponseType.plain,
       );
       final data = response.data;
       if (data == null || data.isEmpty) {
@@ -75,17 +74,88 @@ class WebDavClient {
   /// 获取文件文本内容（GET，注入认证），用于读取 .strm 等文本指针文件。
   ///
   /// [href] 为服务器返回的 href（绝对或相对，保持原编码，不二次编码）。
-  Future<String> getFileContent(String href) async {
+  Future<String> getFileContent(String href, {int? maxBytes}) async {
     final url = resolveHref(baseUrl, href);
     try {
-      final response = await _dio.request<String>(
-        url,
-        options: Options(responseType: ResponseType.plain),
+      final response = await _requestFollowingRedirects<ResponseBody>(
+        url: url,
+        method: 'GET',
+        responseType: ResponseType.stream,
       );
-      return response.data ?? '';
+      final body = response.data;
+      if (body == null) return '';
+      if (maxBytes != null && body.contentLength > maxBytes) {
+        throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+      }
+
+      final bytes = <int>[];
+      await for (final chunk in body.stream) {
+        bytes.addAll(chunk);
+        if (maxBytes != null && bytes.length > maxBytes) {
+          throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+        }
+      }
+      return utf8.decode(bytes, allowMalformed: true);
     } on DioException catch (e) {
       throw _translateDioError(e);
     }
+  }
+
+  static const int _maxRedirects = 5;
+
+  Future<Response<T>> _requestFollowingRedirects<T>({
+    required String url,
+    required String method,
+    required ResponseType responseType,
+    Map<String, Object?> headers = const {},
+  }) async {
+    var current = Uri.parse(url);
+    for (var redirectCount = 0; ; redirectCount++) {
+      if (current.scheme != 'http' && current.scheme != 'https') {
+        throw AppException.parse('不支持的网络协议：${current.scheme}');
+      }
+
+      final requestHeaders = <String, Object?>{...headers};
+      final authorization = _authorizationHeader;
+      if (authorization != null && isSameOrigin(baseUrl, current.toString())) {
+        requestHeaders[HttpHeaders.authorizationHeader] = authorization;
+      }
+      final response = await _dio.request<T>(
+        current.toString(),
+        options: Options(
+          method: method,
+          headers: requestHeaders,
+          responseType: responseType,
+          followRedirects: false,
+          validateStatus: (status) =>
+              status != null && status >= 200 && status < 400,
+        ),
+      );
+
+      if (!_isRedirect(response.statusCode)) return response;
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      if (location == null || location.trim().isEmpty) {
+        throw AppException.network('服务器重定向缺少 Location');
+      }
+      if (redirectCount >= _maxRedirects) {
+        throw AppException.network('服务器重定向次数超过 $_maxRedirects 次');
+      }
+      await _cancelStreamBody(response.data);
+      current = current.resolve(location);
+    }
+  }
+
+  static bool _isRedirect(int? status) =>
+      status == HttpStatus.movedPermanently ||
+      status == HttpStatus.found ||
+      status == HttpStatus.seeOther ||
+      status == HttpStatus.temporaryRedirect ||
+      status == HttpStatus.permanentRedirect;
+
+  static Future<void> _cancelStreamBody(Object? data) async {
+    if (data is! ResponseBody) return;
+    final subscription = data.stream.listen(null);
+    await subscription.cancel();
   }
 
   NetworkException _translateDioError(DioException e) {
@@ -93,12 +163,10 @@ class WebDavClient {
     final msg = switch (e.type) {
       DioExceptionType.connectionTimeout ||
       DioExceptionType.receiveTimeout ||
-      DioExceptionType.sendTimeout =>
-        '连接服务器超时（$connectTimeout）',
+      DioExceptionType.sendTimeout => '连接服务器超时（$connectTimeout）',
       DioExceptionType.connectionError => '无法连接到服务器：${e.message ?? ''}',
       DioExceptionType.badCertificate => '服务器证书不受信任',
-      _ when status == 401 || status == 403 =>
-        '认证失败：请检查账号与密码（HTTP $status）',
+      _ when status == 401 || status == 403 => '认证失败：请检查账号与密码（HTTP $status）',
       _ when status != null => '服务器返回错误（HTTP $status）',
       _ => '网络请求失败：${e.message ?? e.type.name}',
     };

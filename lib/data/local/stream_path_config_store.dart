@@ -27,7 +27,7 @@ class StreamPathConfigStore {
 
   /// 创建配置管理器：定位到数据目录下的配置文件。
   static Future<StreamPathConfigStore> create() async {
-    final dir = await AppPaths.dataDirectory();
+    final dir = await AppPaths.configDirectory(); // 用户配置
     return forPath(p.join(dir.path, AppConstants.configFileName));
   }
 
@@ -66,6 +66,10 @@ class StreamPathConfigStore {
       throw AppException.config('配置文件损坏：${e.message}', e);
     } on FileSystemException catch (e) {
       throw AppException.storage('读取配置文件失败：${e.message}', e);
+    } on TypeError catch (e) {
+      throw AppException.config('配置文件字段类型错误', e);
+    } on ArgumentError catch (e) {
+      throw AppException.config('配置文件字段值无效', e);
     }
   }
 
@@ -84,8 +88,7 @@ class StreamPathConfigStore {
   // ── 便捷访问（兼容旧 ConfigManager / ConnectionConfigStore 用法） ──
 
   /// 播放器部分配置。
-  Future<PlayerConfig> loadPlayer() async =>
-      (await load()).toPlayerConfig();
+  Future<PlayerConfig> loadPlayer() async => (await load()).toPlayerConfig();
 
   /// 连接部分配置。
   Future<ConnectionConfig> loadConnection() async =>
@@ -94,7 +97,7 @@ class StreamPathConfigStore {
   /// 仅更新连接部分（其余字段保持不变）。
   Future<void> saveConnection(ConnectionConfig connection) async {
     final config = await load();
-    await save(StreamPathConfig.fromParts(config.toPlayerConfig(), connection));
+    await save(config.copyWithParts(connection: connection));
   }
 
   // ── 旧配置迁移 ────────────────────────────────────────────────
@@ -111,25 +114,34 @@ class StreamPathConfigStore {
     } catch (_) {
       return;
     }
-    final oldPlayer =
-        File(p.join(supportDir.path, AppConstants.playerConfigFileName));
-    final oldConnection =
-        File(p.join(supportDir.path, AppConstants.connectionConfigFileName));
+    final oldPlayer = File(
+      p.join(supportDir.path, AppConstants.playerConfigFileName),
+    );
+    final oldConnection = File(
+      p.join(supportDir.path, AppConstants.connectionConfigFileName),
+    );
     if (!oldPlayer.existsSync() && !oldConnection.existsSync()) return;
 
     StreamPathConfig merged = StreamPathConfig.defaults();
     try {
       if (oldPlayer.existsSync()) {
         final player = PlayerConfig.fromJson(
-            jsonDecode(await oldPlayer.readAsString()) as Map<String, dynamic>);
-        merged = StreamPathConfig.fromParts(player, merged.toConnectionConfig());
+          jsonDecode(await oldPlayer.readAsString()) as Map<String, dynamic>,
+        );
+        merged = StreamPathConfig.fromParts(
+          player,
+          merged.toConnectionConfig(),
+        );
       }
       if (oldConnection.existsSync()) {
         final connection = ConnectionConfig.fromJson(
-            jsonDecode(await oldConnection.readAsString())
-                as Map<String, dynamic>);
-        merged =
-            StreamPathConfig.fromParts(merged.toPlayerConfig(), connection);
+          jsonDecode(await oldConnection.readAsString())
+              as Map<String, dynamic>,
+        );
+        merged = StreamPathConfig.fromParts(
+          merged.toPlayerConfig(),
+          connection,
+        );
       }
       await save(merged);
       // 迁移成功后删除旧文件。
@@ -140,8 +152,8 @@ class StreamPathConfigStore {
           } catch (_) {}
         }
       }
-    } on FormatException {
-      // 旧文件损坏：保留旧文件，新文件不落盘（不阻塞启动）。
+    } catch (_) {
+      // 无法解析或保存时保留旧文件，稍后仍可人工恢复。
     }
   }
 }

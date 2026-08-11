@@ -6,6 +6,7 @@ import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
+import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 
@@ -29,6 +30,7 @@ void main() {
       final def = StreamPathConfig.defaults();
       expect(def.playerExecutable, 'mpv');
       expect(def.isConnectionComplete, isFalse);
+      expect(def.openListRecovery.enabled, isFalse);
 
       final player = PlayerConfig(
         name: 'PotPlayer',
@@ -46,7 +48,16 @@ void main() {
         username: 'u',
         password: 'p',
       );
-      final merged = StreamPathConfig.fromParts(player, connection);
+      final merged = StreamPathConfig.fromParts(
+        player,
+        connection,
+        openListRecovery: const OpenListRecoveryConfig(
+          enabled: true,
+          baseUrl: 'http://h',
+          username: 'admin',
+          password: 'secret',
+        ),
+      );
       expect(merged.isConnectionComplete, isTrue);
       expect(merged.serverUrl, 'http://h/dav');
       expect(merged.playerExecutable, 'C:\\PotPlayer.exe');
@@ -62,6 +73,8 @@ void main() {
       expect(restored.subtitleAutoSelectEnabled, isFalse);
       expect(restored.defaultSortMode, FileSortMode.size);
       expect(restored.defaultSortDirection, FileSortDirection.descending);
+      expect(restored.openListRecovery.enabled, isTrue);
+      expect(restored.openListRecovery.baseUrl, 'http://h');
     });
 
     test('fromJson 规范化 hiddenExtensions 且缺失字段回退默认', () {
@@ -73,6 +86,16 @@ void main() {
       expect(config.defaultSortMode, FileSortMode.name);
       expect(config.defaultSortDirection, FileSortDirection.ascending);
       expect(config.playerStartupTimeoutSeconds, 60);
+    });
+
+    test('WebDAV 密码为空时仍可使用地址与用户名自动连接', () {
+      const config = StreamPathConfig(
+        serverUrl: 'http://passwordless.example/dav',
+        username: 'user',
+      );
+
+      expect(config.isConnectionComplete, isTrue);
+      expect(config.toConnectionConfig().password, isEmpty);
     });
   });
 
@@ -121,13 +144,15 @@ void main() {
       });
       expect(custom.playerStartupTimeoutSeconds, 120);
       expect(
-        StreamPathConfig.fromJson(const {'playerStartupTimeoutSeconds': 2})
-            .playerStartupTimeoutSeconds,
+        StreamPathConfig.fromJson(const {
+          'playerStartupTimeoutSeconds': 2,
+        }).playerStartupTimeoutSeconds,
         5,
       );
       expect(
-        StreamPathConfig.fromJson(const {'playerStartupTimeoutSeconds': 99999})
-            .playerStartupTimeoutSeconds,
+        StreamPathConfig.fromJson(const {
+          'playerStartupTimeoutSeconds': 99999,
+        }).playerStartupTimeoutSeconds,
         3600,
       );
 
@@ -145,6 +170,11 @@ void main() {
           username: 'u',
           password: 'p',
           playerExecutable: 'mpv',
+          openListRecovery: OpenListRecoveryConfig(
+            enabled: true,
+            baseUrl: 'http://h',
+            token: 'token',
+          ),
         ),
       );
       await store.saveConnection(
@@ -154,6 +184,8 @@ void main() {
       expect(config.serverUrl, 'http://h2/dav');
       expect(config.username, 'u2');
       expect(config.playerExecutable, 'mpv', reason: '播放器部分应保持不变');
+      expect(config.openListRecovery.enabled, isTrue, reason: '恢复配置应保持不变');
+      expect(config.openListRecovery.token, 'token');
     });
 
     test('旧 subtitleEnabled 配置会同时迁移为注入与自动选择开关', () {
@@ -194,9 +226,35 @@ void main() {
       final store = StreamPathConfigStore.forPath(path);
       await expectLater(store.load(), throwsA(isA<AppException>()));
     });
+
+    test('字段类型错误抛 AppException.config', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}wrong-type.json';
+      File(path).writeAsStringSync('{"serverUrl": 42}');
+      final store = StreamPathConfigStore.forPath(path);
+      await expectLater(store.load(), throwsA(isA<AppException>()));
+    });
   });
 
   group('旧配置迁移（player_config.json + connection_config.json）', () {
+    test('旧配置结构错误时保留原文件且不阻塞迁移', () async {
+      final legacy = Directory(
+        '${tempDir.path}${Platform.pathSeparator}malformed-legacy',
+      )..createSync();
+      final oldPlayer = File(
+        '${legacy.path}${Platform.pathSeparator}player_config.json',
+      )..writeAsStringSync('{"args": "not-a-list"}');
+      final store = storeFor('not-migrated.json');
+
+      await expectLater(store.migrateLegacyFiles(legacyDir: legacy), completes);
+      expect(oldPlayer.existsSync(), isTrue);
+      expect(
+        File(
+          '${tempDir.path}${Platform.pathSeparator}not-migrated.json',
+        ).existsSync(),
+        isFalse,
+      );
+    });
+
     test('旧文件合并写入新文件并删除旧文件', () async {
       final legacy = Directory('${tempDir.path}${Platform.pathSeparator}legacy')
         ..createSync();

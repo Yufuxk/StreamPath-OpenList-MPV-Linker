@@ -22,18 +22,19 @@ void main() {
   final ctrlLogical = LogicalKeyboardKey.controlLeft.keyId;
   final vLogical = LogicalKeyboardKey.keyV.keyId;
 
-  KeyData key(int physical,
-          {KeyEventType type = KeyEventType.down,
-          bool synthesized = false,
-          Duration timeStamp = Duration.zero}) =>
-      KeyData(
-        timeStamp: timeStamp,
-        type: type,
-        physical: physical,
-        logical: physical == ctrlPhysical ? ctrlLogical : physical,
-        character: null,
-        synthesized: synthesized,
-      );
+  KeyData key(
+    int physical, {
+    KeyEventType type = KeyEventType.down,
+    bool synthesized = false,
+    Duration timeStamp = Duration.zero,
+  }) => KeyData(
+    timeStamp: timeStamp,
+    type: type,
+    physical: physical,
+    logical: physical == ctrlPhysical ? ctrlLogical : physical,
+    character: null,
+    synthesized: synthesized,
+  );
 
   KeyData ctrlDown([bool syn = false, Duration ts = Duration.zero]) =>
       key(ctrlPhysical, synthesized: syn, timeStamp: ts);
@@ -57,8 +58,11 @@ void main() {
     expect(out[2].type, KeyEventType.up);
     expect(out[3].physical, ctrlPhysical);
     expect(out[3].type, KeyEventType.up);
-    expect(out.every((e) => !e.synthesized), isTrue,
-        reason: '合成事件须等同真实按键才能触发快捷键');
+    expect(
+      out.every((e) => !e.synthesized),
+      isTrue,
+      reason: '合成事件须等同真实按键才能触发快捷键',
+    );
   }
 
   group('Win11 剪贴板历史注入序列', () {
@@ -202,8 +206,7 @@ void main() {
   });
 
   group('注入序列整组识别（physical=0x1600000000 实测标记）', () {
-    KeyData injected(int logical,
-            {KeyEventType type = KeyEventType.down}) =>
+    KeyData injected(int logical, {KeyEventType type = KeyEventType.down}) =>
         KeyData(
           timeStamp: Duration.zero,
           type: type,
@@ -225,9 +228,13 @@ void main() {
       expect(fix.transform(injVDown()), isEmpty);
       // V↑ 时 Ctrl down/up + V down/up 证据已齐 → 立即合成一次 Ctrl+V。
       expectCtrlV(fix.transform(injVUp()));
-      // 注入序列尾部残留（Ctrl↓ Ctrl↑）进入缓冲，不转发（超时后冲刷）。
+      // 注入序列尾部残留（Ctrl↓ Ctrl↑）属于同一次系统注入，直接吞掉。
       expect(fix.transform(injCtrlDown()), isEmpty);
       expect(fix.transform(injCtrlUp()), isEmpty);
+      // 用户紧接着输入的字符只能收到自身，尾部 Ctrl 不得延迟混入 IME。
+      final typed = fix.transform(key(0x70004)); // A
+      expect(typed, hasLength(1));
+      expect(typed.single.physical, 0x70004);
     });
 
     test('4 事件紧凑序列（Ctrl↓ V↓ V↑ Ctrl↑）也识别', () {
@@ -242,8 +249,7 @@ void main() {
       final fix = ClipboardHistoryFix();
       fix.transform(injCtrlDown());
       fix.transform(injCtrlUp());
-      final out = fix.transform(
-          key(vPhysical, type: KeyEventType.down));
+      final out = fix.transform(key(vPhysical, type: KeyEventType.down));
       expect(out, hasLength(3), reason: '冲刷 2 个注入事件 + 转发真实 V');
       expect(out[0].physical, ClipboardHistoryFix.injectedPhysicalKey);
       expect(out[2].physical, vPhysical);
@@ -255,8 +261,7 @@ void main() {
         fix.transform(injCtrlDown());
         fix.transform(injCtrlUp());
         async.elapse(const Duration(milliseconds: 600));
-        final out = fix.transform(
-            key(vPhysical, type: KeyEventType.down));
+        final out = fix.transform(key(vPhysical, type: KeyEventType.down));
         expect(out, hasLength(3));
         expect(out[0].physical, ClipboardHistoryFix.injectedPhysicalKey);
       });
@@ -274,11 +279,11 @@ void main() {
   group('injectPaste 聚焦输入框注入（原生剪贴板兜底）', () {
     testWidgets('文本注入聚焦的 TextField（等价粘贴）', (tester) async {
       final controller = TextEditingController(text: '前缀');
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: TextField(controller: controller),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: TextField(controller: controller)),
         ),
-      ));
+      );
       await tester.tap(find.byType(TextField));
       await tester.pump();
 
@@ -292,11 +297,11 @@ void main() {
 
     testWidgets('光标处替换选区注入（等价粘贴）', (tester) async {
       final controller = TextEditingController(text: 'abcdef');
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: TextField(controller: controller),
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: TextField(controller: controller)),
         ),
-      ));
+      );
       await tester.tap(find.byType(TextField));
       await tester.pump();
       // 选中 'cde'。
@@ -309,6 +314,38 @@ void main() {
 
       await tester.pump();
       expect(controller.text, 'abXYf');
+    });
+
+    testWidgets('注入后清空旧 composing，紧接中文输入不重复旧拼音', (tester) async {
+      final controller = TextEditingController(text: 'abcda')
+        ..value = const TextEditingValue(
+          text: 'abcda',
+          selection: TextSelection.collapsed(offset: 5),
+          composing: TextRange(start: 3, end: 5),
+        );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: TextField(controller: controller)),
+        ),
+      );
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+
+      ClipboardHistoryFix.injectPaste('历史');
+      await tester.pump();
+
+      expect(controller.text, 'abcda历史');
+      expect(controller.value.composing, TextRange.empty);
+      // 模拟下一次 IME 增量：它应以已经同步的新值为基准，只追加一次 n。
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'abcda历史n',
+          selection: TextSelection.collapsed(offset: 8),
+          composing: TextRange(start: 7, end: 8),
+        ),
+      );
+      await tester.pump();
+      expect(controller.text, 'abcda历史n');
     });
   });
 }

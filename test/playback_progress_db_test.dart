@@ -17,7 +17,10 @@ void main() {
   group('PlaybackProgressService 进度 CRUD', () {
     test('保存后按 URL 查询', () async {
       await service.saveProgress(
-          url: 'http://host/dav/movie.mp4', positionMs: 90000, durationMs: 7200000);
+        url: 'http://host/dav/movie.mp4',
+        positionMs: 90000,
+        durationMs: 7200000,
+      );
       final p = await service.getProgress('http://host/dav/movie.mp4');
       expect(p, isNotNull);
       expect(p!.positionMs, 90000);
@@ -26,8 +29,14 @@ void main() {
     });
 
     test('重复保存同一 URL 为 upsert（覆盖不新增）', () async {
-      await service.saveProgress(url: 'http://host/dav/a.mp4', positionMs: 1000);
-      await service.saveProgress(url: 'http://host/dav/a.mp4', positionMs: 2000);
+      await service.saveProgress(
+        url: 'http://host/dav/a.mp4',
+        positionMs: 1000,
+      );
+      await service.saveProgress(
+        url: 'http://host/dav/a.mp4',
+        positionMs: 2000,
+      );
       final p = await service.getProgress('http://host/dav/a.mp4');
       expect(p!.positionMs, 2000);
     });
@@ -35,8 +44,14 @@ void main() {
     test('不同 URL 互不干扰', () async {
       await service.saveProgress(url: 'http://host/dav/a.mp4', positionMs: 111);
       await service.saveProgress(url: 'http://host/dav/b.mp4', positionMs: 222);
-      expect((await service.getProgress('http://host/dav/a.mp4'))!.positionMs, 111);
-      expect((await service.getProgress('http://host/dav/b.mp4'))!.positionMs, 222);
+      expect(
+        (await service.getProgress('http://host/dav/a.mp4'))!.positionMs,
+        111,
+      );
+      expect(
+        (await service.getProgress('http://host/dav/b.mp4'))!.positionMs,
+        222,
+      );
     });
 
     test('无记录返回 null', () async {
@@ -45,7 +60,17 @@ void main() {
 
     test('positionMs<=0 时 resumeSeconds 为 null', () async {
       await service.saveProgress(url: 'http://host/dav/z.mp4', positionMs: 0);
-      expect((await service.getProgress('http://host/dav/z.mp4'))!.resumeSeconds, isNull);
+      expect(
+        (await service.getProgress('http://host/dav/z.mp4'))!.resumeSeconds,
+        isNull,
+      );
+    });
+
+    test('删除完成记录后不再返回旧续播点', () async {
+      const url = 'http://host/dav/done.mp4';
+      await service.saveProgress(url: url, positionMs: 90000);
+      await service.deleteProgress(url);
+      expect(await service.getProgress(url), isNull);
     });
   });
 }

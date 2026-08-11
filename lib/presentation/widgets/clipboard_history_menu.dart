@@ -78,14 +78,8 @@ List<ContextMenuButtonItem> clipboardHistoryMenuItems(
           label: labelOf(item),
           onPressed: () => onPick(item),
         ),
-    ContextMenuButtonItem(
-      label: '粘贴当前剪贴板',
-      onPressed: onPickCurrentClipboard,
-    ),
+    ContextMenuButtonItem(label: '粘贴当前剪贴板', onPressed: onPickCurrentClipboard),
     if (store.items.isNotEmpty)
-      ContextMenuButtonItem(
-        label: '清空剪贴板历史',
-        onPressed: onClearHistory,
-      ),
+      ContextMenuButtonItem(label: '清空剪贴板历史', onPressed: onClearHistory),
   ];
 }

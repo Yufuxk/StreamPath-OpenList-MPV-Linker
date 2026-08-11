@@ -26,10 +26,10 @@ class ConnectionConfig {
   final String password;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
-        'baseUrl': baseUrl,
-        'username': username,
-        'password': password,
-      };
+    'baseUrl': baseUrl,
+    'username': username,
+    'password': password,
+  };
 
   factory ConnectionConfig.fromJson(Map<String, dynamic> json) =>
       ConnectionConfig(

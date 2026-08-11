@@ -69,7 +69,7 @@ void main() {
           subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
           resumeEnabled: resumeEnabled,
         ),
-        const ConnectionConfig(),
+        const ConnectionConfig(baseUrl: 'http://h/dav'),
       ),
     );
     return (
@@ -103,6 +103,25 @@ void main() {
   }
 
   group('launch 单集：外挂字幕注入与自动选择', () {
+    test('MPV 仅向同源 URL 内嵌空密码凭据且不使用全局认证头', () async {
+      final (service, _) = await makeService();
+      final result = await service.launch(
+        entries: [MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub)],
+        username: 'guest',
+        password: '',
+      );
+
+      expect(result.args, contains('http://guest:@h/dav/01.mp4'));
+      expect(
+        result.args.any((arg) => arg.startsWith('--http-header-fields=')),
+        isFalse,
+      );
+      final subtitleScript = await File(
+        scriptArgOf(result.args)!,
+      ).readAsString();
+      expect(subtitleScript, contains('http://guest:@h/dav/01.srt'));
+    });
+
     test('自动注入和自动选择开启时以 select 模式加入匹配字幕', () async {
       final (service, _) = await makeService();
       final result = await service.launch(
@@ -159,8 +178,8 @@ void main() {
       expect(p1, isNot(p2), reason: '每次播放 pipe 名应唯一');
       expect(
         p1,
-        matches(RegExp(r'^\\\\.\\pipe\\mpvsocket_\d+$')),
-        reason: 'pipe 名格式应为 \\\\.\\pipe\\mpvsocket_<单调代际>',
+        matches(RegExp(r'^\\\\.\\pipe\\mpvsocket_\d+_\d+$')),
+        reason: 'pipe 名应包含进程时间 nonce 与单调序号，避免应用重启后复用',
       );
     });
 
@@ -185,6 +204,9 @@ void main() {
       expect(first.ipcPipeName, isNot(second.ipcPipeName));
       expect(first.statusFilePath, isNot(second.statusFilePath));
       expect(first.commandFilePath, isNot(second.commandFilePath));
+      expect(first.progressFilePath, isNot(second.progressFilePath));
+      expect(first.progressFilePath, contains('first-session'));
+      expect(second.progressFilePath, contains('second-session'));
 
       String playlistPath(PlayerLaunchResult result) => result.args
           .firstWhere((arg) => arg.startsWith('--playlist='))
@@ -225,6 +247,8 @@ void main() {
       final content = await File(currentPath!).readAsString();
       expect(content, contains('has_loaded'));
       expect(content, contains('if val and has_loaded then'));
+      expect(content, contains('local PROGRESS ='));
+      expect(content, contains('mp.register_event("end-file"'));
     });
 
     test('自动注入开启但自动选择关闭时以 auto 模式加入并恢复原字幕轨道', () async {
@@ -366,6 +390,53 @@ void main() {
         result.args.any((a) => a.contains('--force-media-title')),
         isFalse,
       );
+    });
+  });
+
+  group('TS 时间轴与续播（不复现 1.084s 起点）', () {
+    test('TS 无进度时只重定位时间轴，不注入 --start=0 seek', () async {
+      final (service, _) = await makeService();
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/movie.m2ts')],
+        resumeSeconds: null,
+      );
+
+      expect(result.args, contains('--rebase-start-time=yes'));
+      expect(result.args, contains('--no-resume-playback'));
+      expect(result.args, isNot(contains('--start=0')));
+    });
+
+    test('TS 单集上次进度仍按重定位后的相对秒数恢复', () async {
+      final (service, _) = await makeService();
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/movie.ts')],
+        resumeSeconds: 90,
+      );
+
+      expect(result.args, contains('--rebase-start-time=yes'));
+      expect(result.args, contains('--start=90'));
+      expect(result.args, isNot(contains('--start=0')));
+    });
+
+    test('TS 多集上次进度写入起点集 watch_later', () async {
+      final (service, dir) = await makeService();
+      const startUrl = 'http://h/dav/02.m2ts';
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/01.m2ts'),
+          MediaEntry(url: startUrl),
+        ],
+        playlistStart: 1,
+        resumeSeconds: 90,
+      );
+
+      final watchLater = File(
+        '${dir.path}${Platform.pathSeparator}wl'
+        '${Platform.pathSeparator}${MpvWatchLaterSync.md5FileName(startUrl)}',
+      );
+      expect(result.args, contains('--rebase-start-time=yes'));
+      expect(result.args, isNot(contains('--start=0')));
+      expect(await watchLater.readAsString(), contains('start=90'));
     });
   });
 

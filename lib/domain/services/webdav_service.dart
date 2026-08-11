@@ -80,6 +80,11 @@ class WebDAVService implements DirectoryRepository {
     return refresh;
   }
 
+  /// 强制访问服务器根目录验证当前凭据，不允许用旧目录缓存代替认证。
+  Future<void> verifyConnection() async {
+    await refreshDirectory('');
+  }
+
   /// 同步读取缓存内容（UI 首帧秒开用，不检查新鲜度）。
   @override
   List<WebDavFile>? cachedDirectory(String path) =>
@@ -97,8 +102,10 @@ class WebDAVService implements DirectoryRepository {
   /// 由调用方跳过该条目。
   Future<String?> fetchStrmUrl(WebDavFile strmFile) async {
     try {
-      final content = await _client.getFileContent(strmFile.href);
-      if (content.length > maxContentBytes) return null;
+      final content = await _client.getFileContent(
+        strmFile.href,
+        maxBytes: maxContentBytes,
+      );
       final raw = parseStrmUrl(content);
       if (raw == null) return null;
       final resolved = url_utils.resolveHref(baseUrl, raw);
@@ -110,7 +117,7 @@ class WebDAVService implements DirectoryRepository {
     }
   }
 
-  /// strm 指针文件内容读取上限（字节）。
+  /// STRM 指针文件内容读取上限（字节）。
   static const int maxContentBytes = 8192;
 
   /// 拼接请求路径（baseUrl + path）。
@@ -122,14 +129,13 @@ class WebDAVService implements DirectoryRepository {
 
   // ── 内部 ─────────────────────────────────────────────────────
 
-  String _key(String path) =>
-      url_utils.cacheKeyFor(baseUrl: baseUrl, path: path);
+  String _key(String path) => url_utils.cacheKeyFor(
+    baseUrl: baseUrl,
+    path: path,
+    namespace: _client.username ?? '',
+  );
 
-  /// 等待同目录旧请求收尾后再执行强制刷新。
-  ///
-  /// 旧实现会先把缓存写成空列表，并复用正在进行的旧请求；一旦该请求
-  /// 失败或返回过时数据，空缓存会被当作新鲜结果保留，刷新也无法真正
-  /// 重新请求。这里保留最后一次成功缓存，只有新请求成功后才覆盖。
+  /// 等待同目录旧请求收尾后发起新请求；只用成功响应覆盖缓存。
   Future<List<WebDavFile>> _refreshAfterCurrentLoad(
     String key,
     String path,

@@ -47,9 +47,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
   void _openLoginWithError(String message) {
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(
-        builder: (_) => HomePage(initialError: message),
-      ),
+      MaterialPageRoute<void>(builder: (_) => HomePage(initialError: message)),
     );
   }
 
@@ -62,10 +60,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 16),
-            Text(
-              '正在连接服务器…',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
+            Text('正在连接服务器…', style: Theme.of(context).textTheme.bodyMedium),
           ],
         ),
       ),

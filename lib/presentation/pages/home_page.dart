@@ -14,10 +14,13 @@ import '../widgets/clipboard_history_menu.dart';
 /// 已保存的连接信息自动填入表单；信息完整时启动即自动连接
 /// （无需再点登录）。
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.initialError});
+  const HomePage({super.key, this.initialError, this.initialConnection});
 
   /// 自动连接失败时的错误信息（进入本页时显示）。
   final String? initialError;
+
+  /// 首帧表单值；为空时读取已加载的统一配置。
+  final ConnectionConfig? initialConnection;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -25,16 +28,21 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _formKey = GlobalKey<FormState>();
-  final _baseUrlController = TextEditingController();
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
+  late final TextEditingController _baseUrlController;
+  late final TextEditingController _usernameController;
+  late final TextEditingController _passwordController;
   bool _connecting = false;
   bool _obscurePassword = true;
 
   @override
   void initState() {
     super.initState();
-    _loadSavedConnection();
+    final saved =
+        widget.initialConnection ??
+        context.read<AppState>().configStore.current.toConnectionConfig();
+    _baseUrlController = TextEditingController(text: saved.baseUrl);
+    _usernameController = TextEditingController(text: saved.username);
+    _passwordController = TextEditingController(text: saved.password);
     final error = widget.initialError;
     if (error != null) {
       // 等首帧完成后再提示（ScaffoldMessenger 就绪）。
@@ -42,21 +50,6 @@ class _HomePageState extends State<HomePage> {
         if (mounted) _showError(error);
       });
     }
-  }
-
-  /// 载入上次保存的连接信息：填入表单；信息完整时自动连接。
-  Future<void> _loadSavedConnection() async {
-    final ConnectionConfig saved;
-    try {
-      saved = await context.read<AppState>().configStore.loadConnection();
-    } on AppException {
-      return; // 配置损坏时显示空表单。
-    }
-    if (!mounted) return;
-    _baseUrlController.text = saved.baseUrl;
-    _usernameController.text = saved.username;
-    _passwordController.text = saved.password;
-    // 自动连接由 AutoConnectGate 负责（本页仅预填 + 手动登录）。
   }
 
   @override
@@ -79,11 +72,13 @@ class _HomePageState extends State<HomePage> {
         password: _passwordController.text,
       );
       // 连接成功：保存连接信息（下次启动自动填入/自动连接）。
-      await appState.configStore.saveConnection(ConnectionConfig(
-        baseUrl: _baseUrlController.text.trim(),
-        username: _usernameController.text.trim(),
-        password: _passwordController.text,
-      ));
+      await appState.configStore.saveConnection(
+        ConnectionConfig(
+          baseUrl: _baseUrlController.text.trim(),
+          username: _usernameController.text.trim(),
+          password: _passwordController.text,
+        ),
+      );
       if (!mounted) return;
       // 连接成功：进入浏览页（替换本页，避免返回后残留表单）。
       Navigator.of(context).pushReplacement(
@@ -101,8 +96,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -113,7 +109,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),
-            tooltip: '播放器设置',
+            tooltip: '设置',
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
@@ -153,6 +149,7 @@ class _HomePageState extends State<HomePage> {
                         decoration: const InputDecoration(
                           labelText: '服务器地址',
                           hintText: 'https://example.com/dav',
+                          floatingLabelBehavior: FloatingLabelBehavior.always,
                           prefixIcon: Icon(Icons.link),
                           border: OutlineInputBorder(),
                         ),
@@ -174,6 +171,7 @@ class _HomePageState extends State<HomePage> {
                         contextMenuBuilder: buildClipboardHistoryMenu,
                         decoration: const InputDecoration(
                           labelText: '用户名',
+                          floatingLabelBehavior: FloatingLabelBehavior.always,
                           prefixIcon: Icon(Icons.person_outline),
                           border: OutlineInputBorder(),
                         ),
@@ -187,14 +185,19 @@ class _HomePageState extends State<HomePage> {
                         contextMenuBuilder: buildClipboardHistoryMenu,
                         decoration: InputDecoration(
                           labelText: '密码',
+                          helperText: '服务器未设置密码时可留空',
+                          floatingLabelBehavior: FloatingLabelBehavior.always,
                           prefixIcon: const Icon(Icons.lock_outline),
                           border: const OutlineInputBorder(),
                           suffixIcon: IconButton(
-                            icon: Icon(_obscurePassword
-                                ? Icons.visibility_off
-                                : Icons.visibility),
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                            ),
                             onPressed: () => setState(
-                                () => _obscurePassword = !_obscurePassword),
+                              () => _obscurePassword = !_obscurePassword,
+                            ),
                           ),
                         ),
                       ),
@@ -205,7 +208,9 @@ class _HomePageState extends State<HomePage> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.login),
                         label: Text(_connecting ? '连接中…' : '连接'),

@@ -30,8 +30,11 @@ void main() {
       );
       expect(items.length, 7, reason: '5 条历史 + 粘贴当前剪贴板 + 清空历史');
       expect(items.first.label, endsWith('…'));
-      expect(items.map((e) => e.label), isNot(contains('历史2')),
-          reason: '只保留最新 5 条（历史3 之后的不再显示）');
+      expect(
+        items.map((e) => e.label),
+        isNot(contains('历史2')),
+        reason: '只保留最新 5 条（历史3 之后的不再显示）',
+      );
       expect(items.last.label, '清空剪贴板历史');
     });
 

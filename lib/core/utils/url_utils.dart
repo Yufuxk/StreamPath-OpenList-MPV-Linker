@@ -33,13 +33,10 @@ String resolveHref(String baseUrl, String href) {
   if (uri != null && uri.hasScheme) return href;
   final base = Uri.tryParse(baseUrl);
   if (base == null) return href;
-  final query = uri?.query;
-  return base
-      .replace(
-        path: uri?.path ?? href,
-        query: (query == null || query.isEmpty) ? null : query,
-      )
-      .toString();
+  final directoryBase = base.path.endsWith('/')
+      ? base
+      : base.replace(path: '${base.path}/');
+  return directoryBase.resolveUri(uri ?? Uri(path: href)).toString();
 }
 
 /// 生成目录缓存键：baseUrl + path 规范化（去尾部斜杠）。
@@ -47,9 +44,17 @@ String resolveHref(String baseUrl, String href) {
 /// 短 URL 保持原格式以兼容已有缓存；百分号编码后的长 URL 超过 Hive
 /// 字符串 key 的 255 长度限制时，改用固定长度 SHA-256，避免长中文路径
 /// 在缓存写入阶段抛出 `HiveError`。
-String cacheKeyFor({required String baseUrl, required String path}) {
+String cacheKeyFor({
+  required String baseUrl,
+  required String path,
+  String? namespace,
+}) {
   final joined = joinUrl(baseUrl, path);
   final normalized = joined.replaceAll(RegExp(r'/+$'), '');
+  if (namespace != null) {
+    final scoped = '$namespace\n$normalized';
+    return 'sha256:${sha256.convert(utf8.encode(scoped))}';
+  }
   if (normalized.length <= _hiveStringKeyMaxLength) return normalized;
   return 'sha256:${sha256.convert(utf8.encode(normalized))}';
 }
@@ -86,5 +91,5 @@ String embedCredentials(String url, String username, String password) {
   if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty) return url;
   final user = Uri.encodeComponent(username);
   final pass = Uri.encodeComponent(password);
-  return uri.replace(userInfo: pass.isEmpty ? user : '$user:$pass').toString();
+  return uri.replace(userInfo: '$user:$pass').toString();
 }

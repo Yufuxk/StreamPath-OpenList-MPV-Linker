@@ -2,10 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/data/models/playback_progress.dart';
 
 /// PlaybackProgress 续播语义测试。
-///
-/// 回归背景：mpv 对网络流写的 watch_later 常无 `duration=` 行 →
-/// SQLite 中 durationMs 为 null；若把「时长未知」误判为「已看完」，
-/// 每次播放都会从头开始（历史缺陷）。修复后 duration 缺失必须正常续播。
+/// MPV 网络流的 watch_later 可能缺少 `duration=`，此时仍应续播。
 void main() {
   PlaybackProgress progress({required int positionMs, int? durationMs}) =>
       PlaybackProgress(
@@ -16,7 +13,6 @@ void main() {
 
   group('isFinishedNearEnd 已看完判定', () {
     test('时长缺失（null）不视为已看完，应续播', () {
-      // mpv 网络流实测场景：无 duration 行。
       final p = progress(positionMs: 3 * 60 * 1000, durationMs: null);
       expect(p.isFinishedNearEnd(), isFalse);
       expect(p.resumeSeconds, 180);

@@ -7,12 +7,7 @@ import '../../data/models/web_dav_file.dart';
 /// 轻量 StatelessWidget：万级条目下 Flutter 仅构建可视区，
 /// 配合 `const` 构造与无动画实现流畅滚动。
 class FileTile extends StatelessWidget {
-  const FileTile({
-    super.key,
-    required this.file,
-    this.onTap,
-    this.trailing,
-  });
+  const FileTile({super.key, required this.file, this.onTap, this.trailing});
 
   final WebDavFile file;
 
@@ -28,8 +23,7 @@ class FileTile extends StatelessWidget {
       // 「返回上级」条目：置顶展示，点击返回上级目录。
       return ListTile(
         onTap: onTap,
-        leading: Icon(Icons.arrow_upward,
-            color: scheme.primary, size: 28),
+        leading: Icon(Icons.arrow_upward, color: scheme.primary, size: 28),
         title: Text(
           file.name,
           maxLines: 1,

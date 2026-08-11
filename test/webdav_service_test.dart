@@ -9,6 +9,26 @@ import 'package:streampath/domain/services/webdav_service.dart';
 
 void main() {
   group('WebDAVService 强制刷新', () {
+    test('连接验证忽略旧账号根目录缓存并真实请求服务器', () async {
+      final oldEntries = [_file('旧账号缓存.mp4')];
+      final cache = _MemoryDirectoryCache(entries: oldEntries);
+      var requestCount = 0;
+      final client = _FakeWebDavClient((_) async {
+        requestCount++;
+        throw AppException.network('认证失败');
+      }, username: 'new-user');
+      final service = WebDAVService(client: client, cache: cache);
+
+      await expectLater(
+        service.verifyConnection(),
+        throwsA(isA<NetworkException>()),
+      );
+
+      expect(requestCount, 1);
+      expect(cache.writeCount, 0);
+      expect(cache.snapshot?.entries, oldEntries);
+    });
+
     test('刷新失败时保留最后一次成功缓存', () async {
       final oldEntries = [_file('旧缓存.mp4')];
       final cache = _MemoryDirectoryCache(entries: oldEntries);
@@ -74,7 +94,8 @@ void main() {
 }
 
 class _FakeWebDavClient extends WebDavClient {
-  _FakeWebDavClient(this._handler) : super(baseUrl: 'http://host/dav');
+  _FakeWebDavClient(this._handler, {super.username})
+    : super(baseUrl: 'http://host/dav');
 
   final Future<String> Function(String path) _handler;
 

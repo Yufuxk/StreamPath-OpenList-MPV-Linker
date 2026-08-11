@@ -15,7 +15,7 @@ class CacheSnapshot {
 
 /// Hive 目录元数据缓存。
 ///
-/// 以规范化 URL 为 key，存储 PROPFIND 解析结果 + 缓存时间戳，
+/// 以账号隔离的规范化 URL 为 key，存储 PROPFIND 解析结果 + 缓存时间戳，
 /// 配合 [isFresh] 实现 TTL 失效与 stale-while-revalidate：
 ///  - 未过期 → 直接返回，目录"秒开"；
 ///  - 已过期 → 先返回旧数据渲染，后台拉新后覆盖。

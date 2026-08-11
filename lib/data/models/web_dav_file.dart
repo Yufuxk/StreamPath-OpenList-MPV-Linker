@@ -109,24 +109,24 @@ class WebDavFile {
   // ── Hive 缓存序列化 ────────────────────────────────────────
 
   Map<String, dynamic> toCacheMap() => <String, dynamic>{
-        'name': name,
-        'href': href,
-        'isDirectory': isDirectory,
-        'isSelfEntry': isSelfEntry,
-        'size': size,
-        'modified': modified?.millisecondsSinceEpoch,
-        'contentType': contentType,
-      };
+    'name': name,
+    'href': href,
+    'isDirectory': isDirectory,
+    'isSelfEntry': isSelfEntry,
+    'size': size,
+    'modified': modified?.millisecondsSinceEpoch,
+    'contentType': contentType,
+  };
 
   factory WebDavFile.fromCacheMap(Map<dynamic, dynamic> map) => WebDavFile(
-        name: map['name'] as String? ?? '',
-        href: map['href'] as String? ?? '',
-        isDirectory: map['isDirectory'] as bool? ?? false,
-        isSelfEntry: map['isSelfEntry'] as bool? ?? false,
-        size: (map['size'] as num?)?.toInt() ?? 0,
-        modified: map['modified'] == null
-            ? null
-            : DateTime.fromMillisecondsSinceEpoch(map['modified'] as int),
-        contentType: map['contentType'] as String?,
-      );
+    name: map['name'] as String? ?? '',
+    href: map['href'] as String? ?? '',
+    isDirectory: map['isDirectory'] as bool? ?? false,
+    isSelfEntry: map['isSelfEntry'] as bool? ?? false,
+    size: (map['size'] as num?)?.toInt() ?? 0,
+    modified: map['modified'] == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(map['modified'] as int),
+    contentType: map['contentType'] as String?,
+  );
 }

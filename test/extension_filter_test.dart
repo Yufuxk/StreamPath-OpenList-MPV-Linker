@@ -6,24 +6,23 @@ import 'package:streampath/data/models/web_dav_file.dart';
 void main() {
   group('parseHiddenExtensions 解析', () {
     test('推荐格式 {".ass", ".mp4", ".mp3"}', () {
-      expect(
-        parseHiddenExtensions('{".ass", ".mp4", ".mp3"}'),
-        ['.ass', '.mp4', '.mp3'],
-      );
+      expect(parseHiddenExtensions('{".ass", ".mp4", ".mp3"}'), [
+        '.ass',
+        '.mp4',
+        '.mp3',
+      ]);
     });
 
     test('宽松格式：无花括号、无引号、可省点、空格分隔', () {
-      expect(
-        parseHiddenExtensions('ass .mp4 mp3'),
-        ['.ass', '.mp4', '.mp3'],
-      );
+      expect(parseHiddenExtensions('ass .mp4 mp3'), ['.ass', '.mp4', '.mp3']);
     });
 
     test('逗号与空白混合分隔', () {
-      expect(
-        parseHiddenExtensions('  .ass,  .mp4  ,mp3 '),
-        ['.ass', '.mp4', '.mp3'],
-      );
+      expect(parseHiddenExtensions('  .ass,  .mp4  ,mp3 '), [
+        '.ass',
+        '.mp4',
+        '.mp3',
+      ]);
     });
 
     test('大小写不敏感，统一转为小写', () {
@@ -43,8 +42,13 @@ void main() {
     test('非法 token 抛 FormatException（含 token 信息）', () {
       expect(
         () => parseHiddenExtensions('.ass, bad/token'),
-        throwsA(isA<FormatException>()
-            .having((e) => e.message, 'message', contains('bad/token'))),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('bad/token'),
+          ),
+        ),
       );
     });
   });
@@ -88,8 +92,11 @@ void main() {
 
     test('普通文件后缀命中即隐藏', () {
       expect(shouldHideFile(file('01.ass'), {'.ass'}), isTrue);
-      expect(shouldHideFile(file('01.SRT'), {'.srt'}), isTrue,
-          reason: '大小写不敏感');
+      expect(
+        shouldHideFile(file('01.SRT'), {'.srt'}),
+        isTrue,
+        reason: '大小写不敏感',
+      );
     });
 
     test('未命中的后缀不隐藏', () {

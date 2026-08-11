@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import 'core/utils/app_paths.dart';
@@ -8,53 +9,88 @@ import 'data/local/stream_path_config_store.dart';
 import 'data/local/directory_cache.dart';
 import 'data/local/playback_history_store.dart';
 import 'data/local/playback_progress_db.dart';
+import 'features/cache_control/cache_policy_service.dart';
+import 'features/cache_control/intelligence/cache_intelligence_service.dart';
+import 'features/cache_control/store/cache_intelligence_config_store.dart';
+import 'features/cache_control/store/cache_intelligence_learning_store.dart';
+import 'features/cache_control/store/cache_policy_config_store.dart';
+import 'features/cache_control/store/media_metadata_store.dart';
 import 'presentation/pages/auto_connect_gate.dart';
 import 'presentation/pages/home_page.dart';
 import 'presentation/state/app_state.dart';
 
 /// StreamPath 应用入口。
 ///
-/// 启动流程（全部异步初始化，完成后进入 UI）：
-///  1. Hive：目录元数据缓存（秒开基石）；
-///  2. SQLite：播放进度库（sqflite_common_ffi 桌面实现）；
-///  3. 配置：外部播放器 JSON 配置；
-///  4. 上次播放记录（继续播放入口）；
-///  5. 组装 AppState 并注入全局 provider。
+/// 先迁移数据布局，再并行初始化缓存、进度、配置和历史，最后进入 UI。
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 0. 剪贴板历史修复：Win11 的 Win+V 剪贴板历史注入序列缺 V 键，
-  //    导致 Flutter 的 Ctrl+V 快捷键不触发（上游 #143997），
-  //    此处改写为合法 Ctrl+V（仅 Windows 生效）。
-  //    诊断日志：应用支持目录/clipboard_history_fix.log。
-  await ClipboardHistoryFix.install();
+  // 数据迁移必须早于任何日志或数据库写入。
+  await AppPaths.migrateLegacyLayout();
+  final clipboardInstall = ClipboardHistoryFix.install();
 
-  // 1. Hive 目录缓存（存储 PROPFIND 元数据，TTL 内目录秒开）。
-  //    数据集中存放在项目根/stream_path_data（便携）。
-  final dataDir = await AppPaths.dataDirectory();
-  Hive.init(dataDir.path);
+  // 目录缓存与配置均位于便携数据目录。
+  final directories = await Future.wait([
+    AppPaths.cacheDirectory(),
+    AppPaths.configDirectory(),
+  ]);
+  final cacheDir = directories[0];
+  final configDir = directories[1];
+  Hive.init(cacheDir.path);
   final directoryCache = DirectoryCache();
-  await directoryCache.init();
 
-  // 2. 播放进度 SQLite 库。
-  final progressService = await PlaybackProgressService.create();
+  // 互不依赖的本地存储并行初始化。
+  final directoryCacheInit = directoryCache.init();
+  final progressServiceFuture = PlaybackProgressService.create();
+  final configStoreFuture = StreamPathConfigStore.create().then((store) async {
+    await store.load();
+    return store;
+  });
+  final playbackHistoryStoreFuture = PlaybackHistoryStore.create();
 
-  // 3. 统一配置（连接信息 + 播放器 + 隐藏后缀，集中一个文件）。
-  final configStore = await StreamPathConfigStore.create();
-  await configStore.load(); // 提前加载：判断是否可自动连接。
+  await directoryCacheInit;
+  final progressService = await progressServiceFuture;
+  final configStore = await configStoreFuture;
+  final playbackHistoryStore = await playbackHistoryStoreFuture;
+  await clipboardInstall;
 
-  // 4. 上次播放记录（继续播放入口）。
-  final playbackHistoryStore = await PlaybackHistoryStore.create();
+  // 缓存策略是独立增强层，初始化失败不得改变基础播放链路。
+  final cachePolicyStore = CachePolicyConfigStore.forPath(
+    p.join(configDir.path, CachePolicyConfigStore.configFileName),
+  );
+  final cacheIntelligenceStore = CacheIntelligenceConfigStore.forPath(
+    p.join(configDir.path, CacheIntelligenceConfigStore.configFileName),
+  );
+  await Future.wait<void>([
+    cachePolicyStore.ensureDefault(),
+    cacheIntelligenceStore.ensureDefault(),
+  ]);
+  final cacheIntelligence = LocalCacheIntelligenceService(
+    configStore: cacheIntelligenceStore,
+    learningStore: CacheIntelligenceLearningStore.forPath(
+      p.join(cacheDir.path, CacheIntelligenceLearningStore.fileName),
+    ),
+  );
+  final cachePolicy = CachePolicyService(
+    store: cachePolicyStore,
+    metadataStore: MediaMetadataStore.forPath(
+      p.join(cacheDir.path, MediaMetadataStore.fileName),
+    ),
+    intelligence: cacheIntelligence,
+  );
 
-  // 5. 全局状态（含 WebDAV/播放器/字幕服务）。
+  // 组装 WebDAV、播放器、缓存与界面状态。
   final appState = AppState(
     configStore: configStore,
     playbackHistoryStore: playbackHistoryStore,
     progressService: progressService,
     directoryCache: directoryCache,
+    cachePolicy: cachePolicy,
+    cachePolicyConfigStore: cachePolicyStore,
+    cacheIntelligenceConfigStore: cacheIntelligenceStore,
   );
 
-  // 已保存完整登录信息 → 直接自动连接（不渲染登录页，避免闪现）。
+  // 地址与用户名完整时直接尝试自动连接，密码允许为空。
   final autoConnect = configStore.current.isConnectionComplete;
   runApp(StreamPathApp(appState: appState, autoConnect: autoConnect));
 }
@@ -69,7 +105,7 @@ class StreamPathApp extends StatelessWidget {
 
   final AppState appState;
 
-  /// 是否自动连接（有完整登录信息时跳过登录页）。
+  /// 是否跳过登录页并自动尝试连接。
   final bool autoConnect;
 
   @override

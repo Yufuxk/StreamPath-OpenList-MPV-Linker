@@ -22,7 +22,9 @@ void main() {
 
     test('中文语言后缀识别（zh / chs / zh-Hans）', () {
       for (final suffix in ['zh', 'chs', 'sc', 'zh-Hans', 'zh-hant']) {
-        final result = matcher.matchFor(media('movie.mp4'), [sub('movie.$suffix.srt')]);
+        final result = matcher.matchFor(media('movie.mp4'), [
+          sub('movie.$suffix.srt'),
+        ]);
         expect(result, hasLength(1), reason: '后缀 $suffix 应匹配');
         expect(
           result.first.language,
@@ -47,7 +49,9 @@ void main() {
         '双语',
         'bilingual',
       ]) {
-        final result = matcher.matchFor(media('movie.mp4'), [sub('movie.$suffix.srt')]);
+        final result = matcher.matchFor(media('movie.mp4'), [
+          sub('movie.$suffix.srt'),
+        ]);
         expect(result, hasLength(1), reason: '后缀 $suffix 应匹配');
         expect(
           result.first.language,
@@ -127,9 +131,10 @@ void main() {
     // ── 相似名称 ────────────────────────────────────────────────
 
     test('相似名称：字幕是视频名的段前缀（视频带版本信息）', () {
-      final result = matcher.findBestFor(media('My.Movie.2024.1080p.BluRay.mkv'), [
-        sub('My.Movie.chs.srt'),
-      ]);
+      final result = matcher.findBestFor(
+        media('My.Movie.2024.1080p.BluRay.mkv'),
+        [sub('My.Movie.chs.srt')],
+      );
       expect(result, isNotNull, reason: '字幕核心名是视频核心名的段前缀');
       expect(result!.language, SubtitleLanguage.chinese);
     });
@@ -158,7 +163,10 @@ void main() {
         matcher.findBestFor(media('Show.S01E01.mkv'), [sub('Show.01.chs.srt')]),
         isNotNull,
       );
-      expect(matcher.findBestFor(media('S01E01.mkv'), [sub('01.srt')]), isNotNull);
+      expect(
+        matcher.findBestFor(media('S01E01.mkv'), [sub('01.srt')]),
+        isNotNull,
+      );
     });
 
     test('支持 1x01、E01、中文集号及分段季集编号', () {
@@ -239,7 +247,9 @@ void main() {
     });
 
     test('误报防护：单段前缀不误伤无关短名', () {
-      final result = matcher.matchFor(media('movie.mkv'), [sub('movie2.zh.srt')]);
+      final result = matcher.matchFor(media('movie.mkv'), [
+        sub('movie2.zh.srt'),
+      ]);
       expect(result, isEmpty);
     });
 
@@ -255,14 +265,18 @@ void main() {
 
     test('误报防护：剧集不匹配缺少集号的泛化字幕', () {
       expect(
-        matcher.findBestFor(media('My.Series.S01E01.mkv'), [sub('My.Series.chs.srt')]),
+        matcher.findBestFor(media('My.Series.S01E01.mkv'), [
+          sub('My.Series.chs.srt'),
+        ]),
         isNull,
       );
     });
 
     test('误报防护：纯数字集号不同时不匹配', () {
       expect(
-        matcher.findBestFor(media('My.Series.01.mkv'), [sub('My.Series.23.srt')]),
+        matcher.findBestFor(media('My.Series.01.mkv'), [
+          sub('My.Series.23.srt'),
+        ]),
         isNull,
       );
     });

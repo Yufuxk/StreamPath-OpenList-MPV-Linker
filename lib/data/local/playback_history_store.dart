@@ -22,7 +22,7 @@ class PlaybackHistoryStore {
 
   /// 创建：定位到数据目录下的记录文件。
   static Future<PlaybackHistoryStore> create() async {
-    final dir = await AppPaths.dataDirectory();
+    final dir = await AppPaths.cacheDirectory(); // playback_history.json
     return forPath(p.join(dir.path, AppConstants.playbackHistoryFileName));
   }
 

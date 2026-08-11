@@ -2,6 +2,7 @@ import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../core/constants.dart';
 import 'connection_config.dart';
+import 'openlist_recovery_config.dart';
 import 'player_config.dart';
 
 /// StreamPath 统一用户配置（平铺结构，集中存放，用户可自行编辑）。
@@ -21,7 +22,8 @@ import 'player_config.dart';
 ///   "hiddenExtensions": [".ass"],
 ///   "defaultSortMode": "name",
 ///   "defaultSortDirection": "ascending",
-///   "playerStartupTimeoutSeconds": 60
+///   "playerStartupTimeoutSeconds": 60,
+///   "openListRecovery": {"enabled": false}
 /// }
 /// ```
 /// 由 [StreamPathConfigStore] 读写；兼容旧的 player_config.json 与
@@ -47,6 +49,7 @@ class StreamPathConfig {
     this.defaultSortDirection = FileSortDirection.ascending,
     this.playerStartupTimeoutSeconds =
         AppConstants.defaultPlayerStartupTimeoutSeconds,
+    this.openListRecovery = const OpenListRecoveryConfig(),
   }) : subtitleInjectionEnabled = subtitleEnabled ?? subtitleInjectionEnabled,
        subtitleAutoSelectEnabled =
            (subtitleEnabled ?? subtitleInjectionEnabled) &&
@@ -86,11 +89,12 @@ class StreamPathConfig {
   /// 新启动的 MPV 等待首个有效播放状态的最长时间（秒）。
   final int playerStartupTimeoutSeconds;
 
-  /// 是否包含完整连接信息（可自动连接）。
+  /// MPV 网络播放失败后的 OpenList / AList 自动恢复配置。
+  final OpenListRecoveryConfig openListRecovery;
+
+  /// 是否具备自动连接所需的地址与用户名；密码允许为空。
   bool get isConnectionComplete =>
-      serverUrl.trim().isNotEmpty &&
-      username.trim().isNotEmpty &&
-      password.isNotEmpty;
+      serverUrl.trim().isNotEmpty && username.trim().isNotEmpty;
 
   /// 转 [ConnectionConfig]（供连接逻辑使用）。
   ConnectionConfig toConnectionConfig() => ConnectionConfig(
@@ -116,8 +120,9 @@ class StreamPathConfig {
   /// 由 [PlayerConfig] + [ConnectionConfig] 组合（兼容旧代码路径）。
   factory StreamPathConfig.fromParts(
     PlayerConfig player,
-    ConnectionConfig connection,
-  ) {
+    ConnectionConfig connection, {
+    OpenListRecoveryConfig openListRecovery = const OpenListRecoveryConfig(),
+  }) {
     return StreamPathConfig(
       serverUrl: connection.baseUrl,
       username: connection.username,
@@ -132,6 +137,20 @@ class StreamPathConfig {
       defaultSortMode: player.defaultSortMode,
       defaultSortDirection: player.defaultSortDirection,
       playerStartupTimeoutSeconds: player.playerStartupTimeoutSeconds,
+      openListRecovery: openListRecovery,
+    );
+  }
+
+  /// 替换播放器或连接部分，同时保留其余统一配置。
+  StreamPathConfig copyWithParts({
+    PlayerConfig? player,
+    ConnectionConfig? connection,
+    OpenListRecoveryConfig? recovery,
+  }) {
+    return StreamPathConfig.fromParts(
+      player ?? toPlayerConfig(),
+      connection ?? toConnectionConfig(),
+      openListRecovery: recovery ?? openListRecovery,
     );
   }
 
@@ -152,6 +171,7 @@ class StreamPathConfig {
     'defaultSortMode': defaultSortMode.jsonValue,
     'defaultSortDirection': defaultSortDirection.jsonValue,
     'playerStartupTimeoutSeconds': playerStartupTimeoutSeconds,
+    'openListRecovery': openListRecovery.toJson(),
   };
 
   factory StreamPathConfig.fromJson(Map<String, dynamic> json) {
@@ -186,6 +206,11 @@ class StreamPathConfig {
       ),
       playerStartupTimeoutSeconds: playerStartupTimeoutSecondsFromJson(
         json['playerStartupTimeoutSeconds'],
+      ),
+      openListRecovery: OpenListRecoveryConfig.fromJson(
+        json['openListRecovery'] is Map
+            ? Map<String, dynamic>.from(json['openListRecovery'] as Map)
+            : null,
       ),
     );
   }

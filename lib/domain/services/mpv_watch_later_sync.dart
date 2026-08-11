@@ -45,7 +45,7 @@ class MpvWatchLaterSync {
   /// 在 watch_later 目录中读取 [url] 的已保存时长（秒）。
   ///
   /// mpv 0.36+ 会在 watch_later 文件写入 `duration=` 行；旧版本无此行时
-  /// 返回 null（调用方应保守处理，如视为「已看完」从头播放）。
+  /// 返回 null，调用方不得仅凭时长缺失判定已经播放完成。
   Future<double?> readDurationSeconds(Directory dir, String url) async {
     final file = await _findFile(dir, url);
     if (file == null) return null;
@@ -53,6 +53,40 @@ class MpvWatchLaterSync {
       return parseDuration(await file.readAsString());
     } on FileSystemException {
       return null;
+    }
+  }
+
+  /// 删除 [url] 对应的恢复记录。
+  ///
+  /// 同时兼容默认 MD5 文件名与开启
+  /// `--write-filename-in-watch-later-config` 后的注释匹配文件名。
+  Future<void> deleteRecord(Directory dir, String url) async {
+    final direct = File(p.join(dir.path, md5FileName(url)));
+    try {
+      if (await direct.exists()) await direct.delete();
+    } on FileSystemException {
+      // 继续扫描注释匹配文件。
+    }
+
+    final Iterable<File> files;
+    try {
+      files = dir.listSync().whereType<File>();
+    } on FileSystemException {
+      return;
+    }
+    for (final file in files) {
+      final String content;
+      try {
+        content = await file.readAsString();
+      } on FileSystemException {
+        continue;
+      }
+      if (!_referencesUrl(content, url)) continue;
+      try {
+        await file.delete();
+      } on FileSystemException {
+        // 单个文件删除失败不影响其他候选。
+      }
     }
   }
 
@@ -111,7 +145,8 @@ class MpvWatchLaterSync {
     ).firstMatch(content);
     if (match == null) return null;
     final value = double.tryParse(match.group(1)!);
-    return (value != null && value > 0) ? value : null;
+    // 0 是有效的“明确从头播放”状态，不能与缺失/解析失败混为一谈。
+    return (value != null && value >= 0) ? value : null;
   }
 
   /// 解析 watch_later 文件内容中的 `duration=` 秒数；无记录返回 null。

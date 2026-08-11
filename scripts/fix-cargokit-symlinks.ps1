@@ -1,78 +1,72 @@
 ﻿<#
 .SYNOPSIS
-    修复 cargokit 的 resolve_symlinks.ps1 在 Windows 下抛出的 "Get-Item 找不到项" 噪声错误。
+    修补 cargokit 在 Windows 上解析符号链接时产生的非致命错误输出。
 
 .DESCRIPTION
-    super_native_extensions / irondash_engine_context 等通过 cargokit 构建 Rust 代码的插件，
-    在 Windows 上每次构建会调用 cargokit/cmake/resolve_symlinks.ps1 解析符号链接路径。
-    上游脚本对 Get-Item 失败不做容错：当目录符号链接的目标带有 \?\ 前缀或结尾反斜杠时，
-    Get-Item 抛出 ObjectNotFound，错误信息会泄漏到 stderr，虽然不影响最终解析结果，
-    但每次 flutter run 都会打印一行刺眼的红字。
-
-    本脚本把 plugin_symlinks 涉及到的 cargokit resolve_symlinks.ps1 就地打上容错补丁，
-    改成 Get-Item 失败时跳过本段 LinkTarget 重置、继续逐段累加，输出保持不变。
-    幂等：已经打过补丁的文件不会被重复修改。
-
-.NOTES
-    需要写到 %LOCALAPPDATA%\Pub\Cache（沙盒外），首次执行可能触发 UAC/权限确认。
-    不修改任何项目源代码（Dart/C++/CMake），只改 pub cache 内第三方插件的构建脚本。
+    脚本只修改当前项目 plugin_symlinks 指向的 cargokit 副本，并保持幂等。
+    找不到预期代码结构时不会写入文件，避免误改新版第三方脚本。
 #>
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
 $marker = 'Get-Item $realPath -ErrorAction SilentlyContinue'
-$nl = "`r`n"
-
-# 通过 ephemeral 的 plugin_symlinks 找到本次构建实际用到的、带 cargokit 的插件包。
 $ephemeral = Join-Path $PSScriptRoot '..\windows\flutter\ephemeral\.plugin_symlinks'
-if (-not (Test-Path $ephemeral)) {
-    Write-Warning "找不到 plugin_symlinks：$ephemeral。请先执行 flutter pub get 再运行本脚本。"
+
+if (-not (Test-Path -LiteralPath $ephemeral -PathType Container)) {
+    Write-Warning "找不到 plugin_symlinks：$ephemeral。请先执行 flutter pub get。"
     exit 1
 }
 
-$files = Get-ChildItem -Path $ephemeral -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-    $sym = Get-Item -Force $_.FullName -ErrorAction SilentlyContinue
-    $target = if ($sym.Target) { $sym.Target } else { $sym.LinkTarget }
-    if (-not $target) { return }
-    $ps1 = Join-Path $target 'cargokit\cmake\resolve_symlinks.ps1'
-    if (Test-Path $ps1) { (Get-Item $ps1).FullName }
-}
+$files = @(
+    Get-ChildItem -LiteralPath $ephemeral -Directory -ErrorAction Stop |
+        ForEach-Object {
+            $link = Get-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            $target = if ($link.Target) { $link.Target } else { $link.LinkTarget }
+            if ($target) {
+                $candidate = Join-Path $target 'cargokit\cmake\resolve_symlinks.ps1'
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    (Get-Item -LiteralPath $candidate -Force).FullName
+                }
+            }
+        } |
+        Select-Object -Unique
+)
 
-if (-not $files) {
-    Write-Host "没有发现需要打补丁的 cargokit 脚本。"
+if ($files.Count -eq 0) {
+    Write-Host '没有发现需要修补的 cargokit 脚本。'
     exit 0
 }
 
-$origLine = '        $item = Get-Item $realPath'
-$origTail = '        if ($item.LinkTarget) {'
-$patchedFirst  = '        $item = Get-Item $realPath -ErrorAction SilentlyContinue'
-$patchedSkip   = '        if ($null -eq $item) {'
-$patchedNote1  = '            # Windows 符号链接目标可能带 \?\ 前缀或结尾反斜杠，导致 Get-Item 解析失败；'
-$patchedNote2  = '            # 跳过本段 LinkTarget 重置、继续逐段累加，避免向 stderr 泄漏 ObjectNotFound 噪声。'
-$patchedCont   = '            continue'
-$patchedClose  = '        }'
-$patchedTail   = '        if ($item.LinkTarget) {'
+$originalFirst = '        $item = Get-Item $realPath'
+$originalNext = '        if ($item.LinkTarget) {'
+$replacementLines = @(
+    '        $item = Get-Item $realPath -ErrorAction SilentlyContinue',
+    '        if ($null -eq $item) {',
+    '            # 无法解析当前链接段时保留已累积路径，并继续处理后续段。',
+    '            continue',
+    '        }',
+    '        if ($item.LinkTarget) {'
+)
 
-foreach ($f in ($files | Select-Object -Unique)) {
-    $content = Get-Content -Raw -Path $f -Encoding UTF8
+foreach ($file in $files) {
+    $content = Get-Content -LiteralPath $file -Raw -Encoding UTF8
     if ($content.Contains($marker)) {
-        Write-Host "已是容错版本，跳过：$f"
-        continue
-    }
-    if (-not $content.Contains($origLine) -or -not $content.Contains($origTail)) {
-        Write-Warning "脚本结构已变化，未自动匹配：$f。请人工核对后再补丁。"
+        Write-Host "已是容错版本，跳过：$file"
         continue
     }
 
-    $replacement = ($patchedFirst + $nl + $patchedSkip + $nl + $patchedNote1 + $nl + $patchedNote2 + $nl + $patchedCont + $nl + $patchedClose + $nl + $patchedTail)
-    $before = ($origLine + $nl + $origTail)
-    $newContent = $content.Replace($before, $replacement)
-    if ($newContent -eq $content) {
-        $newContent = $content.Replace($origLine, $patchedFirst).Replace($origTail, "$patchedSkip" + $nl + $patchedNote1 + $nl + $patchedNote2 + $nl + $patchedCont + $nl + $patchedClose + $nl + $patchedTail)
+    $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $original = $originalFirst + $newline + $originalNext
+    if (-not $content.Contains($original)) {
+        Write-Warning "脚本结构已变化，未自动修改：$file"
+        continue
     }
-    Set-Content -Path $f -Value $newContent -Encoding UTF8 -NoNewline
-    Write-Host "已修补：$f"
+
+    $replacement = $replacementLines -join $newline
+    $updated = $content.Replace($original, $replacement)
+    Set-Content -LiteralPath $file -Value $updated -Encoding UTF8 -NoNewline
+    Write-Host "已修补：$file"
 }
 
-Write-Host "完成。"
+Write-Host '处理完成。'

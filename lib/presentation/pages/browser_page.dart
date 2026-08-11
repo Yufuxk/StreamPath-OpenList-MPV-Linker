@@ -19,6 +19,7 @@ import '../../domain/services/external_player_service.dart';
 import '../../domain/services/playback_activation_guard.dart';
 import '../../domain/services/webdav_service.dart';
 import '../state/app_state.dart';
+import '../widgets/directory_wheel_scroll_region.dart';
 import '../widgets/file_tile.dart';
 import 'home_page.dart';
 import 'settings_page.dart';
@@ -50,6 +51,7 @@ class _PlaybackUiSession {
   bool syncBusy = false;
   bool deleting = false;
   bool launching = false;
+  bool recovering = false;
   final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
   double? lastReportedPositionSeconds;
   double? lastReportedDurationSeconds;
@@ -57,6 +59,100 @@ class _PlaybackUiSession {
   List<String> get playlistFileNames => history.playlistFileNames.isEmpty
       ? [history.fileName]
       : history.playlistFileNames;
+}
+
+/// 独立管理播放底栏悬停动画，鼠标经过时只重建这一条底栏，不触发
+/// BrowserPage、面包屑和文件虚拟列表的整页 build。
+class _PlaybackBar extends StatefulWidget {
+  const _PlaybackBar({
+    super.key,
+    required this.title,
+    required this.dirLabel,
+    required this.icon,
+    required this.tooltip,
+    required this.deleting,
+    required this.onPressed,
+    required this.onDelete,
+    required this.onSecondaryTapDown,
+  });
+
+  final String title;
+  final String dirLabel;
+  final IconData icon;
+  final String tooltip;
+  final bool deleting;
+  final VoidCallback? onPressed;
+  final VoidCallback onDelete;
+  final GestureTapDownCallback onSecondaryTapDown;
+
+  @override
+  State<_PlaybackBar> createState() => _PlaybackBarState();
+}
+
+class _PlaybackBarState extends State<_PlaybackBar> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapDown: widget.onSecondaryTapDown,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          height: 64,
+          color: _hovered
+              ? scheme.surfaceContainerHigh
+              : scheme.surfaceContainerHighest,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.dirLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                icon: Icon(widget.icon),
+                tooltip: widget.tooltip,
+                onPressed: widget.deleting ? null : widget.onPressed,
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: '删除并关闭对应播放器',
+                onPressed: widget.deleting ? null : widget.onDelete,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _BrowserPageState extends State<BrowserPage> {
@@ -75,6 +171,14 @@ class _BrowserPageState extends State<BrowserPage> {
   FileSortDirection? _visibleFilesSortDirection;
   bool _cachedCanSortBySize = false;
 
+  /// 文件列表与右侧滚动条共用的显式控制器。
+  ///
+  /// Windows 桌面端默认滚动条依赖 Flutter 为无 controller 的 Scrollable
+  /// 临时创建控制器；目录、排序或空目录状态切换时 ListView 会按
+  /// PageStorageKey 重建。显式持有控制器可避免滚动条偶发绑定到已销毁的
+  /// ScrollPosition，同时仍由 PageStorageKey 分目录恢复滚动位置。
+  final ScrollController _directoryScrollController = ScrollController();
+
   /// 目录加载序号：仅最后一次导航/刷新请求允许更新当前页面。
   /// 防止较早请求晚返回后把新目录内容覆盖掉。
   int _directoryLoadId = 0;
@@ -82,12 +186,22 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 播放会话（最早创建在前；界面反向绘制，使越早播放越靠下）。
   final List<_PlaybackUiSession> _playbackSessions = [];
   Timer? _playMonitor;
-  String? _hoveredSessionId;
   int _sessionSequence = 0;
+
+  /// MPV 状态目录在应用生命周期内固定，只解析一次，避免播放监控每轮
+  /// 重复执行路径探测和可写目录检查。
+  late final Future<Directory?> _sessionCacheDirectory;
+
+  /// 播放中动态保护警告的订阅（网络带宽持续不足等）。
+  StreamSubscription<String>? _cacheWarningSub;
+  StreamSubscription<PlaybackRecoveryEvent>? _playbackRecoverySub;
 
   @override
   void dispose() {
     _playMonitor?.cancel();
+    _cacheWarningSub?.cancel();
+    _playbackRecoverySub?.cancel();
+    _directoryScrollController.dispose();
     super.dispose();
   }
 
@@ -153,12 +267,124 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void initState() {
     super.initState();
+    _sessionCacheDirectory = _resolveSessionCacheDirectory();
     _initLoad();
     _loadPlaybackSessions();
-    _playMonitor = Timer.periodic(
-      const Duration(milliseconds: 700),
-      (_) => _syncPlaybackSessions(),
-    );
+    // 播放中动态保护警告（如网络带宽不足）：SnackBar 展示。
+    _cacheWarningSub = context.read<AppState>().cacheWarnings.listen((message) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
+    });
+    _playbackRecoverySub = context
+        .read<AppState>()
+        .playbackRecoveryEvents
+        .listen(_handlePlaybackRecoveryEvent);
+  }
+
+  void _handlePlaybackRecoveryEvent(PlaybackRecoveryEvent event) {
+    if (!mounted) return;
+    final session = _sessionById(event.sessionId);
+    final appState = context.read<AppState>();
+    if (session != null) {
+      switch (event.stage) {
+        case PlaybackRecoveryStage.preparing:
+          setState(() {
+            session
+              ..recovering = true
+              ..launching = false
+              ..paused = null;
+          });
+          break;
+        case PlaybackRecoveryStage.relaunched:
+          final result = event.launchResult;
+          if (result != null) {
+            final now = DateTime.now();
+            final timeoutSeconds = appState
+                .configStore
+                .current
+                .playerStartupTimeoutSeconds
+                .clamp(
+                  AppConstants.minPlayerStartupTimeoutSeconds,
+                  AppConstants.maxPlayerStartupTimeoutSeconds,
+                )
+                .toInt();
+            final history = session.history.copyWith(
+              playerPid: result.process.pid,
+              ipcPipeName: result.ipcPipeName,
+              updatedAt: now,
+            );
+            setState(() {
+              session.statusNotBefore = now;
+              session.activationGuard.start(
+                now: now,
+                timeout: Duration(seconds: timeoutSeconds),
+              );
+              session
+                ..history = history
+                ..recovering = false
+                ..launching = false
+                ..paused = null
+                ..finishPending = 0
+                ..lastReportedPositionSeconds = null
+                ..lastReportedDurationSeconds = null;
+            });
+            unawaited(appState.playbackHistoryStore.upsert(history));
+            _refreshPlaybackMonitor();
+          }
+          break;
+        case PlaybackRecoveryStage.failed:
+          setState(() {
+            session
+              ..recovering = false
+              ..launching = false
+              ..paused = null;
+          });
+          break;
+      }
+    }
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(event.message)));
+  }
+
+  Future<Directory?> _resolveSessionCacheDirectory() async {
+    try {
+      return await AppPaths.cacheDirectory();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get _needsPlaybackMonitor => _playbackSessions.any(
+    (session) =>
+        !session.deleting &&
+        (session.history.playerPid != null ||
+            session.history.ipcPipeName != null ||
+            session.activationGuard.isWaiting),
+  );
+
+  /// 仅在确实有播放器进程需要跟踪时启用 700ms 监控。
+  ///
+  /// 纯“继续播放”历史没有活动 PID/IPC，不需要常驻计时器；恢复播放成功
+  /// 后会重新启动监控，不改变暂停、切集、完成判定和启动保护行为。
+  void _refreshPlaybackMonitor() {
+    if (!mounted) return;
+    if (!_needsPlaybackMonitor) {
+      _playMonitor?.cancel();
+      _playMonitor = null;
+      return;
+    }
+    if (_playMonitor != null) return;
+    _playMonitor = Timer.periodic(const Duration(milliseconds: 700), (_) {
+      if (!_needsPlaybackMonitor) {
+        _refreshPlaybackMonitor();
+        return;
+      }
+      _syncPlaybackSessions();
+    });
+    _syncPlaybackSessions();
   }
 
   /// 载入持久化播放会话并恢复各自 PID/IPC 追踪。
@@ -179,6 +405,7 @@ class _BrowserPageState extends State<BrowserPage> {
         ipcPipeName: history.ipcPipeName,
       );
     }
+    _refreshPlaybackMonitor();
   }
 
   _PlaybackUiSession? _sessionById(String sessionId) {
@@ -369,6 +596,7 @@ class _BrowserPageState extends State<BrowserPage> {
       ..lastSyncedPos = playStart
       ..finishPending = 0
       ..paused = null
+      ..recovering = false
       ..launching = true;
     session.activationGuard.reset();
     session
@@ -446,6 +674,7 @@ class _BrowserPageState extends State<BrowserPage> {
           ..paused = null
           ..launching = false;
       });
+      _refreshPlaybackMonitor();
       unawaited(appState.playbackHistoryStore.upsert(launchedHistory));
 
       final subtitle = entries[playStart].subtitle;
@@ -480,9 +709,10 @@ class _BrowserPageState extends State<BrowserPage> {
       if (session.syncBusy || session.deleting || session.launching) continue;
       session.syncBusy = true;
       unawaited(
-        _syncPlaybackSession(
-          session,
-        ).whenComplete(() => session.syncBusy = false),
+        _syncPlaybackSession(session).whenComplete(() {
+          session.syncBusy = false;
+          _refreshPlaybackMonitor();
+        }),
       );
     }
   }
@@ -506,7 +736,8 @@ class _BrowserPageState extends State<BrowserPage> {
 
     final File statusFile;
     try {
-      final dataDir = await AppPaths.dataDirectory();
+      final dataDir = await _sessionCacheDirectory; // mpv 状态文件
+      if (dataDir == null) return;
       statusFile = File(
         p.join(
           dataDir.path,
@@ -516,8 +747,17 @@ class _BrowserPageState extends State<BrowserPage> {
     } catch (_) {
       return;
     }
+    DateTime? statusModifiedAt;
+    try {
+      final status = await statusFile.stat();
+      if (status.type == FileSystemEntityType.file) {
+        statusModifiedAt = status.modified;
+      }
+    } catch (_) {
+      // 状态文件尚未创建或正在被替换，留待下一轮。
+    }
     List<String>? lines;
-    if (statusFile.existsSync() && _isStatusForSession(statusFile, session)) {
+    if (_isStatusForSession(statusModifiedAt, session)) {
       try {
         lines = await statusFile.readAsLines();
       } catch (_) {
@@ -569,7 +809,7 @@ class _BrowserPageState extends State<BrowserPage> {
       final naturallyFinished =
           pos == -1 &&
           session.lastSyncedPos == names.length - 1 &&
-          _isFreshStatus(statusFile);
+          _isFreshStatus(statusModifiedAt);
       var reachedCompletion = _hasReachedCompletionThreshold(session, lines);
       if (!reachedCompletion) {
         reachedCompletion = await _hasPersistedCompletionThreshold(
@@ -605,7 +845,7 @@ class _BrowserPageState extends State<BrowserPage> {
     final pos = int.tryParse(lines[0].trim());
     if (pos == null || pos < 0 || pos >= names.length) {
       final reachedSortedLast = session.lastSyncedPos == names.length - 1;
-      if (pos == -1 && reachedSortedLast && _isFreshStatus(statusFile)) {
+      if (pos == -1 && reachedSortedLast && _isFreshStatus(statusModifiedAt)) {
         session.finishPending++;
         if (session.finishPending >= 2) {
           session.finishPending = 0;
@@ -707,13 +947,10 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  bool _isStatusForSession(File file, _PlaybackUiSession session) {
-    try {
-      return file.lastModifiedSync().isAfter(session.statusNotBefore);
-    } catch (_) {
-      return false;
-    }
-  }
+  bool _isStatusForSession(
+    DateTime? statusModifiedAt,
+    _PlaybackUiSession session,
+  ) => statusModifiedAt?.isAfter(session.statusNotBefore) ?? false;
 
   /// 状态文件是否「新鲜」（最近 [Duration] 内写入）。
   ///
@@ -721,15 +958,11 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 的 `-1` 标记只有刚写出（轮询间隔内）才是本次播放的真实结果，
   /// 陈旧文件不应触发清除「继续播放」历史。
   bool _isFreshStatus(
-    File file, {
+    DateTime? statusModifiedAt, {
     Duration maxAge = const Duration(seconds: 10),
-  }) {
-    try {
-      return DateTime.now().difference(file.lastModifiedSync()) <= maxAge;
-    } catch (_) {
-      return false;
-    }
-  }
+  }) =>
+      statusModifiedAt != null &&
+      DateTime.now().difference(statusModifiedAt) <= maxAge;
 
   Future<void> _removePlaybackSession(
     _PlaybackUiSession session, {
@@ -749,8 +982,8 @@ class _BrowserPageState extends State<BrowserPage> {
     if (!mounted) return;
     setState(() {
       _playbackSessions.remove(session);
-      if (_hoveredSessionId == sessionId) _hoveredSessionId = null;
     });
+    _refreshPlaybackMonitor();
   }
 
   /// 「继续播放」：进入上次目录全量扫描，定位上次视频索引，
@@ -878,7 +1111,7 @@ class _BrowserPageState extends State<BrowserPage> {
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
-            tooltip: '播放器设置',
+            tooltip: '设置',
             onPressed: () async {
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
@@ -936,14 +1169,18 @@ class _BrowserPageState extends State<BrowserPage> {
     final dirLabel = history.dirCrumbs.isEmpty
         ? '根目录'
         : history.dirCrumbs.join(' / ');
-    final scheme = Theme.of(context).colorScheme;
     final paused = session.paused;
 
     final String title;
     final IconData icon;
     final String tooltip;
     final VoidCallback? onPressed;
-    if (session.launching) {
+    if (session.recovering) {
+      title = '正在恢复：${history.fileName}';
+      icon = Icons.sync;
+      tooltip = '正在刷新链接并恢复播放';
+      onPressed = null;
+    } else if (session.launching) {
       title = '正在打开：${history.fileName}';
       icon = Icons.hourglass_top;
       tooltip = '正在打开播放器';
@@ -967,74 +1204,17 @@ class _BrowserPageState extends State<BrowserPage> {
       onPressed = () => _resumePlaybackSession(session);
     }
 
-    final hovered = _hoveredSessionId == sessionId;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hoveredSessionId = sessionId),
-      onExit: (_) {
-        if (_hoveredSessionId == sessionId) {
-          setState(() => _hoveredSessionId = null);
-        }
-      },
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onSecondaryTapDown: (details) =>
-            _showSessionMenu(session, details.globalPosition),
-        child: AnimatedContainer(
-          key: ValueKey<String>('playback-bar-$sessionId'),
-          duration: const Duration(milliseconds: 120),
-          height: 64,
-          color: hovered
-              ? scheme.surfaceContainerHigh
-              : scheme.surfaceContainerHighest,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      dirLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filled(
-                icon: Icon(icon),
-                tooltip: tooltip,
-                onPressed: session.deleting ? null : onPressed,
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: '删除并关闭对应播放器',
-                onPressed: session.deleting
-                    ? null
-                    : () => _removePlaybackSession(
-                        session,
-                        terminateProcess: true,
-                      ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return _PlaybackBar(
+      key: ValueKey<String>('playback-bar-$sessionId'),
+      title: title,
+      dirLabel: dirLabel,
+      icon: icon,
+      tooltip: tooltip,
+      deleting: session.deleting,
+      onPressed: onPressed,
+      onDelete: () => _removePlaybackSession(session, terminateProcess: true),
+      onSecondaryTapDown: (details) =>
+          _showSessionMenu(session, details.globalPosition),
     );
   }
 
@@ -1043,9 +1223,6 @@ class _BrowserPageState extends State<BrowserPage> {
     Offset globalPosition,
   ) async {
     if (session.deleting) return;
-    if (_hoveredSessionId != session.history.sessionId && mounted) {
-      setState(() => _hoveredSessionId = session.history.sessionId);
-    }
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final selected = await showMenu<String>(
       context: context,
@@ -1127,36 +1304,56 @@ class _BrowserPageState extends State<BrowserPage> {
     }
 
     final visibleFiles = _visibleFiles;
-    return RefreshIndicator(
-      onRefresh: () => _load(force: true),
-      child: visibleFiles.isEmpty
-          ? ListView(
-              key: _directoryScrollKey,
-              // RefreshIndicator 需要可滚动子组件
-              children: const [
-                SizedBox(height: 200),
-                Center(child: Text('空目录')),
-              ],
-            )
-          : ListView.builder(
-              key: _directoryScrollKey,
-              // ── 高性能虚拟列表：万级条目仅构建可视区 ──
-              itemCount: visibleFiles.length,
-              itemBuilder: (context, index) {
-                final file = visibleFiles[index];
-                return FileTile(
-                  file: file,
-                  onTap: () => _onFileTap(file),
-                  trailing: _refreshing && index == 0
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : null,
-                );
-              },
-            ),
+    final listView = visibleFiles.isEmpty
+        ? ListView(
+            key: _directoryScrollKey,
+            controller: _directoryScrollController,
+            // RefreshIndicator 需要可滚动子组件
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: const [
+              SizedBox(height: 200),
+              Center(child: Text('空目录')),
+            ],
+          )
+        : ListView.builder(
+            key: _directoryScrollKey,
+            controller: _directoryScrollController,
+            // ── 高性能虚拟列表：万级条目仅构建可视区 ──
+            // 所有文件项均为单行标题 + 单行副标题，使用原型项固定当前
+            // 主题/文字缩放下的布局高度，减少快速滚动时的重复测量。
+            prototypeItem: FileTile(file: visibleFiles.first),
+            itemCount: visibleFiles.length,
+            itemBuilder: (context, index) {
+              final file = visibleFiles[index];
+              return FileTile(
+                file: file,
+                onTap: () => _onFileTap(file),
+                trailing: _refreshing && index == 0
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : null,
+              );
+            },
+          );
+    return DirectoryWheelScrollRegion(
+      controller: _directoryScrollController,
+      child: RefreshIndicator(
+        onRefresh: () => _load(force: true),
+        child: ScrollConfiguration(
+          // 关闭本列表的桌面自动滚动条，避免与显式滚动条重复绘制。
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: Scrollbar(
+            key: const ValueKey<String>('directory-scrollbar'),
+            controller: _directoryScrollController,
+            thumbVisibility: true,
+            interactive: true,
+            child: listView,
+          ),
+        ),
+      ),
     );
   }
 }

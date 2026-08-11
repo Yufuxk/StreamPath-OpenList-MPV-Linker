@@ -35,7 +35,8 @@ sealed class AppException implements Exception {
       ParseException(message, cause: cause);
 
   @override
-  String toString() => '$runtimeType: $message${cause == null ? '' : ' ($cause)'}';
+  String toString() =>
+      '$runtimeType: $message${cause == null ? '' : ' ($cause)'}';
 }
 
 /// 网络/认证层错误。

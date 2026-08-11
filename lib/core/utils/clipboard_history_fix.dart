@@ -9,10 +9,16 @@ import 'package:flutter/services.dart'
         LogicalKeyboardKey,
         MethodChannel,
         PhysicalKeyboardKey,
+        SelectionChangedCause,
         TextEditingValue,
+        TextRange,
         TextSelection;
 import 'package:flutter/widgets.dart'
-    show AppLifecycleListener, AppLifecycleState, EditableTextState, FocusManager;
+    show
+        AppLifecycleListener,
+        AppLifecycleState,
+        EditableTextState,
+        FocusManager;
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -44,8 +50,9 @@ class ClipboardHistoryFix {
   static const String logFileName = 'clipboard_history_fix.log';
 
   /// 原生侧（windows runner）剪贴板变化通知通道。
-  static const MethodChannel _clipboardChannel =
-      MethodChannel('streampath/clipboard');
+  static const MethodChannel _clipboardChannel = MethodChannel(
+    'streampath/clipboard',
+  );
 
   static List<File> _logFiles = const [];
 
@@ -79,6 +86,13 @@ class ClipboardHistoryFix {
   /// 注入序列缓冲（physical == [injectedPhysicalKey] 的事件）。
   final List<KeyData> _injectedBuffer = [];
   Timer? _injectedBufferTimer;
+
+  /// 完整 Win+V 序列在 V↑ 后通常还残留一组注入 Ctrl↓/Ctrl↑。若把
+  /// 这组事件延迟到用户下一次输入时再交给 Flutter，会污染 IME 状态，
+  /// 造成新字符覆盖粘贴内容或拼音字符成倍出现。
+  bool _discardInjectedTail = false;
+  bool _discardTailSawCtrlDown = false;
+  Timer? _discardTailTimer;
 
   /// 缓存的待确认 Ctrl KeyDown。
   KeyData? _pendingDown;
@@ -124,7 +138,8 @@ class ClipboardHistoryFix {
           final now = DateTime.now();
           final lastResumed = _lastResumedAt;
           final lastSequence = _lastInjectedSequenceAt;
-          final isHistoryPick = lastResumed != null &&
+          final isHistoryPick =
+              lastResumed != null &&
               now.difference(lastResumed) < autoPasteWindow &&
               lastSequence != null &&
               now.difference(lastSequence) < autoPasteWindow;
@@ -157,15 +172,17 @@ class ClipboardHistoryFix {
         // KeyData when transitMode is rawKeyData'）。空键事件
         // （physical==0 && logical==0）会被框架直接忽略，仅触发
         // _transitMode ??= keyDataThenRawKeyData，无任何副作用。
-        original(KeyData(
-          timeStamp: Duration.zero,
-          type: KeyEventType.up,
-          physical: 0,
-          logical: 0,
-          character: null,
-          synthesized: false,
-          deviceType: KeyEventDeviceType.keyboard,
-        ));
+        original(
+          KeyData(
+            timeStamp: Duration.zero,
+            type: KeyEventType.up,
+            physical: 0,
+            logical: 0,
+            character: null,
+            synthesized: false,
+            deviceType: KeyEventDeviceType.keyboard,
+          ),
+        );
         final fix = ClipboardHistoryFix();
         dispatcher.onKeyData = (KeyData data) {
           final events = fix.transform(data);
@@ -211,10 +228,17 @@ class ClipboardHistoryFix {
     final start = selection.isValid ? selection.start : value.text.length;
     final end = selection.isValid ? selection.end : value.text.length;
     final newText = value.text.replaceRange(start, end, text);
-    editable.updateEditingValue(TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(offset: start + text.length),
-    ));
+    // 使用用户编辑入口同步 EditableText 与平台 TextInputClient，并显式
+    // 清空 Win+V 前后可能残留的 composing 区间。直接 updateEditingValue
+    // 只更新框架侧时，下一次中文 IME 增量可能基于旧 composing 重放。
+    editable.userUpdateTextEditingValue(
+      TextEditingValue(
+        text: newText,
+        selection: TextSelection.collapsed(offset: start + text.length),
+        composing: TextRange.empty,
+      ),
+      SelectionChangedCause.keyboard,
+    );
   }
 
   /// 兜底注入：剪贴板历史点击后延迟 300ms 检查输入框文本——
@@ -265,13 +289,17 @@ class ClipboardHistoryFix {
     final focus = FocusManager.instance.primaryFocus;
     final editable = _focusedEditableState();
     final before = editable?.textEditingValue.text;
-    _log('粘贴诊断：焦点=${focus?.debugLabel ?? 'null'} '
-        'EditableText=${editable != null} 文本长度=${before?.length ?? -1}');
+    _log(
+      '粘贴诊断：焦点=${focus?.debugLabel ?? 'null'} '
+      'EditableText=${editable != null} 文本长度=${before?.length ?? -1}',
+    );
     await Future.delayed(const Duration(milliseconds: 500));
     final editableNow = _focusedEditableState();
     final after = editableNow?.textEditingValue.text;
-    _log('粘贴诊断：500ms 后 EditableText=${editableNow != null} '
-        '文本长度=${after?.length ?? -1} 变化=${before != after}');
+    _log(
+      '粘贴诊断：500ms 后 EditableText=${editableNow != null} '
+      '文本长度=${after?.length ?? -1} 变化=${before != after}',
+    );
   }
 
   /// 测试辅助：清空注入缓冲与定时器（避免测试间状态泄漏）。
@@ -280,6 +308,10 @@ class ClipboardHistoryFix {
     _injectedBufferTimer?.cancel();
     _injectedBufferTimer = null;
     _injectedBuffer.clear();
+    _discardTailTimer?.cancel();
+    _discardTailTimer = null;
+    _discardInjectedTail = false;
+    _discardTailSawCtrlDown = false;
     _pendingDown = null;
     _pendingUp = null;
     _cancelTimer();
@@ -290,9 +322,11 @@ class ClipboardHistoryFix {
   ///
   /// TextField 的焦点挂在 EditableText 内部的 Focus widget 上，
   /// 因此从焦点 context 向上即可找到 EditableTextState。
-  static EditableTextState? _focusedEditableState() =>
-      FocusManager.instance.primaryFocus?.context
-          ?.findAncestorStateOfType<EditableTextState>();
+  static EditableTextState? _focusedEditableState() => FocusManager
+      .instance
+      .primaryFocus
+      ?.context
+      ?.findAncestorStateOfType<EditableTextState>();
 
   /// 处理单个输入事件，返回需要转发的 [KeyData] 列表。
   ///
@@ -303,6 +337,28 @@ class ClipboardHistoryFix {
     final out = <KeyData>[..._deferred];
     _deferred.clear();
 
+    // 已确认序列的尾部 Ctrl 事件属于同一次系统注入，必须直接吞掉，
+    // 不能积压到下一次真实字符到来时再冲刷给框架/中文 IME。
+    if (data.physical == injectedPhysicalKey && _discardInjectedTail) {
+      if (_isCtrlLogical(data)) {
+        if (data.type == KeyEventType.down) {
+          _discardTailSawCtrlDown = true;
+        } else if (data.type == KeyEventType.up && _discardTailSawCtrlDown) {
+          _discardInjectedTail = false;
+          _discardTailSawCtrlDown = false;
+          _discardTailTimer?.cancel();
+          _discardTailTimer = null;
+        }
+        _logEvent(data, '丢弃已确认 Win+V 序列的尾部 Ctrl 事件');
+        return out;
+      }
+      // 非 Ctrl 标记事件说明这是新的注入序列，不误吞。
+      _discardInjectedTail = false;
+      _discardTailSawCtrlDown = false;
+      _discardTailTimer?.cancel();
+      _discardTailTimer = null;
+    }
+
     // ── 注入序列整组识别（physical == injectedPhysicalKey）────────
     // 剪贴板历史注入的事件带统一物理标记，且序列为「单击式」Ctrl+V
     // （Ctrl↓ Ctrl↑ V↓ V↑ Ctrl↓ Ctrl↑），需整组收集后替换为一次
@@ -311,25 +367,38 @@ class ClipboardHistoryFix {
       _injectedBuffer.add(data);
       _injectedBufferTimer?.cancel();
       _injectedBufferTimer = Timer(
-          const Duration(milliseconds: injectedFlushDelayMs), () {
-        _log('注入缓冲超时未确认，原样冲刷（${_injectedBuffer.length} 事件）');
-        _deferred.addAll(_injectedBuffer);
-        _injectedBuffer.clear();
-      });
-      final hasCtrlDown = _injectedBuffer
-          .any((e) => e.type == KeyEventType.down && _isCtrlLogical(e));
-      final hasCtrlUp = _injectedBuffer
-          .any((e) => e.type == KeyEventType.up && _isCtrlLogical(e));
-      final hasVDown = _injectedBuffer
-          .any((e) => e.type == KeyEventType.down && _isVLogical(e));
-      final hasVUp = _injectedBuffer
-          .any((e) => e.type == KeyEventType.up && _isVLogical(e));
+        const Duration(milliseconds: injectedFlushDelayMs),
+        () {
+          _log('注入缓冲超时未确认，原样冲刷（${_injectedBuffer.length} 事件）');
+          _deferred.addAll(_injectedBuffer);
+          _injectedBuffer.clear();
+        },
+      );
+      final hasCtrlDown = _injectedBuffer.any(
+        (e) => e.type == KeyEventType.down && _isCtrlLogical(e),
+      );
+      final hasCtrlUp = _injectedBuffer.any(
+        (e) => e.type == KeyEventType.up && _isCtrlLogical(e),
+      );
+      final hasVDown = _injectedBuffer.any(
+        (e) => e.type == KeyEventType.down && _isVLogical(e),
+      );
+      final hasVUp = _injectedBuffer.any(
+        (e) => e.type == KeyEventType.up && _isVLogical(e),
+      );
       if (hasCtrlDown && hasCtrlUp && hasVDown && hasVUp) {
         _injectedBufferTimer?.cancel();
         _injectedBufferTimer = null;
         final count = _injectedBuffer.length;
         _injectedBuffer.clear();
         _lastInjectedSequenceAt = DateTime.now();
+        _discardInjectedTail = true;
+        _discardTailSawCtrlDown = false;
+        _discardTailTimer?.cancel();
+        _discardTailTimer = Timer(const Duration(milliseconds: 250), () {
+          _discardInjectedTail = false;
+          _discardTailSawCtrlDown = false;
+        });
         _log('识别完整剪贴板历史注入序列（$count 事件）→ 整组替换为一次 Ctrl+V');
         out.addAll(_ctrlVSequence(data));
         // 不依赖框架快捷键链路（焦点/TextInput 连接在剪贴板历史窗口
@@ -368,15 +437,16 @@ class ClipboardHistoryFix {
       if (_pendingDown != null) {
         _cancelTimer();
         // 注入特征 1：合成 up 且与 down 时间戳接近 → 立即确认。
-        final gap =
-            data.timeStamp - _pendingDown!.timeStamp;
+        final gap = data.timeStamp - _pendingDown!.timeStamp;
         if (data.synthesized &&
             gap <= const Duration(milliseconds: maxSynthesizedGapMs)) {
           _pendingDown = null;
           out.addAll(_ctrlVSequence(data));
           _lastInjectedSequenceAt = DateTime.now();
-          _logEvent(data,
-              '注入确认（syn up, gap=${gap.inMilliseconds}ms）→ 合成 Ctrl+V');
+          _logEvent(
+            data,
+            '注入确认（syn up, gap=${gap.inMilliseconds}ms）→ 合成 Ctrl+V',
+          );
           return out;
         }
         _pendingUp = data;
@@ -449,37 +519,46 @@ class ClipboardHistoryFix {
 
   /// 构造完整 Ctrl+V 键序列（非 synthesized，等同真实按键）。
   static List<KeyData> _ctrlVSequence(KeyData seed) => [
-        _make(seed,
-            physical: PhysicalKeyboardKey.controlLeft.usbHidUsage,
-            logical: LogicalKeyboardKey.controlLeft.keyId,
-            type: KeyEventType.down),
-        _make(seed,
-            physical: PhysicalKeyboardKey.keyV.usbHidUsage,
-            logical: LogicalKeyboardKey.keyV.keyId,
-            type: KeyEventType.down),
-        _make(seed,
-            physical: PhysicalKeyboardKey.keyV.usbHidUsage,
-            logical: LogicalKeyboardKey.keyV.keyId,
-            type: KeyEventType.up),
-        _make(seed,
-            physical: PhysicalKeyboardKey.controlLeft.usbHidUsage,
-            logical: LogicalKeyboardKey.controlLeft.keyId,
-            type: KeyEventType.up),
-      ];
+    _make(
+      seed,
+      physical: PhysicalKeyboardKey.controlLeft.usbHidUsage,
+      logical: LogicalKeyboardKey.controlLeft.keyId,
+      type: KeyEventType.down,
+    ),
+    _make(
+      seed,
+      physical: PhysicalKeyboardKey.keyV.usbHidUsage,
+      logical: LogicalKeyboardKey.keyV.keyId,
+      type: KeyEventType.down,
+    ),
+    _make(
+      seed,
+      physical: PhysicalKeyboardKey.keyV.usbHidUsage,
+      logical: LogicalKeyboardKey.keyV.keyId,
+      type: KeyEventType.up,
+    ),
+    _make(
+      seed,
+      physical: PhysicalKeyboardKey.controlLeft.usbHidUsage,
+      logical: LogicalKeyboardKey.controlLeft.keyId,
+      type: KeyEventType.up,
+    ),
+  ];
 
-  static KeyData _make(KeyData seed,
-          {required int physical,
-          required int logical,
-          required KeyEventType type}) =>
-      KeyData(
-        timeStamp: seed.timeStamp,
-        type: type,
-        physical: physical,
-        logical: logical,
-        character: null,
-        synthesized: false,
-        deviceType: seed.deviceType,
-      );
+  static KeyData _make(
+    KeyData seed, {
+    required int physical,
+    required int logical,
+    required KeyEventType type,
+  }) => KeyData(
+    timeStamp: seed.timeStamp,
+    type: type,
+    physical: physical,
+    logical: logical,
+    character: null,
+    synthesized: false,
+    deviceType: seed.deviceType,
+  );
 
   // ── 诊断日志（写文件，GUI stdout 不可见） ──────────────────────
 
@@ -489,7 +568,7 @@ class ClipboardHistoryFix {
     if (!kDebugMode) return;
     Directory? dataDir;
     try {
-      dataDir = await AppPaths.dataDirectory();
+      dataDir = await AppPaths.cacheDirectory(); // 诊断日志
     } catch (_) {}
     final files = <File>[
       if (dataDir != null) File(p.join(dataDir.path, logFileName)),
@@ -514,16 +593,20 @@ class ClipboardHistoryFix {
   }
 
   void _logEvent(KeyData d, String decision) {
-    _log('event type=${d.type.name} physical=0x${d.physical.toRadixString(16)}'
-        ' logical=0x${d.logical.toRadixString(16)} syn=${d.synthesized}'
-        ' ts=${d.timeStamp.inMilliseconds}ms -> $decision');
+    _log(
+      'event type=${d.type.name} physical=0x${d.physical.toRadixString(16)}'
+      ' logical=0x${d.logical.toRadixString(16)} syn=${d.synthesized}'
+      ' ts=${d.timeStamp.inMilliseconds}ms -> $decision',
+    );
   }
 
   static void _log(String line) {
     for (final f in _logFiles) {
       try {
-        f.writeAsStringSync('${DateTime.now().toIso8601String()} $line\n',
-            mode: FileMode.append);
+        f.writeAsStringSync(
+          '${DateTime.now().toIso8601String()} $line\n',
+          mode: FileMode.append,
+        );
       } catch (_) {
         // 写入失败不影响功能。
       }

@@ -124,10 +124,13 @@ end)
   }) async {
     final lines = <String>['#EXTM3U'];
     for (final e in entries) {
-      final title = e.title ?? fallbackTitleFromUrl(e.url);
+      // 标题来自服务器（文件/目录名），剥离控制字符防止
+      // CR/LF 注入额外 m3u 行（#EXTINF/#EXTVLCOPT 是逐行解析的）。
+      final title = _sanitizeTitle(e.title ?? fallbackTitleFromUrl(e.url));
       lines.add('#EXTINF:0,$title');
       lines.add('#EXTVLCOPT:force-media-title=$title');
-      lines.add(authUrl(e.url));
+      // URL 行同样剥离控制字符（防止服务器返回的 URL 注入额外行）。
+      lines.add(_sanitizeTitle(authUrl(e.url)));
     }
     final file = File(
       p.join(
@@ -179,8 +182,11 @@ end)
 
   /// 写入当前播放状态上报脚本：
   ///  - `file-loaded` 与 `pause` 变化时，把 `playlist-pos`、当前文件
-  ///    URL、暂停状态、当前位置和总时长（五行）写入 [outFile]；
+  ///    URL、暂停状态、当前位置和总时长（十四行，含缓冲/缓存/速度）
+  ///    写入 [outFile]；
   ///  - 播放中每秒以及 MPV 退出前刷新状态，供直接关窗时判断完成度；
+  ///  - 在 [progressFile] 追加逐媒体 JSONL 结果，明确区分完成、0 秒和
+  ///    普通退出位置，避免 watch_later 缺失时旧进度残留；
   ///  - 轮询 [cmdFile] 命令文件，执行暂停/恢复；
   ///  - 播放列表播完进入 idle 时写 `-1` 标记（仅限已加载过文件的场景，
   ///    避免启动瞬间误写）。
@@ -189,32 +195,74 @@ end)
     String cmdFile,
     Directory base, {
     String? sessionId,
+    String? progressFile,
   }) async {
+    final resolvedProgressFile = progressFile ?? '$outFile.progress.jsonl';
     final script =
         '''
 -- StreamPath: 当前播放状态上报 + 命令执行。
--- OUT 五行：playlist-pos / path / paused(1|0) / time-pos / duration
+-- OUT 十四行：playlist-pos / path / paused(1|0) / time-pos / duration
+--           / buffering(0-100) / cache-used-bytes / net-speed(B/s)
+--           / cache-idle(1|0|-1) / 诊断行（speed_src|speed|idle_src|idle_raw）
+--           / paused-for-cache / bof-cached / eof-cached / resolution
+local utils = require "mp.utils"
 local OUT = ${_luaQuote(outFile)}
 local CMD = ${_luaQuote(cmdFile)}
+local PROGRESS = ${_luaQuote(resolvedProgressFile)}
 
 local has_loaded = false
+local last_playlist_pos = -1
+local last_path = ""
 local last_time_pos = -1
 local last_duration = -1
+local last_entry_recorded = false
+local entry_started = false
 
-local function write_status(use_cached_progress)
+local function append_progress(outcome, reason, file_error)
+    -- 初次打开即失败时 path 在部分 mpv 版本中可能为空，但 playlist-pos
+    -- 仍足以映射原播放项，不能因此丢失恢复事件。
+    if last_playlist_pos < 0 and last_path == "" then return end
+    local record = {
+        outcome = outcome,
+        playlist_pos = last_playlist_pos,
+        path = last_path,
+    }
+    if last_time_pos >= 0 then record["position"] = last_time_pos end
+    if last_duration > 0 then record["duration"] = last_duration end
+    if reason ~= nil and reason ~= "" then record["reason"] = reason end
+    if file_error ~= nil and file_error ~= "" then
+        record["file_error"] = file_error
+    end
+    local ok, line = pcall(utils.format_json, record)
+    if not ok or line == nil then return end
+    local f = io.open(PROGRESS, "a")
+    if f then
+        f:write(line .. "\\n")
+        f:flush()
+        f:close()
+    end
+end
+
+local function write_status(use_cached_progress, skip_diagnostics)
     local pos = mp.get_property_number("playlist-pos", -1)
     local path = mp.get_property("path", "")
     local paused = mp.get_property_bool("pause", false)
     local time_pos = mp.get_property_number("time-pos", -1)
     local duration = mp.get_property_number("duration", -1)
     if use_cached_progress then
-        if time_pos <= 0 and last_time_pos >= 0 then
+        if last_time_pos >= 0 then
             time_pos = last_time_pos
         end
         if duration <= 0 and last_duration > 0 then
             duration = last_duration
         end
     else
+        if pos >= 0 then
+            last_playlist_pos = pos
+        end
+        if path ~= "" then
+            last_path = path
+        end
         if time_pos >= 0 then
             last_time_pos = time_pos
         end
@@ -222,29 +270,150 @@ local function write_status(use_cached_progress)
             last_duration = duration
         end
     end
+    -- 播放中动态保护采样（第二阶段）：缓冲状态 / 缓存占用 / 实时下载速度。
+    -- 旧版 mpv 或属性不可用时全部回落 -1，监控侧按「未知」降级处理。
+    -- shutdown 阶段只保存前五行必要进度，不再同步读取 demuxer-cache-state；
+    -- 网络源正在拆卸时该属性可能明显阻塞窗口关闭。
+    -- paused-for-cache 是 mpv 因缓存不足暂停播放的真值；
+    -- cache-buffering-state 仅作为进度展示，不能结合 idle 推断卡顿。
+    -- mpv 0.41 使用 demuxer-cache-idle，旧版本使用 cache-idle。
+    -- true 表示 EOF 或缓存当前无需继续读取；优先新名并回退旧名。
+    local buffering = -1
+    local paused_for_cache = -1
+    local idle_raw = "skipped"
+    local idle_src = "shutdown-fast"
+    local cache_idle = -1
+    local net_speed = -1
+    local speed_src = "shutdown-fast"
+    local cache_used = -1
+    local bof_cached = -1
+    local eof_cached = -1
+    local resolution = ""
+    if not skip_diagnostics then
+        buffering = mp.get_property_number("cache-buffering-state", -1)
+        local paused_for_cache_raw = mp.get_property("paused-for-cache", nil)
+        if paused_for_cache_raw == "yes" then
+            paused_for_cache = 1
+        elseif paused_for_cache_raw == "no" then
+            paused_for_cache = 0
+        end
+        idle_raw = mp.get_property("demuxer-cache-idle", nil)
+        idle_src = "demuxer-cache-idle"
+        if idle_raw == nil then
+            idle_raw = mp.get_property("cache-idle", nil)
+            idle_src = "cache-idle"
+        end
+        if idle_raw == "yes" then
+            cache_idle = 1
+        elseif idle_raw == "no" then
+            cache_idle = 0
+        end
+    -- 网络读取速率（bytes/s）：
+    -- 1) 首选 `cache-speed` 属性（mpv 0.38+）：与 demuxer-cache-state 的
+    --    raw-input-rate 同源同值（demux_reader_state.bytes_per_second，
+    --    EMA 平滑）。0.36 起 stream cache 已移除，它就是网络下载速率。
+    -- 2) 回退读 demuxer-cache-state 顶层 `raw-input-rate`（0.41 结构
+    --    无 reader 子表；该键仅当速率 >0 时存在）。
+    -- 3) 旧版 mpv 两者皆无时回落 -1（网络判定降级为缓冲驱动）。
+        net_speed = mp.get_property_number("cache-speed", nil)
+        speed_src = "cache-speed"
+        if net_speed == nil then
+            local cstate = mp.get_property_native("demuxer-cache-state", nil)
+            speed_src = "cstate"
+            if type(cstate) == "table" then
+                net_speed = cstate["raw-input-rate"]
+                if net_speed == nil then
+                    net_speed = cstate["reader"] and cstate["reader"]["bytes_per_second"] or nil
+                    if net_speed ~= nil then speed_src = "cstate.reader" end
+                end
+            end
+            if net_speed == nil then net_speed = -1 end
+        end
+        -- 缓存占用（bytes）：0.41 结构顶层 file-cache-bytes（≥0 时存在）；
+        -- 旧版回退 cstate.cache.bytes。均不可用时 -1（全量缓存判定降级）。
+        local cstate2 = mp.get_property_native("demuxer-cache-state", nil)
+        if type(cstate2) == "table" then
+            cache_used = cstate2["file-cache-bytes"] or -1
+            if cache_used < 0 and type(cstate2["cache"]) == "table" then
+                cache_used = cstate2["cache"]["bytes"] or -1
+            end
+            if cstate2["bof-cached"] ~= nil then
+                bof_cached = cstate2["bof-cached"] and 1 or 0
+            end
+            if cstate2["eof-cached"] ~= nil then
+                eof_cached = cstate2["eof-cached"] and 1 or 0
+            end
+        end
+        local width = mp.get_property_number("width", -1)
+        local height = mp.get_property_number("height", -1)
+        if width > 0 and height > 0 then
+            resolution = tostring(math.floor(width)) .. "x" .. tostring(math.floor(height))
+        end
+    end
     local f = io.open(OUT, "w")
     if f then
+        -- 第 10 行：诊断行（speed_src|speed|idle_src|idle_raw），供排查
+        -- net-speed / cache-idle 缺失。
         f:write(tostring(pos) .. "\\n" .. tostring(path) .. "\\n" ..
-            (paused and "1" or "0") .. "\\n" .. tostring(time_pos) .. "\\n" .. tostring(duration))
+            (paused and "1" or "0") .. "\\n" .. tostring(time_pos) .. "\\n" .. tostring(duration) ..
+            "\\n" .. tostring(buffering) .. "\\n" .. tostring(cache_used) .. "\\n" .. tostring(net_speed) ..
+            "\\n" .. tostring(cache_idle) .. "\\n" .. speed_src .. "|" .. tostring(net_speed) ..
+            "|" .. idle_src .. "|" .. tostring(idle_raw) ..
+            "\\n" .. tostring(paused_for_cache) .. "\\n" .. tostring(bof_cached) ..
+            "\\n" .. tostring(eof_cached) .. "\\n" .. resolution)
         f:close()
     end
 end
 
+mp.register_event("start-file", function()
+    -- 当前曲目不得继承上一集缓存的时长/进度。
+    has_loaded = false
+    entry_started = true
+    last_playlist_pos = -1
+    last_path = ""
+    last_time_pos = -1
+    last_duration = -1
+    last_entry_recorded = false
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local path = mp.get_property("path", "")
+    if pos >= 0 then last_playlist_pos = pos end
+    if path ~= "" then last_path = path end
+end)
 mp.register_event("file-loaded", function()
     has_loaded = true
-    write_status(false)
+    entry_started = true
+    write_status(false, false)
 end)
 mp.observe_property("pause", "bool", function()
-    write_status(false)
+    write_status(false, false)
+end)
+-- 初次起播与 seek 完成后立即采样；尤其要及时保留用户主动跳回 0 秒。
+mp.register_event("playback-restart", function()
+    if has_loaded and not mp.get_property_bool("idle-active", false) then
+        write_status(false, false)
+    end
+end)
+mp.register_event("end-file", function(event)
+    if not entry_started or last_entry_recorded then return end
+    local reason = event and event["reason"] or "unknown"
+    -- Lua 旧版把错误放在 error，新版使用 file_error；同时读取以兼容
+    -- mpv 0.34～0.41+。不解析终端文案，不依赖特定 FFmpeg 日志格式。
+    local file_error = event and (event["file_error"] or event["error"]) or nil
+    append_progress(reason == "eof" and "completed" or "position", reason, file_error)
+    last_entry_recorded = true
 end)
 mp.register_event("shutdown", function()
-    write_status(true)
+    if has_loaded and not last_entry_recorded then
+        append_progress("position", "shutdown", nil)
+        last_entry_recorded = true
+    end
+    write_status(true, true)
 end)
 
 -- 定期刷新播放进度；idle 时保留专门的 -1 完成标记。
 mp.add_periodic_timer(1.0, function()
     if has_loaded and not mp.get_property_bool("idle-active", false) then
-        write_status(false)
+        write_status(false, false)
     end
 end)
 
@@ -305,7 +474,12 @@ end)
 
   /// Lua 字符串字面量转义。
   static String _luaQuote(String s) =>
-      '"${s.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"';
+      '"${s.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n').replaceAll('\r', '\\r')}"';
+
+  /// 剥离控制字符（标题写入 m3u 的 #EXTINF/#EXTVLCOPT 行，
+  /// 逐行解析，控制字符可注入额外行）。
+  static String _sanitizeTitle(String title) =>
+      title.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ');
 
   /// 会话安全文件名；未传 [sessionId] 时保持旧文件名兼容。
   static String _sessionFileName(

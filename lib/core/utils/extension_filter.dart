@@ -61,6 +61,5 @@ bool shouldHideFile(WebDavFile file, Set<String> hiddenExtensions) {
 }
 
 /// 把后缀列表格式化为设置页回显形式：`{".ass", ".mp4", ".mp3"}`。
-String formatHiddenExtensions(List<String> extensions) => extensions.isEmpty
-    ? ''
-    : '{${extensions.map((e) => '"$e"').join(', ')}}';
+String formatHiddenExtensions(List<String> extensions) =>
+    extensions.isEmpty ? '' : '{${extensions.map((e) => '"$e"').join(', ')}}';

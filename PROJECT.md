@@ -1,416 +1,327 @@
 # StreamPath 项目说明
 
-本文档面向开发和维护人员，描述当前代码库的架构、关键数据流、业务约束、兼容策略与维护风险。用户操作和构建命令见 [README.md](README.md)。
+本文是 StreamPath 的工程基线，面向维护者
+说明当前实现、外部协议、兼容边界、测试方法和不可破坏的行为。用户使用说明见
+[README.md](README.md)。
 
-## 1. 项目定位
+## 1. 技术基线
 
-StreamPath 是 Flutter Windows 桌面端 WebDAV 媒体浏览器。核心职责不是自行解码媒体，而是完成以下工作：
-
-1. 读取和缓存 WebDAV 目录。
-2. 对文件进行稳定显示排序。
-3. 组织视频和 STRM 播放列表。
-4. 严格匹配同目录外挂字幕。
-5. 调用外部播放器，重点增强 mpv。
-6. 持久化播放进度和最多两个继续播放会话。
-7. 在 Windows 提供额外的剪贴板兼容处理。
-
-应用定位为受信任的单机工具。WebDAV 密码以明文写入本地 JSON 配置，不具备多用户密钥管理能力。
-
-## 2. 技术栈
-
-| 领域 | 实现 |
-|---|---|
-| UI 与状态 | Flutter Material、Provider |
-| WebDAV 请求 | Dio、`PROPFIND Depth: 1`、Basic Authentication |
-| XML | `xml`，按 `localName` 解析以兼容命名空间前缀 |
+| 项目 | 当前选择 |
+| --- | --- |
+| 客户端 | Flutter 3.44.6、Dart 3.12.2、Windows x64 |
+| 状态管理 | `provider` / `ChangeNotifier` |
+| WebDAV | Dio 5.11，手动重定向与 XML multistatus 解析 |
 | 目录缓存 | Hive |
-| 播放进度 | SQLite、`sqflite_common_ffi` |
-| 字幕与播放 | 外部播放器，mpv 使用 m3u、Lua、watch_later 和 IPC 标识 |
-| 剪贴板 | `super_clipboard`、Windows MethodChannel 与键盘事件修复 |
+| 播放进度 | SQLite：`sqflite_common_ffi` + `sqlite3` Native Assets |
+| 外部播放器 | MPV 为主要目标，其他播放器走参数模板 |
+| Windows 集成 | `win32`、`super_clipboard`、MethodChannel |
+| 测试 | `flutter_test`、本地 HTTP 服务器、条件式实体 MPV 测试 |
 
-## 3. 目录结构
+项目采用便携数据布局，不依赖当前工作目录。开发构建会从可执行文件路径向上定位
+项目根；便携构建直接使用可执行文件所在目录。不可写时才回退系统应用支持目录。
+
+## 2. 启动与模块关系
+
+启动顺序：
+
+1. `WidgetsFlutterBinding` 初始化；
+2. 迁移旧版平铺数据，迁移期间不启动数据库或日志写入；
+3. 并行初始化目录缓存、SQLite、统一配置和播放历史；
+4. 初始化基础缓存策略、智能缓存配置与聚合学习存储；
+5. 组装 `AppState`，根据地址和用户名是否完整决定自动连接或显示登录页。
+
+主要目录：
 
 ```text
 lib/
-  core/
-    constants.dart              全局常量、扩展名和会话上限
-    errors/                     统一异常
-    utils/                      路径、URL、排序、STRM、剪贴板等纯工具
-  data/
-    local/                      Hive、SQLite、JSON 持久化
-    models/                     配置、文件、字幕、播放历史与进度模型
-    remote/                     WebDAV HTTP 客户端和 XML 解析
-  domain/
-    repositories/               目录仓库接口
-    services/                   WebDAV、字幕、播放器、MPV 脚本和会话控制
-  presentation/
-    pages/                      自动连接、登录、浏览、设置
-    state/                      AppState 服务装配
-    widgets/                    文件项和剪贴板菜单
-windows/                        Windows runner 与剪贴板原生通道
-test/                           单元、组件和真实 MPV 会话测试
-stream_path_data/               运行时数据，不属于源码
+├─ core/                 常量、异常、路径、URL、Windows 剪贴板适配
+├─ data/
+│  ├─ local/             配置、Hive、SQLite、播放历史
+│  ├─ models/            WebDAV、播放器、OpenList 和统一配置模型
+│  └─ remote/            WebDAV HTTP 客户端与 XML 解析
+├─ domain/services/      WebDAV、字幕、MPV、进度和 OpenList 恢复
+├─ features/cache_control/
+│  ├─ engine/            缓存策略纯计算
+│  ├─ intelligence/      本地解释型建议器
+│  ├─ monitor/           播放中内存、速度和卡顿监控
+│  ├─ providers/         HTTP 媒体探测与系统内存探测
+│  └─ store/             策略、元数据与学习数据持久化
+└─ presentation/         登录、浏览、设置、会话界面与 AppState
 ```
 
-## 4. 启动与依赖装配
+## 3. 统一配置与数据迁移
 
-[lib/main.dart](lib/main.dart) 的启动顺序：
+`stream_path_config.json` 保存连接、播放器、字幕、排序、隐藏扩展名和 OpenList 配置。
+自动连接完整性只要求 `serverUrl` 和 `username` 非空，密码允许为空。OpenList 管理员
+登录仍要求 Token，或同时提供管理员账号和密码；它与 WebDAV 空密码语义无关。
 
-1. 初始化 Flutter binding。
-2. 安装 Windows 剪贴板兼容逻辑；非 Windows 直接跳过。
-3. 解析数据目录并初始化 Hive。
-4. 打开 SQLite 播放进度库。
-5. 加载统一配置。
-6. 加载继续播放历史。
-7. 创建 `AppState`，装配 WebDAV、字幕和播放器服务。
-8. 配置完整时进入 `AutoConnectGate`，否则显示登录页。
+运行数据分为：
 
-`AppState` 只保存当前连接的内存状态和服务实例。连接配置由 `StreamPathConfigStore` 持久化；调用 `disconnect()` 不会删除配置文件。
+- `config/stream_path_config.json`：统一用户配置；
+- `config/cache_policy.json`：确定性缓存策略；
+- `config/cache_intelligence.json`：本地智能建议器模式和边界；
+- `cache/directory_cache/`：目录缓存；
+- `cache/streampath.db`：按无凭据 URL 存储的播放进度；
+- `cache/playback_history.json`：最多两个会话的继续播放信息；
+- `cache/media_metadata.json`：媒体长度、时长、码率、ETag 等；
+- `cache/cache_intelligence_learning.json`：匿名聚合样本；
+- `cache/mpv-watch-later/`：MPV 原生续播文件；
+- `cache/mpv-current-*`、`mpv-command-*`、`mpv-progress-*`：会话通道。
 
-## 5. 数据目录与持久化
+迁移已覆盖基础配置、智能缓存配置、学习数据、SQLite、历史、媒体元数据、MPV 状态、
+命令、JSONL、播放列表、Lua 和 watch_later。目标存在时用户数据优先；单项失败保留
+源文件并在下次启动重试。旧配置 JSON 结构错误时不会阻塞启动，也不会删除原文件。
 
-### 5.1 路径策略
+## 4. WebDAV 协议层
 
-[lib/core/utils/app_paths.dart](lib/core/utils/app_paths.dart) 从 `Platform.resolvedExecutable` 查找路径中的 `build` 段：
+### 4.1 认证和重定向
 
-- 标准 Flutter 源码构建布局下，取 `build` 之前的项目根目录。
-- 找不到 `build` 时，使用当前工作目录。
-- 目标目录不可写时，回退系统应用支持目录。
+`WebDavClient` 不在 Dio 实例上设置全局 `Authorization`。每个请求以 WebDAV 根地址
+为原始来源，最多手动跟随 5 次重定向：
 
-因此不能假设数据始终位于可执行文件旁。部署或改变启动工作目录时，应先确认实际 `stream_path_data/` 位置。
+- 只接受 HTTP/HTTPS；
+- 严格比较 scheme、host 和有效端口；
+- 只有同源请求携带 Basic；
+- 跨来源 GET 可以继续，但移除认证；
+- PROPFIND 同源重定向保留方法、`Depth: 1` 和认证。
 
-### 5.2 数据文件
+空密码编码为 `base64("username:")`。连接失败统一转为可展示的网络错误，登录页保留
+地址、用户名和密码输入状态，用户可直接修改后重试。
 
-| 数据 | 存储 | 说明 |
-|---|---|---|
-| 用户配置 | `stream_path_config.json` | 连接、播放器、字幕开关、隐藏后缀、默认排序 |
-| 目录缓存 | Hive `directory_cache` box | 条目快照与缓存时间 |
-| 播放进度 | `streampath.db` | URL 主键、位置、时长、更新时间 |
-| 播放会话 | `playback_history.json` | 版本 2，会话数组，最多两条 |
-| MPV 进度 | `mpv-watch-later/` | mpv 原生续播与临时 Lua/m3u |
-| MPV 状态与命令 | `mpv-current-<session>.txt`、`mpv-command-<session>.txt` | 每个会话独立 |
+登录验证必须调用 `verifyConnection()` 强制刷新根目录，禁止通过新鲜 Hive 缓存返回。
+目录缓存键包含用户名命名空间的 SHA-256，因此同一 WebDAV 地址下的不同账号不会读取
+彼此的目录快照；用户名本身不以明文写入缓存键。
 
-### 5.3 配置兼容
+### 4.2 目录与 STRM
 
-`StreamPathConfig` 是平铺统一配置。主要字段：
+目录请求使用 `PROPFIND Depth: 1`，解析标准 DAV 命名空间和非标准前缀，名称缺失时
+从 href 解码。显示列表可按名称、时间或体积排序；播放列表始终使用后台自然名称正序，
+避免临时排序改变切集顺序和历史索引。
 
-```json
-{
-  "serverUrl": "http://host/dav",
-  "username": "user",
-  "password": "pass",
-  "playerName": "mpv",
-  "playerExecutable": "mpv",
-  "playerArgs": ["--sub-file={subfile}", "{url}", "--start={start}"],
-  "subtitleInjectionEnabled": true,
-  "subtitleAutoSelectEnabled": true,
-  "resumeEnabled": true,
-  "hiddenExtensions": [".ass"],
-  "defaultSortMode": "name",
-  "defaultSortDirection": "ascending",
-  "playerStartupTimeoutSeconds": 60
-}
-```
+STRM 规则：
 
-兼容规则：
+- 最多读取 8192 字节；声明长度和流式累计长度都执行上限；
+- UTF-8 非法字节以替换字符处理，不允许读取无界正文；
+- 取第一条非空、非注释的 HTTP/HTTPS 地址；
+- 相对地址基于 WebDAV 根路径解析；
+- 最终地址必须与 WebDAV 根严格同源，否则条目无效；
+- 任意网络、解析或安全检查失败都只跳过该条目。
 
-- 旧 `player_config.json` 与 `connection_config.json` 可迁移到统一配置。
-- 旧 `subtitleEnabled` 同时映射到注入和自动选择。
-- 注入关闭时，自动选择会被强制视为关闭。
-- 未知排序方式回退名称，未知方向回退正序。
-- `playerStartupTimeoutSeconds` 默认 60 秒，可写 5 到 3600 秒，超出范围会被限制到边界值。
-- 隐藏后缀会规范化为小写点号格式。
+目录强制刷新会等待正在进行的同目录请求结束，再发起真实新请求。只有成功结果覆盖
+缓存；刷新失败保留最后一次成功数据。
 
-## 6. WebDAV 目录链路
+## 5. 外部播放器与 MPV
 
-### 6.1 请求与解析
+### 5.1 启动参数和认证
 
-[lib/data/remote/webdav_client.dart](lib/data/remote/webdav_client.dart) 发送 `PROPFIND`，请求深度为 1，并通过 Dio 超时和异常映射返回中文业务错误。
+播放器参数由 `PlayerConfig.args` 展开。MPV 通过可执行文件名识别并增加 IPC、脚本、
+标题、进度和缓存参数。配置中后出现的 MPV 参数覆盖前值，便于策略层在不改用户模板的
+前提下追加安全参数。
 
-[lib/data/remote/webdav_xml_parser.dart](lib/data/remote/webdav_xml_parser.dart) 负责：
+不能给 MPV 使用全局 `--http-header-fields=Authorization`：实体测试证实它会把 Basic
+继续发送给跨来源重定向目标。当前实现只对与统一配置 `serverUrl` 同源的媒体和字幕 URL
+写入百分号编码的 userinfo；空密码保留 `username:` 中的冒号，以兼容 MPV 0.34。
+四个实测版本均能完成源站 Basic，并在跨来源重定向后移除凭据。第三方 URL 不注入。
 
-- 忽略 XML 命名空间前缀差异。
-- 解析目录、文件、大小、修改时间和内容类型。
-- 在缺少 `getdisplayname` 时从 href 末段解码名称。
-- 识别当前目录自身条目，供 UI 渲染“返回上级目录”。
-- 兼容 HTTP 日期与 ISO8601 修改时间。
+### 5.2 单集、多集和字幕
 
-解析后的后台列表固定按自然名称正序排列。该顺序也是播放列表的稳定基础，不受浏览页临时时间或体积排序影响。
+单集直接展开 `{url}`，并使用 `--force-media-title`。多集生成 M3U：
 
-### 6.2 缓存和刷新
+- `#EXTINF` 和 `EXTVLCOPT:force-media-title` 保存稳定标题；
+- `--playlist-start` 决定点击的起始集；
+- 标题 Lua 是不支持 EXTVLCOPT 的旧版兜底；
+- 字幕 Lua 监听 `file-loaded`，按 `playlist-pos` 调用 `sub-add`；
+- 自动选择关闭时加入轨道但恢复原 sid；自动注入关闭时不增加字幕参数或脚本。
 
-[lib/domain/services/webdav_service.dart](lib/domain/services/webdav_service.dart) 组合远端客户端与 `DirectoryCache`：
+TS/M2TS 使用 `--rebase-start-time=yes`，无历史进度时不得注入 `--start=0`，避免对非零
+起始时间戳执行无意义 seek。TS 直链不启用通用 seekable cache 参数。
 
-- 普通请求优先读取缓存。
-- 新鲜缓存 TTL 为 10 分钟。
-- 过期缓存先返回旧快照，再后台刷新。
-- 同路径普通请求共享 Future。
-- 强制刷新会与同目录刷新合并；若旧普通请求仍运行，则等待后再发起真正刷新。
-- 只有成功网络结果可以覆盖缓存。
-- 缓存读取、写入或 Hive 异常不阻断已经成功的网络结果。
+### 5.3 会话和进度协议
 
-缓存键由 `cacheKeyFor` 生成。短 URL 保持旧格式；超过 Hive 字符串键限制风险的长 URL 使用 SHA-256 固定长度摘要。
+每次 MPV 启动获得唯一 Windows named pipe。最多两个界面会话，每个会话使用独立的：
 
-### 6.3 页面一致性
+- `mpv-current-<session>.txt`；
+- `mpv-command-<session>.txt`；
+- `mpv-progress-<session>.jsonl`；
+- Lua、M3U 和 IPC pipe；
+- 缓存策略状态、代际令牌和进程身份。
 
-`BrowserPage._load` 为每次导航或刷新分配递增 ID，并固定本次请求路径。只有最后一次请求能更新当前页面，避免快速进入、返回或刷新时旧响应覆盖新目录。
-
-## 7. 文件类型与显示排序
-
-`WebDavFile` 根据名称和 href 末段双重判断类型，以兼容服务器丢失显示名扩展名的情况。
-
-- 视频扩展名由 `AppConstants.videoExtensions` 定义。
-- STRM 使用 `.strm`。
-- 字幕扩展名由 `AppConstants.subtitleExtensions` 定义。
-- `isPlayable` 包含视频和 STRM。
-
-[lib/core/utils/file_sort.dart](lib/core/utils/file_sort.dart) 提供：
-
-- `FileSortMode`：名称、修改时间、体积。
-- `FileSortDirection`：正序、倒序。
-- “返回上级、目录、文件”固定分组。
-- 时间按分钟比较，缺失值始终置后。
-- 体积排序不应用于目录；纯目录页面禁用体积入口。
-- 同值回退名称和 href，保持确定性。
-
-自然名称比较器支持任意长度数字块、全角字符、前导零、中文序数、常见罗马数字季名和分隔符。显式序号规则为：
-
-1. 优先识别名称开头数字。
-2. 没有开头数字时，识别扩展名前由空格、横线或下划线分隔的末尾数字。
-3. 不把 `1080p`、`x264` 这类无分隔发布信息当作末尾主键。
-
-浏览页排序只作用于 `_files` 的显示副本。页面以目录路径、排序方式和方向构造 `PageStorageKey`，滚动位置仅存内存。
-
-## 8. STRM 处理
-
-[lib/core/utils/strm_parser.dart](lib/core/utils/strm_parser.dart) 从 STRM 文本中读取第一个非空、非注释行。`WebDAVService.fetchStrmUrl` 再将其作为绝对或相对地址解析，并强制校验与当前 WebDAV 根地址同源。
-
-播放前，`BrowserPage` 按每批 4 个并发读取当前目录的 STRM：
-
-- 解析成功的 STRM 进入播放列表。
-- 解析失败的 STRM 被剔除。
-- 用户点击的 STRM 解析失败时，本次播放终止并提示。
-- 字幕匹配入口仍使用 STRM 文件自身的 WebDAV 条目，因此目录约束不会被真实媒体 URL 绕过。
-
-## 9. 字幕匹配与注入
-
-### 9.1 匹配边界
-
-[lib/domain/services/subtitle_matcher.dart](lib/domain/services/subtitle_matcher.dart) 先做硬边界，再做名称评分：
-
-1. 绝对 URL 必须同源。
-2. 父目录路径必须完全相同。
-3. 明确的季集编号冲突直接拒绝。
-
-这三条保证媒体库中的“字幕备份”目录不会向剧集目录串入字幕。
-
-名称处理会：
-
-- 去扩展名并归一化大小写和分隔符。
-- 剥离语言标签和 `forced`、`default`、`sdh`、`cc` 等字幕属性。
-- 识别 `S01E01`、`1x01`、`E01`、`EP01`、中文集号和纯数字集号。
-- 允许片名一致、集号一致但发布信息不同的候选。
-
-评分优先级为完全同名、同名中文、相似中文、同名其他语言、相似无标签、相似其他语言；同分时短名称优先。
-
-### 9.2 两个配置开关
-
-- `subtitleInjectionEnabled`：是否查找并注入匹配字幕。
-- `subtitleAutoSelectEnabled`：注入后是否自动选择，依赖前者。
-
-设置页在注入关闭时禁用自动选择控件。浏览页仅在注入开启时调用 `findBestFor`，从源目录全量列表中为每个播放项独立保存匹配结果。
-
-### 9.3 MPV 注入
-
-mpv 不再依赖模板中的 `--sub-file={subfile}` 注入字幕。`MpvScripts` 生成 Lua：
-
-- 单集：在 `file-loaded` 时注入本次匹配字幕。
-- 多集：在每次 `file-loaded` 时读取 `playlist-pos`，从 `SUBS[pos]` 注入当前集字幕。
-- 自动选择开启：`sub-add ... select`。
-- 自动选择关闭：`sub-add ... auto`，记录注入前 `sid` 并在下一事件循环恢复，达到“加入轨道但不改变当前字幕”的效果。
-
-自动注入开启时追加 `--sub-auto=no`，阻止 mpv 自身配置跨目录搜索字幕。非 mpv 播放器仍可通过 `{subfile}` 参数模板接收字幕 URL。
-
-## 10. 播放器启动与认证
-
-[lib/domain/services/external_player_service.dart](lib/domain/services/external_player_service.dart) 是播放器联动核心。
-
-### 10.1 参数模板
-
-支持 `{url}`、`{subfile}`、`{start}`。无值占位符所在参数会清理空外壳；缺少 `{url}` 时自动追加媒体地址。
-
-mpv 增强当前按播放器可执行文件配置字符串是否包含 `mpv` 判断。增强行为包括：
-
-- Basic Authorization header，不把凭据写入媒体 URL。
-- 单集标题或多集 m3u 标题。
-- 每次启动唯一 named pipe 标识。
-- 独立 Lua 字幕、标题和状态脚本。
-- 独立 watch_later 目录和进度同步。
-
-其他播放器使用内嵌凭据 URL，并退化为普通直链参数模式。
-
-### 10.2 播放列表
-
-多集模式生成 m3u：
-
-```text
-#EXTM3U
-#EXTINF:0,<标题>
-#EXTVLCOPT:force-media-title=<标题>
-<媒体 URL>
-```
-
-使用 `--playlist-start` 指定所选条目。标题 Lua 为不支持 `EXTVLCOPT` 的旧版 mpv 提供兜底。
-
-### 10.3 进程与会话
-
-服务以 `sessionId` 管理运行时会话，保存 PID、IPC 标识、状态文件、命令文件和存活缓存。Windows 使用 `tasklist/taskkill` 探测与终止，其他平台使用 `kill -0/kill`。
-
-新启动的 MPV 在首个有效 `file-loaded` 状态前进入启动保护期。浏览页每秒探测一次对应 PID；在 `playerStartupTimeoutSeconds` 到期前底栏保持“继续播放”，到期仍未激活则定向终止该会话进程并删除历史。
-
-删除会话前会校验目标 PID 与会话身份，避免误结束其他播放器进程。清理动作只处理该会话的 m3u、Lua、状态和命令文件。
-
-## 11. 播放进度与继续播放
-
-### 11.1 进度模型
-
-`PlaybackProgress` 按 URL 保存 `positionMs`、可空 `durationMs` 和更新时间。
-
-“已看完”只在时长已知时判断：距离片尾不足一分钟则从头播放。时长未知不再视为已看完，这是文档和测试必须保持一致的语义。
-
-mpv 启动时配置专属 watch_later 目录。退出后通过 URL MD5 文件名直查，并以注释行扫描作为兼容兜底，再同步到 SQLite。
-
-### 11.2 状态脚本
-
-每个会话的 current Lua 写五行状态：
+状态文件逻辑上有十四个字段：
 
 ```text
 playlist-pos
 path
-paused(1|0)
+paused
 time-pos
 duration
+cache-buffering-state
+cache-used-bytes
+network-speed-bps
+cache-idle
+speed_src|speed|idle_src|idle_raw
+paused-for-cache
+bof-cached
+eof-cached
+resolution
 ```
 
-状态在 `file-loaded`、暂停变化、周期定时器和 shutdown 时更新。命令文件轮询执行 pause/resume。播放列表进入稳定 idle 后写 `-1` 完成标记。
+MPV 0.41 优先读取 `demuxer-cache-idle`，旧版回退 `cache-idle`；速度优先
+`cache-speed`，再回退 `demuxer-cache-state.raw-input-rate` 和旧版 reader 结构。属性缺失
+写 `-1`，监控按未知降级，不能抛错或停止播放。
 
-### 11.3 最多两个会话
+JSONL 记录每个 `end-file` 的播放列表位置、路径、位置、时长、原因和错误。自然 EOF
+删除 SQLite 旧进度，0 秒是明确状态，普通退出允许 watch_later 的精确值覆盖每秒采样。
+认证播放 URL 的 watch_later 按实际 URL 的 MD5 读取，最终 SQLite 键和轨道比较均剥离
+userinfo。MPV 只有 `reason=error` 才进入 OpenList 恢复判断。
 
-上限集中在 `AppConstants.maxPlaybackSessions`，当前值为 2。持久化格式为：
+应用重启后恢复的 PID 在强制结束前必须再次确认仍是 MPV，避免 PID 复用伤及其他进程。
 
-```json
-{
-  "version": 2,
-  "sessions": []
-}
-```
+### 5.4 实体版本结果
 
-旧版单对象记录会作为 `legacy` 会话读取。会话按创建时间排序，UI 反向展示，因此新会话在上、旧会话在下。
+| 构建 | 版本 | Lua/命令/IPC/进度 | 空密码认证与跨域隔离 |
+| --- | --- | --- | --- |
+| `mpv-0.34.0-x86_64` | 0.34.0 | 通过 | 通过 |
+| `mpv-v0.41.0-x86_64-pc-windows-msvc` | 0.41.0-dev-g41f6a6450 | 通过 | 通过 |
+| `mpv-lazy-20260510-noVS` | 0.41.0-615-g7b057f66f | 通过 | 通过 |
+| `mpv-x86_64-20260610-git-304426c` | 0.41.0-744-g304426c39 | 通过 | 通过 |
+| `mpv-v0.41.0-460-g2f6561947(MPV Config 版本)` | `v0.41.0-460-g2f6561947` | 通过 |
 
-进程退出后的状态规则：
 
-- 明确完成或退出时最后进度达到 99%：移除该会话栏。
-- 未完成：切换为“继续播放”。
-- 99% 规则只在确认进程退出后应用。
-- 运行中的 99% 不提前隐藏。
+## 6. 缓存控制系统
 
-### 11.4 继续播放栏的存活检测
+缓存控制是增强层，任何配置损坏、探测超时、内存读取失败、智能建议器异常或 IPC 失败
+都只能跳过或降级，不能阻塞起播。
 
-播放视频后，浏览页按启动保护期每秒探测一次对应 MPV 进程：激活成功则更新底栏状态；到期仍未激活则移除底栏并清理该会话进程。
+### 6.1 确定性策略
 
-## 12. 页面职责
+核心输入包括媒体长度、已知时长/码率、分辨率、可用内存、活动会话数、用户模式和
+历史元数据。计算顺序：
 
-### AutoConnectGate
+1. 内存预算 = 可用内存乘安全比例，并受配置上下限约束；
+2. 多会话按活动数和压力折减单会话预算；
+3. 优先使用可信元数据码率，其次用 `文件大小 × 8 ÷ 时长`，最后按分辨率估算；
+4. 目标字节约为 `码率 × cacheSecs × 125000 × 1.3` 并受预算封顶；
+5. 码率未知时不伪造可达秒数，直接使用预算作为字节上限；
+6. 小文件可进入全量缓存候选，但全缓存真值只取 `bof-cached && eof-cached`；
+7. TS/M2TS 走直接播放与时间轴规则，不套用通用 seekable cache 注入。
 
-读取已加载配置并尝试连接。成功替换为浏览页；失败回到登录页并显示错误，避免登录界面短暂闪现。
+媒体探测使用 HEAD；服务器不支持或没有长度时回退 `Range: bytes=0-0`。总 deadline
+默认 1.5 秒，最多 5 次手动重定向；Authorization 只在同源保留。ETag 和
+Last-Modified 用于元数据失效判断。
 
-### HomePage
+### 6.2 播放中监控
 
-编辑 WebDAV 地址、用户名和密码。连接成功后保存配置并进入浏览页。
+监控每秒读取状态文件并维护 O(1) 聚合量：
 
-### BrowserPage
+- 卡顿真值优先使用 `paused-for-cache`；旧版缺失时回退 `0 < buffering < 100`；
+- 已暂停、播放结束、全缓存或 `cache-idle=true` 时跳过网络不足判定；
+- 已知码率按相对阈值判断；未知码率使用 512 KB/s 和 256 KB/s 绝对阈值；
+- 连续卡顿可直接增档和告警，不依赖可能是缓存读取速度的瞬时值；
+- 内存压力连续出现时降档，健康样本连续出现后逐步回落到基线；
+- 切集使用代际令牌，迟到的旧探测不能覆盖当前曲目；
+- IPC 更新失败不影响播放，且不重启 MPV。
 
-项目主要交互页面，负责：
+### 6.3 本地智能建议器
 
-- 目录导航、缓存首帧和强制刷新。
-- 显示过滤、排序和滚动位置。
-- STRM 预取与播放列表组装。
-- 为每个条目匹配字幕。
-- 查询续播进度并启动播放器。
-- 同步和渲染多个播放会话。
-- 暂停、恢复、继续播放和删除会话。
+智能层只处理匿名聚合数据，不调用在线服务。默认影子模式只记录建议，最终策略与确定性
+基线一致；应用模式也只能在硬内存边界、档位和 TS 规则内调整引擎输入。码率桶最多
+256 个，来源画像最多 128 个，按旧记录淘汰。读写串行并用临时文件替换；采样回调不
+等待磁盘写入。建议器超时或永久不返回时按截止时间回退。
 
-文件交互当前为单击：目录进入，视频或 STRM 播放，普通文件无动作。
+## 7. OpenList/AList 恢复
 
-### SettingsPage
+该功能默认关闭，并与普通 WebDAV 播放解耦。兼容策略以 API 能力探测为准，不按版本号
+硬编码：
 
-编辑播放器、参数模板、隐藏后缀、默认排序、WebDAV 凭据、字幕开关和自动续播。保存时写统一配置。自动选择字幕控件依赖自动注入。
+接口语义以 [OpenList 认证 API](https://openlistteam.github.io/docs/zh/guide/api/auth.html)
+和 [AList 认证 API](https://alistgo.com/guide/api/auth.html) 为依据。
 
-## 13. Windows 剪贴板实现
+1. `GET /api/public/settings` 尝试读取版本，失败不阻塞；
+2. 先对原媒体地址发起一字节 Range 探测，已恢复则不刷新；
+3. Token 为空时调用 `/api/auth/login`；仅 HTTP 或 JSON `code` 为 404/405 时回退
+   `/api/auth/login/hash`；
+4. hash 密码是
+   `sha256(password + "-https://github.com/alist-org/alist")`；
+5. 管理 API 的 `Authorization` 直接使用 Token，不添加 Bearer；
+6. `POST /api/admin/storage/load_all` 后轮询 `/api/admin/storage/list`；
+7. 最后轮询真实媒体地址，确认 Range 可读后才报告恢复成功。
 
-Windows runner 注册 `WM_CLIPBOARDUPDATE`，通过 `streampath/clipboard` MethodChannel 通知 Dart。文本由 `super_clipboard` 读取，应用内历史最多保留五条。
+管理 API 最多跟随 5 次同源重定向，跨来源立即拒绝，防止 Token 外发。媒体 Range
+探测可跟随网盘签名地址，但 WebDAV Basic 仅在原来源发送。并发刷新按后台根地址合并，
+成功后进入 5 分钟冷却；每个会话有独立恢复次数和状态。2FA 返回时提示用户填写 Token。
 
-`ClipboardHistoryFix` 只在 Windows 安装，用于识别 Win+V 产生但被 Flutter 引擎吞掉部分按键的合成序列，并注入等价粘贴。Debug 模式可写诊断日志。
+异常必须收敛为 `OpenListRecoveryResult`，不能从播放器监听回调抛出。
 
-## 14. 测试策略
+## 8. 界面行为
 
-测试覆盖以下边界：
+设置页使用顶部分类栏，将配置拆分为“服务器”“播放”“缓存”“基础设置”四个分页。
+分页由统一的页面描述列表注册，新增分类时只需补充页面元数据与内容构建器。每个分页拥有
+独立表单和滚动状态，保存仍一次提交全部配置；隐藏分页校验失败时会自动切换到对应页。
+当前选择只缓存在进程内，退出设置页后再次进入仍显示上次分页，软件重启后恢复服务器页。
 
-- WebDAV XML 命名空间、显示名回退、自身条目和中文长目录。
-- 缓存 TTL、强制刷新、失败保留快照和请求合并。
-- 自然排序、时间/体积方向、显式序号和纯目录体积禁用。
-- STRM 文本解析。
-- 字幕目录隔离、剧集编号冲突、语言和属性标签。
-- 配置读写、旧字段和旧文件迁移。
-- 单集/多集播放器参数、逐集字幕注入和双会话资源隔离。
-- watch_later 解析、SQLite 进度、播放历史集合。
-- 真实 MPV 命令文件暂停和恢复测试。
-- 文件列表组件与 Windows 剪贴板状态机。
+登录页的三个控制器在 `initState` 同步读取保存配置，标签统一固定为
+`FloatingLabelBehavior.always`。因此从右上角退出返回登录页时，不会先渲染空控制器再
+异步填值，也不会出现标签瞬间落入输入框文本的重叠。
 
-常规验证命令：
+浏览页显示列表与播放基础列表分离：隐藏扩展名、搜索、右上角临时排序和滚动位置只影响
+当前显示；字幕候选、稳定播放顺序和会话索引使用后台全量列表。默认排序设置持久化，
+临时排序和滚动位置不持久化。
+
+## 9. 测试与质量门槛
+
+常规质量门槛：
 
 ```powershell
-flutter analyze
-flutter test
-flutter build windows --debug
+flutter analyze --no-pub
+flutter test --no-pub
 ```
 
-真实 MPV 测试会启动无画面测试进程，并在测试结束后自行关闭。新增进程控制测试时必须保持同样的清理要求。
+实体 MPV 门槛：
 
-## 15. 关键约束
+```powershell
+$env:STREAMPATH_MPV_TEST_ROOT = 'MPV根文件夹路径'
+flutter test test/mpv_version_compatibility_test.dart --no-pub -r expanded
+```
 
-修改项目时应优先保护以下约束：
+重点覆盖：WebDAV 空密码、同源/跨源重定向、PROPFIND 方法保持、STRM 字节上限、
+OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、多会话代际、
+缓存策略和监控、登录首帧布局、旧数据迁移、排序与滚轮。
 
-1. **显示列表与后台全量列表分离**：隐藏后缀和临时排序不能改变字幕候选或播放列表索引。
-2. **播放列表固定自然名称正序**：浏览页的时间、体积和倒序只影响显示。
-3. **字幕不跨目录**：同源、同父目录和集号兼容都是硬条件。
-4. **自动选择不等于自动注入**：关闭选择后仍要逐集注入字幕轨道。
-5. **会话资源完全隔离**：PID、IPC、状态、命令、Lua、m3u 和历史都按 `sessionId` 区分。
-6. **缓存失败不能阻断网络结果**：缓存是优化层，不是目录正确性的依赖。
-7. **进程退出后才应用 99% 隐藏规则**。
-8. **体积排序不计算目录总体积**。
-9. **滚动位置和右上角临时排序不持久化**。
-10. **用户未要求时，不结束与目标会话无关的 MPV 进程**。
+2026-08-11 常规套件结果：452 项通过，2 项条件跳过；设置 MPV 测试目录后，两项实体
+兼容测试均通过。
 
-## 16. 维护入口
 
-| 需求 | 主要位置 |
-|---|---|
-| 修改支持的媒体或字幕扩展名 | `lib/core/constants.dart` |
-| 修改名称、时间或体积排序 | `lib/core/utils/file_sort.dart` |
-| 修改长 URL 缓存键 | `lib/core/utils/url_utils.dart` |
-| 修改 WebDAV 请求 | `lib/data/remote/webdav_client.dart` |
-| 修改 XML 兼容 | `lib/data/remote/webdav_xml_parser.dart` |
-| 修改缓存刷新策略 | `lib/domain/services/webdav_service.dart` |
-| 修改字幕匹配规则 | `lib/domain/services/subtitle_matcher.dart` |
-| 修改 MPV 参数和进度同步 | `lib/domain/services/external_player_service.dart` |
-| 修改 Lua/m3u 生成 | `lib/domain/services/mpv_scripts.dart` |
-| 修改播放会话上限 | `lib/core/constants.dart` 的 `maxPlaybackSessions` |
-| 修改浏览和下边栏交互 | `lib/presentation/pages/browser_page.dart` |
-| 修改配置项 | 配置模型、设置页、配置测试和两份文档 |
+## 10. 构建和便携发布
 
-## 17. 当前已知维护事项
+`package.ps1` 是面向发布人员的交互入口，启动后要求输入目标目录，直接回车使用现有
+便携版目录；确认后调用 `build.ps1`。`build.ps1` 默认执行 analyze、test、
+`flutter build windows --release`，随后校验：
 
-- 提供了通用型脚本（放在项目根目录即可）：[run.ps1](run.ps1) / [build.ps1](build.ps1) 启动后选择 Debug 或 Release 再运行/构建；[cleanup.ps1](cleanup.ps1) 清理运行时数据。
-- 数据根路径依赖标准 `build/...` 布局或当前工作目录。若未来制作安装包，应明确改为稳定的便携目录或系统应用数据目录策略。
-- `MpvSessionController` 的 JSON-RPC named pipe 能力目前主要用于测试和扩展；稳定的暂停/恢复主通道仍是每会话命令文件加 Lua 轮询。
+- Release/Profile 必须含 `data/app.so`；
+- Release/Profile 不得含 Debug `kernel_blob.bin`；
+- 构建目录和目标目录不得是重解析点；
+- 打包时 StreamPath 进程不得运行；
+- 删除目标旧产物前逐项验证路径位于目标目录内。
+
+目标目录仅替换 `data/`、EXE、DLL、Native Assets 和符号文件，保留
+`使用说明.txt`、`stream_path_data/` 以及其他用户文件。正式命令见 README。
+
+`cleanup.ps1` 只枚举数据目录直属的已知运行时名称，再对解析后的每个目标执行范围与
+重解析点检查；配置目录不清理。脚本不得对项目根、用户目录、APPDATA 或驱动器根执行
+递归删除。
+
+## 11. 维护不变量
+
+任何后续改动都必须保持：
+
+1. WebDAV、缓存、OpenList 恢复失败不能阻塞基础播放。
+2. 地址和用户名完整时允许用空 WebDAV 密码尝试连接。
+3. 凭据不得随跨来源重定向外发，第三方 STRM 不得进入播放链。
+4. 同时会话最多两个，资源、PID、进度、缓存状态和恢复状态必须隔离。
+5. TS 无历史进度不得出现 `--start=0`，有进度只恢复一次。
+6. MPV 属性缺失按未知降级，不得把 `buffering=100` 当作卡顿。
+7. 播放完成和明确 0 秒必须清除旧正数进度；时长未知不等于播放完成。
+8. 显示排序和隐藏规则不得改变稳定播放列表和字幕候选基础。
+9. 旧数据迁移不覆盖目标、不删除无法解析的源文件。
+10. Release 便携包必须是 AOT，并保留用户数据目录。
+11. 项目文档只维护 `README.md` 和 `PROJECT.md`；协议、算法或维护边界变化时同步更新。
