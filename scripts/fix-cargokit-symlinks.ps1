@@ -3,7 +3,8 @@
     修补 cargokit 在 Windows 上解析符号链接时产生的非致命错误输出。
 
 .DESCRIPTION
-    脚本只修改当前项目 plugin_symlinks 指向的 cargokit 副本，并保持幂等。
+    脚本只修改当前项目目录内的 cargokit 副本，并保持幂等。指向全局
+    Pub 缓存的 plugin_symlinks 会被跳过，避免影响其他 Flutter 项目。
     找不到预期代码结构时不会写入文件，避免误改新版第三方脚本。
 #>
 [CmdletBinding()]
@@ -12,6 +13,9 @@ param()
 $ErrorActionPreference = 'Stop'
 $marker = 'Get-Item $realPath -ErrorAction SilentlyContinue'
 $ephemeral = Join-Path $PSScriptRoot '..\windows\flutter\ephemeral\.plugin_symlinks'
+$projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$projectPrefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) +
+    [IO.Path]::DirectorySeparatorChar
 
 if (-not (Test-Path -LiteralPath $ephemeral -PathType Container)) {
     Write-Warning "找不到 plugin_symlinks：$ephemeral。请先执行 flutter pub get。"
@@ -26,7 +30,17 @@ $files = @(
             if ($target) {
                 $candidate = Join-Path $target 'cargokit\cmake\resolve_symlinks.ps1'
                 if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                    (Get-Item -LiteralPath $candidate -Force).FullName
+                    $candidatePath = [IO.Path]::GetFullPath(
+                        (Get-Item -LiteralPath $candidate -Force).FullName
+                    )
+                    if ($candidatePath.StartsWith(
+                            $projectPrefix,
+                            [StringComparison]::OrdinalIgnoreCase
+                        )) {
+                        $candidatePath
+                    } else {
+                        Write-Warning "跳过项目目录外的 cargokit 脚本：$candidatePath"
+                    }
                 }
             }
         } |

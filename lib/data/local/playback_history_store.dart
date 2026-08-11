@@ -19,6 +19,7 @@ class PlaybackHistoryStore {
 
   List<PlaybackHistory> _cached = const [];
   bool _loaded = false;
+  Future<void> _pending = Future<void>.value();
 
   /// 创建：定位到数据目录下的记录文件。
   static Future<PlaybackHistoryStore> create() async {
@@ -35,7 +36,9 @@ class PlaybackHistoryStore {
   List<PlaybackHistory> get sessions => List.unmodifiable(_cached);
 
   /// 加载全部播放会话（最早创建在前）。
-  Future<List<PlaybackHistory>> loadAll() async {
+  Future<List<PlaybackHistory>> loadAll() => _enqueue(_loadAll);
+
+  Future<List<PlaybackHistory>> _loadAll() async {
     if (_loaded) return sessions;
     if (!_configFile.existsSync()) {
       _loaded = true;
@@ -67,8 +70,8 @@ class PlaybackHistoryStore {
   }
 
   /// 新增或更新一个会话。达到上限且 [history] 是新 ID 时返回 false。
-  Future<bool> upsert(PlaybackHistory history) async {
-    await loadAll();
+  Future<bool> upsert(PlaybackHistory history) => _enqueue(() async {
+    await _loadAll();
     final record = PlaybackHistory(
       sessionId: history.sessionId,
       dirCrumbs: history.dirCrumbs,
@@ -99,11 +102,11 @@ class PlaybackHistoryStore {
       // 记录失败不阻塞播放。
     }
     return true;
-  }
+  });
 
   /// 删除指定会话；其余会话保持不变。
-  Future<void> remove(String sessionId) async {
-    await loadAll();
+  Future<void> remove(String sessionId) => _enqueue(() async {
+    await _loadAll();
     final records = _cached.where((e) => e.sessionId != sessionId).toList();
     _cached = records;
     _loaded = true;
@@ -116,6 +119,12 @@ class PlaybackHistoryStore {
     } on FileSystemException {
       // 删除失败不阻塞界面移除。
     }
+  });
+
+  Future<T> _enqueue<T>(Future<T> Function() action) {
+    final task = _pending.then((_) => action());
+    _pending = task.then<void>((_) {}, onError: (_) {});
+    return task;
   }
 
   Future<void> _write(List<PlaybackHistory> records) async {
@@ -124,6 +133,8 @@ class PlaybackHistoryStore {
       'version': 2,
       'sessions': records.map((e) => e.toJson()).toList(),
     });
-    await _configFile.writeAsString(body, flush: true);
+    final temp = File('${_configFile.path}.tmp');
+    await temp.writeAsString(body, flush: true);
+    await temp.rename(_configFile.path);
   }
 }

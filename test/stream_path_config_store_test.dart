@@ -227,6 +227,48 @@ void main() {
       await expectLater(store.load(), throwsA(isA<AppException>()));
     });
 
+    test('启动加载在主配置损坏时回退最近一次有效备份', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}recover.json';
+      final store = StreamPathConfigStore.forPath(path);
+      await store.save(const StreamPathConfig(serverUrl: 'http://old/dav'));
+      await store.save(const StreamPathConfig(serverUrl: 'http://new/dav'));
+      File(path).writeAsStringSync('{not valid');
+
+      final recovered = await StreamPathConfigStore.forPath(
+        path,
+      ).loadForStartup();
+
+      expect(recovered.serverUrl, 'http://old/dav');
+      expect(File('$path.bak').existsSync(), isTrue);
+    });
+
+    test('启动加载在主配置和备份均损坏时使用默认值', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}defaults.json';
+      File(path).writeAsStringSync('{not valid');
+      File('$path.bak').writeAsStringSync('{also invalid');
+
+      final recovered = await StreamPathConfigStore.forPath(
+        path,
+      ).loadForStartup();
+
+      expect(recovered.serverUrl, StreamPathConfig.defaults().serverUrl);
+    });
+
+    test('连续保存时保留上一次有效配置作为备份', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}backup.json';
+      final store = StreamPathConfigStore.forPath(path);
+      await store.save(const StreamPathConfig(serverUrl: 'http://first/dav'));
+      await store.save(const StreamPathConfig(serverUrl: 'http://second/dav'));
+      await store.save(const StreamPathConfig(serverUrl: 'http://third/dav'));
+
+      final backup = jsonDecode(await File('$path.bak').readAsString());
+      expect(backup['serverUrl'], 'http://second/dav');
+      expect(
+        (await StreamPathConfigStore.forPath(path).load()).serverUrl,
+        'http://third/dav',
+      );
+    });
+
     test('字段类型错误抛 AppException.config', () async {
       final path = '${tempDir.path}${Platform.pathSeparator}wrong-type.json';
       File(path).writeAsStringSync('{"serverUrl": 42}');

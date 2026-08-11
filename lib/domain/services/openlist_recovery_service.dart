@@ -163,7 +163,15 @@ class OpenListRecoveryService implements PlaybackLinkRecoveryProvider {
       username: webDavUsername,
       password: webDavPassword,
     );
-    if (mediaAvailable && !forceStorageReload) {
+    if (mediaAvailable) {
+      if (forceStorageReload) {
+        return OpenListRecoveryResult(
+          success: false,
+          storageReloaded: false,
+          serverVersion: version,
+          message: '媒体地址可正常读取，当前错误不属于链接失效，停止自动恢复',
+        );
+      }
       return OpenListRecoveryResult(
         success: true,
         storageReloaded: false,

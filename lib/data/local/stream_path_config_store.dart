@@ -39,6 +39,8 @@ class StreamPathConfigStore {
   /// 当前配置（内存缓存）；未加载过时返回默认配置。
   StreamPathConfig get current => _cached ?? StreamPathConfig.defaults();
 
+  File get _backupFile => File('${_configFile.path}.bak');
+
   /// 加载配置。
   ///
   ///  - 文件不存在 → 尝试迁移旧配置文件，否则返回默认配置；
@@ -54,14 +56,39 @@ class StreamPathConfigStore {
       }
     }
 
+    _cached = await _readConfigFile(_configFile);
+    return _cached!;
+  }
+
+  /// 启动阶段加载配置；主文件损坏时回退最近一次有效备份或默认值。
+  ///
+  /// 严格的 [load] 仍保留原有异常语义，只有应用启动入口使用此方法，
+  /// 避免单个 JSON 文件损坏导致界面无法显示。
+  Future<StreamPathConfig> loadForStartup() async {
     try {
-      final raw = await _configFile.readAsString();
+      return await load();
+    } on AppException {
+      try {
+        if (_backupFile.existsSync()) {
+          _cached = await _readConfigFile(_backupFile);
+          return _cached!;
+        }
+      } on AppException {
+        // 主文件和备份均不可用时使用默认配置，原文件保留供人工恢复。
+      }
+      _cached = StreamPathConfig.defaults();
+      return _cached!;
+    }
+  }
+
+  Future<StreamPathConfig> _readConfigFile(File file) async {
+    try {
+      final raw = await file.readAsString();
       final json = jsonDecode(raw);
       if (json is! Map<String, dynamic>) {
         throw const FormatException('配置根节点必须是 JSON 对象');
       }
-      _cached = StreamPathConfig.fromJson(json);
-      return _cached!;
+      return StreamPathConfig.fromJson(json);
     } on FormatException catch (e) {
       throw AppException.config('配置文件损坏：${e.message}', e);
     } on FileSystemException catch (e) {
@@ -78,7 +105,22 @@ class StreamPathConfigStore {
     try {
       await _configFile.parent.create(recursive: true);
       final body = const JsonEncoder.withIndent('  ').convert(config.toJson());
-      await _configFile.writeAsString(body, flush: true);
+      final temp = File('${_configFile.path}.tmp');
+      await temp.writeAsString(body, flush: true);
+
+      // 只备份能成功解析的旧配置；损坏文件不能覆盖最近一次有效备份。
+      if (_configFile.existsSync()) {
+        try {
+          await _readConfigFile(_configFile);
+          final backupTemp = File('${_backupFile.path}.tmp');
+          await _configFile.copy(backupTemp.path);
+          await backupTemp.rename(_backupFile.path);
+        } catch (_) {
+          // 备份失败不阻止新的完整配置原子落盘。
+        }
+      }
+
+      await temp.rename(_configFile.path);
       _cached = config;
     } on FileSystemException catch (e) {
       throw AppException.storage('保存配置文件失败：${e.message}', e);

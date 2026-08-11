@@ -81,6 +81,8 @@ flutter test test/mpv_version_compatibility_test.dart --no-pub -r expanded
 系统优先调用 `/api/auth/login`，仅当端点不存在时回退
 `/api/auth/login/hash`，随后调用 `/api/admin/storage/load_all` 并等待存储列表和
 媒体地址恢复。失败只显示提示，不会中断播放器退出监听或反复无限重试。
+如果 MPV 第二次报告读取错误，但 Range 探测确认媒体仍可读取，系统会将其判定为
+非链接失效并停止自动恢复，不会强制刷新全部存储。
 
 ## 数据目录
 
@@ -103,7 +105,8 @@ stream_path_data/
 ```
 
 旧版平铺数据会在启动时迁移到上述目录。目标已存在时不会覆盖；迁移失败时原文件
-保留，应用继续启动。
+保留，应用继续启动。统一配置采用临时文件原子替换，并保留最近一次有效备份；启动时
+主配置损坏会回退备份，备份也不可用时使用默认值并保留损坏文件。
 
 ## 安全边界
 
@@ -123,7 +126,7 @@ flutter test
 flutter run -d windows
 ```
 
-当前常规测试结果为 452 项通过、2 项条件跳过；跳过项是需要显式提供 MPV 实体目录的
+当前常规测试结果为 457 项通过、2 项条件跳过；跳过项是需要显式提供 MPV 实体目录的
 两项兼容测试。
 
 Release/AOT 构建并更新指定便携目录：
@@ -142,13 +145,14 @@ Release/AOT 构建并更新指定便携目录：
 
 ```powershell
 .\build.ps1 -Mode release `
-  -Target 'C:\Users\YX\Documents\StreamPath_Release\StreamPath 20260809 V0.1 test portable' `
+  -Target 'C:\Users\YX\Documents\StreamPath_Release\StreamPath 20260809 V0.1 portable' `
   -Yes
 ```
 
 构建脚本依次执行静态分析、全部常规测试和 Windows Release 构建，并校验
 `data/app.so` 存在且没有 Debug `kernel_blob.bin`。覆盖目标时只替换程序构建产物，
-保留 `使用说明.txt` 与 `stream_path_data/` 用户数据。
+保留 `使用说明.txt` 与 `stream_path_data/` 用户数据。非空目标必须同时含已有
+`streampath.exe` 和 `data/app.so` 标记，否则拒绝覆盖。
 
 仅清理缓存和运行时数据、保留全部配置：
 
@@ -157,7 +161,8 @@ Release/AOT 构建并更新指定便携目录：
 ```
 
 保留播放历史时使用 `.\cleanup.ps1 -KeepHistory`。脚本会验证目标范围并拒绝驱动器
-根目录、项目根目录、用户目录和重解析点。
+根目录、项目根目录、用户目录和目标路径链中的重解析点；旧版播放器与连接配置也不会
+被清理。
 
 ## 常见问题
 

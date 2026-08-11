@@ -71,6 +71,8 @@ lib/
 迁移已覆盖基础配置、智能缓存配置、学习数据、SQLite、历史、媒体元数据、MPV 状态、
 命令、JSONL、播放列表、Lua 和 watch_later。目标存在时用户数据优先；单项失败保留
 源文件并在下次启动重试。旧配置 JSON 结构错误时不会阻塞启动，也不会删除原文件。
+统一配置保存使用临时文件原子替换，并保留最近一次有效备份；启动加载失败时依次回退
+备份和默认值，损坏的主文件与备份均保留供人工恢复。
 
 ## 4. WebDAV 协议层
 
@@ -175,6 +177,8 @@ JSONL 记录每个 `end-file` 的播放列表位置、路径、位置、时长�
 userinfo。MPV 只有 `reason=error` 才进入 OpenList 恢复判断。
 
 应用重启后恢复的 PID 在强制结束前必须再次确认仍是 MPV，避免 PID 复用伤及其他进程。
+播放历史的读、改、写在单个存储实例内串行执行，并通过临时文件原子替换，避免两个
+MPV 会话同时更新时互相覆盖或留下半写入 JSON。
 
 ### 5.4 实体版本结果
 
@@ -237,7 +241,8 @@ Last-Modified 用于元数据失效判断。
 和 [AList 认证 API](https://alistgo.com/guide/api/auth.html) 为依据。
 
 1. `GET /api/public/settings` 尝试读取版本，失败不阻塞；
-2. 先对原媒体地址发起一字节 Range 探测，已恢复则不刷新；
+2. 先对原媒体地址发起一字节 Range 探测，已恢复则不刷新；第二次 MPV 错误触发恢复时
+   若地址仍可读取，则判定为非链接失效并停止，不强制刷新全部存储；
 3. Token 为空时调用 `/api/auth/login`；仅 HTTP 或 JSON `code` 为 404/405 时回退
    `/api/auth/login/hash`；
 4. hash 密码是
@@ -287,7 +292,7 @@ flutter test test/mpv_version_compatibility_test.dart --no-pub -r expanded
 OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、多会话代际、
 缓存策略和监控、登录首帧布局、旧数据迁移、排序与滚轮。
 
-2026-08-11 常规套件结果：452 项通过，2 项条件跳过；设置 MPV 测试目录后，两项实体
+2026-08-12 常规套件结果：457 项通过，2 项条件跳过；设置 MPV 测试目录后，两项实体
 兼容测试均通过。
 
 
@@ -300,6 +305,8 @@ OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、�
 - Release/Profile 必须含 `data/app.so`；
 - Release/Profile 不得含 Debug `kernel_blob.bin`；
 - 构建目录和目标目录不得是重解析点；
+- 非空目标必须同时含已有 `streampath.exe` 和 `data/app.so` 标记；
+- 目标不得位于项目目录内部，也不得是项目目录、用户目录或其祖先目录；
 - 打包时 StreamPath 进程不得运行；
 - 删除目标旧产物前逐项验证路径位于目标目录内。
 
@@ -308,7 +315,7 @@ OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、�
 
 `cleanup.ps1` 只枚举数据目录直属的已知运行时名称，再对解析后的每个目标执行范围与
 重解析点检查；配置目录不清理。脚本不得对项目根、用户目录、APPDATA 或驱动器根执行
-递归删除。
+递归删除，也不得删除旧版 `player_config.json` 或 `connection_config.json`。
 
 ## 11. 维护不变量
 

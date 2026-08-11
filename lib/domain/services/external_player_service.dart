@@ -1310,8 +1310,8 @@ class ExternalPlayerService {
         mediaUrl: entry.url,
         webDavUsername: runtime.username,
         webDavPassword: runtime.password,
-        // 第一次允许“原 WebDAV 地址已经可取新签名”这一无损路径；若新
-        // MPV 仍失败，第二次强制进入后台刷新（仍受全局冷却保护）。
+        // 第一次允许直接重新取链；第二次仅在地址仍不可读时强制刷新存储，
+        // 地址可读则按非链接失效停止恢复。
         forceStorageReload: state.attempts > 1,
       );
     } catch (_) {

@@ -43,7 +43,7 @@ Future<void> main() async {
   final directoryCacheInit = directoryCache.init();
   final progressServiceFuture = PlaybackProgressService.create();
   final configStoreFuture = StreamPathConfigStore.create().then((store) async {
-    await store.load();
+    await store.loadForStartup();
     return store;
   });
   final playbackHistoryStoreFuture = PlaybackHistoryStore.create();

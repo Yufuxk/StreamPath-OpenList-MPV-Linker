@@ -57,6 +57,32 @@ void main() {
     expect(paths, ['/api/public/settings']);
   });
 
+  test('第二次恢复时媒体仍可读取则停止，不强制刷新全部存储', () async {
+    final paths = <String>[];
+    final service = OpenListRecoveryService(
+      requestSender: (uri, {required method, headers, body, timeout}) async {
+        paths.add(uri.path);
+        return const OpenListHttpResponse(statusCode: 200, data: {'code': 200});
+      },
+      mediaProbe: (uri, {username, password, timeout}) async => true,
+    );
+
+    final result = await service.prepare(
+      config: const OpenListRecoveryConfig(
+        enabled: true,
+        baseUrl: 'http://host:5244',
+        token: 'admin-token',
+      ),
+      mediaUrl: 'http://host:5244/dav/movie.mkv',
+      forceStorageReload: true,
+    );
+
+    expect(result.success, isFalse);
+    expect(result.storageReloaded, isFalse);
+    expect(result.message, contains('不属于链接失效'));
+    expect(paths, ['/api/public/settings']);
+  });
+
   test('OpenList v4 / AList v3 通用登录后刷新并等待媒体恢复', () async {
     final calls =
         <({String method, String path, Object? body, String? token})>[];

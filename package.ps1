@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = $PSScriptRoot
 $BuildScript = Join-Path $ProjectRoot 'build.ps1'
 $DefaultTarget = Join-Path (Split-Path $ProjectRoot -Parent) `
-    'StreamPath_Release\StreamPath 20260809 V0.1 test portable'
+    'StreamPath 20260809 V0.1 portable'
 
 if (-not (Test-Path -LiteralPath $BuildScript -PathType Leaf)) {
     throw "未找到构建脚本：$BuildScript"

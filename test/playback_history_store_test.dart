@@ -228,6 +228,59 @@ void main() {
     expect(await store.loadAll(), hasLength(AppConstants.maxPlaybackSessions));
   });
 
+  test('两个会话并发更新时不会互相覆盖', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}concurrent.json';
+    final store = PlaybackHistoryStore.forPath(path);
+    final createdAt = DateTime(2026);
+    for (final id in const ['one', 'two']) {
+      await store.upsert(
+        PlaybackHistory(
+          sessionId: id,
+          dirCrumbs: const [],
+          fileName: '$id-old.mkv',
+          videoIndex: 0,
+          updatedAt: createdAt,
+          createdAt: createdAt,
+        ),
+      );
+    }
+
+    await Future.wait([
+      store.upsert(
+        PlaybackHistory(
+          sessionId: 'one',
+          dirCrumbs: const [],
+          fileName: 'one-new.mkv',
+          videoIndex: 1,
+          updatedAt: createdAt,
+          createdAt: createdAt,
+        ),
+      ),
+      store.upsert(
+        PlaybackHistory(
+          sessionId: 'two',
+          dirCrumbs: const [],
+          fileName: 'two-new.mkv',
+          videoIndex: 2,
+          updatedAt: createdAt,
+          createdAt: createdAt,
+        ),
+      ),
+    ]);
+
+    final reloaded = PlaybackHistoryStore.forPath(path);
+    final sessions = await reloaded.loadAll();
+    expect(sessions, hasLength(2));
+    expect(
+      sessions.firstWhere((item) => item.sessionId == 'one').fileName,
+      'one-new.mkv',
+    );
+    expect(
+      sessions.firstWhere((item) => item.sessionId == 'two').fileName,
+      'two-new.mkv',
+    );
+  });
+
   test('旧版单对象记录可作为 legacy 会话读取', () async {
     final path = '${tempDir.path}${Platform.pathSeparator}legacy.json';
     await File(path).writeAsString(

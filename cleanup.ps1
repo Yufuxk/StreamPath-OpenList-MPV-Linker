@@ -126,9 +126,7 @@ $legacyPaths = @(
     (Join-Path $env:APPDATA 'com.streampath\streampath\directory_cache'),
     (Join-Path $env:APPDATA 'com.streampath\streampath\directory_cache.hive'),
     (Join-Path $env:APPDATA 'com.streampath\streampath\directory_cache.lock'),
-    (Join-Path $env:APPDATA 'com.streampath\streampath\clipboard_history_fix.log'),
-    (Join-Path $env:APPDATA 'com.streampath\streampath\player_config.json'),
-    (Join-Path $env:APPDATA 'com.streampath\streampath\connection_config.json')
+    (Join-Path $env:APPDATA 'com.streampath\streampath\clipboard_history_fix.log')
 )
 foreach ($path in $legacyPaths) {
     if (Test-Path -LiteralPath $path) {

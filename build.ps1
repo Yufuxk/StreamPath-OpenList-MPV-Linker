@@ -27,12 +27,114 @@ param(
     [switch]$SkipTest,
     [switch]$SkipPackage,
     [string]$Target,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$ValidateTargetOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 Set-Location $Root
+
+function Resolve-SafePackageTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$BuildOutput
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw '打包目标不能为空。'
+    }
+    $Resolved = [IO.Path]::GetFullPath($Path)
+    $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
+    $BuildOutput = [IO.Path]::GetFullPath($BuildOutput)
+    $TargetRoot = [IO.Path]::GetPathRoot($Resolved)
+    $ForbiddenExact = @($TargetRoot, $ProjectRoot, $BuildOutput)
+    foreach ($EnvironmentPath in @(
+            $env:USERPROFILE,
+            $env:APPDATA,
+            $env:LOCALAPPDATA,
+            $env:TEMP
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($EnvironmentPath)) {
+            $ForbiddenExact += [IO.Path]::GetFullPath($EnvironmentPath)
+        }
+    }
+    if ($ForbiddenExact | Where-Object {
+            [string]::Equals(
+                $_,
+                $Resolved,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }) {
+        throw "拒绝使用不安全的打包目标：$Resolved"
+    }
+
+    $ProjectPrefix = $ProjectRoot.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar
+    ) + [IO.Path]::DirectorySeparatorChar
+    if ($Resolved.StartsWith(
+            $ProjectPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "拒绝使用项目目录内部作为打包目标：$Resolved"
+    }
+
+    $TargetPrefix = $Resolved.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar
+    ) + [IO.Path]::DirectorySeparatorChar
+    foreach ($ProtectedPath in @(
+            $ProjectRoot,
+            [IO.Path]::GetFullPath($env:USERPROFILE)
+        )) {
+        if ($ProtectedPath.StartsWith(
+                $TargetPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "拒绝使用包含项目或用户目录的打包目标：$Resolved"
+        }
+    }
+
+    $ExistingPath = $Resolved
+    while (-not (Test-Path -LiteralPath $ExistingPath)) {
+        $ParentPath = [IO.Path]::GetDirectoryName($ExistingPath)
+        if ([string]::IsNullOrWhiteSpace($ParentPath) -or
+            [string]::Equals($ParentPath, $ExistingPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "无法确认打包目标的父路径：$Resolved"
+        }
+        $ExistingPath = $ParentPath
+    }
+    $PathCursor = Get-Item -LiteralPath $ExistingPath -Force
+    while ($null -ne $PathCursor) {
+        if (($PathCursor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "打包目标路径经过重解析点：$($PathCursor.FullName)"
+        }
+        $PathCursor = $PathCursor.Parent
+    }
+
+    if (Test-Path -LiteralPath $Resolved) {
+        $TargetItem = Get-Item -LiteralPath $Resolved -Force
+        if (-not $TargetItem.PSIsContainer -or
+            (($TargetItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw "打包目标无效或为重解析点：$Resolved"
+        }
+        $Children = @(Get-ChildItem -LiteralPath $Resolved -Force)
+        $HasPackageMarker =
+            (Test-Path -LiteralPath (Join-Path $Resolved 'streampath.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $Resolved 'data\app.so') -PathType Leaf)
+        if ($Children.Count -ne 0 -and -not $HasPackageMarker) {
+            throw "非空目标不是可识别的 StreamPath 便携目录：$Resolved"
+        }
+        $ReparsePoints = @(Get-ChildItem -LiteralPath $Resolved -Recurse -Force |
+            Where-Object {
+                ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            })
+        if ($ReparsePoints.Count -ne 0) {
+            throw "打包目标包含重解析点，停止覆盖：$Resolved"
+        }
+    }
+    return $Resolved
+}
 
 # ── 步骤包装：失败即退出（携带退出码） ──
 function Invoke-Step {
@@ -53,6 +155,15 @@ $ModeDirectory = @{
     profile = 'Profile'
     release = 'Release'
 }[$Mode]
+$BuildOutput = [IO.Path]::GetFullPath(
+    (Join-Path $Root "build\windows\x64\runner\$ModeDirectory")
+)
+if ($ValidateTargetOnly) {
+    $ValidatedTarget = Resolve-SafePackageTarget -Path $Target `
+        -ProjectRoot $Root -BuildOutput $BuildOutput
+    Write-Host "打包目标校验通过：$ValidatedTarget" -ForegroundColor Green
+    exit 0
+}
 Write-Host "=== StreamPath 通用构建（$ModeDirectory） ===" -ForegroundColor Cyan
 
 # ── 0. 检查 flutter ──
@@ -78,9 +189,6 @@ if (-not $SkipTest) {
 # ── 3. 构建 ──
 Invoke-Step "flutter build windows --$Mode" { flutter build windows "--$Mode" }
 
-$BuildOutput = [IO.Path]::GetFullPath(
-    (Join-Path $Root "build\windows\x64\runner\$ModeDirectory")
-)
 $exe = Join-Path $BuildOutput 'streampath.exe'
 if (-not (Test-Path $exe)) {
     Write-Host "构建产物缺失：$exe" -ForegroundColor Red
@@ -127,14 +235,8 @@ if (-not $SkipPackage) {
         }
     }
     if ($Target) {
-        $Target = [IO.Path]::GetFullPath($Target)
-        $RootFull = [IO.Path]::GetFullPath($Root)
-        $TargetRoot = [IO.Path]::GetPathRoot($Target)
-        if ([string]::Equals($Target, $TargetRoot, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals($Target, $RootFull, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals($Target, $BuildOutput, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "拒绝使用不安全的打包目标：$Target"
-        }
+        $Target = Resolve-SafePackageTarget -Path $Target `
+            -ProjectRoot $Root -BuildOutput $BuildOutput
 
         $BuildItem = Get-Item -LiteralPath $BuildOutput -Force
         if (-not $BuildItem.PSIsContainer -or
