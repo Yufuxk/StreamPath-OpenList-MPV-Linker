@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/constants.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
 
 void main() {
   late Directory tempDir;
@@ -288,7 +289,7 @@ void main() {
         'dirCrumbs': ['旧目录'],
         'fileName': 'legacy.mkv',
         'videoIndex': 3,
-        'updatedAt': DateTime(2025).millisecondsSinceEpoch,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
       }),
     );
 
@@ -298,5 +299,74 @@ void main() {
     expect(all, hasLength(1));
     expect(all.single.sessionId, 'legacy');
     expect(all.single.fileName, 'legacy.mkv');
+  });
+
+  test('过期的非活动会话自动移除，带进程身份的会话保留', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}expiration.json';
+    var now = DateTime.utc(2026, 1, 1);
+    const policy = CacheExpirationConfig(playbackRetentionDays: 1);
+    final writer = PlaybackHistoryStore.forPath(
+      path,
+      now: () => now,
+      policyProvider: () => policy,
+    );
+    await writer.upsert(
+      PlaybackHistory(
+        sessionId: 'inactive',
+        dirCrumbs: const [],
+        fileName: 'inactive.mkv',
+        videoIndex: 0,
+        updatedAt: now,
+      ),
+    );
+    await writer.upsert(
+      PlaybackHistory(
+        sessionId: 'active',
+        dirCrumbs: const [],
+        fileName: 'active.mkv',
+        videoIndex: 0,
+        updatedAt: now,
+        playerPid: 123,
+        ipcPipeName: r'\\.\pipe\mpv-active',
+      ),
+    );
+
+    now = now.add(const Duration(days: 2));
+    final reloaded = PlaybackHistoryStore.forPath(
+      path,
+      now: () => now,
+      policyProvider: () => policy,
+    );
+    final sessions = await reloaded.loadAll();
+
+    expect(sessions.map((item) => item.sessionId), ['active']);
+    expect(sessions.single.playerPid, 123);
+  });
+
+  test('运行中缩短保留期后，下次读取立即应用新策略', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}dynamic.json';
+    var now = DateTime.utc(2026, 1, 1);
+    var policy = const CacheExpirationConfig(playbackRetentionDays: 30);
+    final store = PlaybackHistoryStore.forPath(
+      path,
+      now: () => now,
+      policyProvider: () => policy,
+    );
+    await store.upsert(
+      PlaybackHistory(
+        sessionId: 'dynamic',
+        dirCrumbs: const [],
+        fileName: 'dynamic.mkv',
+        videoIndex: 0,
+        updatedAt: now,
+      ),
+    );
+
+    now = now.add(const Duration(days: 2));
+    expect(await store.loadAll(), hasLength(1));
+    policy = const CacheExpirationConfig(playbackRetentionDays: 1);
+
+    expect(await store.loadAll(), isEmpty);
+    expect(File(path).existsSync(), isFalse);
   });
 }

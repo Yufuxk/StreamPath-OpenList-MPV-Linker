@@ -75,15 +75,26 @@ class WebDavClient {
   ///
   /// [href] 为服务器返回的 href（绝对或相对，保持原编码，不二次编码）。
   Future<String> getFileContent(String href, {int? maxBytes}) async {
+    final bytes = await getFileBytes(href, maxBytes: maxBytes);
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+
+  /// 获取文件原始字节，供需要保留源编码的小型伴随文件使用。
+  Future<List<int>> getFileBytes(
+    String href, {
+    int? maxBytes,
+    Duration? timeout,
+  }) async {
     final url = resolveHref(baseUrl, href);
     try {
       final response = await _requestFollowingRedirects<ResponseBody>(
         url: url,
         method: 'GET',
         responseType: ResponseType.stream,
+        requestTimeout: timeout,
       );
       final body = response.data;
-      if (body == null) return '';
+      if (body == null) return const [];
       if (maxBytes != null && body.contentLength > maxBytes) {
         throw AppException.parse('文件内容超过 $maxBytes 字节限制');
       }
@@ -95,7 +106,7 @@ class WebDavClient {
           throw AppException.parse('文件内容超过 $maxBytes 字节限制');
         }
       }
-      return utf8.decode(bytes, allowMalformed: true);
+      return bytes;
     } on DioException catch (e) {
       throw _translateDioError(e);
     }
@@ -108,6 +119,7 @@ class WebDavClient {
     required String method,
     required ResponseType responseType,
     Map<String, Object?> headers = const {},
+    Duration? requestTimeout,
   }) async {
     var current = Uri.parse(url);
     for (var redirectCount = 0; ; redirectCount++) {
@@ -126,6 +138,8 @@ class WebDavClient {
           method: method,
           headers: requestHeaders,
           responseType: responseType,
+          connectTimeout: requestTimeout,
+          receiveTimeout: requestTimeout,
           followRedirects: false,
           validateStatus: (status) =>
               status != null && status >= 200 && status < 400,

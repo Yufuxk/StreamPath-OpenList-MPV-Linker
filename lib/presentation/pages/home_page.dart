@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../../core/errors/app_exception.dart';
 import '../../data/models/connection_config.dart';
 import '../state/app_state.dart';
+import '../theme/glass_tokens.dart';
+import '../widgets/glass_surface.dart';
 import 'browser_page.dart';
 import 'settings_page.dart';
 import '../widgets/clipboard_history_menu.dart';
@@ -105,7 +107,15 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('StreamPath — WebDAV 浏览器'),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            _StreamPathMark(),
+            SizedBox(width: 10),
+            Text('StreamPath'),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -118,112 +128,144 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Icon(
-                        Icons.folder_shared_outlined,
-                        size: 56,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        '连接 WebDAV 服务器',
-                        style: Theme.of(context).textTheme.titleLarge,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 24),
-                      TextFormField(
-                        controller: _baseUrlController,
-                        decoration: const InputDecoration(
-                          labelText: '服务器地址',
-                          hintText: 'https://example.com/dav',
-                          floatingLabelBehavior: FloatingLabelBehavior.always,
-                          prefixIcon: Icon(Icons.link),
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.url,
-                        contextMenuBuilder: buildClipboardHistoryMenu,
-                        validator: (v) {
-                          final s = v?.trim() ?? '';
-                          if (s.isEmpty) return '请输入服务器地址';
-                          if (!s.startsWith('http://') &&
-                              !s.startsWith('https://')) {
-                            return '地址需以 http:// 或 https:// 开头';
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _usernameController,
-                        contextMenuBuilder: buildClipboardHistoryMenu,
-                        decoration: const InputDecoration(
-                          labelText: '用户名',
-                          floatingLabelBehavior: FloatingLabelBehavior.always,
-                          prefixIcon: Icon(Icons.person_outline),
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (v) =>
-                            (v == null || v.trim().isEmpty) ? '请输入用户名' : null,
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: _passwordController,
-                        obscureText: _obscurePassword,
-                        contextMenuBuilder: buildClipboardHistoryMenu,
-                        decoration: InputDecoration(
-                          labelText: '密码',
-                          helperText: '服务器未设置密码时可留空',
-                          floatingLabelBehavior: FloatingLabelBehavior.always,
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          border: const OutlineInputBorder(),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscurePassword
-                                  ? Icons.visibility_off
-                                  : Icons.visibility,
-                            ),
-                            onPressed: () => setState(
-                              () => _obscurePassword = !_obscurePassword,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      FilledButton.icon(
-                        onPressed: _connecting ? null : _connect,
-                        icon: _connecting
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.login),
-                        label: Text(_connecting ? '连接中…' : '连接'),
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                        ),
-                      ),
-                    ],
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: _buildConnectionCard(context),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConnectionCard(BuildContext context) {
+    return GlassSurface(
+      level: GlassSurfaceLevel.raised,
+      borderRadius: BorderRadius.circular(16),
+      clipBehavior: Clip.antiAlias,
+      padding: const EdgeInsets.all(28),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '连接服务器',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.3,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '输入已配置的 WebDAV 服务信息',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 24),
+            TextFormField(
+              controller: _baseUrlController,
+              decoration: const InputDecoration(
+                labelText: '服务器地址',
+                hintText: 'https://example.com/dav',
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                prefixIcon: Icon(Icons.link),
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.url,
+              contextMenuBuilder: buildClipboardHistoryMenu,
+              validator: (v) {
+                final s = v?.trim() ?? '';
+                if (s.isEmpty) return '请输入服务器地址';
+                if (!s.startsWith('http://') && !s.startsWith('https://')) {
+                  return '地址需以 http:// 或 https:// 开头';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _usernameController,
+              contextMenuBuilder: buildClipboardHistoryMenu,
+              decoration: const InputDecoration(
+                labelText: '用户名',
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                prefixIcon: Icon(Icons.person_outline),
+                border: OutlineInputBorder(),
+              ),
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? '请输入用户名' : null,
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _passwordController,
+              obscureText: _obscurePassword,
+              contextMenuBuilder: buildClipboardHistoryMenu,
+              decoration: InputDecoration(
+                labelText: '密码',
+                helperText: '服务器未设置密码时可留空',
+                floatingLabelBehavior: FloatingLabelBehavior.always,
+                prefixIcon: const Icon(Icons.lock_outline),
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
                   ),
+                  onPressed: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
                 ),
               ),
             ),
-          ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: _connecting ? null : _connect,
+              icon: _connecting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.login),
+              label: Text(_connecting ? '连接中…' : '连接'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 复用应用图标的“文件夹 + 播放”构图，适配标题栏小尺寸显示。
+class _StreamPathMark extends StatelessWidget {
+  const _StreamPathMark();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ExcludeSemantics(
+      child: SizedBox(
+        width: 28,
+        height: 28,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Icon(
+              Icons.folder_rounded,
+              size: 28,
+              color: scheme.surfaceContainerHighest,
+            ),
+            Icon(Icons.folder_outlined, size: 28, color: scheme.primary),
+            Icon(Icons.play_arrow_rounded, size: 15, color: scheme.primary),
+          ],
         ),
       ),
     );

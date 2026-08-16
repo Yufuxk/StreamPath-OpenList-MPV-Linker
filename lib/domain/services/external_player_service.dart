@@ -6,6 +6,7 @@ import 'dart:isolate';
 import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 
+import '../../core/cache/cache_retention_policy.dart';
 import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
@@ -338,6 +339,17 @@ class ExternalPlayerService {
       }
       if (config.resumeEnabled) {
         final dir = await _ensureWatchLaterDir();
+        try {
+          await const MpvWatchLaterSync().purgeExpiredRecords(
+            dir,
+            watchLaterUrls,
+            maxAge:
+                _progressService?.retention ??
+                const DefaultCacheRetentionPolicy().playbackRetention,
+          );
+        } catch (_) {
+          // 续播缓存维护失败不阻断播放器启动。
+        }
         args.addAll([
           '--save-position-on-quit',
           '--watch-later-directory=${dir.path}',

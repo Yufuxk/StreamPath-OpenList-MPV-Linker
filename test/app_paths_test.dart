@@ -33,6 +33,8 @@ void main() {
     createLegacy('cache_intelligence.json', '{"enabled":true}');
     createLegacy('streampath.db');
     createLegacy('playback_history.json');
+    createLegacy('audio_streampath.db');
+    createLegacy('audio_playback_history.json');
     createLegacy('media_metadata.json');
     createLegacy('cache_intelligence_learning.json');
     createLegacy('mpv-current-session_1.txt');
@@ -45,6 +47,8 @@ void main() {
     expect(exists('config/cache_intelligence.json'), isTrue);
     expect(exists('cache/streampath.db'), isTrue);
     expect(exists('cache/playback_history.json'), isTrue);
+    expect(exists('cache/audio_streampath.db'), isTrue);
+    expect(exists('cache/audio_playback_history.json'), isTrue);
     expect(exists('cache/media_metadata.json'), isTrue);
     expect(exists('cache/cache_intelligence_learning.json'), isTrue);
     expect(exists('cache/mpv-current-session_1.txt'), isTrue);

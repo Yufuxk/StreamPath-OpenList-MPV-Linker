@@ -1,16 +1,24 @@
 import 'dart:async';
 
 import 'package:hive/hive.dart';
+import 'package:meta/meta.dart';
 
+import '../../core/cache/cache_retention_policy.dart';
 import '../../core/constants.dart';
+import '../../core/utils/cache_expiration.dart';
 import '../models/web_dav_file.dart';
 
 /// 目录元数据快照（缓存读取结果）。
 class CacheSnapshot {
-  const CacheSnapshot({required this.entries, required this.cachedAt});
+  const CacheSnapshot({
+    required this.entries,
+    required this.cachedAt,
+    DateTime? lastAccessedAt,
+  }) : lastAccessedAt = lastAccessedAt ?? cachedAt;
 
   final List<WebDavFile> entries;
   final DateTime cachedAt;
+  final DateTime lastAccessedAt;
 }
 
 /// Hive 目录元数据缓存。
@@ -24,11 +32,28 @@ class CacheSnapshot {
 class DirectoryCache {
   static const _boxName = 'directory_cache';
 
+  DirectoryCache({
+    DateTime Function()? now,
+    String boxName = _boxName,
+    CacheRetentionPolicyProvider? policyProvider,
+  }) : _now = now ?? DateTime.now,
+       _policyProvider = policyProvider ?? _defaultPolicyProvider,
+       _resolvedBoxName = boxName;
+
   Box<Map>? _box;
+  final DateTime Function() _now;
+  final CacheRetentionPolicyProvider _policyProvider;
+  final String _resolvedBoxName;
+  Future<void> _pending = Future<void>.value();
 
   /// 打开缓存箱（应用启动时调用一次）。
   Future<void> init() async {
-    _box = await Hive.openBox<Map>(_boxName);
+    _box = await Hive.openBox<Map>(_resolvedBoxName);
+    try {
+      await purgeExpired();
+    } catch (_) {
+      // 自动维护失败只会降低缓存命中率，不能阻止应用启动。
+    }
   }
 
   /// 同步读取缓存；无缓存或数据损坏时返回 null。
@@ -48,9 +73,31 @@ class DirectoryCache {
           .toList();
       final cachedAtMs = raw['cachedAt'];
       if (cachedAtMs is! int) return null;
+      final cachedAt = DateTime.fromMillisecondsSinceEpoch(cachedAtMs);
+      final lastAccessedAtMs = raw['lastAccessedAt'];
+      final lastAccessedAt = lastAccessedAtMs is int
+          ? DateTime.fromMillisecondsSinceEpoch(lastAccessedAtMs)
+          : cachedAt;
+      final now = _now();
+      if (CacheExpiration.isExpired(
+        lastUsedAt: lastAccessedAt,
+        retention: _policyProvider().directoryRetention,
+        now: now,
+      )) {
+        final observedAccessMs = lastAccessedAtMs is int
+            ? lastAccessedAtMs
+            : cachedAtMs;
+        _scheduleDeleteIfStillExpired(key, observedAccessMs, now);
+        return null;
+      }
+      _scheduleTouch(key, lastAccessedAt, now);
       return CacheSnapshot(
         entries: entries,
-        cachedAt: DateTime.fromMillisecondsSinceEpoch(cachedAtMs),
+        cachedAt: cachedAt,
+        lastAccessedAt: CacheExpiration.monotonicAccessTime(
+          now,
+          lastAccessedAt,
+        ),
       );
     } catch (_) {
       // 单条缓存损坏不应影响浏览，忽略并视为未命中。
@@ -62,20 +109,157 @@ class DirectoryCache {
   void write(String key, List<WebDavFile> entries) {
     final box = _box;
     if (box == null) return;
-    try {
-      final pending = box.put(key, <String, dynamic>{
-        'entries': entries.map((e) => e.toCacheMap()).toList(),
-        'cachedAt': DateTime.now().millisecondsSinceEpoch,
+    final nowMs = _now().millisecondsSinceEpoch;
+    final serializedEntries = entries.map((e) => e.toCacheMap()).toList();
+    _scheduleMutation(() async {
+      await box.put(key, <String, dynamic>{
+        'entries': serializedEntries,
+        'cachedAt': nowMs,
+        'lastAccessedAt': nowMs,
       });
-      // 缓存只是目录浏览优化，异步落盘失败不能形成未处理异常。
-      unawaited(pending.catchError((Object _) {}));
-    } catch (_) {
-      // Hive key/存储异常不能阻断已经成功取得的网络目录结果。
-    }
+      if (box.length > AppConstants.maxDirectoryCacheEntries) {
+        await _prune(box, _now());
+      }
+    });
+  }
+
+  /// 清空全部目录快照，并保持 Hive 箱可继续使用。
+  Future<void> clear() async {
+    final box = _box;
+    if (box == null) throw StateError('目录缓存尚未初始化');
+    await _enqueue(() async {
+      await box.clear();
+      await box.flush();
+    });
+  }
+
+  /// 删除空闲超时、损坏和超过容量上限的目录快照。
+  Future<int> purgeExpired({DateTime? now}) {
+    final box = _box;
+    if (box == null) return Future<int>.value(0);
+    return _enqueue(() => _prune(box, now ?? _now()));
   }
 
   /// TTL 内是否视为新鲜。
-  bool isFresh(CacheSnapshot snapshot) =>
-      DateTime.now().difference(snapshot.cachedAt) <=
-      AppConstants.directoryCacheTtl;
+  bool isFresh(CacheSnapshot snapshot) => !CacheExpiration.isExpired(
+    lastUsedAt: snapshot.cachedAt,
+    retention: _policyProvider().directoryFreshness,
+    now: _now(),
+  );
+
+  @visibleForTesting
+  Future<void> close() async {
+    await _pending;
+    await _box?.close();
+    _box = null;
+  }
+
+  void _scheduleTouch(String key, DateTime lastAccessedAt, DateTime now) {
+    if (now.difference(lastAccessedAt) <
+        AppConstants.directoryCacheTouchInterval) {
+      return;
+    }
+    _scheduleMutation(() async {
+      final box = _box;
+      final current = box?.get(key);
+      if (box == null || current is! Map) return;
+      final currentAccessMs = current['lastAccessedAt'] ?? current['cachedAt'];
+      if (currentAccessMs is! int) return;
+      final currentAccess = DateTime.fromMillisecondsSinceEpoch(
+        currentAccessMs,
+      );
+      final touchedAt = CacheExpiration.monotonicAccessTime(now, currentAccess);
+      if (touchedAt == currentAccess) return;
+      await box.put(key, <String, dynamic>{
+        ...Map<dynamic, dynamic>.from(current),
+        'lastAccessedAt': touchedAt.millisecondsSinceEpoch,
+      });
+    });
+  }
+
+  void _scheduleDeleteIfStillExpired(
+    String key,
+    int observedAccessMs,
+    DateTime now,
+  ) {
+    _scheduleMutation(() async {
+      final box = _box;
+      final current = box?.get(key);
+      if (box == null || current is! Map) return;
+      final currentAccessMs = current['lastAccessedAt'] ?? current['cachedAt'];
+      if (currentAccessMs != observedAccessMs) return;
+      final currentAccess = DateTime.fromMillisecondsSinceEpoch(
+        observedAccessMs,
+      );
+      if (CacheExpiration.isExpired(
+        lastUsedAt: currentAccess,
+        retention: _policyProvider().directoryRetention,
+        now: now,
+      )) {
+        await box.delete(key);
+      }
+    });
+  }
+
+  Future<int> _prune(Box<Map> box, DateTime now) async {
+    final retention = _policyProvider().directoryRetention;
+    final retained = <(dynamic, DateTime, int)>[];
+    final deleteKeys = <dynamic>[];
+    var scanOrder = 0;
+    for (final key in box.keys) {
+      final raw = box.get(key);
+      if (raw is! Map || raw['entries'] is! List || raw['cachedAt'] is! int) {
+        deleteKeys.add(key);
+        continue;
+      }
+      final accessMs = raw['lastAccessedAt'] ?? raw['cachedAt'];
+      if (accessMs is! int) {
+        deleteKeys.add(key);
+        continue;
+      }
+      final lastAccessedAt = DateTime.fromMillisecondsSinceEpoch(accessMs);
+      if (CacheExpiration.isExpired(
+        lastUsedAt: lastAccessedAt,
+        retention: retention,
+        now: now,
+      )) {
+        deleteKeys.add(key);
+      } else {
+        retained.add((key, lastAccessedAt, scanOrder));
+      }
+      scanOrder++;
+    }
+
+    retained.sort((a, b) {
+      final byAccess = b.$2.compareTo(a.$2);
+      return byAccess != 0 ? byAccess : b.$3.compareTo(a.$3);
+    });
+    if (retained.length > AppConstants.maxDirectoryCacheEntries) {
+      deleteKeys.addAll(
+        retained
+            .skip(AppConstants.maxDirectoryCacheEntries)
+            .map((entry) => entry.$1),
+      );
+    }
+    if (deleteKeys.isNotEmpty) {
+      await box.deleteAll(deleteKeys);
+      await box.flush();
+    }
+    return deleteKeys.length;
+  }
+
+  void _scheduleMutation(Future<void> Function() action) {
+    final pending = _enqueue(action);
+    // 缓存落盘失败不能形成未处理异常或阻断浏览。
+    unawaited(pending.catchError((Object _) {}));
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() action) {
+    final task = _pending.then((_) => action());
+    _pending = task.then<void>((_) {}, onError: (_) {});
+    return task;
+  }
+
+  static CacheRetentionPolicy _defaultPolicyProvider() =>
+      const DefaultCacheRetentionPolicy();
 }

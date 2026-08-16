@@ -901,6 +901,24 @@ class CachePolicyService implements CachePolicyProvider {
     }
   }
 
+  /// 清空本次进程内的策略结果、媒体探测和会话状态。
+  ///
+  /// 设置页只会在播放器全部退出后调用，因此这里直接停止残留监控，
+  /// 不再把旧会话样本写回刚清空的学习数据。
+  void clearRuntimeCache() {
+    for (final monitor in _monitors.values) {
+      monitor.stop();
+    }
+    _monitors.clear();
+    _monitorUrls.clear();
+    _knownSizes.clear();
+    _knownProbes.clear();
+    _lastResults.clear();
+    _sessionStates.clear();
+    _sessionConfigs.clear();
+    _sessionAuthHeaders.clear();
+  }
+
   /// 记录会话策略状态（LRU 上限：超出淘汰最久未用的会话条目）。
   void _recordSessionState(CachePolicySessionState state) {
     _sessionStates[state.sessionId] = state;

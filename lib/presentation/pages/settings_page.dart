@@ -5,22 +5,30 @@ import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
+import '../../data/models/appearance_config.dart';
 import '../../data/models/connection_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/stream_path_config.dart';
+import '../../domain/services/cache_cleanup_service.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/openlist_recovery_service.dart';
 import '../../features/cache_control/models/cache_intelligence_config.dart';
 import '../../features/cache_control/models/cache_policy_config.dart';
+import '../../features/cache_expiration/models/cache_expiration_config.dart';
 import '../state/app_state.dart';
+import '../theme/appearance_controller.dart';
+import '../theme/glass_tokens.dart';
 import '../widgets/clipboard_history_menu.dart';
+import '../widgets/directory_wheel_scroll_region.dart';
+import '../widgets/glass_dialog.dart';
+import '../widgets/glass_surface.dart';
 
 /// 设置页中的可用分类。
 ///
 /// 新增页面时只需补充枚举值，并在 [_SettingsPageState._buildSections]
 /// 注册页面描述与内容构建器。
-enum SettingsSection { server, playback, cache, general }
+enum SettingsSection { server, playback, cache, appearance, general }
 
 /// 设置页当前分类的进程内缓存。
 ///
@@ -58,7 +66,7 @@ class _SettingsSectionDefinition {
   final Widget Function() builder;
 }
 
-/// 分类设置页：服务器、播放、缓存与基础行为。
+/// 分类设置页：服务器、播放、缓存、界面与基础行为。
 ///
 /// 参数模板按行编辑（每行一个参数），支持占位符：
 /// `{url}` 视频地址 · `{subfile}` 字幕地址 · `{start}` 续播秒数；
@@ -74,6 +82,9 @@ class _SettingsPageState extends State<SettingsPage> {
   final Map<SettingsSection, GlobalKey<FormState>> _formKeys = {
     for (final section in SettingsSection.values)
       section: GlobalKey<FormState>(),
+  };
+  final Map<SettingsSection, ScrollController> _pageScrollControllers = {
+    for (final section in SettingsSection.values) section: ScrollController(),
   };
   late final TextEditingController _nameController;
   late final TextEditingController _executableController;
@@ -92,10 +103,16 @@ class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _cacheBandwidthController;
   late final TextEditingController _intelligenceMinSamplesController;
   late final TextEditingController _intelligenceMaxAdjustmentController;
+  late final TextEditingController _directoryFreshnessController;
+  late final TextEditingController _directoryRetentionController;
+  late final TextEditingController _directoryScrollRetentionController;
+  late final TextEditingController _playbackRetentionController;
+  late final TextEditingController _mediaMetadataRetentionController;
 
   bool _subtitleInjectionEnabled = true;
   bool _subtitleAutoSelectEnabled = true;
   bool _resumeEnabled = true;
+  bool _hiddenExtensionsEnabled = true;
   FileSortMode _defaultSortMode = FileSortMode.name;
   FileSortDirection _defaultSortDirection = FileSortDirection.ascending;
   int _playerStartupTimeoutSeconds =
@@ -109,9 +126,15 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _bitratePredictionEnabled = true;
   bool _storageOptimizationEnabled = true;
   bool _habitLearningEnabled = true;
+  InterfaceStyle _interfaceStyle = InterfaceStyle.classic;
+  WindowMaterialPreference _windowMaterial = WindowMaterialPreference.automatic;
+  double _glassOpacity = AppearanceConfig.defaultGlassOpacity;
   late SettingsSection _selectedSection;
   bool _loaded = false;
   bool _saving = false;
+  bool _resettingSettings = false;
+  bool _clearingCache = false;
+  bool _clearingLearningData = false;
 
   @override
   void initState() {
@@ -134,7 +157,16 @@ class _SettingsPageState extends State<SettingsPage> {
     _cacheBandwidthController = TextEditingController();
     _intelligenceMinSamplesController = TextEditingController();
     _intelligenceMaxAdjustmentController = TextEditingController();
+    _directoryFreshnessController = TextEditingController();
+    _directoryRetentionController = TextEditingController();
+    _directoryScrollRetentionController = TextEditingController();
+    _playbackRetentionController = TextEditingController();
+    _mediaMetadataRetentionController = TextEditingController();
     _loadConfig();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await context.read<AppearanceController>().refreshCapabilities();
+    });
   }
 
   @override
@@ -156,13 +188,23 @@ class _SettingsPageState extends State<SettingsPage> {
     _cacheBandwidthController.dispose();
     _intelligenceMinSamplesController.dispose();
     _intelligenceMaxAdjustmentController.dispose();
+    _directoryFreshnessController.dispose();
+    _directoryRetentionController.dispose();
+    _directoryScrollRetentionController.dispose();
+    _playbackRetentionController.dispose();
+    _mediaMetadataRetentionController.dispose();
+    for (final controller in _pageScrollControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> _loadConfig() async {
+  Future<bool> _loadConfig() async {
     try {
       final appState = context.read<AppState>();
+      final appearanceController = context.read<AppearanceController>();
       final fullConfig = await appState.configStore.load();
+      final appearance = appearanceController.config;
       final config = fullConfig.toPlayerConfig();
       final connection = fullConfig.toConnectionConfig();
       final cacheConfig =
@@ -171,7 +213,10 @@ class _SettingsPageState extends State<SettingsPage> {
       final intelligenceConfig =
           await appState.cacheIntelligenceConfigStore?.load() ??
           CacheIntelligenceConfig.defaults();
-      if (!mounted) return;
+      final expirationConfig =
+          await appState.cacheExpirationConfigStore?.load() ??
+          CacheExpirationConfig.defaults();
+      if (!mounted) return false;
       setState(() {
         _nameController.text = config.name;
         _executableController.text = config.executable;
@@ -190,6 +235,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _subtitleInjectionEnabled = config.subtitleInjectionEnabled;
         _subtitleAutoSelectEnabled = config.subtitleAutoSelectEnabled;
         _resumeEnabled = config.resumeEnabled;
+        _hiddenExtensionsEnabled = config.hiddenExtensionsEnabled;
         _defaultSortMode = config.defaultSortMode;
         _defaultSortDirection = config.defaultSortDirection;
         _playerStartupTimeoutSeconds = config.playerStartupTimeoutSeconds;
@@ -209,17 +255,37 @@ class _SettingsPageState extends State<SettingsPage> {
         _storageOptimizationEnabled =
             intelligenceConfig.storageOptimizationEnabled;
         _habitLearningEnabled = intelligenceConfig.habitLearningEnabled;
+        _interfaceStyle = appearance.style;
+        _windowMaterial = appearance.material;
+        _glassOpacity = appearance.glassOpacity;
         _intelligenceMinSamplesController.text = intelligenceConfig.minSamples
             .toString();
         _intelligenceMaxAdjustmentController.text =
             (intelligenceConfig.maxAdjustmentRatio * 100).toStringAsFixed(0);
+        _directoryFreshnessController.text = expirationConfig
+            .directoryFreshnessMinutes
+            .toString();
+        _directoryRetentionController.text = expirationConfig
+            .directoryRetentionDays
+            .toString();
+        _directoryScrollRetentionController.text = expirationConfig
+            .directoryScrollRetentionMinutes
+            .toString();
+        _playbackRetentionController.text = expirationConfig
+            .playbackRetentionDays
+            .toString();
+        _mediaMetadataRetentionController.text = expirationConfig
+            .mediaMetadataRetentionDays
+            .toString();
         _loaded = true;
       });
+      return true;
     } on AppException catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(e.message)));
+      return false;
     }
   }
 
@@ -244,6 +310,7 @@ class _SettingsPageState extends State<SettingsPage> {
       subtitleAutoSelectEnabled:
           _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
       resumeEnabled: _resumeEnabled,
+      hiddenExtensionsEnabled: _hiddenExtensionsEnabled,
       hiddenExtensions: parseHiddenExtensions(_hiddenExtensionsController.text),
       defaultSortMode: _defaultSortMode,
       defaultSortDirection: _defaultSortDirection,
@@ -272,6 +339,23 @@ class _SettingsPageState extends State<SettingsPage> {
       maxAdjustmentRatio:
           double.parse(_intelligenceMaxAdjustmentController.text.trim()) / 100,
     );
+    final expirationConfig = CacheExpirationConfig(
+      directoryFreshnessMinutes: int.parse(
+        _directoryFreshnessController.text.trim(),
+      ),
+      directoryRetentionDays: int.parse(
+        _directoryRetentionController.text.trim(),
+      ),
+      directoryScrollRetentionMinutes: int.parse(
+        _directoryScrollRetentionController.text.trim(),
+      ),
+      playbackRetentionDays: int.parse(
+        _playbackRetentionController.text.trim(),
+      ),
+      mediaMetadataRetentionDays: int.parse(
+        _mediaMetadataRetentionController.text.trim(),
+      ),
+    );
     final openListRecovery = OpenListRecoveryConfig(
       enabled: _openListRecoveryEnabled,
       baseUrl: _openListBaseUrlController.text.trim(),
@@ -279,22 +363,44 @@ class _SettingsPageState extends State<SettingsPage> {
       password: _openListPasswordController.text,
       token: _openListTokenController.text.trim(),
     );
+    final appearance = AppearanceConfig(
+      style: _interfaceStyle,
+      material: _windowMaterial,
+      glassOpacity: _glassOpacity,
+    );
 
     setState(() => _saving = true);
     try {
       final appState = context.read<AppState>();
+      final appearanceController = context.read<AppearanceController>();
+      final previousAppearance = appearanceController.config;
+      final appearanceChanged =
+          previousAppearance.style != appearance.style ||
+          previousAppearance.material != appearance.material ||
+          previousAppearance.glassOpacity != appearance.glassOpacity;
       final connection = ConnectionConfig(
         baseUrl: _serverUrlController.text.trim(),
         username: _serverUsernameController.text.trim(),
         password: _serverPasswordController.text,
       );
-      await appState.configStore.save(
-        StreamPathConfig.fromParts(
-          config,
-          connection,
-          openListRecovery: openListRecovery,
-        ),
-      );
+      if (appearanceChanged && !await appearanceController.apply(appearance)) {
+        throw AppException.config('无法启用所选窗口样式，已保留当前界面');
+      }
+      try {
+        await appState.configStore.save(
+          StreamPathConfig.fromParts(
+            config,
+            connection,
+            openListRecovery: openListRecovery,
+            appearance: appearance,
+          ),
+        );
+      } on AppException {
+        if (appearanceChanged) {
+          await appearanceController.apply(previousAppearance);
+        }
+        rethrow;
+      }
       final cacheStore = appState.cachePolicyConfigStore;
       if (cacheStore != null && !await cacheStore.save(cacheConfig)) {
         throw AppException.storage('播放器配置已保存，但基础缓存配置保存失败');
@@ -303,6 +409,11 @@ class _SettingsPageState extends State<SettingsPage> {
       if (intelligenceStore != null &&
           !await intelligenceStore.save(intelligenceConfig)) {
         throw AppException.storage('基础配置已保存，但智能缓存配置保存失败');
+      }
+      final expirationStore = appState.cacheExpirationConfigStore;
+      if (expirationStore != null &&
+          !await expirationStore.save(expirationConfig)) {
+        throw AppException.storage('基础配置已保存，但缓存过期配置保存失败');
       }
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -328,8 +439,197 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _reloadConfig() async {
+    await _refreshConfigFields();
+  }
+
+  Future<bool> _refreshConfigFields() async {
     setState(() => _loaded = false);
-    await _loadConfig();
+    return _loadConfig();
+  }
+
+  Future<void> _confirmAndResetSettings() async {
+    final colorScheme = Theme.of(context).colorScheme;
+    await showGlassDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重置全部设置？'),
+        content: const Text(
+          '服务器、播放、缓存策略、界面和基础设置将恢复默认值。目录缓存、续播记录、学习数据和其他缓存文件不会被删除；当前连接与正在播放的会话不会被中断。',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('cancel-reset-settings-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('confirm-reset-settings-button'),
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+            ),
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              await _resetAllSettings();
+            },
+            child: const Text('确认重置'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _resetAllSettings() async {
+    setState(() => _resettingSettings = true);
+    var settingsChanged = false;
+    try {
+      final appState = context.read<AppState>();
+      final appearanceController = context.read<AppearanceController>();
+      final defaultConfig = StreamPathConfig.defaults();
+      final defaultAppearance = defaultConfig.appearance;
+      final previousAppearance = appearanceController.config;
+      final appearanceChanged =
+          previousAppearance.style != defaultAppearance.style ||
+          previousAppearance.material != defaultAppearance.material ||
+          previousAppearance.glassOpacity != defaultAppearance.glassOpacity;
+
+      if (appearanceChanged &&
+          !await appearanceController.apply(defaultAppearance)) {
+        throw AppException.config('无法恢复默认窗口样式，设置未重置');
+      }
+      try {
+        await appState.configStore.resetToDefaults();
+        settingsChanged = true;
+      } on AppException {
+        if (appearanceChanged) {
+          await appearanceController.apply(previousAppearance);
+        }
+        rethrow;
+      }
+
+      final cacheStore = appState.cachePolicyConfigStore;
+      if (cacheStore != null &&
+          !await cacheStore.save(CachePolicyConfig.defaults())) {
+        throw AppException.storage('主配置已重置，但基础缓存设置重置失败');
+      }
+      final intelligenceStore = appState.cacheIntelligenceConfigStore;
+      if (intelligenceStore != null &&
+          !await intelligenceStore.save(CacheIntelligenceConfig.defaults())) {
+        throw AppException.storage('部分配置已重置，但智能缓存设置重置失败');
+      }
+      final expirationStore = appState.cacheExpirationConfigStore;
+      if (expirationStore != null &&
+          !await expirationStore.save(CacheExpirationConfig.defaults())) {
+        throw AppException.storage('部分配置已重置，但缓存过期设置重置失败');
+      }
+
+      if (!await _refreshConfigFields() || !mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('全部设置已恢复默认值')));
+    } on AppException catch (e) {
+      if (settingsChanged && mounted) await _refreshConfigFields();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (error) {
+      if (settingsChanged && mounted) await _refreshConfigFields();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('重置设置失败：$error')));
+    } finally {
+      if (mounted) setState(() => _resettingSettings = false);
+    }
+  }
+
+  Future<void> _confirmAndClearCache() async {
+    final confirmed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清理缓存？'),
+        content: const Text('将清除目录缓存、播放进度、继续播放记录和 MPV 临时文件。'),
+        actions: [
+          TextButton(
+            key: const Key('cancel-clear-cache-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('confirm-clear-cache-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认清理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _clearingCache = true);
+    try {
+      await context.read<AppState>().clearCache();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('缓存已清理')));
+    } on CacheCleanupException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('清理缓存失败：$error')));
+    } finally {
+      if (mounted) setState(() => _clearingCache = false);
+    }
+  }
+
+  Future<void> _confirmAndClearLearningData() async {
+    final confirmed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清理学习数据？'),
+        content: const Text('将清除智能缓存积累的学习数据。'),
+        actions: [
+          TextButton(
+            key: const Key('cancel-clear-learning-data-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const Key('confirm-clear-learning-data-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认清理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _clearingLearningData = true);
+    try {
+      await context.read<AppState>().clearLearningData();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(content: Text('学习数据已清理')));
+    } on CacheCleanupException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('清理学习数据失败：$error')));
+    } finally {
+      if (mounted) setState(() => _clearingLearningData = false);
+    }
   }
 
   void _selectSection(SettingsSection section) {
@@ -381,6 +681,13 @@ class _SettingsPageState extends State<SettingsPage> {
         description: '基础策略与智能优化',
         icon: Icons.memory_outlined,
         builder: _buildCachePage,
+      ),
+      _SettingsSectionDefinition(
+        section: SettingsSection.appearance,
+        label: '界面',
+        description: '界面样式与窗口背景',
+        icon: Icons.palette_outlined,
+        builder: _buildAppearanceSettings,
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.general,
@@ -630,21 +937,21 @@ class _SettingsPageState extends State<SettingsPage> {
         _SettingsGroupCard(
           icon: Icons.subtitles_outlined,
           title: '播放行为',
-          description: '控制外挂字幕注入、字幕选择与续播。',
+          description: '控制外挂字幕与 LRC 注入、轨道选择和续播。',
           child: Column(
             children: [
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('自动注入匹配的外挂字幕'),
-                subtitle: const Text('将同级目录中名称匹配的字幕加入播放器字幕轨道'),
+                title: const Text('自动注入匹配的外挂字幕与 LRC'),
+                subtitle: const Text('将同级目录中名称匹配的视频字幕或音频歌词加入播放器轨道'),
                 value: _subtitleInjectionEnabled,
                 onChanged: (value) =>
                     setState(() => _subtitleInjectionEnabled = value),
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('自动选择已注入的外挂字幕'),
-                subtitle: const Text('关闭时保留播放器原有的内封字幕选择'),
+                title: const Text('自动选择已注入的外挂字幕与 LRC'),
+                subtitle: const Text('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
                 value: _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
                 onChanged: !_subtitleInjectionEnabled
                     ? null
@@ -654,7 +961,7 @@ class _SettingsPageState extends State<SettingsPage> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('自动续播'),
-                subtitle: const Text('存在播放进度时从上次位置继续'),
+                subtitle: const Text('视频或音频存在播放进度时从上次位置继续'),
                 value: _resumeEnabled,
                 onChanged: (value) => setState(() => _resumeEnabled = value),
               ),
@@ -671,7 +978,13 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         _buildCacheSettings(),
         const SizedBox(height: 16),
+        _buildCacheExpirationSettings(),
+        const SizedBox(height: 16),
         _buildIntelligenceSettings(),
+        const SizedBox(height: 16),
+        _buildCacheCleanupSettings(),
+        const SizedBox(height: 16),
+        _buildLearningDataCleanupSettings(),
       ],
     );
   }
@@ -803,6 +1116,120 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildCacheExpirationSettings() {
+    return _SettingsGroupCard(
+      key: const Key('cache-expiration-settings-section'),
+      icon: Icons.timer_outlined,
+      title: '缓存过期时间',
+      description: '按最后访问或最后更新时间自动淘汰可重建缓存。',
+      child: Column(
+        children: [
+          _buildFieldPair(
+            TextFormField(
+              key: const Key('directory-freshness-minutes-field'),
+              controller: _directoryFreshnessController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '目录刷新间隔',
+                helperText: '超过后先显示旧快照并后台刷新',
+                suffixText: '分钟',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) => _validateNumber(
+                value,
+                min: CacheExpirationConfig.minMinutes.toDouble(),
+                max: CacheExpirationConfig.maxMinutes.toDouble(),
+                unit: '分钟',
+                integer: true,
+              ),
+            ),
+            TextFormField(
+              key: const Key('directory-scroll-retention-minutes-field'),
+              controller: _directoryScrollRetentionController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '滚动位置保留时间',
+                helperText: '长时间未打开的目录不再恢复位置',
+                suffixText: '分钟',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) => _validateNumber(
+                value,
+                min: CacheExpirationConfig.minMinutes.toDouble(),
+                max: CacheExpirationConfig.maxMinutes.toDouble(),
+                unit: '分钟',
+                integer: true,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildFieldPair(
+            TextFormField(
+              key: const Key('directory-retention-days-field'),
+              controller: _directoryRetentionController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '目录快照保留时间',
+                helperText: '按最后访问时间清理 Hive 快照',
+                suffixText: '天',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) => _validateNumber(
+                value,
+                min: CacheExpirationConfig.minDays.toDouble(),
+                max: CacheExpirationConfig.maxDays.toDouble(),
+                unit: '天',
+                integer: true,
+              ),
+            ),
+            TextFormField(
+              key: const Key('playback-retention-days-field'),
+              controller: _playbackRetentionController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '续播记录保留时间',
+                helperText: '同时作用于进度、历史和 MPV 恢复文件',
+                suffixText: '天',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) => _validateNumber(
+                value,
+                min: CacheExpirationConfig.minDays.toDouble(),
+                max: CacheExpirationConfig.maxDays.toDouble(),
+                unit: '天',
+                integer: true,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            key: const Key('media-metadata-retention-days-field'),
+            controller: _mediaMetadataRetentionController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '媒体元数据保留时间',
+              helperText: '适用于文件大小、时长、码率和资源验证器缓存',
+              suffixText: '天',
+              border: OutlineInputBorder(),
+            ),
+            validator: (value) => _validateNumber(
+              value,
+              min: CacheExpirationConfig.minDays.toDouble(),
+              max: CacheExpirationConfig.maxDays.toDouble(),
+              unit: '天',
+              integer: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildIntelligenceSettings() {
     return _SettingsGroupCard(
       key: const Key('cache-intelligence-settings-section'),
@@ -909,74 +1336,392 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildGeneralSettings() {
+  Widget _buildCacheCleanupSettings() {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final appState = context.read<AppState>();
     return _SettingsGroupCard(
-      icon: Icons.folder_copy_outlined,
-      title: '文件浏览',
-      description: '这些选项只改变界面显示，不影响稳定播放列表和字幕匹配。',
-      child: Column(
-        children: [
-          TextFormField(
-            key: const Key('hidden-extensions-field'),
-            controller: _hiddenExtensionsController,
-            contextMenuBuilder: buildClipboardHistoryMenu,
-            decoration: const InputDecoration(
-              labelText: '隐藏文件后缀（仅界面隐藏）',
-              helperText: '格式：{".ass", ".mp4", ".mp3"}（逗号或空格分隔）；后台引用与字幕加载不受影响。',
-              prefixIcon: Icon(Icons.visibility_off_outlined),
-              border: OutlineInputBorder(),
-            ),
-            validator: (value) {
-              try {
-                parseHiddenExtensions(value ?? '');
-                return null;
-              } on FormatException catch (error) {
-                return error.message;
-              }
-            },
-          ),
-          const SizedBox(height: 12),
-          _buildFieldPair(
-            DropdownButtonFormField<FileSortMode>(
-              key: const Key('default-sort-mode-field'),
-              initialValue: _defaultSortMode,
-              decoration: const InputDecoration(
-                labelText: '默认排序方式',
-                prefixIcon: Icon(Icons.sort),
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                for (final mode in FileSortMode.values)
-                  DropdownMenuItem(value: mode, child: Text(mode.label)),
+      key: const Key('cache-cleanup-settings-section'),
+      icon: Icons.delete_sweep_outlined,
+      title: '缓存文件清理',
+      description: '清除目录缓存、播放进度和临时文件。',
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          key: const Key('clear-cache-button'),
+          onPressed:
+              !_loaded ||
+                  _saving ||
+                  _resettingSettings ||
+                  _clearingCache ||
+                  _clearingLearningData ||
+                  !appState.canClearCache
+              ? null
+              : _confirmAndClearCache,
+          style: OutlinedButton.styleFrom(foregroundColor: errorColor),
+          icon: _clearingCache
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.delete_sweep_outlined),
+          label: Text(_clearingCache ? '正在清理…' : '清理缓存'),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLearningDataCleanupSettings() {
+    final errorColor = Theme.of(context).colorScheme.error;
+    final appState = context.read<AppState>();
+    return _SettingsGroupCard(
+      key: const Key('learning-data-cleanup-settings-section'),
+      icon: Icons.psychology_alt_outlined,
+      title: '学习数据清理',
+      description: '清除智能缓存积累的学习数据。',
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          key: const Key('clear-learning-data-button'),
+          onPressed:
+              !_loaded ||
+                  _saving ||
+                  _resettingSettings ||
+                  _clearingCache ||
+                  _clearingLearningData ||
+                  !appState.canClearLearningData
+              ? null
+              : _confirmAndClearLearningData,
+          style: OutlinedButton.styleFrom(foregroundColor: errorColor),
+          icon: _clearingLearningData
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.psychology_alt_outlined),
+          label: Text(_clearingLearningData ? '正在清理…' : '清理学习数据'),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAppearanceSettings() {
+    final glassSelected = _interfaceStyle == InterfaceStyle.glass;
+    final opacityPercent = (_glassOpacity * 100).round();
+    final appearanceController = context.watch<AppearanceController>();
+    final capabilities = appearanceController.capabilities;
+    final result = appearanceController.lastResult;
+    final capabilityError = appearanceController.capabilityError;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsGroupCard(
+          icon: Icons.layers_outlined,
+          title: '界面样式',
+          description: '默认样式保持原有不透明界面；磨砂玻璃使用 Windows 窗口级材质。',
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<InterfaceStyle>(
+              key: const Key('interface-style-selector'),
+              segments: const [
+                ButtonSegment(
+                  value: InterfaceStyle.classic,
+                  icon: Icon(Icons.crop_square_rounded),
+                  label: Text('默认'),
+                ),
+                ButtonSegment(
+                  value: InterfaceStyle.glass,
+                  icon: Icon(Icons.blur_on_outlined),
+                  label: Text('磨砂玻璃'),
+                ),
               ],
-              onChanged: (mode) {
-                if (mode != null) setState(() => _defaultSortMode = mode);
-              },
-            ),
-            DropdownButtonFormField<FileSortDirection>(
-              key: const Key('default-sort-direction-field'),
-              initialValue: _defaultSortDirection,
-              decoration: const InputDecoration(
-                labelText: '默认排序顺序',
-                prefixIcon: Icon(Icons.swap_vert),
-                border: OutlineInputBorder(),
-              ),
-              items: [
-                for (final direction in FileSortDirection.values)
-                  DropdownMenuItem(
-                    value: direction,
-                    child: Text(direction.label),
-                  ),
-              ],
-              onChanged: (direction) {
-                if (direction != null) {
-                  setState(() => _defaultSortDirection = direction);
+              selected: {_interfaceStyle},
+              onSelectionChanged: (selection) {
+                if (selection.isNotEmpty) {
+                  setState(() => _interfaceStyle = selection.first);
                 }
               },
             ),
           ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          icon: Icons.opacity_outlined,
+          title: '磨砂玻璃参数',
+          description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('窗口材质', style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<WindowMaterialPreference>(
+                  key: const Key('window-material-selector'),
+                  segments: const [
+                    ButtonSegment(
+                      value: WindowMaterialPreference.automatic,
+                      icon: Icon(Icons.auto_awesome_outlined),
+                      label: Text('自动'),
+                    ),
+                    ButtonSegment(
+                      value: WindowMaterialPreference.acrylic,
+                      icon: Icon(Icons.blur_on_outlined),
+                      label: Text('Acrylic'),
+                    ),
+                    ButtonSegment(
+                      value: WindowMaterialPreference.mica,
+                      icon: Icon(Icons.texture_outlined),
+                      label: Text('Mica'),
+                    ),
+                  ],
+                  selected: {_windowMaterial},
+                  onSelectionChanged: glassSelected
+                      ? (selection) {
+                          if (selection.isNotEmpty) {
+                            setState(() => _windowMaterial = selection.first);
+                          }
+                        }
+                      : null,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _windowMaterialDescription(capabilities),
+                key: const Key('window-material-description'),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  const Expanded(child: Text('背景不透明度')),
+                  Text(
+                    '$opacityPercent%',
+                    key: const Key('glass-opacity-value'),
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ],
+              ),
+              Slider(
+                key: const Key('glass-opacity-slider'),
+                min: AppearanceConfig.minGlassOpacity,
+                max: AppearanceConfig.maxGlassOpacity,
+                divisions: 35,
+                label: '$opacityPercent%',
+                value: _glassOpacity,
+                onChanged: glassSelected
+                    ? (value) => setState(() => _glassOpacity = value)
+                    : null,
+              ),
+              Text(
+                glassSelected
+                    ? '数值越低，窗口材质越明显；最低值已限制以保证文字对比度。'
+                    : '选择“磨砂玻璃”后可调整。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          key: const Key('windows-appearance-capabilities-section'),
+          icon: Icons.monitor_heart_outlined,
+          title: 'Windows 外观兼容性',
+          description: '只读取系统能力与窗口实际材质，用于说明磨砂效果是否生效。',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _AppearanceStatusRow(
+                label: '系统版本',
+                value: capabilities.windowsVersionLabel,
+              ),
+              const SizedBox(height: 10),
+              _AppearanceStatusRow(
+                label: '辅助显示',
+                value: capabilities.transparencyStatusLabel,
+              ),
+              const SizedBox(height: 10),
+              _AppearanceStatusRow(
+                label: '支持材质',
+                value: capabilities.supportedMaterialsLabel,
+              ),
+              const SizedBox(height: 10),
+              _AppearanceStatusRow(
+                label: '实际材质',
+                value: result?.actualEffectLabel ?? '尚未应用',
+                valueKey: const Key('actual-window-backdrop-value'),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                capabilityError ??
+                    (result?.isDegraded == true
+                        ? result!.degradation.message
+                        : capabilities.availabilityLabel),
+                key: const Key('window-appearance-capability-summary'),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: capabilityError != null || result?.isDegraded == true
+                      ? Theme.of(context).colorScheme.tertiary
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const Key('refresh-window-capabilities-button'),
+                  onPressed: appearanceController.checkingCapabilities
+                      ? null
+                      : appearanceController.refreshCapabilities,
+                  icon: appearanceController.checkingCapabilities
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 18),
+                  label: Text(
+                    appearanceController.checkingCapabilities
+                        ? '正在检测…'
+                        : '重新检测',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _windowMaterialDescription(
+    WindowAppearanceCapabilities capabilities,
+  ) => switch (_windowMaterial) {
+    WindowMaterialPreference.automatic =>
+      capabilities.supportsMica
+          ? '当前系统优先使用 Mica；系统不支持时自动使用 Acrylic。'
+          : '当前系统将使用 Acrylic；升级到支持的 Windows 11 后可自动使用 Mica。',
+    WindowMaterialPreference.acrylic => '固定使用 Acrylic，保持更明显的桌面透视与磨砂感。',
+    WindowMaterialPreference.mica =>
+      capabilities.supportsMica
+          ? '固定请求 Mica，适合作为长时间显示的主窗口背景。'
+          : '当前系统不支持 Mica，保存后会自动回退到 Acrylic。',
+  };
+
+  Widget _buildGeneralSettings() {
+    final errorColor = Theme.of(context).colorScheme.error;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsGroupCard(
+          icon: Icons.folder_copy_outlined,
+          title: '文件浏览',
+          description: '这些选项只改变界面显示，不影响稳定播放列表和字幕匹配。',
+          child: Column(
+            children: [
+              SwitchListTile(
+                key: const Key('hidden-extensions-enabled-switch'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('启用隐藏文件后缀'),
+                subtitle: const Text('关闭后停止过滤，但保留并允许编辑下方后缀内容'),
+                value: _hiddenExtensionsEnabled,
+                onChanged: (value) =>
+                    setState(() => _hiddenExtensionsEnabled = value),
+              ),
+              const SizedBox(height: 4),
+              TextFormField(
+                key: const Key('hidden-extensions-field'),
+                controller: _hiddenExtensionsController,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: const InputDecoration(
+                  labelText: '隐藏文件后缀（仅界面隐藏）',
+                  helperText: '格式：.ass, .mkv（必须使用英文逗号）；后台引用与字幕加载不受影响。',
+                  prefixIcon: Icon(Icons.visibility_off_outlined),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  try {
+                    parseHiddenExtensions(value ?? '');
+                    return null;
+                  } on FormatException catch (error) {
+                    return error.message;
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              _buildFieldPair(
+                DropdownButtonFormField<FileSortMode>(
+                  key: const Key('default-sort-mode-field'),
+                  initialValue: _defaultSortMode,
+                  decoration: const InputDecoration(
+                    labelText: '默认排序方式',
+                    prefixIcon: Icon(Icons.sort),
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final mode in FileSortMode.values)
+                      DropdownMenuItem(value: mode, child: Text(mode.label)),
+                  ],
+                  onChanged: (mode) {
+                    if (mode != null) setState(() => _defaultSortMode = mode);
+                  },
+                ),
+                DropdownButtonFormField<FileSortDirection>(
+                  key: const Key('default-sort-direction-field'),
+                  initialValue: _defaultSortDirection,
+                  decoration: const InputDecoration(
+                    labelText: '默认排序顺序',
+                    prefixIcon: Icon(Icons.swap_vert),
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final direction in FileSortDirection.values)
+                      DropdownMenuItem(
+                        value: direction,
+                        child: Text(direction.label),
+                      ),
+                  ],
+                  onChanged: (direction) {
+                    if (direction != null) {
+                      setState(() => _defaultSortDirection = direction);
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          key: const Key('settings-maintenance-section'),
+          icon: Icons.settings_backup_restore_outlined,
+          title: '配置维护',
+          description: '仅重置用户设置，不清理缓存或中断当前会话。',
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('reset-settings-button'),
+              onPressed:
+                  !_loaded ||
+                      _saving ||
+                      _resettingSettings ||
+                      _clearingCache ||
+                      _clearingLearningData
+                  ? null
+                  : _confirmAndResetSettings,
+              style: OutlinedButton.styleFrom(foregroundColor: errorColor),
+              icon: _resettingSettings
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.settings_backup_restore_outlined),
+              label: Text(_resettingSettings ? '正在重置…' : '重置全部设置'),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1002,20 +1747,19 @@ class _SettingsPageState extends State<SettingsPage> {
     BuildContext context,
     List<_SettingsSectionDefinition> sections,
   ) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surface,
-      child: Container(
+    final tokens = Theme.of(context).glass;
+    return GlassSurface(
+      level: GlassSurfaceLevel.chrome,
+      automaticBorder: false,
+      border: Border(bottom: BorderSide(color: tokens.dividerColor)),
+      child: SizedBox(
         width: double.infinity,
-        decoration: BoxDecoration(
-          border: Border(bottom: BorderSide(color: scheme.outlineVariant)),
-        ),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1040),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               child: Row(
                 children: [
                   for (var index = 0; index < sections.length; index++) ...[
@@ -1039,21 +1783,39 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildPageShell(_SettingsSectionDefinition definition) {
+    final scrollController = _pageScrollControllers[definition.section]!;
     return Form(
       key: _formKeys[definition.section],
-      child: SingleChildScrollView(
-        key: PageStorageKey<String>('settings-page-${definition.section.name}'),
-        padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _SettingsPageHeader(definition: definition),
-                const SizedBox(height: 20),
-                definition.builder(),
-              ],
+      child: DirectoryWheelScrollRegion(
+        controller: scrollController,
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: Scrollbar(
+            key: ValueKey<String>(
+              'settings-scrollbar-${definition.section.name}',
+            ),
+            controller: scrollController,
+            thumbVisibility: true,
+            interactive: true,
+            child: SingleChildScrollView(
+              key: PageStorageKey<String>(
+                'settings-page-${definition.section.name}',
+              ),
+              controller: scrollController,
+              padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _SettingsPageHeader(definition: definition),
+                      const SizedBox(height: 20),
+                      definition.builder(),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -1062,40 +1824,32 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildBottomBar(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surface,
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border(top: BorderSide(color: scheme.outlineVariant)),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-        child: SafeArea(
-          top: false,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              Flexible(
-                child: Text(
-                  '所有分页共用一次保存',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-              const SizedBox(width: 16),
-              FilledButton.icon(
-                key: const Key('save-settings-button'),
-                onPressed: !_loaded || _saving ? null : _save,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save_outlined),
-                label: Text(_saving ? '保存中…' : '保存全部配置'),
-              ),
-            ],
-          ),
+    final tokens = Theme.of(context).glass;
+    return GlassSurface(
+      level: GlassSurfaceLevel.chrome,
+      automaticBorder: false,
+      border: Border(top: BorderSide(color: tokens.dividerColor)),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            FilledButton.icon(
+              key: const Key('save-settings-button'),
+              onPressed: !_loaded || _saving || _resettingSettings
+                  ? null
+                  : _save,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_outlined),
+              label: Text(_saving ? '保存中…' : '保存全部配置'),
+            ),
+          ],
         ),
       ),
     );
@@ -1113,11 +1867,13 @@ class _SettingsPageState extends State<SettingsPage> {
         actions: [
           IconButton(
             tooltip: '从配置文件重新加载',
-            onPressed: !_loaded || _saving ? null : _reloadConfig,
+            onPressed: !_loaded || _saving || _resettingSettings
+                ? null
+                : _reloadConfig,
             icon: const Icon(Icons.refresh),
           ),
           TextButton.icon(
-            onPressed: !_loaded || _saving ? null : _save,
+            onPressed: !_loaded || _saving || _resettingSettings ? null : _save,
             icon: const Icon(Icons.save_outlined),
             label: const Text('保存'),
           ),
@@ -1137,9 +1893,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                 ),
-                _buildBottomBar(context),
               ],
             ),
+      bottomNavigationBar: _loaded ? _buildBottomBar(context) : null,
     );
   }
 }
@@ -1163,11 +1919,11 @@ class _SettingsNavigationButton extends StatelessWidget {
       selected: selected,
       button: true,
       child: Material(
-        color: selected ? scheme.secondaryContainer : Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
+        color: selected ? scheme.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
@@ -1177,7 +1933,7 @@ class _SettingsNavigationButton extends StatelessWidget {
                   definition.icon,
                   size: 20,
                   color: selected
-                      ? scheme.onSecondaryContainer
+                      ? scheme.onPrimaryContainer
                       : scheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
@@ -1185,7 +1941,7 @@ class _SettingsNavigationButton extends StatelessWidget {
                   definition.label,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
                     color: selected
-                        ? scheme.onSecondaryContainer
+                        ? scheme.onPrimaryContainer
                         : scheme.onSurfaceVariant,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
@@ -1211,11 +1967,11 @@ class _SettingsPageHeader extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Container(
-          width: 48,
-          height: 48,
+          width: 46,
+          height: 46,
           decoration: BoxDecoration(
             color: scheme.primaryContainer,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
           ),
           child: Icon(definition.icon, color: scheme.onPrimaryContainer),
         ),
@@ -1226,7 +1982,10 @@ class _SettingsPageHeader extends StatelessWidget {
             children: [
               Text(
                 definition.label,
-                style: Theme.of(context).textTheme.headlineSmall,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.3,
+                ),
               ),
               const SizedBox(height: 2),
               Text(
@@ -1260,44 +2019,80 @@ class _SettingsGroupCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Card(
-      margin: EdgeInsets.zero,
+    return GlassSurface(
+      level: GlassSurfaceLevel.raised,
+      borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(icon, size: 22, color: scheme.primary),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: Theme.of(context).textTheme.titleMedium,
+      padding: const EdgeInsets.all(22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 22, color: scheme.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 2),
+                    Text(
+                      description,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        description,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            child,
-          ],
-        ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          child,
+        ],
       ),
+    );
+  }
+}
+
+class _AppearanceStatusRow extends StatelessWidget {
+  const _AppearanceStatusRow({
+    required this.label,
+    required this.value,
+    this.valueKey,
+  });
+
+  final String label;
+  final String value;
+  final Key? valueKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 88,
+          child: Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            key: valueKey,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

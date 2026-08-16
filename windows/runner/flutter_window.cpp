@@ -1,9 +1,101 @@
 #include "flutter_window.h"
 
-#include <optional>
 #include <windows.h>
+#include <dwmapi.h>
+#include <optional>
+#include <winternl.h>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+struct WindowsVersion {
+  DWORD major = 0;
+  DWORD minor = 0;
+  DWORD build = 0;
+};
+
+WindowsVersion ReadWindowsVersion() {
+  RTL_OSVERSIONINFOW version = {};
+  version.dwOSVersionInfoSize = sizeof(version);
+  const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) {
+    return {};
+  }
+  using RtlGetVersionFunction = LONG(WINAPI*)(RTL_OSVERSIONINFOW*);
+  const auto rtl_get_version = reinterpret_cast<RtlGetVersionFunction>(
+      ::GetProcAddress(ntdll, "RtlGetVersion"));
+  if (rtl_get_version == nullptr || rtl_get_version(&version) != 0) {
+    return {};
+  }
+  return {version.dwMajorVersion, version.dwMinorVersion,
+          version.dwBuildNumber};
+}
+
+bool ReadTransparencyEnabled() {
+  DWORD enabled = 1;
+  DWORD size = sizeof(enabled);
+  const LSTATUS status = ::RegGetValueW(
+      HKEY_CURRENT_USER,
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &enabled, &size);
+  return status == ERROR_SUCCESS ? enabled != 0 : true;
+}
+
+bool ReadHighContrastEnabled() {
+  HIGHCONTRASTW high_contrast = {};
+  high_contrast.cbSize = sizeof(high_contrast);
+  if (!::SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(high_contrast),
+                               &high_contrast, 0)) {
+    return false;
+  }
+  return (high_contrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+}
+
+flutter::EncodableValue ReadWindowCapabilities(HWND window) {
+  const WindowsVersion version = ReadWindowsVersion();
+  BOOL composition_enabled = FALSE;
+  const bool composition_available =
+      SUCCEEDED(::DwmIsCompositionEnabled(&composition_enabled)) &&
+      composition_enabled != FALSE;
+
+  constexpr DWORD kSystemBackdropType = 38;
+  INT system_backdrop_type = 0;
+  if (version.major >= 10 && version.build >= 22523) {
+    ::DwmGetWindowAttribute(
+        window, static_cast<DWMWINDOWATTRIBUTE>(kSystemBackdropType),
+        &system_backdrop_type, sizeof(system_backdrop_type));
+  }
+
+  flutter::EncodableMap capabilities;
+  capabilities[flutter::EncodableValue("platformSupported")] =
+      flutter::EncodableValue(true);
+  capabilities[flutter::EncodableValue("versionMajor")] =
+      flutter::EncodableValue(static_cast<int32_t>(version.major));
+  capabilities[flutter::EncodableValue("versionMinor")] =
+      flutter::EncodableValue(static_cast<int32_t>(version.minor));
+  capabilities[flutter::EncodableValue("buildNumber")] =
+      flutter::EncodableValue(static_cast<int32_t>(version.build));
+  capabilities[flutter::EncodableValue("compositionEnabled")] =
+      flutter::EncodableValue(composition_available);
+  capabilities[flutter::EncodableValue("transparencyEnabled")] =
+      flutter::EncodableValue(ReadTransparencyEnabled());
+  capabilities[flutter::EncodableValue("highContrast")] =
+      flutter::EncodableValue(ReadHighContrastEnabled());
+  capabilities[flutter::EncodableValue("remoteSession")] =
+      flutter::EncodableValue(::GetSystemMetrics(SM_REMOTESESSION) != 0);
+  capabilities[flutter::EncodableValue("supportsLegacyAcrylic")] =
+      flutter::EncodableValue(version.major >= 10 && version.build >= 17134);
+  capabilities[flutter::EncodableValue("supportsMica")] =
+      flutter::EncodableValue(version.major >= 10 && version.build >= 22000);
+  capabilities[flutter::EncodableValue("supportsSystemBackdrop")] =
+      flutter::EncodableValue(version.major >= 10 && version.build >= 22523);
+  capabilities[flutter::EncodableValue("systemBackdropType")] =
+      flutter::EncodableValue(static_cast<int32_t>(system_backdrop_type));
+  return flutter::EncodableValue(capabilities);
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -37,6 +129,123 @@ bool FlutterWindow::OnCreate() {
   clipboard_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       flutter_controller_->engine()->messenger(), "streampath/clipboard",
       &flutter::StandardMethodCodec::GetInstance());
+  appearance_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "streampath/appearance",
+          &flutter::StandardMethodCodec::GetInstance());
+  appearance_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        const std::string method = call.method_name();
+
+        // Window controls for the custom Flutter title bar.
+        if (method == "minimize") {
+          ::ShowWindow(GetHandle(), SW_MINIMIZE);
+          result->Success();
+          return;
+        }
+        if (method == "toggleMaximize") {
+          const HWND window = GetHandle();
+          ::ShowWindow(window, ::IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
+          const auto maximized =
+              flutter::EncodableValue(::IsZoomed(window) != FALSE);
+          result->Success(maximized);
+          return;
+        }
+        if (method == "isMaximized") {
+          const auto maximized =
+              flutter::EncodableValue(::IsZoomed(GetHandle()) != FALSE);
+          result->Success(maximized);
+          return;
+        }
+        if (method == "close") {
+          ::PostMessage(GetHandle(), WM_CLOSE, 0, 0);
+          result->Success();
+          return;
+        }
+        if (method == "setFrameColor") {
+          // Keep the rounded fill aligned with Flutter, but always suppress
+          // the native border. DWM cannot use an alpha caption color.
+          const auto* arguments =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          if (arguments) {
+            const auto r_entry = arguments->find(flutter::EncodableValue("r"));
+            const auto g_entry = arguments->find(flutter::EncodableValue("g"));
+            const auto b_entry = arguments->find(flutter::EncodableValue("b"));
+            const auto a_entry = arguments->find(flutter::EncodableValue("a"));
+            if (r_entry != arguments->end() && g_entry != arguments->end() &&
+                b_entry != arguments->end()) {
+              constexpr COLORREF kColorNone = 0xFFFFFFFE;
+              const COLORREF caption_color =
+                  a_entry != arguments->end() &&
+                          std::get<int32_t>(a_entry->second) < 255
+                      ? kColorNone
+                      : RGB(std::get<int32_t>(r_entry->second),
+                            std::get<int32_t>(g_entry->second),
+                            std::get<int32_t>(b_entry->second));
+              constexpr DWORD kFrameBorderColor = 34;
+              constexpr DWORD kFrameCaptionColor = 35;
+              const HWND window = GetHandle();
+              ::DwmSetWindowAttribute(
+                  window, static_cast<DWMWINDOWATTRIBUTE>(kFrameBorderColor),
+                  &kColorNone, sizeof(kColorNone));
+              ::DwmSetWindowAttribute(
+                  window, static_cast<DWMWINDOWATTRIBUTE>(kFrameCaptionColor),
+                  &caption_color, sizeof(caption_color));
+            }
+          }
+          result->Success();
+          return;
+        }
+
+        if (method == "getWindowCapabilities") {
+          result->Success(ReadWindowCapabilities(GetHandle()));
+          return;
+        }
+
+        if (method != "resetWindowEffect") {
+          result->NotImplemented();
+          return;
+        }
+
+        bool dark = false;
+        const auto* arguments =
+            std::get_if<flutter::EncodableMap>(call.arguments());
+        if (arguments) {
+          const auto dark_entry =
+              arguments->find(flutter::EncodableValue("dark"));
+          if (dark_entry != arguments->end()) {
+            dark = std::get<bool>(dark_entry->second);
+          }
+        }
+
+        constexpr DWORD kUseImmersiveDarkMode = 20;
+        constexpr DWORD kBorderColor = 34;
+        constexpr DWORD kCaptionColor = 35;
+        constexpr DWORD kSystemBackdropType = 38;
+        constexpr INT kBackdropNone = 1;
+        constexpr COLORREF kDefaultCaptionColor = 0xFFFFFFFF;
+        constexpr COLORREF kColorNone = 0xFFFFFFFE;
+        const BOOL dark_mode = dark ? TRUE : FALSE;
+        const MARGINS margins = {0, 0, 1, 0};
+        const HWND window = GetHandle();
+        ::DwmExtendFrameIntoClientArea(window, &margins);
+        ::DwmSetWindowAttribute(
+            window, static_cast<DWMWINDOWATTRIBUTE>(kSystemBackdropType),
+            &kBackdropNone, sizeof(kBackdropNone));
+        ::DwmSetWindowAttribute(
+            window, static_cast<DWMWINDOWATTRIBUTE>(kBorderColor),
+            &kColorNone, sizeof(kColorNone));
+        ::DwmSetWindowAttribute(
+            window, static_cast<DWMWINDOWATTRIBUTE>(kCaptionColor),
+            &kDefaultCaptionColor, sizeof(kDefaultCaptionColor));
+        ::DwmSetWindowAttribute(
+            window, static_cast<DWMWINDOWATTRIBUTE>(kUseImmersiveDarkMode),
+            &dark_mode, sizeof(dark_mode));
+        ::SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                           SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        result->Success();
+      });
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -52,6 +261,8 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   RemoveClipboardFormatListener(GetHandle());
+  appearance_channel_.reset();
+  clipboard_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -77,6 +288,20 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_SIZE: {
+      // Keep the Dart-side title bar in sync with the maximize state
+      // (switches between the maximize and restore icons).
+      if (appearance_channel_) {
+        const bool maximized = wparam == SIZE_MAXIMIZED;
+        if (maximized != last_maximize_state_) {
+          last_maximize_state_ = maximized;
+          appearance_channel_->InvokeMethod(
+              "maximizeChanged",
+              std::make_unique<flutter::EncodableValue>(maximized));
+        }
+      }
+      break;
+    }
     case WM_CLIPBOARDUPDATE: {
       // Clipboard content changed. Notify Dart (which reads the text via
       // super_clipboard): it keeps an in-app clipboard history (right-click

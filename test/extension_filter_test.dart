@@ -5,19 +5,15 @@ import 'package:streampath/data/models/web_dav_file.dart';
 /// 隐藏后缀解析/格式化工具测试。
 void main() {
   group('parseHiddenExtensions 解析', () {
-    test('推荐格式 {".ass", ".mp4", ".mp3"}', () {
-      expect(parseHiddenExtensions('{".ass", ".mp4", ".mp3"}'), [
+    test('标准格式使用英文逗号分隔', () {
+      expect(parseHiddenExtensions('.ass, .mp4, .mp3'), [
         '.ass',
         '.mp4',
         '.mp3',
       ]);
     });
 
-    test('宽松格式：无花括号、无引号、可省点、空格分隔', () {
-      expect(parseHiddenExtensions('ass .mp4 mp3'), ['.ass', '.mp4', '.mp3']);
-    });
-
-    test('逗号与空白混合分隔', () {
+    test('英文逗号两侧允许空白且后缀可省略点', () {
       expect(parseHiddenExtensions('  .ass,  .mp4  ,mp3 '), [
         '.ass',
         '.mp4',
@@ -36,7 +32,15 @@ void main() {
     test('空输入返回空列表', () {
       expect(parseHiddenExtensions(''), isEmpty);
       expect(parseHiddenExtensions('   '), isEmpty);
-      expect(parseHiddenExtensions('{}'), isEmpty);
+    });
+
+    test('中文逗号、空格分隔和旧花括号格式均拒绝', () {
+      expect(() => parseHiddenExtensions('.ass，.mkv'), throwsFormatException);
+      expect(() => parseHiddenExtensions('.ass .mkv'), throwsFormatException);
+      expect(
+        () => parseHiddenExtensions('{".ass", ".mkv"}'),
+        throwsFormatException,
+      );
     });
 
     test('非法 token 抛 FormatException（含 token 信息）', () {
@@ -73,11 +77,8 @@ void main() {
       expect(formatHiddenExtensions(const []), '');
     });
 
-    test('非空列表格式化为 {".ass", ".mp4"}', () {
-      expect(
-        formatHiddenExtensions(const ['.ass', '.mp4']),
-        '{".ass", ".mp4"}',
-      );
+    test('非空列表格式化为英文逗号分隔文本', () {
+      expect(formatHiddenExtensions(const ['.ass', '.mp4']), '.ass, .mp4');
     });
 
     test('parse ↔ format 往返一致', () {
@@ -102,6 +103,10 @@ void main() {
     test('未命中的后缀不隐藏', () {
       expect(shouldHideFile(file('01.ass'), {'.mp4'}), isFalse);
       expect(shouldHideFile(file('01.ass'), {}), isFalse);
+    });
+
+    test('功能关闭时保留规则但不隐藏文件', () {
+      expect(shouldHideFile(file('01.ass'), {'.ass'}, enabled: false), isFalse);
     });
 
     test('目录永不过滤（即使目录名含点）', () {

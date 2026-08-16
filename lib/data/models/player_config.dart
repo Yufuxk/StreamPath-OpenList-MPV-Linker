@@ -20,6 +20,8 @@ import '../../core/utils/file_sort.dart';
 ///   "subtitleInjectionEnabled": true,
 ///   "subtitleAutoSelectEnabled": true,
 ///   "resumeEnabled": true,
+///   "hiddenExtensionsEnabled": true,
+///   "hiddenExtensions": [".ass"],
 ///   "playerStartupTimeoutSeconds": 60
 /// }
 /// ```
@@ -32,6 +34,7 @@ class PlayerConfig {
     bool subtitleAutoSelectEnabled = true,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
+    this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
     this.defaultSortDirection = FileSortDirection.ascending,
@@ -51,10 +54,10 @@ class PlayerConfig {
   /// 启动参数模板列表（每项一行，可含占位符）。
   final List<String> args;
 
-  /// 是否自动匹配并注入同级目录外挂字幕。
+  /// 是否自动匹配并注入同级目录外挂字幕与音频 LRC。
   final bool subtitleInjectionEnabled;
 
-  /// 是否在注入后自动选择外挂字幕。
+  /// 是否在注入后自动选择外挂字幕或音频 LRC。
   ///
   /// 只有 [subtitleInjectionEnabled] 开启时才生效；关闭时保留 MPV
   /// 在注入前已选择的内封字幕或无字幕状态。
@@ -65,8 +68,11 @@ class PlayerConfig {
   bool get subtitleEnabled =>
       subtitleInjectionEnabled && subtitleAutoSelectEnabled;
 
-  /// 是否自动注入续播参数（`{start}`）。
+  /// 是否为视频或音频应用续播位置。
   final bool resumeEnabled;
+
+  /// 是否在文件浏览页应用 [hiddenExtensions]。
+  final bool hiddenExtensionsEnabled;
 
   /// 文件浏览页隐藏的后缀（规范化：小写、含点，如 `['.ass']`）。
   ///
@@ -106,6 +112,7 @@ class PlayerConfig {
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'resumeEnabled': resumeEnabled,
+    'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
     'defaultSortDirection': defaultSortDirection.jsonValue,
@@ -126,6 +133,8 @@ class PlayerConfig {
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
+      hiddenExtensionsEnabled:
+          (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:
           (json['hiddenExtensions'] as List?)
               ?.whereType<String>()

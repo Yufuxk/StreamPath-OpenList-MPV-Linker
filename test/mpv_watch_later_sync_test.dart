@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:streampath/core/constants.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 
 void main() {
@@ -171,6 +172,89 @@ void main() {
 
       expect(md5File.existsSync(), isFalse);
       expect(namedFile.existsSync(), isFalse);
+    });
+
+    test('过期 MD5 记录不会恢复进度并自动删除', () async {
+      const url = 'http://host/dav/expired.mp4';
+      final now = DateTime.utc(2026, 1, 1);
+      final file = File(
+        '${dir.path}${Platform.pathSeparator}${MpvWatchLaterSync.md5FileName(url)}',
+      )..writeAsStringSync('start=90\n');
+      await file.setLastModified(
+        now
+            .subtract(AppConstants.playbackCacheRetention)
+            .subtract(const Duration(milliseconds: 1)),
+      );
+
+      expect(
+        await const MpvWatchLaterSync().readStartSeconds(dir, url, now: now),
+        isNull,
+      );
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('启动前只清除播放列表中的过期记录，保留新鲜记录', () async {
+      const oldUrl = 'http://host/dav/old.mp4';
+      const freshUrl = 'http://host/dav/fresh.mp4';
+      final now = DateTime.utc(2026, 1, 1);
+      final oldFile = File(
+        '${dir.path}${Platform.pathSeparator}${MpvWatchLaterSync.md5FileName(oldUrl)}',
+      )..writeAsStringSync('start=10\n');
+      final freshFile = File(
+        '${dir.path}${Platform.pathSeparator}${MpvWatchLaterSync.md5FileName(freshUrl)}',
+      )..writeAsStringSync('start=20\n');
+      await oldFile.setLastModified(
+        now
+            .subtract(AppConstants.playbackCacheRetention)
+            .subtract(const Duration(seconds: 1)),
+      );
+      await freshFile.setLastModified(now);
+
+      final removed = await const MpvWatchLaterSync().purgeExpiredRecords(
+        dir,
+        const [oldUrl, freshUrl, oldUrl],
+        now: now,
+      );
+
+      expect(removed, 1);
+      expect(oldFile.existsSync(), isFalse);
+      expect(freshFile.existsSync(), isTrue);
+    });
+
+    test('全局清理删除旧恢复记录，但保留新鲜记录和其他会话文件', () async {
+      final now = DateTime.utc(2026, 1, 1);
+      final expiredAt = now
+          .subtract(AppConstants.playbackCacheRetention)
+          .subtract(const Duration(seconds: 1));
+      final oldMd5 = File(
+        '${dir.path}${Platform.pathSeparator}'
+        '${MpvWatchLaterSync.md5FileName('http://host/old.mp4')}',
+      )..writeAsStringSync('start=10\n');
+      final oldSanitized = File(
+        '${dir.path}${Platform.pathSeparator}old-sanitized',
+      )..writeAsStringSync('# http://host/old.flac\nstart=20\n');
+      final fresh = File(
+        '${dir.path}${Platform.pathSeparator}'
+        '${MpvWatchLaterSync.md5FileName('http://host/fresh.mp4')}',
+      )..writeAsStringSync('start=30\n');
+      final oldPlaylist = File(
+        '${dir.path}${Platform.pathSeparator}session.m3u8',
+      )..writeAsStringSync('#EXTM3U\nhttp://host/old.mp4\n');
+      for (final file in [oldMd5, oldSanitized, oldPlaylist]) {
+        await file.setLastModified(expiredAt);
+      }
+      await fresh.setLastModified(now);
+
+      final removed = await const MpvWatchLaterSync().purgeExpiredFiles(
+        dir,
+        now: now,
+      );
+
+      expect(removed, 2);
+      expect(oldMd5.existsSync(), isFalse);
+      expect(oldSanitized.existsSync(), isFalse);
+      expect(fresh.existsSync(), isTrue);
+      expect(oldPlaylist.existsSync(), isTrue);
     });
   });
 }

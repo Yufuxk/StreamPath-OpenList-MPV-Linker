@@ -4,6 +4,57 @@ import 'package:streampath/data/models/web_dav_file.dart';
 /// WebDavFile 类型判定：displayname 丢扩展名 / 与 href 不一致时，
 /// 应回退到 href 末段判定（否则字幕/视频会被漏识别）。
 void main() {
+  group('音频、歌词与封面类型识别', () {
+    test('常见音频扩展名均可识别', () {
+      for (final name in const [
+        'a.mp3',
+        'a.FLAC',
+        'a.m4a',
+        'a.opus',
+        'a.ape',
+        'a.dsf',
+        'a.wv',
+        'a.mka',
+      ]) {
+        final file = WebDavFile(
+          name: name,
+          href: '/music/$name',
+          isDirectory: false,
+        );
+        expect(file.isAudio, isTrue, reason: name);
+        expect(file.isMediaPlayable, isTrue, reason: name);
+        expect(file.isPlayable, isFalse, reason: '音频不得混入视频/STRM 列表');
+      }
+    });
+
+    test('name 缺扩展名时回退 href 识别音频、LRC 与图片', () {
+      expect(
+        const WebDavFile(
+          name: 'track',
+          href: '/music/track%2001.FLAC',
+          isDirectory: false,
+        ).isAudio,
+        isTrue,
+      );
+      expect(
+        const WebDavFile(
+          name: 'lyrics',
+          href: '/music/track%2001.LRC',
+          isDirectory: false,
+        ).isLyrics,
+        isTrue,
+      );
+      expect(
+        const WebDavFile(
+          name: 'cover',
+          href: '/music/cover.JPEG',
+          isDirectory: false,
+        ).isCoverArt,
+        isTrue,
+      );
+    });
+  });
+
   group('WebDavFile 类型判定（href 兜底）', () {
     test('name 正常时按 name 判定', () {
       const f = WebDavFile(

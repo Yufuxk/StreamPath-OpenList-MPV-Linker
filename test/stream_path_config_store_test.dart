@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/player_config.dart';
@@ -31,6 +32,9 @@ void main() {
       expect(def.playerExecutable, 'mpv');
       expect(def.isConnectionComplete, isFalse);
       expect(def.openListRecovery.enabled, isFalse);
+      expect(def.hiddenExtensionsEnabled, isTrue);
+      expect(def.appearance.style, InterfaceStyle.classic);
+      expect(def.appearance.material, WindowMaterialPreference.automatic);
 
       final player = PlayerConfig(
         name: 'PotPlayer',
@@ -39,6 +43,7 @@ void main() {
         subtitleInjectionEnabled: true,
         subtitleAutoSelectEnabled: false,
         resumeEnabled: true,
+        hiddenExtensionsEnabled: false,
         hiddenExtensions: const ['.ass'],
         defaultSortMode: FileSortMode.size,
         defaultSortDirection: FileSortDirection.descending,
@@ -62,6 +67,7 @@ void main() {
       expect(merged.serverUrl, 'http://h/dav');
       expect(merged.playerExecutable, 'C:\\PotPlayer.exe');
       expect(merged.hiddenExtensions, ['.ass']);
+      expect(merged.hiddenExtensionsEnabled, isFalse);
       expect(merged.defaultSortMode, FileSortMode.size);
       expect(merged.defaultSortDirection, FileSortDirection.descending);
 
@@ -71,10 +77,12 @@ void main() {
       expect(restored.playerArgs, ['{url}']);
       expect(restored.subtitleInjectionEnabled, isTrue);
       expect(restored.subtitleAutoSelectEnabled, isFalse);
+      expect(restored.hiddenExtensionsEnabled, isFalse);
       expect(restored.defaultSortMode, FileSortMode.size);
       expect(restored.defaultSortDirection, FileSortDirection.descending);
       expect(restored.openListRecovery.enabled, isTrue);
       expect(restored.openListRecovery.baseUrl, 'http://h');
+      expect(restored.appearance.style, InterfaceStyle.classic);
     });
 
     test('fromJson 规范化 hiddenExtensions 且缺失字段回退默认', () {
@@ -82,10 +90,65 @@ void main() {
         'hiddenExtensions': ['ASS', 'mp4', 'bad/token'],
       });
       expect(config.hiddenExtensions, ['.ass', '.mp4']);
+      expect(config.hiddenExtensionsEnabled, isTrue);
       expect(config.playerExecutable, '');
       expect(config.defaultSortMode, FileSortMode.name);
       expect(config.defaultSortDirection, FileSortDirection.ascending);
       expect(config.playerStartupTimeoutSeconds, 60);
+      expect(config.appearance.style, InterfaceStyle.classic);
+    });
+
+    test('界面配置支持往返并限制磨砂背景不透明度', () {
+      final glass = StreamPathConfig.fromJson(const {
+        'appearance': {'style': 'glass', 'glassOpacity': 0.72},
+      });
+      expect(glass.appearance.style, InterfaceStyle.glass);
+      expect(
+        glass.appearance.material,
+        WindowMaterialPreference.acrylic,
+        reason: '旧版磨砂配置应保留原有 Acrylic 视觉',
+      );
+      expect(glass.appearance.glassOpacity, 0.72);
+      expect(
+        StreamPathConfig.fromJson(const {
+          'appearance': {'style': 'glass', 'glassOpacity': 0.1},
+        }).appearance.glassOpacity,
+        AppearanceConfig.minGlassOpacity,
+      );
+      expect(
+        StreamPathConfig.fromJson(const {
+          'appearance': {'style': 'unknown', 'glassOpacity': 2},
+        }).appearance,
+        isA<AppearanceConfig>()
+            .having((value) => value.style, 'style', InterfaceStyle.classic)
+            .having(
+              (value) => value.glassOpacity,
+              'glassOpacity',
+              AppearanceConfig.maxGlassOpacity,
+            ),
+      );
+      expect(
+        StreamPathConfig.fromJson(glass.toJson()).appearance.style,
+        InterfaceStyle.glass,
+      );
+      final mica = StreamPathConfig.fromJson(const {
+        'appearance': {
+          'style': 'glass',
+          'material': 'mica',
+          'glassOpacity': 0.8,
+        },
+      });
+      expect(mica.appearance.material, WindowMaterialPreference.mica);
+      expect(
+        StreamPathConfig.fromJson(mica.toJson()).appearance.material,
+        WindowMaterialPreference.mica,
+      );
+      expect(
+        StreamPathConfig.fromJson(const {
+          'appearance': {'style': 'classic', 'material': 'futureMaterial'},
+        }).appearance.material,
+        WindowMaterialPreference.automatic,
+      );
     });
 
     test('WebDAV 密码为空时仍可使用地址与用户名自动连接', () {
@@ -119,9 +182,15 @@ void main() {
         subtitleInjectionEnabled: true,
         subtitleAutoSelectEnabled: false,
         resumeEnabled: true,
+        hiddenExtensionsEnabled: false,
         hiddenExtensions: ['.ass', '.mp4'],
         defaultSortMode: FileSortMode.modified,
         defaultSortDirection: FileSortDirection.descending,
+        appearance: AppearanceConfig(
+          style: InterfaceStyle.glass,
+          material: WindowMaterialPreference.mica,
+          glassOpacity: 0.75,
+        ),
       );
       await store.save(config);
       final loaded = await store.load();
@@ -132,9 +201,19 @@ void main() {
       expect(loaded.subtitleInjectionEnabled, isTrue);
       expect(loaded.subtitleAutoSelectEnabled, isFalse);
       expect(loaded.hiddenExtensions, ['.ass', '.mp4']);
+      expect(loaded.hiddenExtensionsEnabled, isFalse);
+      final json = jsonDecode(
+        await File(
+          '${tempDir.path}${Platform.pathSeparator}cfg.json',
+        ).readAsString(),
+      );
+      expect(json['hiddenExtensionsEnabled'], isFalse);
       expect(loaded.defaultSortMode, FileSortMode.modified);
       expect(loaded.defaultSortDirection, FileSortDirection.descending);
       expect(loaded.playerStartupTimeoutSeconds, 60);
+      expect(loaded.appearance.style, InterfaceStyle.glass);
+      expect(loaded.appearance.material, WindowMaterialPreference.mica);
+      expect(loaded.appearance.glassOpacity, 0.75);
       expect(loaded.isConnectionComplete, isTrue);
     });
 
@@ -170,10 +249,17 @@ void main() {
           username: 'u',
           password: 'p',
           playerExecutable: 'mpv',
+          hiddenExtensionsEnabled: false,
+          hiddenExtensions: ['.ass'],
           openListRecovery: OpenListRecoveryConfig(
             enabled: true,
             baseUrl: 'http://h',
             token: 'token',
+          ),
+          appearance: AppearanceConfig(
+            style: InterfaceStyle.glass,
+            material: WindowMaterialPreference.mica,
+            glassOpacity: 0.76,
           ),
         ),
       );
@@ -184,8 +270,17 @@ void main() {
       expect(config.serverUrl, 'http://h2/dav');
       expect(config.username, 'u2');
       expect(config.playerExecutable, 'mpv', reason: '播放器部分应保持不变');
+      expect(config.hiddenExtensionsEnabled, isFalse, reason: '隐藏开关应保持不变');
+      expect(config.hiddenExtensions, ['.ass'], reason: '隐藏后缀应保持不变');
       expect(config.openListRecovery.enabled, isTrue, reason: '恢复配置应保持不变');
       expect(config.openListRecovery.token, 'token');
+      expect(
+        config.appearance.style,
+        InterfaceStyle.glass,
+        reason: '界面配置应保持不变',
+      );
+      expect(config.appearance.material, WindowMaterialPreference.mica);
+      expect(config.appearance.glassOpacity, 0.76);
     });
 
     test('旧 subtitleEnabled 配置会同时迁移为注入与自动选择开关', () {
@@ -267,6 +362,38 @@ void main() {
         (await StreamPathConfigStore.forPath(path).load()).serverUrl,
         'http://third/dav',
       );
+    });
+
+    test('重置会同时覆盖主配置和恢复备份', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}reset.json';
+      final store = StreamPathConfigStore.forPath(path);
+      await store.save(
+        const StreamPathConfig(
+          serverUrl: 'http://old/dav',
+          username: 'old-user',
+          password: 'old-password',
+        ),
+      );
+      await store.save(
+        const StreamPathConfig(
+          serverUrl: 'http://new/dav',
+          username: 'new-user',
+          password: 'new-password',
+        ),
+      );
+
+      await store.resetToDefaults();
+
+      final defaults = StreamPathConfig.defaults().toJson();
+      expect(jsonDecode(await File(path).readAsString()), defaults);
+      expect(jsonDecode(await File('$path.bak').readAsString()), defaults);
+      expect(store.current.toJson(), defaults);
+
+      File(path).writeAsStringSync('{not valid');
+      final recovered = await StreamPathConfigStore.forPath(
+        path,
+      ).loadForStartup();
+      expect(recovered.toJson(), defaults);
     });
 
     test('字段类型错误抛 AppException.config', () async {

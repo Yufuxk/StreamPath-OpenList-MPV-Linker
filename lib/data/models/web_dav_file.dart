@@ -53,10 +53,25 @@ class WebDavFile {
       AppConstants.videoExtensions.contains(_extOf(name)) ||
       AppConstants.videoExtensions.contains(_extOfHref);
 
+  /// 是否为音频文件（按扩展名判断，大小写不敏感）。
+  bool get isAudio =>
+      AppConstants.audioExtensions.contains(_extOf(name)) ||
+      AppConstants.audioExtensions.contains(_extOfHref);
+
   /// 是否为字幕文件。
   bool get isSubtitle =>
       AppConstants.subtitleExtensions.contains(_extOf(name)) ||
       AppConstants.subtitleExtensions.contains(_extOfHref);
+
+  /// 是否为 LRC 歌词文件。
+  bool get isLyrics =>
+      AppConstants.lyricsExtensions.contains(_extOf(name)) ||
+      AppConstants.lyricsExtensions.contains(_extOfHref);
+
+  /// 是否为可用作外挂封面的图片。
+  bool get isCoverArt =>
+      AppConstants.coverArtExtensions.contains(_extOf(name)) ||
+      AppConstants.coverArtExtensions.contains(_extOfHref);
 
   /// 是否为 .strm 流指针文件（内容为一行媒体 URL）。
   bool get isStrm =>
@@ -65,6 +80,9 @@ class WebDavFile {
 
   /// 是否为可播放项（视频文件或 strm 流指针）。
   bool get isPlayable => isVideo || isStrm;
+
+  /// 是否为软件支持的任意媒体播放项。
+  bool get isMediaPlayable => isPlayable || isAudio;
 
   /// 文件扩展名（小写、含点）；目录或无法解析时为空字符串。
   ///

@@ -127,6 +127,27 @@ class StreamPathConfigStore {
     }
   }
 
+  /// 将主配置与恢复备份同时覆盖为默认值。
+  Future<void> resetToDefaults() async {
+    final defaults = StreamPathConfig.defaults();
+    try {
+      await _configFile.parent.create(recursive: true);
+      final body = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(defaults.toJson());
+
+      // 先覆盖恢复备份，避免主配置损坏时重新载入重置前的敏感信息。
+      for (final file in [_backupFile, _configFile]) {
+        final temp = File('${file.path}.tmp');
+        await temp.writeAsString(body, flush: true);
+        await temp.rename(file.path);
+      }
+      _cached = defaults;
+    } on FileSystemException catch (e) {
+      throw AppException.storage('重置配置文件失败：${e.message}', e);
+    }
+  }
+
   // ── 便捷访问（兼容旧 ConfigManager / ConnectionConfigStore 用法） ──
 
   /// 播放器部分配置。

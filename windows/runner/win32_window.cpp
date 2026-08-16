@@ -1,7 +1,9 @@
 #include "win32_window.h"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <windowsx.h>
 
 #include "resource.h"
 
@@ -35,6 +37,73 @@ using EnableNonClientDpiScaling = BOOL __stdcall(HWND hwnd);
 // scale factor
 int Scale(int source, double scale_factor) {
   return static_cast<int>(source * scale_factor);
+}
+
+void DisableDwmBorder(HWND window) {
+  // Numeric values keep this compatible with older Windows SDK headers.
+  constexpr DWORD kWindowBorderColor = 34;
+  constexpr COLORREF kColorNone = 0xFFFFFFFE;
+  DwmSetWindowAttribute(
+      window, static_cast<DWMWINDOWATTRIBUTE>(kWindowBorderColor),
+      &kColorNone, sizeof(kColorNone));
+}
+
+int GetResizeMargin(HWND window) {
+  const UINT dpi = FlutterDesktopGetDpiForHWND(window);
+  return GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+         GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+}
+
+LRESULT HitTestCustomFrame(HWND window, LPARAM lparam) {
+  POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ScreenToClient(window, &point);
+  RECT client_rect{};
+  GetClientRect(window, &client_rect);
+
+  if (!IsZoomed(window)) {
+    const int margin = GetResizeMargin(window);
+    const bool left = point.x < margin;
+    const bool right = point.x >= client_rect.right - margin;
+    const bool top = point.y < margin;
+    const bool bottom = point.y >= client_rect.bottom - margin;
+    if (top && left) return HTTOPLEFT;
+    if (top && right) return HTTOPRIGHT;
+    if (bottom && left) return HTBOTTOMLEFT;
+    if (bottom && right) return HTBOTTOMRIGHT;
+    if (top) return HTTOP;
+    if (bottom) return HTBOTTOM;
+    if (left) return HTLEFT;
+    if (right) return HTRIGHT;
+  }
+
+  const UINT dpi = FlutterDesktopGetDpiForHWND(window);
+  const int title_bar_height = MulDiv(32, dpi, 96);
+  const int window_controls_width = MulDiv(46 * 3, dpi, 96);
+  if (point.y < title_bar_height &&
+      point.x < client_rect.right - window_controls_width) {
+    return HTCAPTION;
+  }
+  return HTCLIENT;
+}
+
+constexpr UINT_PTR kFlutterViewSubclassId = 1;
+
+LRESULT CALLBACK FlutterViewSubclassProc(HWND window,
+                                         UINT message,
+                                         WPARAM wparam,
+                                         LPARAM lparam,
+                                         UINT_PTR subclass_id,
+                                         DWORD_PTR ref_data) {
+  auto* host = reinterpret_cast<Win32Window*>(ref_data);
+  if (message == WM_NCHITTEST && host != nullptr && host->GetHandle() != nullptr) {
+    const LRESULT result = HitTestCustomFrame(host->GetHandle(), lparam);
+    if (result != HTCLIENT) {
+      return HTTRANSPARENT;
+    }
+  } else if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(window, FlutterViewSubclassProc, subclass_id);
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
 }
 
 // Dynamically loads the |EnableNonClientDpiScaling| from the User32 module.
@@ -91,7 +160,9 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     WNDCLASS window_class{};
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.lpszClassName = kWindowClassName;
-    window_class.style = CS_HREDRAW | CS_VREDRAW;
+    // CS_DROPSHADOW gives the caption-less (WS_POPUP) window the standard
+    // DWM shadow.
+    window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
     window_class.cbClsExtra = 0;
     window_class.cbWndExtra = 0;
     window_class.hInstance = GetModuleHandle(nullptr);
@@ -134,8 +205,16 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  // Custom-drawn title bar: use WS_POPUP instead of merely dropping
+  // WS_CAPTION, because Windows forces WS_CAPTION back onto any non-child,
+  // non-popup window. The resizable frame, system menu and minimize/maximize
+  // support are kept so the window keeps native resize borders and taskbar
+  // commands; dragging and double-click maximize are delegated to Flutter
+  // through the window-controls channel using the native caption semantics.
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      window_class, title.c_str(),
+      WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX |
+          WS_MAXIMIZEBOX,
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
       nullptr, nullptr, GetModuleHandle(nullptr), this);
@@ -145,6 +224,15 @@ bool Win32Window::Create(const std::wstring& title,
   }
 
   UpdateTheme(window);
+  DisableDwmBorder(window);
+
+  // Windows 11 does not round corners of caption-less windows by default;
+  // request rounded corners explicitly. Older systems ignore this attribute.
+  constexpr DWORD kWindowCornerPreference = 33;
+  constexpr INT kCornerRound = 2;
+  DwmSetWindowAttribute(window,
+                        static_cast<DWMWINDOWATTRIBUTE>(kWindowCornerPreference),
+                        &kCornerRound, sizeof(kCornerRound));
 
   return OnCreate();
 }
@@ -179,6 +267,20 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_NCCALCSIZE:
+      // Let Flutter paint the whole window, including the rounded top edge.
+      return 0;
+
+    case WM_NCACTIVATE:
+      // Keep the custom border disabled while DWM updates backdrop state.
+      // A -1 region suppresses only the transitional non-client repaint.
+      DisableDwmBorder(hwnd);
+      return DefWindowProc(hwnd, message, wparam, static_cast<LPARAM>(-1));
+
+    case WM_NCHITTEST:
+      // Preserve native resize, drag and double-click maximize semantics.
+      return HitTestCustomFrame(hwnd, lparam);
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
@@ -195,6 +297,26 @@ Win32Window::MessageHandler(HWND hwnd,
       SetWindowPos(hwnd, nullptr, newRectSize->left, newRectSize->top, newWidth,
                    newHeight, SWP_NOZORDER | SWP_NOACTIVATE);
 
+      return 0;
+    }
+    case WM_GETMINMAXINFO: {
+      // A maximized WS_POPUP window would otherwise cover the whole monitor
+      // including the taskbar; constrain maximizing to the work area.
+      auto* min_max_info = reinterpret_cast<MINMAXINFO*>(lparam);
+      MONITORINFO monitor_info{};
+      monitor_info.cbSize = sizeof(MONITORINFO);
+      if (::GetMonitorInfo(
+              ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+              &monitor_info)) {
+        min_max_info->ptMaxPosition.x =
+            monitor_info.rcWork.left - monitor_info.rcMonitor.left;
+        min_max_info->ptMaxPosition.y =
+            monitor_info.rcWork.top - monitor_info.rcMonitor.top;
+        min_max_info->ptMaxSize.x =
+            monitor_info.rcWork.right - monitor_info.rcWork.left;
+        min_max_info->ptMaxSize.y =
+            monitor_info.rcWork.bottom - monitor_info.rcWork.top;
+      }
       return 0;
     }
     case WM_SIZE: {
@@ -241,6 +363,8 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
 void Win32Window::SetChildContent(HWND content) {
   child_content_ = content;
   SetParent(content, window_handle_);
+  SetWindowSubclass(content, FlutterViewSubclassProc, kFlutterViewSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this));
   RECT frame = GetClientArea();
 
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,

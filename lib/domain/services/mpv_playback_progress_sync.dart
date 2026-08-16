@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../../data/local/playback_progress_db.dart';
-import '../../data/models/media_entry.dart';
+import '../../data/models/playback_media_entry.dart';
 import '../../core/utils/url_utils.dart';
 import 'mpv_watch_later_sync.dart';
 
@@ -107,7 +107,7 @@ class MpvPlaybackProgressSynchronizer {
   Future<void> sync({
     required PlaybackProgressService progressService,
     required Directory watchLaterDirectory,
-    required List<MediaEntry> entries,
+    required List<PlaybackMediaEntry> entries,
     List<String> watchLaterUrls = const [],
     File? journalFile,
   }) async {
@@ -167,18 +167,21 @@ class MpvPlaybackProgressSynchronizer {
       var start = await watchLaterSync.readStartSeconds(
         watchLaterDirectory,
         watchLaterUrl,
+        maxAge: progressService.retention,
       );
       if (start == null && watchLaterUrl != entry.url) {
         matchedWatchLaterUrl = entry.url;
         start = await watchLaterSync.readStartSeconds(
           watchLaterDirectory,
           entry.url,
+          maxAge: progressService.retention,
         );
       }
       if (start == null) continue;
       final watchLaterDuration = await watchLaterSync.readDurationSeconds(
         watchLaterDirectory,
         matchedWatchLaterUrl,
+        maxAge: progressService.retention,
       );
       await progressService.saveProgress(
         url: stripUserInfo(entry.url),
@@ -216,7 +219,7 @@ class MpvPlaybackProgressSynchronizer {
 
   int? _entryIndexFor(
     MpvProgressJournalRecord record,
-    List<MediaEntry> entries,
+    List<PlaybackMediaEntry> entries,
   ) {
     final playlistPos = record.playlistPos;
     if (playlistPos != null &&

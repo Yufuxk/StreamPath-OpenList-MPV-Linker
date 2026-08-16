@@ -8,19 +8,26 @@ import 'package:provider/provider.dart';
 import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
+import '../../core/utils/expiring_lru_cache.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../core/utils/url_utils.dart';
 import '../../data/models/playback_history.dart';
+import '../../data/models/audio_media_entry.dart';
+import '../../data/models/audio_playback_history.dart';
 import '../../data/models/playback_progress.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/media_entry.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/playback_activation_guard.dart';
 import '../../domain/services/webdav_service.dart';
 import '../state/app_state.dart';
+import '../theme/glass_tokens.dart';
 import '../widgets/directory_wheel_scroll_region.dart';
 import '../widgets/file_tile.dart';
+import '../widgets/glass_dialog.dart';
+import '../widgets/glass_surface.dart';
 import 'home_page.dart';
 import 'settings_page.dart';
 
@@ -52,6 +59,28 @@ class _PlaybackUiSession {
   bool deleting = false;
   bool launching = false;
   bool recovering = false;
+  final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
+  double? lastReportedPositionSeconds;
+  double? lastReportedDurationSeconds;
+
+  List<String> get playlistFileNames => history.playlistFileNames.isEmpty
+      ? [history.fileName]
+      : history.playlistFileNames;
+}
+
+class _AudioPlaybackUiSession {
+  _AudioPlaybackUiSession(this.history)
+    : statusNotBefore = history.createdAt,
+      lastSyncedPos = history.trackIndex;
+
+  AudioPlaybackHistory history;
+  DateTime statusNotBefore;
+  int lastSyncedPos;
+  int finishPending = 0;
+  bool? paused;
+  bool syncBusy = false;
+  bool deleting = false;
+  bool launching = false;
   final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
   double? lastReportedPositionSeconds;
   double? lastReportedDurationSeconds;
@@ -103,11 +132,11 @@ class _PlaybackBarState extends State<_PlaybackBar> {
         onSecondaryTapDown: widget.onSecondaryTapDown,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
-          height: 64,
-          color: _hovered
-              ? scheme.surfaceContainerHigh
-              : scheme.surfaceContainerHighest,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          height: 68,
+          decoration: BoxDecoration(
+            color: _hovered ? Theme.of(context).hoverColor : Colors.transparent,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
               Expanded(
@@ -167,17 +196,20 @@ class _BrowserPageState extends State<BrowserPage> {
   List<WebDavFile>? _visibleFilesCache;
   List<WebDavFile>? _visibleFilesSource;
   List<String>? _visibleFilesHiddenExtensions;
+  bool? _visibleFilesHiddenExtensionsEnabled;
   FileSortMode? _visibleFilesSortMode;
   FileSortDirection? _visibleFilesSortDirection;
   bool _cachedCanSortBySize = false;
 
   /// 文件列表与右侧滚动条共用的显式控制器。
   ///
-  /// Windows 桌面端默认滚动条依赖 Flutter 为无 controller 的 Scrollable
-  /// 临时创建控制器；目录、排序或空目录状态切换时 ListView 会按
-  /// PageStorageKey 重建。显式持有控制器可避免滚动条偶发绑定到已销毁的
-  /// ScrollPosition，同时仍由 PageStorageKey 分目录恢复滚动位置。
-  final ScrollController _directoryScrollController = ScrollController();
+  /// Windows 桌面端显式滚动控制器，避免滚动条绑定到已销毁的位置。
+  final ScrollController _directoryScrollController = ScrollController(
+    keepScrollOffset: false,
+  );
+
+  /// 分目录、排序保存的滚动位置，只存在于当前页面内存中。
+  late final ExpiringLruCache<String, double> _directoryScrollPositions;
 
   /// 目录加载序号：仅最后一次导航/刷新请求允许更新当前页面。
   /// 防止较早请求晚返回后把新目录内容覆盖掉。
@@ -187,6 +219,9 @@ class _BrowserPageState extends State<BrowserPage> {
   final List<_PlaybackUiSession> _playbackSessions = [];
   Timer? _playMonitor;
   int _sessionSequence = 0;
+  final List<_AudioPlaybackUiSession> _audioPlaybackSessions = [];
+  Timer? _audioPlayMonitor;
+  int _audioSessionSequence = 0;
 
   /// MPV 状态目录在应用生命周期内固定，只解析一次，避免播放监控每轮
   /// 重复执行路径探测和可写目录检查。
@@ -199,6 +234,7 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void dispose() {
     _playMonitor?.cancel();
+    _audioPlayMonitor?.cancel();
     _cacheWarningSub?.cancel();
     _playbackRecoverySub?.cancel();
     _directoryScrollController.dispose();
@@ -210,17 +246,49 @@ class _BrowserPageState extends State<BrowserPage> {
   String get _currentPath => _crumbs.join('/');
 
   /// 当前目录列表的内存状态键。
-  ///
-  /// Flutter 会通过 [PageStorageKey] 自动保存/恢复滚动位置；键只存在于
-  /// 当前页面内存中，页面销毁或软件重启后自然清除，不写入本地数据。
-  PageStorageKey<String> get _directoryScrollKey => PageStorageKey<String>(
-    'directory-scroll:${_sortMode.jsonValue}:'
-    '${_sortDirection.jsonValue}:$_currentPath',
-  );
+  String get _directoryScrollCacheKey =>
+      'directory-scroll:${_sortMode.jsonValue}:'
+      '${_sortDirection.jsonValue}:$_currentPath';
+
+  ValueKey<String> get _directoryScrollKey =>
+      ValueKey<String>(_directoryScrollCacheKey);
+
+  void _rememberDirectoryScroll() {
+    if (!_directoryScrollController.hasClients) return;
+    _directoryScrollPositions.write(
+      _directoryScrollCacheKey,
+      _directoryScrollController.offset,
+    );
+  }
+
+  void _scheduleDirectoryScrollRestore() {
+    final key = _directoryScrollCacheKey;
+    final target = _directoryScrollPositions.read(key) ?? 0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || key != _directoryScrollCacheKey) return;
+      if (!_directoryScrollController.hasClients) return;
+      final position = _directoryScrollController.position;
+      final offset = target
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      if ((position.pixels - offset).abs() > 0.5) {
+        _directoryScrollController.jumpTo(offset);
+      }
+    });
+  }
+
+  void _changeDirectoryScrollScope(VoidCallback mutation) {
+    _rememberDirectoryScroll();
+    setState(mutation);
+    _scheduleDirectoryScrollRestore();
+  }
 
   /// 隐藏后缀（用户配置，规范化后小写含点；如 ['.ass']）。
   List<String> get _hiddenExtensions =>
       context.read<AppState>().configStore.current.hiddenExtensions;
+
+  bool get _hiddenExtensionsEnabled =>
+      context.read<AppState>().configStore.current.hiddenExtensionsEnabled;
 
   /// 显示列表：应用隐藏后缀过滤；后台全量数据 [\_files] 保持不变，
   /// 保证字幕自动匹配、播放列表切集等功能不受影响。
@@ -231,8 +299,10 @@ class _BrowserPageState extends State<BrowserPage> {
 
   void _ensureVisibleFilesCache() {
     final hiddenExtensions = _hiddenExtensions;
+    final hiddenExtensionsEnabled = _hiddenExtensionsEnabled;
     if (identical(_visibleFilesSource, _files) &&
         identical(_visibleFilesHiddenExtensions, hiddenExtensions) &&
+        _visibleFilesHiddenExtensionsEnabled == hiddenExtensionsEnabled &&
         _visibleFilesSortMode == _sortMode &&
         _visibleFilesSortDirection == _sortDirection &&
         _visibleFilesCache != null) {
@@ -243,7 +313,13 @@ class _BrowserPageState extends State<BrowserPage> {
     final visible =
         (hidden.isEmpty
                 ? _files
-                : _files.where((f) => !shouldHideFile(f, hidden)))
+                : _files.where(
+                    (f) => !shouldHideFile(
+                      f,
+                      hidden,
+                      enabled: hiddenExtensionsEnabled,
+                    ),
+                  ))
             .toList();
     _cachedCanSortBySize = canSortWebDavFilesBySize(visible);
     _visibleFilesCache = _sortMode == FileSortMode.size && !_cachedCanSortBySize
@@ -255,6 +331,7 @@ class _BrowserPageState extends State<BrowserPage> {
           );
     _visibleFilesSource = _files;
     _visibleFilesHiddenExtensions = hiddenExtensions;
+    _visibleFilesHiddenExtensionsEnabled = hiddenExtensionsEnabled;
     _visibleFilesSortMode = _sortMode;
     _visibleFilesSortDirection = _sortDirection;
   }
@@ -267,9 +344,18 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void initState() {
     super.initState();
+    final expirationStore = context.read<AppState>().cacheExpirationConfigStore;
+    _directoryScrollPositions = ExpiringLruCache(
+      maxEntries: AppConstants.maxDirectoryScrollEntries,
+      idleTtl: AppConstants.directoryScrollRetention,
+      idleTtlProvider: expirationStore == null
+          ? null
+          : () => expirationStore.current.directoryScrollRetention,
+    );
     _sessionCacheDirectory = _resolveSessionCacheDirectory();
     _initLoad();
     _loadPlaybackSessions();
+    _loadAudioPlaybackSessions();
     // 播放中动态保护警告（如网络带宽不足）：SnackBar 展示。
     _cacheWarningSub = context.read<AppState>().cacheWarnings.listen((message) {
       if (!mounted) return;
@@ -418,6 +504,65 @@ class _BrowserPageState extends State<BrowserPage> {
   String _newSessionId() =>
       'play_${DateTime.now().microsecondsSinceEpoch}_${++_sessionSequence}';
 
+  String _newAudioSessionId() =>
+      'audio_${DateTime.now().microsecondsSinceEpoch}_${++_audioSessionSequence}';
+
+  bool get _needsAudioPlaybackMonitor => _audioPlaybackSessions.any(
+    (session) =>
+        !session.deleting &&
+        (session.history.playerPid != null ||
+            session.history.ipcPipeName != null ||
+            session.activationGuard.isWaiting),
+  );
+
+  void _refreshAudioPlaybackMonitor() {
+    if (!mounted) return;
+    if (!_needsAudioPlaybackMonitor) {
+      _audioPlayMonitor?.cancel();
+      _audioPlayMonitor = null;
+      return;
+    }
+    if (_audioPlayMonitor != null) return;
+    _audioPlayMonitor = Timer.periodic(const Duration(milliseconds: 700), (_) {
+      if (!_needsAudioPlaybackMonitor) {
+        _refreshAudioPlaybackMonitor();
+        return;
+      }
+      _syncAudioPlaybackSessions();
+    });
+    _syncAudioPlaybackSessions();
+  }
+
+  Future<void> _loadAudioPlaybackSessions() async {
+    final appState = context.read<AppState>();
+    final store = appState.audioPlaybackHistoryStore;
+    final player = appState.audioPlayerService;
+    if (store == null || player == null) return;
+    final histories = await store.loadAll();
+    if (!mounted) return;
+    final sessions = histories.map(_AudioPlaybackUiSession.new).toList();
+    setState(() {
+      _audioPlaybackSessions
+        ..clear()
+        ..addAll(sessions);
+    });
+    for (final history in histories) {
+      await player.restoreSession(
+        sessionId: history.sessionId,
+        pid: history.playerPid,
+        ipcPipeName: history.ipcPipeName,
+      );
+    }
+    _refreshAudioPlaybackMonitor();
+  }
+
+  _AudioPlaybackUiSession? _audioSessionById(String sessionId) {
+    for (final session in _audioPlaybackSessions) {
+      if (session.history.sessionId == sessionId) return session;
+    }
+    return null;
+  }
+
   /// 首帧加载：先同步读缓存秒开，再走网络/缓存编排。
   Future<void> _initLoad() async {
     // 确保配置文件已加载（隐藏后缀过滤生效；配置损坏时回退默认，不阻塞浏览）。
@@ -439,10 +584,12 @@ class _BrowserPageState extends State<BrowserPage> {
             .current
             .defaultSortDirection;
       });
+      _scheduleDirectoryScrollRestore();
     }
     final cached = _service.cachedDirectory(_currentPath);
     if (cached != null && mounted) {
       setState(() => _files = cached);
+      _scheduleDirectoryScrollRestore();
     }
     await _load();
   }
@@ -462,6 +609,7 @@ class _BrowserPageState extends State<BrowserPage> {
         return;
       }
       setState(() => _files = files);
+      _scheduleDirectoryScrollRestore();
     } on AppException catch (e) {
       if (!mounted || loadId != _directoryLoadId || path != _currentPath) {
         return;
@@ -477,7 +625,7 @@ class _BrowserPageState extends State<BrowserPage> {
   // ── 目录导航 ─────────────────────────────────────────────────
 
   void _enterDirectory(WebDavFile dir) {
-    setState(() {
+    _changeDirectoryScrollScope(() {
       _crumbs.add(dir.name);
       _files = const [];
     });
@@ -486,7 +634,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   void _backTo(int index) {
     // index 为面包屑位置；切到该层（含其子层移除）。
-    setState(() {
+    _changeDirectoryScrollScope(() {
       _crumbs.removeRange(index + 1, _crumbs.length);
       _files = const [];
     });
@@ -500,7 +648,7 @@ class _BrowserPageState extends State<BrowserPage> {
     final existingSession = sessionId == null ? null : _sessionById(sessionId);
     if (sessionId == null &&
         _playbackSessions.length >= AppConstants.maxPlaybackSessions) {
-      await showDialog<void>(
+      await showGlassDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('播放位置已占满'),
@@ -702,6 +850,481 @@ class _BrowserPageState extends State<BrowserPage> {
         context,
       ).showSnackBar(SnackBar(content: Text(e.message)));
     }
+  }
+
+  // ── 音频播放联动（独立 M3U8、歌词、封面与进度） ─────────────
+
+  Future<void> _playAudio(WebDavFile audio, {String? sessionId}) async {
+    final appState = context.read<AppState>();
+    final player = appState.audioPlayerService;
+    final historyStore = appState.audioPlaybackHistoryStore;
+    final progressService = appState.audioProgressService;
+    if (player == null || historyStore == null || progressService == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('音频播放模块初始化失败，视频播放不受影响')));
+      return;
+    }
+    final existingSession = sessionId == null
+        ? null
+        : _audioSessionById(sessionId);
+    if (sessionId == null &&
+        _audioPlaybackSessions.length >= AppConstants.maxPlaybackSessions) {
+      await showGlassDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('音频播放位置已占满'),
+          content: Text(
+            '当前最多同时保留 ${AppConstants.maxPlaybackSessions} 个音频会话，'
+            '请先关闭或删除一个音频下边栏后再播放。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    if (existingSession?.deleting == true ||
+        existingSession?.launching == true) {
+      return;
+    }
+
+    // 与视频稳定列表相同：只取后台全量目录，不受显示排序、搜索或隐藏影响。
+    final audioFiles = _files.where((file) => file.isAudio).toList();
+    final clickedIndex = audioFiles.indexWhere(
+      (file) => file.href == audio.href,
+    );
+    final ordered = clickedIndex < 0 ? [audio] : audioFiles;
+    final subtitleInjectionEnabled =
+        appState.configStore.current.subtitleInjectionEnabled;
+    final entries = <AudioMediaEntry>[];
+    var playStart = -1;
+    for (final file in ordered) {
+      if (file.href == audio.href) playStart = entries.length;
+      final lyrics = subtitleInjectionEnabled
+          ? appState.audioCompanionMatcher.findLyricsFor(file, _files)
+          : null;
+      final cover = appState.audioCompanionMatcher.findCoverFor(file, _files);
+      entries.add(
+        AudioMediaEntry(
+          url: _service.resolveUrl(file.href),
+          title: file.name,
+          lyrics: lyrics == null
+              ? null
+              : AudioCompanionFile(
+                  name: lyrics.name,
+                  url: _service.resolveUrl(lyrics.url),
+                ),
+          coverArt: cover == null
+              ? null
+              : AudioCompanionFile(
+                  name: cover.name,
+                  url: _service.resolveUrl(cover.url),
+                ),
+        ),
+      );
+    }
+    if (entries.isEmpty || playStart < 0) return;
+
+    final resolvedSessionId = sessionId ?? _newAudioSessionId();
+    final now = DateTime.now();
+    final history = AudioPlaybackHistory(
+      sessionId: resolvedSessionId,
+      dirCrumbs: List.of(_crumbs),
+      fileName: ordered[playStart].name,
+      trackIndex: playStart,
+      updatedAt: now,
+      createdAt: existingSession?.history.createdAt ?? now,
+      playlistFileNames: ordered.map((file) => file.name).toList(),
+    );
+    final session = existingSession ?? _AudioPlaybackUiSession(history);
+    session
+      ..history = history
+      ..lastSyncedPos = playStart
+      ..finishPending = 0
+      ..paused = null
+      ..launching = true
+      ..lastReportedPositionSeconds = null
+      ..lastReportedDurationSeconds = null;
+    session.activationGuard.reset();
+    if (mounted) {
+      setState(() {
+        if (existingSession == null) {
+          _audioPlaybackSessions.add(session);
+          _audioPlaybackSessions.sort(
+            (a, b) => a.history.createdAt.compareTo(b.history.createdAt),
+          );
+        }
+      });
+    }
+    if (!await historyStore.upsert(history)) {
+      if (mounted) setState(() => _audioPlaybackSessions.remove(session));
+      return;
+    }
+
+    PlaybackProgress? progress;
+    try {
+      await player.syncPersistedProgress(
+        sessionId: resolvedSessionId,
+        entries: entries,
+        username: appState.username,
+        password: appState.password,
+      );
+      progress = await progressService.getProgress(entries[playStart].url);
+      if (progress != null && progress.isFinishedNearEnd()) progress = null;
+    } on AppException {
+      // 音频进度读取失败时从头播放，视频链路不受影响。
+    }
+
+    try {
+      session.statusNotBefore = DateTime.now();
+      final result = await player.launch(
+        entries: entries,
+        sessionId: resolvedSessionId,
+        playlistStart: playStart,
+        resumeSeconds: progress?.resumeSeconds,
+        username: appState.username,
+        password: appState.password,
+        lyricsLoader: (url, {required maxBytes, required timeout}) =>
+            _service.fetchFileBytes(url, maxBytes: maxBytes, timeout: timeout),
+      );
+      if (!mounted || !_audioPlaybackSessions.contains(session)) {
+        await player.terminateSession(resolvedSessionId);
+        return;
+      }
+      final launchedHistory = session.history.copyWith(
+        playerPid: result.process.pid,
+        ipcPipeName: result.ipcPipeName,
+        updatedAt: DateTime.now(),
+      );
+      setState(() {
+        final activatedAt = DateTime.now();
+        final timeoutSeconds = appState
+            .configStore
+            .current
+            .playerStartupTimeoutSeconds
+            .clamp(
+              AppConstants.minPlayerStartupTimeoutSeconds,
+              AppConstants.maxPlayerStartupTimeoutSeconds,
+            )
+            .toInt();
+        session.activationGuard.start(
+          now: activatedAt,
+          timeout: Duration(seconds: timeoutSeconds),
+        );
+        session
+          ..history = launchedHistory
+          ..paused = null
+          ..launching = false;
+      });
+      _refreshAudioPlaybackMonitor();
+      unawaited(historyStore.upsert(launchedHistory));
+
+      final current = entries[playStart];
+      final parts = <String>[
+        '已启动音频播放器（${entries.length} 首）',
+        if (current.lyrics != null) '歌词：${current.lyrics!.name}',
+        if (current.coverArt != null) '封面：${current.coverArt!.name}',
+        if (progress?.resumeSeconds != null) '续播于 ${progress!.resumeSeconds}s',
+      ];
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(parts.join(' · '))));
+    } on AppException catch (error) {
+      if (!mounted) return;
+      if (_audioPlaybackSessions.contains(session)) {
+        setState(() {
+          session
+            ..launching = false
+            ..paused = null;
+        });
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (!mounted) return;
+      if (_audioPlaybackSessions.contains(session)) {
+        setState(() {
+          session
+            ..launching = false
+            ..paused = null;
+        });
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('音频播放模块发生错误，视频播放不受影响')));
+    }
+  }
+
+  void _syncAudioPlaybackSessions() {
+    for (final session in List<_AudioPlaybackUiSession>.of(
+      _audioPlaybackSessions,
+    )) {
+      if (session.syncBusy || session.deleting || session.launching) continue;
+      session.syncBusy = true;
+      unawaited(
+        _syncAudioPlaybackSession(session).whenComplete(() {
+          session.syncBusy = false;
+          _refreshAudioPlaybackMonitor();
+        }),
+      );
+    }
+  }
+
+  Future<void> _syncAudioPlaybackSession(
+    _AudioPlaybackUiSession session,
+  ) async {
+    if (!_audioPlaybackSessions.contains(session)) return;
+    final names = session.playlistFileNames;
+    if (names.isEmpty) return;
+    final appState = context.read<AppState>();
+    final store = appState.audioPlaybackHistoryStore;
+    final player = appState.audioPlayerService;
+    if (store == null || player == null) return;
+    final sessionId = session.history.sessionId;
+    final now = DateTime.now();
+    final guard = session.activationGuard;
+    if (guard.shouldProbe(now)) {
+      final running = await player.isPlayerRunning(sessionId);
+      guard.recordProbe(now: now, running: running);
+    }
+    var running = guard.lastKnownRunning ?? false;
+    if (!_audioPlaybackSessions.contains(session)) return;
+
+    final Directory? dataDir = await _sessionCacheDirectory;
+    if (dataDir == null) return;
+    final statusFile = File(
+      p.join(dataDir.path, AudioPlayerService.sessionStatusFileName(sessionId)),
+    );
+    DateTime? statusModifiedAt;
+    try {
+      final status = await statusFile.stat();
+      if (status.type == FileSystemEntityType.file) {
+        statusModifiedAt = status.modified;
+      }
+    } catch (_) {
+      // 音频状态文件尚未创建或正在替换，留待下一轮。
+    }
+    List<String>? lines;
+    if (statusModifiedAt?.isAfter(session.statusNotBefore) ?? false) {
+      try {
+        lines = await statusFile.readAsLines();
+      } catch (_) {
+        // MPV 正在写状态文件时留待下一轮。
+      }
+    }
+
+    _rememberAudioProgress(session, lines, running: running);
+    final loadedPos = lines == null || lines.isEmpty
+        ? null
+        : int.tryParse(lines.first.trim());
+    final hasLoaded =
+        loadedPos != null &&
+        loadedPos >= 0 &&
+        loadedPos < names.length &&
+        lines!.length >= 2 &&
+        lines[1].trim().isNotEmpty;
+    if (guard.isWaiting && hasLoaded) {
+      guard.confirmActivation();
+      running = true;
+      guard.recordProbe(now: DateTime.now(), running: true);
+    }
+    if (guard.isWaiting) {
+      if (guard.hasTimedOut(now)) {
+        await _removeAudioPlaybackSession(session, terminateProcess: true);
+      } else if (session.paused != null && mounted) {
+        setState(() => session.paused = null);
+      }
+      return;
+    }
+
+    if (!running) {
+      await player.waitForExitSync(sessionId);
+      if (!_audioPlaybackSessions.contains(session)) return;
+      final pos = lines == null || lines.isEmpty
+          ? null
+          : int.tryParse(lines.first.trim());
+      final naturallyFinished =
+          pos == -1 &&
+          session.lastSyncedPos == names.length - 1 &&
+          _isFreshStatus(statusModifiedAt);
+      var completed = _hasReachedAudioCompletion(session, lines);
+      if (!completed) {
+        completed = await _hasPersistedAudioCompletion(session, lines);
+      }
+      if (naturallyFinished || completed) {
+        await _removeAudioPlaybackSession(session, terminateProcess: false);
+        return;
+      }
+      final needsHistoryUpdate =
+          session.history.playerPid != null ||
+          session.history.ipcPipeName != null;
+      if (needsHistoryUpdate) {
+        session.history = session.history.copyWith(
+          clearPlayerPid: true,
+          clearIpcPipeName: true,
+          updatedAt: DateTime.now(),
+        );
+        await store.upsert(session.history);
+      }
+      if (session.paused != null && mounted) {
+        setState(() => session.paused = null);
+      }
+      return;
+    }
+
+    if (lines == null || lines.length < 2) return;
+    final pos = int.tryParse(lines.first.trim());
+    if (pos == null || pos < 0 || pos >= names.length) {
+      final reachedLast = session.lastSyncedPos == names.length - 1;
+      if (pos == -1 && reachedLast && _isFreshStatus(statusModifiedAt)) {
+        session.finishPending++;
+        if (session.finishPending >= 2) {
+          session.finishPending = 0;
+          await _removeAudioPlaybackSession(session, terminateProcess: false);
+        }
+      } else {
+        session.finishPending = 0;
+      }
+      return;
+    }
+    session.finishPending = 0;
+    final paused = lines.length >= 3 ? lines[2].trim() == '1' : false;
+    if (paused != session.paused && mounted) {
+      setState(() => session.paused = paused);
+    }
+    if (pos == session.lastSyncedPos) return;
+    session.lastSyncedPos = pos;
+    session.history = session.history.copyWith(
+      fileName: names[pos],
+      trackIndex: pos,
+      updatedAt: DateTime.now(),
+    );
+    await store.upsert(session.history);
+    if (mounted && _audioPlaybackSessions.contains(session)) setState(() {});
+  }
+
+  void _rememberAudioProgress(
+    _AudioPlaybackUiSession session,
+    List<String>? lines, {
+    required bool running,
+  }) {
+    if (lines == null || lines.length < 5) return;
+    final playlistPos = int.tryParse(lines.first.trim());
+    if (playlistPos == null || playlistPos < 0 || lines[1].trim().isEmpty) {
+      return;
+    }
+    final position = double.tryParse(lines[3].trim());
+    final duration = double.tryParse(lines[4].trim());
+    if (position != null && position >= 0) {
+      final exitZero =
+          !running &&
+          position == 0 &&
+          session.lastReportedPositionSeconds != null;
+      if (!exitZero) session.lastReportedPositionSeconds = position;
+    }
+    if (duration != null && duration > 0) {
+      session.lastReportedDurationSeconds = duration;
+    }
+  }
+
+  bool _hasReachedAudioCompletion(
+    _AudioPlaybackUiSession session,
+    List<String>? lines,
+  ) => hasReachedExitCompletion(
+    positionSeconds: lines != null && lines.length >= 5
+        ? double.tryParse(lines[3].trim())
+        : null,
+    durationSeconds: lines != null && lines.length >= 5
+        ? double.tryParse(lines[4].trim())
+        : null,
+    fallbackPositionSeconds: session.lastReportedPositionSeconds,
+    fallbackDurationSeconds: session.lastReportedDurationSeconds,
+  );
+
+  Future<bool> _hasPersistedAudioCompletion(
+    _AudioPlaybackUiSession session,
+    List<String>? lines,
+  ) async {
+    if (lines == null || lines.length < 2 || lines[1].trim().isEmpty) {
+      return false;
+    }
+    final progressService = context.read<AppState>().audioProgressService;
+    if (progressService == null) return false;
+    try {
+      final progress = await progressService.getProgress(
+        stripUserInfo(lines[1].trim()),
+      );
+      final updatedAt = progress?.updatedAt;
+      if (progress == null ||
+          updatedAt == null ||
+          updatedAt.isBefore(session.statusNotBefore)) {
+        return false;
+      }
+      return progress.hasReachedFraction();
+    } on AppException {
+      return false;
+    }
+  }
+
+  Future<void> _removeAudioPlaybackSession(
+    _AudioPlaybackUiSession session, {
+    required bool terminateProcess,
+  }) async {
+    if (session.deleting || !_audioPlaybackSessions.contains(session)) return;
+    session.deleting = true;
+    if (mounted) setState(() {});
+    final appState = context.read<AppState>();
+    final player = appState.audioPlayerService;
+    final store = appState.audioPlaybackHistoryStore;
+    if (terminateProcess) {
+      await player?.terminateSession(session.history.sessionId);
+    } else {
+      player?.releaseSession(session.history.sessionId);
+    }
+    await store?.remove(session.history.sessionId);
+    if (!mounted) return;
+    setState(() => _audioPlaybackSessions.remove(session));
+    _refreshAudioPlaybackMonitor();
+  }
+
+  Future<void> _resumeAudioPlaybackSession(
+    _AudioPlaybackUiSession session,
+  ) async {
+    if (session.launching || session.deleting) return;
+    final history = session.history;
+    setState(() {
+      _crumbs
+        ..clear()
+        ..addAll(history.dirCrumbs);
+      _files = const [];
+      _error = null;
+    });
+    try {
+      await _load();
+    } on AppException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    }
+    if (!mounted) return;
+    final audioFiles = _files.where((file) => file.isAudio).toList();
+    if (audioFiles.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('该目录下没有可播放的音频')));
+      return;
+    }
+    var index = audioFiles.indexWhere((file) => file.name == history.fileName);
+    if (index < 0) index = history.trackIndex.clamp(0, audioFiles.length - 1);
+    await _playAudio(audioFiles[index], sessionId: history.sessionId);
   }
 
   void _syncPlaybackSessions() {
@@ -1033,6 +1656,8 @@ class _BrowserPageState extends State<BrowserPage> {
       _backTo(_crumbs.length - 2);
     } else if (file.isDirectory) {
       _enterDirectory(file);
+    } else if (file.isAudio) {
+      _playAudio(file);
     } else if (file.isPlayable) {
       _playVideo(file);
     }
@@ -1051,7 +1676,7 @@ class _BrowserPageState extends State<BrowserPage> {
             tooltip: '排序：${_sortMode.label} · ${_sortDirection.label}',
             icon: const Icon(Icons.sort),
             onSelected: (value) {
-              setState(() {
+              _changeDirectoryScrollScope(() {
                 switch (value) {
                   case 'mode:name':
                     _sortMode = FileSortMode.name;
@@ -1116,7 +1741,12 @@ class _BrowserPageState extends State<BrowserPage> {
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
               );
-              // 返回后重算显示列表（隐藏后缀可能已修改）。
+              if (!mounted) return;
+              // 返回后同步可能被设置页清空的历史，并重算显示列表。
+              await Future.wait([
+                _loadPlaybackSessions(),
+                _loadAudioPlaybackSessions(),
+              ]);
               if (mounted) setState(() {});
             },
           ),
@@ -1138,7 +1768,8 @@ class _BrowserPageState extends State<BrowserPage> {
         ],
       ),
       body: _buildBody(),
-      bottomNavigationBar: _playbackSessions.isEmpty
+      bottomNavigationBar:
+          _playbackSessions.isEmpty && _audioPlaybackSessions.isEmpty
           ? null
           : _buildPlaybackBars(),
     );
@@ -1147,20 +1778,111 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 播放会话垂直堆栈：新会话在上，越早创建的会话越靠下。
   Widget _buildPlaybackBars() {
     final displayed = _playbackSessions.reversed.toList();
-    return Material(
+    final displayedAudio = _audioPlaybackSessions.reversed.toList();
+    final bars = <Widget>[
+      for (final session in displayedAudio) _buildAudioPlaybackBar(session),
+      for (final session in displayed) _buildPlaybackBar(session),
+    ];
+    final tokens = Theme.of(context).glass;
+    return GlassSurface(
+      level: GlassSurfaceLevel.raised,
+      automaticBorder: false,
+      showShadow: false,
+      border: Border(top: BorderSide(color: tokens.dividerColor)),
       child: SafeArea(
         top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (var i = 0; i < displayed.length; i++) ...[
-              if (i > 0) const Divider(height: 1),
-              _buildPlaybackBar(displayed[i]),
+            for (var i = 0; i < bars.length; i++) ...[
+              if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
+              bars[i],
             ],
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildAudioPlaybackBar(_AudioPlaybackUiSession session) {
+    final history = session.history;
+    final sessionId = history.sessionId;
+    final dirLabel = history.dirCrumbs.isEmpty
+        ? '音乐 · 根目录'
+        : '音乐 · ${history.dirCrumbs.join(' / ')}';
+    final paused = session.paused;
+
+    final String title;
+    final IconData icon;
+    final String tooltip;
+    final VoidCallback? onPressed;
+    if (session.launching) {
+      title = '正在打开音频：${history.fileName}';
+      icon = Icons.hourglass_top;
+      tooltip = '正在打开播放器';
+      onPressed = null;
+    } else if (paused == false) {
+      title = '正在播放音频：${history.fileName}';
+      icon = Icons.pause;
+      tooltip = '暂停';
+      onPressed = () =>
+          context.read<AppState>().audioPlayerService?.sendPause(sessionId);
+    } else if (paused == true) {
+      title = '音频已暂停：${history.fileName}';
+      icon = Icons.play_arrow;
+      tooltip = '继续播放';
+      onPressed = () =>
+          context.read<AppState>().audioPlayerService?.sendResume(sessionId);
+    } else {
+      title = '继续播放音频：${history.fileName}';
+      icon = Icons.play_arrow;
+      tooltip = '继续播放';
+      onPressed = () => _resumeAudioPlaybackSession(session);
+    }
+
+    return _PlaybackBar(
+      key: ValueKey<String>('audio-playback-bar-$sessionId'),
+      title: title,
+      dirLabel: dirLabel,
+      icon: icon,
+      tooltip: tooltip,
+      deleting: session.deleting,
+      onPressed: onPressed,
+      onDelete: () =>
+          _removeAudioPlaybackSession(session, terminateProcess: true),
+      onSecondaryTapDown: (details) =>
+          _showAudioSessionMenu(session, details.globalPosition),
+    );
+  }
+
+  Future<void> _showAudioSessionMenu(
+    _AudioPlaybackUiSession session,
+    Offset globalPosition,
+  ) async {
+    if (session.deleting) return;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem<String>(
+          value: 'delete',
+          child: Row(
+            children: [
+              Icon(Icons.delete_outline),
+              SizedBox(width: 10),
+              Text('删除并关闭音频播放器'),
+            ],
+          ),
+        ),
+      ],
+    );
+    if (selected == 'delete' && mounted) {
+      await _removeAudioPlaybackSession(session, terminateProcess: true);
+    }
   }
 
   Widget _buildPlaybackBar(_PlaybackUiSession session) {
@@ -1256,11 +1978,28 @@ class _BrowserPageState extends State<BrowserPage> {
         children: [
           TextButton(
             onPressed: _crumbs.isEmpty ? null : () => _backTo(-1),
-            style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-            child: const Text('根目录'),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.only(right: 8),
+              minimumSize: const Size(0, 40),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              alignment: Alignment.centerLeft,
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.home_outlined, size: 18),
+                SizedBox(width: 6),
+                Text('根目录'),
+              ],
+            ),
           ),
           for (var i = 0; i < _crumbs.length; i++) ...[
-            const Text('/'),
+            Icon(
+              Icons.chevron_right,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
             TextButton(
               onPressed: () => _backTo(i),
               style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
@@ -1319,8 +2058,8 @@ class _BrowserPageState extends State<BrowserPage> {
             key: _directoryScrollKey,
             controller: _directoryScrollController,
             // ── 高性能虚拟列表：万级条目仅构建可视区 ──
-            // 所有文件项均为单行标题 + 单行副标题，使用原型项固定当前
-            // 主题/文字缩放下的布局高度，减少快速滚动时的重复测量。
+            // 宽窗口条目统一使用紧凑行高；窄窗口继续按标题和副标题
+            // 测量原型高度，减少快速滚动时的重复测量。
             prototypeItem: FileTile(file: visibleFiles.first),
             itemCount: visibleFiles.length,
             itemBuilder: (context, index) {
@@ -1338,21 +2077,32 @@ class _BrowserPageState extends State<BrowserPage> {
               );
             },
           );
-    return DirectoryWheelScrollRegion(
-      controller: _directoryScrollController,
-      child: RefreshIndicator(
-        onRefresh: () => _load(force: true),
-        child: ScrollConfiguration(
-          // 关闭本列表的桌面自动滚动条，避免与显式滚动条重复绘制。
-          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-          child: Scrollbar(
-            key: const ValueKey<String>('directory-scrollbar'),
-            controller: _directoryScrollController,
-            thumbVisibility: true,
-            interactive: true,
-            child: listView,
+    return FileListSurface(
+      child: Column(
+        children: [
+          const FileListHeader(),
+          Expanded(
+            child: DirectoryWheelScrollRegion(
+              controller: _directoryScrollController,
+              child: RefreshIndicator(
+                onRefresh: () => _load(force: true),
+                child: ScrollConfiguration(
+                  // 关闭本列表的桌面自动滚动条，避免与显式滚动条重复绘制。
+                  behavior: ScrollConfiguration.of(
+                    context,
+                  ).copyWith(scrollbars: false),
+                  child: Scrollbar(
+                    key: const ValueKey<String>('directory-scrollbar'),
+                    controller: _directoryScrollController,
+                    thumbVisibility: true,
+                    interactive: true,
+                    child: listView,
+                  ),
+                ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

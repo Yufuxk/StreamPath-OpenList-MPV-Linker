@@ -34,6 +34,19 @@ class CacheIntelligenceLearningStore {
         }
       });
 
+  /// 清空聚合学习数据和内存副本。
+  Future<bool> clear() => _enqueue(() async {
+    try {
+      for (final file in [_file, File('${_file.path}.tmp')]) {
+        if (await file.exists()) await file.delete();
+      }
+      _cached = CacheLearningData();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  });
+
   Future<T> _enqueue<T>(Future<T> Function() action) {
     final task = _pending.then((_) => action());
     _pending = task.then<void>((_) {}, onError: (_) {});

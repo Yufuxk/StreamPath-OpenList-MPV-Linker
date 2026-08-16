@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/features/cache_control/models/media_metadata.dart';
 import 'package:streampath/features/cache_control/store/media_metadata_store.dart';
+import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
 
 /// 媒体元数据缓存测试（对应文档「Metadata 缓存结构」）。
 void main() {
@@ -174,6 +176,56 @@ void main() {
         expect((await fresh.read('item_$i'))!.fileSize, i + 2);
       }
       expect(File('$path.tmp').existsSync(), isFalse);
+    });
+
+    test('过期元数据会从内存与持久化文件中移除', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}expired.json';
+      var now = DateTime.utc(2025, 1, 1);
+      final store = MediaMetadataStore.forPath(path, now: () => now);
+      await store.write(
+        MediaMetadata(urlHash: 'old', fileSize: 1, updatedAt: now),
+      );
+
+      now = now
+          .add(MediaMetadataStore.maxAge)
+          .add(const Duration(milliseconds: 1));
+      expect(await store.purgeExpired(), 1);
+      expect(await store.read('old'), isNull);
+      expect(jsonDecode(await File(path).readAsString()), isEmpty);
+    });
+
+    test('外部配置缩短保留期后，后续读取立即失效', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}configured.json';
+      var now = DateTime.utc(2026, 1, 1);
+      var policy = CacheExpirationConfig.defaults();
+      final store = MediaMetadataStore.forPath(
+        path,
+        now: () => now,
+        policyProvider: () => policy,
+      );
+      await store.write(
+        MediaMetadata(urlHash: 'item', fileSize: 1, updatedAt: now),
+      );
+
+      now = now.add(const Duration(days: 2));
+      policy = const CacheExpirationConfig(mediaMetadataRetentionDays: 1);
+      expect(await store.read('item'), isNull);
+    });
+
+    test('单条损坏元数据不会阻止同文件其他条目维护', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}partial-bad.json';
+      final now = DateTime.utc(2026, 1, 1);
+      final good = MediaMetadata(urlHash: 'good', fileSize: 1, updatedAt: now);
+      await File(path).writeAsString(
+        jsonEncode({
+          'bad': {'url_hash': 123, 'updated': now.millisecondsSinceEpoch},
+          'good': good.toJson(),
+        }),
+      );
+      final store = MediaMetadataStore.forPath(path, now: () => now);
+
+      expect(await store.purgeExpired(), 1);
+      expect((await store.read('good'))?.fileSize, 1);
     });
   });
 }

@@ -3,16 +3,21 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../data/local/playback_history_store.dart';
+import '../../data/local/audio_playback_history_store.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/directory_cache.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/remote/webdav_client.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/audio_companion_matcher.dart';
+import '../../domain/services/audio_player_service.dart';
+import '../../domain/services/cache_cleanup_service.dart';
 import '../../domain/services/subtitle_matcher.dart';
 import '../../domain/services/webdav_service.dart';
 import '../../features/cache_control/cache_policy_service.dart';
 import '../../features/cache_control/store/cache_intelligence_config_store.dart';
 import '../../features/cache_control/store/cache_policy_config_store.dart';
+import '../../features/cache_expiration/store/cache_expiration_config_store.dart';
 
 /// 应用全局状态（provider 单例）。
 ///
@@ -23,21 +28,36 @@ class AppState extends ChangeNotifier {
     required StreamPathConfigStore configStore,
     required PlaybackHistoryStore playbackHistoryStore,
     required PlaybackProgressService progressService,
+    AudioPlaybackHistoryStore? audioPlaybackHistoryStore,
+    PlaybackProgressService? audioProgressService,
     DirectoryCache? directoryCache,
     ExternalPlayerService? playerService,
+    AudioPlayerService? audioPlayerService,
     SubtitleMatcher? subtitleMatcher,
     CachePolicyProvider? cachePolicy,
     CachePolicyConfigStore? cachePolicyConfigStore,
     CacheIntelligenceConfigStore? cacheIntelligenceConfigStore,
+    CacheExpirationConfigStore? cacheExpirationConfigStore,
+    CacheCleaner? cacheCleaner,
+    CacheCleaner? learningDataCleaner,
   }) : _configStore = configStore,
        // ignore: prefer_initializing_formals
        _cachePolicyConfigStore = cachePolicyConfigStore,
        // ignore: prefer_initializing_formals
        _cacheIntelligenceConfigStore = cacheIntelligenceConfigStore,
        // ignore: prefer_initializing_formals
+       _cacheExpirationConfigStore = cacheExpirationConfigStore,
+       // ignore: prefer_initializing_formals
        _playbackHistoryStore = playbackHistoryStore,
        _progressService = progressService,
+       // ignore: prefer_initializing_formals
+       _audioPlaybackHistoryStore = audioPlaybackHistoryStore,
+       _audioProgressService = audioProgressService,
        _directoryCache = directoryCache ?? DirectoryCache(),
+       // ignore: prefer_initializing_formals
+       _cacheCleaner = cacheCleaner,
+       // ignore: prefer_initializing_formals
+       _learningDataCleaner = learningDataCleaner,
        _subtitleMatcher = subtitleMatcher ?? const SubtitleMatcher() {
     // 警告流与播放器服务的警告接线放构造器 body（initializer 中
     // 不能引用 this 字段）。
@@ -53,16 +73,32 @@ class AppState extends ChangeNotifier {
           onCacheWarning: (message) => _cacheWarnings.add(message),
           onPlaybackRecovery: (event) => _playbackRecoveryEvents.add(event),
         );
+    _audioPlayerService =
+        audioPlayerService ??
+        (audioProgressService == null
+            ? null
+            : AudioPlayerService(
+                configStore: configStore,
+                progressService: audioProgressService,
+              ));
   }
 
   final StreamPathConfigStore _configStore;
   final CachePolicyConfigStore? _cachePolicyConfigStore;
   final CacheIntelligenceConfigStore? _cacheIntelligenceConfigStore;
+  final CacheExpirationConfigStore? _cacheExpirationConfigStore;
   final PlaybackHistoryStore _playbackHistoryStore;
   final PlaybackProgressService _progressService;
+  final AudioPlaybackHistoryStore? _audioPlaybackHistoryStore;
+  final PlaybackProgressService? _audioProgressService;
   final DirectoryCache _directoryCache;
+  final CacheCleaner? _cacheCleaner;
+  final CacheCleaner? _learningDataCleaner;
   late final ExternalPlayerService _playerService;
+  late final AudioPlayerService? _audioPlayerService;
   final SubtitleMatcher _subtitleMatcher;
+  final AudioCompanionMatcher _audioCompanionMatcher =
+      const AudioCompanionMatcher();
 
   /// 播放中动态保护的用户警告（网络带宽持续不足等）；UI 订阅后
   /// 以 SnackBar 展示。
@@ -102,10 +138,89 @@ class AppState extends ChangeNotifier {
   CachePolicyConfigStore? get cachePolicyConfigStore => _cachePolicyConfigStore;
   CacheIntelligenceConfigStore? get cacheIntelligenceConfigStore =>
       _cacheIntelligenceConfigStore;
+  CacheExpirationConfigStore? get cacheExpirationConfigStore =>
+      _cacheExpirationConfigStore;
   PlaybackHistoryStore get playbackHistoryStore => _playbackHistoryStore;
   PlaybackProgressService get progressService => _progressService;
+  AudioPlaybackHistoryStore? get audioPlaybackHistoryStore =>
+      _audioPlaybackHistoryStore;
+  PlaybackProgressService? get audioProgressService => _audioProgressService;
   ExternalPlayerService get playerService => _playerService;
+  AudioPlayerService? get audioPlayerService => _audioPlayerService;
   SubtitleMatcher get subtitleMatcher => _subtitleMatcher;
+  AudioCompanionMatcher get audioCompanionMatcher => _audioCompanionMatcher;
+  bool get canClearCache => _cacheCleaner != null;
+  bool get canClearLearningData => _learningDataCleaner != null;
+
+  /// 清空缓存前确认没有播放器进程仍在使用会话文件。
+  Future<CacheCleanupResult> clearCache() async {
+    final cleaner = _cacheCleaner;
+    if (cleaner == null) {
+      throw const CacheCleanupException('缓存清理服务尚未初始化');
+    }
+    if (await _hasRunningPlayback()) {
+      throw const CacheCleanupBlockedException('请先关闭正在运行的播放器，再清理缓存');
+    }
+    await _releaseStoppedPlaybackSessions();
+    final result = await cleaner.clear();
+    notifyListeners();
+    return result;
+  }
+
+  /// 只清空本地智能缓存的匿名聚合学习数据。
+  Future<CacheCleanupResult> clearLearningData() async {
+    final cleaner = _learningDataCleaner;
+    if (cleaner == null) {
+      throw const CacheCleanupException('学习数据清理服务尚未初始化');
+    }
+    if (await _hasRunningPlayback()) {
+      throw const CacheCleanupBlockedException('请先关闭正在运行的播放器，再清理学习数据');
+    }
+    final result = await cleaner.clear();
+    notifyListeners();
+    return result;
+  }
+
+  Future<bool> _hasRunningPlayback() async {
+    if (await _playerService.isPlayerRunning()) return true;
+    final videoHistories = await _playbackHistoryStore.loadAll();
+    for (final history in videoHistories) {
+      await _playerService.restoreSession(
+        sessionId: history.sessionId,
+        pid: history.playerPid,
+        ipcPipeName: history.ipcPipeName,
+      );
+      if (await _playerService.isPlayerRunning(history.sessionId)) return true;
+    }
+
+    final audioService = _audioPlayerService;
+    final audioStore = _audioPlaybackHistoryStore;
+    if (audioService == null || audioStore == null) return false;
+    final audioHistories = await audioStore.loadAll();
+    for (final history in audioHistories) {
+      await audioService.restoreSession(
+        sessionId: history.sessionId,
+        pid: history.playerPid,
+        ipcPipeName: history.ipcPipeName,
+      );
+      if (await audioService.isPlayerRunning(history.sessionId)) return true;
+    }
+    return false;
+  }
+
+  Future<void> _releaseStoppedPlaybackSessions() async {
+    final videoHistories = await _playbackHistoryStore.loadAll();
+    for (final history in videoHistories) {
+      _playerService.releaseSession(history.sessionId);
+    }
+    final audioService = _audioPlayerService;
+    final audioStore = _audioPlaybackHistoryStore;
+    if (audioService == null || audioStore == null) return;
+    final audioHistories = await audioStore.loadAll();
+    for (final history in audioHistories) {
+      audioService.releaseSession(history.sessionId);
+    }
+  }
 
   // ── 连接管理 ─────────────────────────────────────────────────
 

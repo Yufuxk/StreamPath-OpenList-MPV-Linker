@@ -1,6 +1,84 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/web_dav_file.dart';
+import '../theme/glass_tokens.dart';
+import 'glass_surface.dart';
+
+const double _metadataBreakpoint = 680;
+const double _sizeColumnWidth = 96;
+const double _modifiedColumnWidth = 152;
+const double _wideTileHeight = 56;
+const double _leadingColumnWidth = 40;
+const double _leadingGap = 16;
+const double _trailingGap = 16;
+const double _trailingColumnWidth = 20;
+
+/// 为文件条目的 Ink 悬浮反馈提供同层绘制表面。
+class FileListSurface extends StatelessWidget {
+  const FileListSurface({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassSurface(
+      level: GlassSurfaceLevel.content,
+      automaticBorder: false,
+      child: child,
+    );
+  }
+}
+
+/// 目录列表表头；窄窗口下元数据改在条目副标题显示，因此隐藏表头。
+class FileListHeader extends StatelessWidget {
+  const FileListHeader({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: scheme.onSurfaceVariant,
+      fontWeight: FontWeight.w700,
+      letterSpacing: 0.35,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < _metadataBreakpoint) {
+          return const SizedBox.shrink();
+        }
+        return Container(
+          key: const Key('file-list-header'),
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              SizedBox(
+                width: _leadingColumnWidth,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('名称', style: style),
+                ),
+              ),
+              const SizedBox(width: _leadingGap),
+              const Spacer(),
+              SizedBox(
+                width: _sizeColumnWidth,
+                child: Text('大小', textAlign: TextAlign.right, style: style),
+              ),
+              const SizedBox(width: 24),
+              SizedBox(
+                width: _modifiedColumnWidth,
+                child: Text('修改时间', textAlign: TextAlign.right, style: style),
+              ),
+              const SizedBox(width: _trailingGap),
+              const SizedBox(width: _trailingColumnWidth),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
 
 /// 文件列表项（虚拟列表单元）。
 ///
@@ -11,62 +89,167 @@ class FileTile extends StatelessWidget {
 
   final WebDavFile file;
 
-  /// 单击回调（目录进入 / 视频播放 / 「返回上级」）。
+  /// 单击回调（目录进入 / 视频或音频播放 / 「返回上级」）。
   final VoidCallback? onTap;
 
   final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final showColumns = constraints.maxWidth >= _metadataBreakpoint;
+        if (showColumns) return _buildWideTile(context);
+
+        final scheme = Theme.of(context).colorScheme;
+        if (file.isSelfEntry) {
+          // 窄窗口保留原来的两行「返回上级」布局。
+          return ListTile(
+            onTap: onTap,
+            hoverColor: Theme.of(context).hoverColor,
+            leading: Icon(Icons.arrow_upward, color: scheme.primary, size: 28),
+            title: Text(
+              file.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 15),
+            ),
+            subtitle: const Text('返回上级目录'),
+            trailing: trailing,
+            dense: true,
+          );
+        }
+        return ListTile(
+          onTap: onTap,
+          hoverColor: Theme.of(context).hoverColor,
+          leading: Icon(
+            _iconFor(file),
+            color: _colorFor(file, scheme),
+            size: 28,
+          ),
+          title: Text(
+            file.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+          ),
+          subtitle: _buildCompactMetadata(),
+          trailing: trailing,
+          dense: true,
+        );
+      },
+    );
+  }
+
+  Widget _buildWideTile(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    if (file.isSelfEntry) {
-      // 「返回上级」条目：置顶展示，点击返回上级目录。
-      return ListTile(
+    final metadataStyle = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final leading = file.isSelfEntry
+        ? Icon(Icons.arrow_upward, color: scheme.primary, size: 28)
+        : Icon(_iconFor(file), color: _colorFor(file, scheme), size: 28);
+    return SizedBox(
+      key: ValueKey<String>('wide-file-tile-${file.href}'),
+      height: _wideTileHeight,
+      child: InkWell(
         onTap: onTap,
-        leading: Icon(Icons.arrow_upward, color: scheme.primary, size: 28),
-        title: Text(
-          file.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 15),
+        hoverColor: Theme.of(context).hoverColor,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: _leadingColumnWidth,
+                child: Align(alignment: Alignment.centerLeft, child: leading),
+              ),
+              const SizedBox(width: _leadingGap),
+              Expanded(child: _buildWideName(context)),
+              SizedBox(
+                width: _sizeColumnWidth,
+                child: Text(
+                  file.isDirectory ? '-' : file.sizeLabel,
+                  maxLines: 1,
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: metadataStyle,
+                ),
+              ),
+              const SizedBox(width: 24),
+              SizedBox(
+                width: _modifiedColumnWidth,
+                child: Text(
+                  file.isSelfEntry || file.modified == null
+                      ? ''
+                      : _formatDate(file.modified!),
+                  maxLines: 1,
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: metadataStyle,
+                ),
+              ),
+              const SizedBox(width: _trailingGap),
+              SizedBox(
+                width: _trailingColumnWidth,
+                height: _trailingColumnWidth,
+                child: trailing == null ? null : Center(child: trailing),
+              ),
+            ],
+          ),
         ),
-        subtitle: const Text('返回上级目录'),
-        trailing: trailing,
-        dense: true,
-      );
-    }
-    return ListTile(
-      onTap: onTap,
-      leading: Icon(_iconFor(file), color: _colorFor(file, scheme), size: 28),
-      title: Text(
+      ),
+    );
+  }
+
+  Widget _buildWideName(BuildContext context) {
+    if (!file.isSelfEntry) {
+      return Text(
         file.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 15),
-      ),
-      subtitle: file.isDirectory
-          ? const Text('目录')
-          : Text(
-              '${file.sizeLabel}'
-              '${file.modified != null ? ' · ${_formatDate(file.modified!)}' : ''}',
-              style: const TextStyle(fontSize: 12),
-            ),
-      trailing: trailing,
-      dense: true,
+        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+      );
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          file.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+        ),
+        Text('返回上级目录', style: Theme.of(context).textTheme.bodySmall),
+      ],
     );
+  }
+
+  Widget? _buildCompactMetadata() {
+    final parts = <String>[
+      if (!file.isDirectory) file.sizeLabel,
+      if (file.modified != null) _formatDate(file.modified!),
+    ];
+    return parts.isEmpty
+        ? null
+        : Text(parts.join(' · '), style: const TextStyle(fontSize: 12));
   }
 
   static IconData _iconFor(WebDavFile f) {
     if (f.isDirectory) return Icons.folder_outlined;
+    if (f.isAudio) return Icons.audiotrack_outlined;
     if (f.isPlayable) return Icons.movie_outlined;
+    if (f.isLyrics) return Icons.lyrics_outlined;
     if (f.isSubtitle) return Icons.subtitles_outlined;
     return Icons.insert_drive_file_outlined;
   }
 
   static Color _colorFor(WebDavFile f, ColorScheme scheme) {
     if (f.isDirectory) return scheme.primary;
-    if (f.isPlayable) return Colors.deepOrange;
-    if (f.isSubtitle) return Colors.teal;
+    if (f.isAudio || f.isLyrics) return scheme.secondary;
+    if (f.isPlayable) return scheme.tertiary;
+    if (f.isSubtitle) return scheme.primary;
     return scheme.outline;
   }
 
@@ -74,6 +257,6 @@ class FileTile extends StatelessWidget {
     final local = d.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
-        '${two(local.hour)}:${two(local.minute)}';
+        '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
   }
 }

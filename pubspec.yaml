@@ -32,6 +32,9 @@ dependencies:
   provider: ^6.1.2
   path: ^1.9.0
 
+  # ── Windows 窗口外观：可选 Acrylic 磨砂背景 ────────────────
+  flutter_acrylic: ^1.1.4
+
   # ── 剪贴板：super_clipboard 深层原生支持（Win+V 剪贴板历史
   #    兼容方案：读取文本更稳健，绕过 Flutter 引擎剪贴板事件限制）──
   super_clipboard: ^0.9.1

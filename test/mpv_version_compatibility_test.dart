@@ -5,6 +5,10 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:streampath/data/models/audio_media_entry.dart';
+import 'package:streampath/data/remote/webdav_client.dart';
+import 'package:streampath/domain/services/audio_lyrics_localizer.dart';
+import 'package:streampath/domain/services/audio_mpv_scripts.dart';
 import 'package:streampath/domain/services/mpv_scripts.dart';
 
 void main() {
@@ -13,14 +17,7 @@ void main() {
   test(
     '实际 MPV 版本可加载状态脚本、命令通道、IPC 与进度日志',
     () async {
-      final root = Directory(testRoot!);
-      final executables =
-          root
-              .listSync(recursive: true, followLinks: false)
-              .whereType<File>()
-              .where((file) => p.basename(file.path).toLowerCase() == 'mpv.exe')
-              .toList()
-            ..sort((a, b) => a.path.compareTo(b.path));
+      final executables = _sampleExecutables(testRoot!);
       expect(executables, hasLength(4));
 
       final workspace = Directory.systemTemp.createTempSync('sp_mpv_compat_');
@@ -104,14 +101,7 @@ void main() {
   test(
     'URL 凭据可完成 Basic 认证且不会随跨来源重定向发送',
     () async {
-      final root = Directory(testRoot!);
-      final executables =
-          root
-              .listSync(recursive: true, followLinks: false)
-              .whereType<File>()
-              .where((file) => p.basename(file.path).toLowerCase() == 'mpv.exe')
-              .toList()
-            ..sort((a, b) => a.path.compareTo(b.path));
+      final executables = _sampleExecutables(testRoot!);
       expect(executables, hasLength(4));
       final media = _silentWave(seconds: 1);
       final expectedAuth = 'Basic ${base64Encode(utf8.encode('viewer:'))}';
@@ -200,6 +190,202 @@ void main() {
         : false,
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    '五个 MPV 版本可播放本地化 LRC 与远程封面的完整音频列表',
+    () async {
+      final executables = _fiveExecutables(testRoot!);
+      expect(executables, hasLength(5));
+      final versionHeads = executables.map(_mpvVersionHead).toSet();
+      expect(versionHeads, hasLength(5), reason: '五个测试程序必须来自不同 MPV 构建');
+      final workspace = Directory.systemTemp.createTempSync(
+        'sp_audio_mpv_compat_',
+      );
+      final audio = _silentWave(seconds: 1);
+      final cover = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        final name = request.uri.pathSegments.last;
+        final List<int> bytes;
+        final ContentType contentType;
+        if (name.endsWith('.wav')) {
+          bytes = audio;
+          contentType = ContentType('audio', 'wav');
+        } else if (name.endsWith('.lrc')) {
+          bytes = utf8.encode('[00:00.00]StreamPath 跨版本歌词\n');
+          contentType = ContentType.text;
+        } else {
+          bytes = cover;
+          contentType = ContentType('image', 'png');
+        }
+        await request.drain<void>();
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = contentType
+          ..headers.contentLength = bytes.length
+          ..add(bytes);
+        await request.response.close();
+      });
+
+      try {
+        final origin = 'http://${server.address.address}:${server.port}';
+        final client = WebDavClient(baseUrl: origin);
+        for (var index = 0; index < executables.length; index++) {
+          final executable = executables[index];
+          final caseDir = Directory(p.join(workspace.path, 'case_$index'))
+            ..createSync();
+          final entries = List.generate(
+            2,
+            (track) => AudioMediaEntry(
+              url: '$origin/song$track.wav',
+              title: '曲目 ${track + 1}',
+              lyrics: AudioCompanionFile(
+                name: 'song$track.lrc',
+                url: '$origin/song$track.lrc',
+              ),
+              coverArt: AudioCompanionFile(
+                name: 'song$track.png',
+                url: '$origin/song$track.png',
+              ),
+            ),
+          );
+          final localized = await const AudioLyricsLocalizer().localize(
+            entries: entries,
+            base: caseDir,
+            sessionId: 'audio_compat_$index',
+            loader: (url, {required maxBytes, required timeout}) =>
+                client.getFileBytes(url, maxBytes: maxBytes, timeout: timeout),
+          );
+          expect(localized.sessionFiles, hasLength(2));
+
+          final playlist = await AudioMpvScripts.ensurePlaylistM3u8(
+            entries,
+            (value) => value,
+            caseDir,
+            sessionId: 'audio_compat_$index',
+          );
+          final companions = await AudioMpvScripts.ensureCompanions(
+            localized.entries,
+            (value) => value,
+            caseDir,
+            sessionId: 'audio_compat_$index',
+            lyricsInjectionEnabled: true,
+            lyricsAutoSelectEnabled: true,
+          );
+          final companionText = await File(companions).readAsString();
+          expect(companionText, isNot(contains('$origin/song0.lrc')));
+          expect(companionText, contains('$origin/song0.png'));
+
+          final status = p.join(caseDir.path, 'current.txt');
+          final command = p.join(caseDir.path, 'command.txt');
+          final progress = p.join(caseDir.path, 'progress.jsonl');
+          final current = await AudioMpvScripts.ensureCurrent(
+            status,
+            command,
+            progress,
+            caseDir,
+            sessionId: 'audio_compat_$index',
+          );
+          final process = await Process.start(executable.path, [
+            '--no-config',
+            '--terminal=no',
+            '--vo=null',
+            '--ao=null',
+            '--idle=no',
+            '--keep-open=no',
+            '--audio-display=embedded-first',
+            '--cover-art-auto=no',
+            '--sub-auto=no',
+            '--script=$companions',
+            '--script=$current',
+            '--playlist=$playlist',
+          ]);
+          process.stdout.drain<void>();
+          final stderrFuture = process.stderr.transform(utf8.decoder).join();
+          final exitCode = await process.exitCode.timeout(
+            const Duration(seconds: 25),
+            onTimeout: () {
+              process.kill();
+              return -1;
+            },
+          );
+          final stderr = await stderrFuture;
+          expect(exitCode, 0, reason: '${executable.path}：$stderr');
+          final records = await File(progress).readAsLines();
+          final completed = records
+              .map((line) => jsonDecode(line) as Map<String, dynamic>)
+              .where((record) => record['outcome'] == 'completed')
+              .toList();
+          expect(
+            completed,
+            hasLength(2),
+            reason: '${executable.path} 未自然播放完整音频列表：$stderr',
+          );
+          expect(completed.last['playlist_pos'], 1);
+        }
+      } finally {
+        await server.close(force: true);
+        try {
+          workspace.deleteSync(recursive: true);
+        } on FileSystemException {
+          // MPV 退出后仍被安全软件短暂占用时交由系统临时目录回收。
+        }
+      }
+    },
+    skip: testRoot == null || testRoot.trim().isEmpty
+        ? '设置 STREAMPATH_MPV_TEST_ROOT 后运行真实版本兼容测试'
+        : false,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+}
+
+List<File> _sampleExecutables(String root) {
+  final files = Directory(root)
+      .listSync(recursive: true, followLinks: false)
+      .whereType<File>()
+      .where((file) => p.basename(file.path).toLowerCase() == 'mpv.exe')
+      .toList();
+  files.sort((a, b) => a.path.compareTo(b.path));
+  return files;
+}
+
+List<File> _fiveExecutables(String root) {
+  final files = _sampleExecutables(root);
+  final configured = Platform.environment['STREAMPATH_PATH_MPV'];
+  final pathMpv = configured != null && configured.trim().isNotEmpty
+      ? configured.trim()
+      : _findPathMpv();
+  if (pathMpv != null && File(pathMpv).existsSync()) {
+    files.add(File(pathMpv));
+  }
+  final unique = <String, File>{};
+  for (final file in files) {
+    unique[p.normalize(file.absolute.path).toLowerCase()] = file;
+  }
+  return unique.values.toList(growable: false);
+}
+
+String? _findPathMpv() {
+  final result = Process.runSync('where.exe', ['mpv.exe']);
+  if (result.exitCode != 0) return null;
+  return result.stdout
+      .toString()
+      .split(RegExp(r'\r?\n'))
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .firstOrNull;
+}
+
+String _mpvVersionHead(File executable) {
+  final result = Process.runSync(executable.path, ['--version']);
+  expect(result.exitCode, 0, reason: '${executable.path} 无法输出版本信息');
+  return result.stdout
+      .toString()
+      .split(RegExp(r'\r?\n'))
+      .map((line) => line.trim())
+      .firstWhere((line) => line.isNotEmpty);
 }
 
 Future<void> _waitUntil(bool Function() predicate) async {

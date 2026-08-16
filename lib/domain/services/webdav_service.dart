@@ -117,6 +117,13 @@ class WebDAVService implements DirectoryRepository {
     }
   }
 
+  /// 读取小型伴随文件原始字节，不经过目录缓存或媒体缓存。
+  Future<List<int>> fetchFileBytes(
+    String url, {
+    required int maxBytes,
+    required Duration timeout,
+  }) => _client.getFileBytes(url, maxBytes: maxBytes, timeout: timeout);
+
   /// STRM 指针文件内容读取上限（字节）。
   static const int maxContentBytes = 8192;
 

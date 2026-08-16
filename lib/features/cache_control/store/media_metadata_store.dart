@@ -3,6 +3,9 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
+import '../../../core/cache/cache_retention_policy.dart';
+import '../../../core/constants.dart';
+import '../../../core/utils/cache_expiration.dart';
 import '../models/media_metadata.dart';
 
 /// 媒体元数据缓存管理（JSON 文件读写，模块内自包含）。
@@ -13,22 +16,31 @@ import '../models/media_metadata.dart';
 /// 容错原则（增强层）：文件缺失/损坏/IO 失败一律视为空缓存，
 /// 写失败静默丢弃，绝不抛出、绝不阻断播放链路。
 class MediaMetadataStore {
-  MediaMetadataStore._(this._file);
+  MediaMetadataStore._(this._file, this._now, this._policyProvider);
 
   final File _file;
+  final DateTime Function() _now;
+  final CacheRetentionPolicyProvider _policyProvider;
 
   /// 缓存文件名（位于数据目录下）。
   static const String fileName = 'media_metadata.json';
 
   /// 以指定文件路径创建（集成方传入完整路径）。
-  static MediaMetadataStore forPath(String path) =>
-      MediaMetadataStore._(File(path));
+  static MediaMetadataStore forPath(
+    String path, {
+    DateTime Function()? now,
+    CacheRetentionPolicyProvider? policyProvider,
+  }) => MediaMetadataStore._(
+    File(path),
+    now ?? DateTime.now,
+    policyProvider ?? _defaultPolicyProvider,
+  );
 
   Map<String, dynamic>? _cached;
   Future<Map<String, dynamic>>? _loadingFuture;
 
   static const int maxEntries = 1000;
-  static const Duration maxAge = Duration(days: 180);
+  static const Duration maxAge = AppConstants.mediaMetadataCacheRetention;
 
   Future<Map<String, dynamic>> _loadAll() async {
     if (_cached != null) return _cached!;
@@ -71,8 +83,13 @@ class MediaMetadataStore {
         if (raw is! Map<String, dynamic>) return null;
         final meta = MediaMetadata.fromJson(raw);
         if (meta.urlHash.isEmpty || meta.urlHash != urlHash) return null;
-        if (DateTime.now().difference(meta.updatedAt) > maxAge) {
+        if (CacheExpiration.isExpired(
+          lastUsedAt: meta.updatedAt,
+          retention: _policyProvider().mediaMetadataRetention,
+          now: _now(),
+        )) {
           all.remove(urlHash);
+          await _persistAll(all);
           return null;
         }
         return meta;
@@ -90,6 +107,34 @@ class MediaMetadataStore {
     return _enqueue(() => _writeOne(meta));
   }
 
+  /// 清空持久化媒体元数据和内存副本。
+  Future<bool> clear() => _enqueue(() async {
+    try {
+      for (final file in [_file, File('${_file.path}.tmp')]) {
+        if (await file.exists()) await file.delete();
+      }
+      _cached = <String, dynamic>{};
+      _loadingFuture = null;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  });
+
+  /// 清除过期、损坏及超出容量上限的元数据，返回移除数量。
+  Future<int> purgeExpired({DateTime? now}) => _enqueue(() async {
+    try {
+      final all = await _loadAll();
+      final before = all.length;
+      _trim(all, now ?? _now());
+      final removed = before - all.length;
+      if (removed > 0) await _persistAll(all);
+      return removed;
+    } catch (_) {
+      return 0;
+    }
+  });
+
   Future<void> _pending = Future<void>.value();
 
   Future<T> _enqueue<T>(Future<T> Function() action) {
@@ -102,32 +147,60 @@ class MediaMetadataStore {
     try {
       final all = await _loadAll();
       all[meta.urlHash] = meta.toJson();
-      if (all.length > maxEntries) {
-        final entries = all.entries.toList()
-          ..sort((a, b) {
-            DateTime updated(MapEntry<String, dynamic> entry) {
-              final value = entry.value;
-              if (value is Map<String, dynamic>) {
-                return MediaMetadata.fromJson(value).updatedAt;
-              }
-              return DateTime.fromMillisecondsSinceEpoch(0);
-            }
-
-            return updated(a).compareTo(updated(b));
-          });
-        for (final entry in entries.take(all.length - maxEntries)) {
-          all.remove(entry.key);
-        }
-      }
-      await _file.parent.create(recursive: true);
-      final body = const JsonEncoder.withIndent('  ').convert(all);
-      final temp = File('${_file.path}.tmp');
-      await temp.writeAsString(body, flush: true);
-      await temp.rename(_file.path);
+      _trim(all, _now());
+      await _persistAll(all);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  void _trim(Map<String, dynamic> all, DateTime now) {
+    final retention = _policyProvider().mediaMetadataRetention;
+    final entries = <(String, DateTime)>[];
+    final removeKeys = <String>[];
+    for (final entry in all.entries) {
+      final value = entry.value;
+      if (value is! Map<String, dynamic>) {
+        removeKeys.add(entry.key);
+        continue;
+      }
+      final MediaMetadata meta;
+      try {
+        meta = MediaMetadata.fromJson(value);
+      } catch (_) {
+        removeKeys.add(entry.key);
+        continue;
+      }
+      if (meta.urlHash != entry.key ||
+          CacheExpiration.isExpired(
+            lastUsedAt: meta.updatedAt,
+            retention: retention,
+            now: now,
+          )) {
+        removeKeys.add(entry.key);
+      } else {
+        entries.add((entry.key, meta.updatedAt));
+      }
+    }
+    for (final key in removeKeys) {
+      all.remove(key);
+    }
+    entries.sort((a, b) => a.$2.compareTo(b.$2));
+    final overflow = all.length - maxEntries;
+    if (overflow > 0) {
+      for (final entry in entries.take(overflow)) {
+        all.remove(entry.$1);
+      }
+    }
+  }
+
+  Future<void> _persistAll(Map<String, dynamic> all) async {
+    await _file.parent.create(recursive: true);
+    final body = const JsonEncoder.withIndent('  ').convert(all);
+    final temp = File('${_file.path}.tmp');
+    await temp.writeAsString(body, flush: true);
+    await temp.rename(_file.path);
   }
 
   /// 生成 URL 缓存键：SHA-256 摘要（与存储键一致）。
@@ -163,4 +236,7 @@ class MediaMetadataStore {
     } catch (_) {}
     return sha256.convert(utf8.encode(stable)).toString();
   }
+
+  static CacheRetentionPolicy _defaultPolicyProvider() =>
+      const DefaultCacheRetentionPolicy();
 }

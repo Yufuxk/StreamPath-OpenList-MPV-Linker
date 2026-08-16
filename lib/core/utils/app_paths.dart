@@ -18,6 +18,8 @@ import 'package:path_provider/path_provider.dart';
 ///       ├── mpv-watch-later/          （mpv 续播进度）
 ///       ├── streampath.db             （播放进度 SQLite）
 ///       ├── playback_history.json     （上次播放记录）
+///       ├── audio_streampath.db       （音频播放进度 SQLite）
+///       ├── audio_playback_history.json（音频播放记录）
 ///       ├── media_metadata.json       （缓存系统媒体元数据）
 ///       ├── cache_intelligence_learning.json（匿名聚合学习数据）
 ///       ├── mpv-current-*.txt         （mpv 状态上报）
@@ -106,6 +108,8 @@ class AppPaths {
     for (final name in const [
       'streampath.db',
       'playback_history.json',
+      'audio_streampath.db',
+      'audio_playback_history.json',
       'media_metadata.json',
       'cache_intelligence_learning.json',
       'mpv-current.txt',
@@ -129,7 +133,11 @@ class AppPaths {
             name.startsWith('mpv-current-') ||
             name.startsWith('mpv-command-') ||
             name.startsWith('mpv-progress-') ||
+            name.startsWith('mpv-audio-current-') ||
+            name.startsWith('mpv-audio-command-') ||
+            name.startsWith('mpv-audio-progress-') ||
             name.startsWith('streampath-playlist-') ||
+            name.startsWith('streampath-audio-') ||
             name.endsWith('.lua');
         if (isSessionFile && e is File) {
           await _moveIfPresent(e, File(p.join(cacheDir.path, name)));
@@ -140,7 +148,11 @@ class AppPaths {
     }
 
     // 缓存目录：mpv-watch-later/、mpv-scripts/。
-    for (final name in const ['mpv-watch-later', 'mpv-scripts']) {
+    for (final name in const [
+      'mpv-watch-later',
+      'mpv-audio-watch-later',
+      'mpv-scripts',
+    ]) {
       final src = Directory(p.join(root.path, name));
       if (await src.exists()) {
         final dst = Directory(p.join(cacheDir.path, name));

@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 
-/// 为目录列表提供桌面端滚轮兜底路由。
+/// 为桌面端滚动区域提供滚轮兜底路由。
 ///
 /// 正常情况下，最深层的 [Scrollable] 会先通过
 /// [GestureBinding.pointerSignalResolver] 接管滚轮；如果实际 Windows

@@ -72,6 +72,7 @@ Write-Host "数据目录: $DataDir"
 # ── 1. cache/ 子目录内的缓存/动态数据（配置目录 config/ 不受影响） ──
 $targets = @(
     'streampath.db',            # 播放进度 SQLite
+    'audio_streampath.db',      # 音频播放进度 SQLite
     'directory_cache',          # Hive 目录缓存（目录形式）
     'directory_cache.hive',     # Hive 目录缓存（散落文件形式）
     'directory_cache.lock',
@@ -80,9 +81,14 @@ $targets = @(
     'mpv-current-*.txt',        # 分会话 MPV 当前播放状态上报
     'mpv-command-*.txt',        # 分会话软件下发命令文件
     'mpv-progress-*.jsonl',     # 分会话逐媒体播放结果
+    'mpv-audio-current-*.txt',  # 音频分会话状态上报
+    'mpv-audio-command-*.txt',  # 音频分会话命令通道
+    'mpv-audio-progress-*.jsonl',# 音频分会话播放结果
     'mpv-watch-later',          # MPV watch_later 续播记录
+    'mpv-audio-watch-later',    # 音频 MPV watch_later 续播记录
     'streampath-playlist.m3u',  # 多集播放列表临时文件
     'streampath-playlist-*.m3u',# 分会话播放列表临时文件
+    'streampath-audio-playlist-*.m3u8',# 音频分会话播放列表
     '*.lua',                    # 会话 Lua 脚本产物
     'mpv-scripts',              # 脚本基础目录
     'mpv.log',                  # MPV 日志
@@ -92,8 +98,9 @@ $targets = @(
 )
 if (-not $KeepHistory) {
     $targets += 'playback_history.json'  # 播放历史（继续播放入口）
+    $targets += 'audio_playback_history.json' # 音频播放历史
 } else {
-    Write-Host '已指定 -KeepHistory：保留 playback_history.json' -ForegroundColor Yellow
+    Write-Host '已指定 -KeepHistory：保留视频与音频播放历史' -ForegroundColor Yellow
 }
 
 # 新布局：cache/ 子目录；旧平铺布局残留（迁移失败等）同样清理。

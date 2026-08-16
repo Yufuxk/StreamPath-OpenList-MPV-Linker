@@ -132,4 +132,20 @@ void main() {
       throwsA(isA<ParseException>()),
     );
   });
+
+  test('原始字节读取保留 LRC 的非 UTF-8 编码', () async {
+    const bytes = <int>[0xff, 0xfe, 0x5b, 0x00, 0x30, 0x00];
+    final server = await serve((request) async {
+      request.response
+        ..headers.contentLength = bytes.length
+        ..add(bytes);
+      await request.response.close();
+    });
+    final client = WebDavClient(baseUrl: '${origin(server)}/dav');
+
+    expect(
+      await client.getFileBytes('${origin(server)}/song.lrc', maxBytes: 64),
+      bytes,
+    );
+  });
 }

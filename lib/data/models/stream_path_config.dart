@@ -1,6 +1,7 @@
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../core/constants.dart';
+import 'appearance_config.dart';
 import 'connection_config.dart';
 import 'openlist_recovery_config.dart';
 import 'player_config.dart';
@@ -19,9 +20,15 @@ import 'player_config.dart';
 ///   "subtitleInjectionEnabled": true,
 ///   "subtitleAutoSelectEnabled": true,
 ///   "resumeEnabled": true,
+///   "hiddenExtensionsEnabled": true,
 ///   "hiddenExtensions": [".ass"],
 ///   "defaultSortMode": "name",
 ///   "defaultSortDirection": "ascending",
+///   "appearance": {
+///     "style": "classic",
+///     "material": "automatic",
+///     "glassOpacity": 0.82
+///   },
 ///   "playerStartupTimeoutSeconds": 60,
 ///   "openListRecovery": {"enabled": false}
 /// }
@@ -44,9 +51,11 @@ class StreamPathConfig {
     bool subtitleAutoSelectEnabled = true,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
+    this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
     this.defaultSortDirection = FileSortDirection.ascending,
+    this.appearance = const AppearanceConfig(),
     this.playerStartupTimeoutSeconds =
         AppConstants.defaultPlayerStartupTimeoutSeconds,
     this.openListRecovery = const OpenListRecoveryConfig(),
@@ -78,6 +87,7 @@ class StreamPathConfig {
   final bool resumeEnabled;
 
   // ── 文件浏览 ─────────────────────────────────────────────────
+  final bool hiddenExtensionsEnabled;
   final List<String> hiddenExtensions;
 
   /// 文件浏览页启动时使用的默认排序方式。
@@ -85,6 +95,9 @@ class StreamPathConfig {
 
   /// 文件浏览页启动时使用的默认排序顺序。
   final FileSortDirection defaultSortDirection;
+
+  // ── 界面外观 ─────────────────────────────────────────────────
+  final AppearanceConfig appearance;
 
   /// 新启动的 MPV 等待首个有效播放状态的最长时间（秒）。
   final int playerStartupTimeoutSeconds;
@@ -111,6 +124,7 @@ class StreamPathConfig {
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
     resumeEnabled: resumeEnabled,
+    hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: hiddenExtensions,
     defaultSortMode: defaultSortMode,
     defaultSortDirection: defaultSortDirection,
@@ -122,6 +136,7 @@ class StreamPathConfig {
     PlayerConfig player,
     ConnectionConfig connection, {
     OpenListRecoveryConfig openListRecovery = const OpenListRecoveryConfig(),
+    AppearanceConfig appearance = const AppearanceConfig(),
   }) {
     return StreamPathConfig(
       serverUrl: connection.baseUrl,
@@ -133,11 +148,13 @@ class StreamPathConfig {
       subtitleInjectionEnabled: player.subtitleInjectionEnabled,
       subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
       resumeEnabled: player.resumeEnabled,
+      hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
       hiddenExtensions: player.hiddenExtensions,
       defaultSortMode: player.defaultSortMode,
       defaultSortDirection: player.defaultSortDirection,
       playerStartupTimeoutSeconds: player.playerStartupTimeoutSeconds,
       openListRecovery: openListRecovery,
+      appearance: appearance,
     );
   }
 
@@ -151,6 +168,7 @@ class StreamPathConfig {
       player ?? toPlayerConfig(),
       connection ?? toConnectionConfig(),
       openListRecovery: recovery ?? openListRecovery,
+      appearance: appearance,
     );
   }
 
@@ -167,9 +185,11 @@ class StreamPathConfig {
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'resumeEnabled': resumeEnabled,
+    'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
     'defaultSortDirection': defaultSortDirection.jsonValue,
+    'appearance': appearance.toJson(),
     'playerStartupTimeoutSeconds': playerStartupTimeoutSeconds,
     'openListRecovery': openListRecovery.toJson(),
   };
@@ -193,6 +213,8 @@ class StreamPathConfig {
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
+      hiddenExtensionsEnabled:
+          (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:
           (json['hiddenExtensions'] as List?)
               ?.whereType<String>()
@@ -203,6 +225,11 @@ class StreamPathConfig {
       defaultSortMode: fileSortModeFromJson(json['defaultSortMode']),
       defaultSortDirection: fileSortDirectionFromJson(
         json['defaultSortDirection'],
+      ),
+      appearance: AppearanceConfig.fromJson(
+        json['appearance'] is Map
+            ? Map<String, dynamic>.from(json['appearance'] as Map)
+            : null,
       ),
       playerStartupTimeoutSeconds: playerStartupTimeoutSecondsFromJson(
         json['playerStartupTimeoutSeconds'],
