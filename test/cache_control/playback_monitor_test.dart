@@ -12,13 +12,12 @@ void main() {
   late Directory dir;
   late File statusFile;
 
-  /// 写一个 n 行状态文件（默认 8 行）。
+  /// 写一个 n 行状态文件（默认 7 行）。
   void writeStatus({
     double? duration = 7200,
     int? buffering = 0,
-    int? cacheUsed = 100 * 1024 * 1024,
     double? speedKbps = 5000,
-    int lines = 8,
+    int lines = 7,
   }) {
     final rows = <String>[
       '0',
@@ -27,7 +26,6 @@ void main() {
       '10.5',
       duration.toString(),
       buffering.toString(),
-      cacheUsed.toString(),
       (speedKbps! * 1024).round().toString(),
     ];
     statusFile.writeAsStringSync('${rows.take(lines).join('\n')}\n');
@@ -79,13 +77,12 @@ void main() {
     );
   }
 
-  /// 写入十四字段状态文件，并允许覆盖播放与缓存状态。
+  /// 写入十三字段状态文件，并允许覆盖播放与缓存状态。
   void writeStatusFull({
     double timePos = 10.5,
     String paused = '0',
     double? duration = 7200,
     int? buffering = 0,
-    int? cacheUsed = 100 * 1024 * 1024,
     double? speedKbps = 5000,
     String cacheIdle = '0', // 0=非空闲（真卡顿场景），1=缓存满（正常）
     String pausedForCache = '0',
@@ -94,7 +91,7 @@ void main() {
   }) {
     statusFile.writeAsStringSync(
       '0\nhttp://h/dav/01.mkv\n$paused\n$timePos\n$duration\n'
-      '$buffering\n$cacheUsed\n${(speedKbps! * 1024).round()}\n$cacheIdle\n'
+      '$buffering\n${(speedKbps! * 1024).round()}\n$cacheIdle\n'
       'diag\n$pausedForCache\n$bofCached\n$eofCached\n1920x1080\n',
     );
   }
@@ -576,12 +573,7 @@ void main() {
         onAdjustment: adjustments.add,
         onWarning: warnings.add,
       );
-      writeStatusFull(
-        cacheUsed: 200 * 1024 * 1024,
-        speedKbps: 0,
-        bofCached: '1',
-        eofCached: '1',
-      );
+      writeStatusFull(speedKbps: 0, bofCached: '1', eofCached: '1');
       for (var i = 0; i < 4; i++) {
         await monitor.sampleOnce();
       }
@@ -590,38 +582,29 @@ void main() {
       monitor.stop();
     });
 
-    test(
-      '0.41 场景：cache-used 缺失（默认内存缓存）+ cache-idle=yes + 速度 0 → 不误报',
-      () async {
-        // 用户复现场景：mpv 0.41 下 cache-idle 属性已改名 demuxer-cache-idle，
-        // 旧脚本读不到（null）→ idle 分支失效；同时默认内存缓存无
-        // file-cache-bytes → cacheUsedBytes=null → fullyCached 也失效。
-        // cacheIdle=true 时零速属于缓存空闲，不应判定为网络不足。
-        final adjustments = <CacheAdjustment>[];
-        final warnings = <String>[];
-        final monitor = makeMonitor(
-          bitrateMbps: 40,
-          memory: const _FakeMemory(16 * 1024 * 1024 * 1024),
-          fileSizeBytes: 1024 * 1024 * 1024, // 1GB 文件，播放到后半段
-          onAdjustment: adjustments.add,
-          onWarning: warnings.add,
-        );
-        // 后半段（timePos 3000/7200，未到结尾 5s）：文件已下载完（EOF），
-        // 缓存速度归 0，idle=yes（0.41 demuxer-cache-idle），cache-used 缺失。
-        writeStatusFull(
-          timePos: 3000,
-          cacheUsed: -1,
-          speedKbps: 0,
-          cacheIdle: '1',
-        );
-        for (var i = 0; i < 4; i++) {
-          await monitor.sampleOnce();
-        }
-        expect(adjustments, isEmpty, reason: '全缓存（idle=yes）速度 0 不应触发增档');
-        expect(warnings, isEmpty, reason: '全缓存（idle=yes）速度 0 不应触发警告');
-        monitor.stop();
-      },
-    );
+    test('0.41 场景：cache-idle=yes + 速度 0 → 不误报', () async {
+      // 用户复现场景：mpv 0.41 下 cache-idle 属性已改名 demuxer-cache-idle，
+      // 旧脚本读不到（null）会让 idle 分支失效。
+      // cacheIdle=true 时零速属于缓存空闲，不应判定为网络不足。
+      final adjustments = <CacheAdjustment>[];
+      final warnings = <String>[];
+      final monitor = makeMonitor(
+        bitrateMbps: 40,
+        memory: const _FakeMemory(16 * 1024 * 1024 * 1024),
+        fileSizeBytes: 1024 * 1024 * 1024, // 1GB 文件，播放到后半段
+        onAdjustment: adjustments.add,
+        onWarning: warnings.add,
+      );
+      // 后半段（timePos 3000/7200，未到结尾 5s）：文件已下载完（EOF），
+      // 缓存速度归 0，idle=yes（0.41 demuxer-cache-idle）。
+      writeStatusFull(timePos: 3000, speedKbps: 0, cacheIdle: '1');
+      for (var i = 0; i < 4; i++) {
+        await monitor.sampleOnce();
+      }
+      expect(adjustments, isEmpty, reason: '全缓存（idle=yes）速度 0 不应触发增档');
+      expect(warnings, isEmpty, reason: '全缓存（idle=yes）速度 0 不应触发警告');
+      monitor.stop();
+    });
 
     test('播放中缓存满时序：正常下载（idle=0）→ 缓存满（idle=1 速度 0）streak 清零不误报', () async {
       final adjustments = <CacheAdjustment>[];
@@ -711,7 +694,7 @@ void main() {
       monitor.stop();
     });
 
-    test('旧 8 行格式（无 cache-idle）→ buffering=100 按「未知」保守不误报', () async {
+    test('旧 7 行格式（无 cache-idle）→ buffering=100 按「未知」保守不误报', () async {
       final warnings = <String>[];
       final monitor = makeMonitor(
         bitrateMbps: 40,
@@ -719,8 +702,8 @@ void main() {
         bufferingWarningStreak: 3,
         onWarning: warnings.add,
       );
-      // 8 行（无 idle 行）：buffering=100 但 idle 未知 → 不视为卡顿。
-      writeStatus(buffering: 100, speedKbps: 5000, lines: 8);
+      // 7 行（无 idle 行）：buffering=100 但 idle 未知 → 不视为卡顿。
+      writeStatus(buffering: 100, speedKbps: 5000, lines: 7);
       for (var i = 0; i < 3; i++) {
         await monitor.sampleOnce();
       }

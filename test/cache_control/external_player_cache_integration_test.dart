@@ -1,8 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:path/path.dart' as p;
-import 'package:streampath/core/utils/app_paths.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
@@ -447,22 +445,18 @@ void main() {
         cachePolicy: provider,
         keepAlive: true,
       );
-      final dataDir = await AppPaths.cacheDirectory();
-      final statusFile = File(
-        p.join(
-          dataDir.path,
-          ExternalPlayerService.sessionStatusFileName('session_dur'),
-        ),
-      );
+      File? statusFile;
       try {
         final result = await service.launch(
           entries: const [MediaEntry(url: 'http://127.0.0.1:1/dav/01.mkv')],
           sessionId: 'session_dur',
         );
+        final activeStatusFile = File(result.statusFilePath!);
+        statusFile = activeStatusFile;
         expect(hasCacheArgs(result.args), isTrue);
         // 模拟真实 mpv 打开 mkv 后由 lua 脚本写入的 5 行状态文件
         // （launch 之后写入 → mtime 晚于监控启动，通过新鲜度检查）。
-        await statusFile.writeAsString(
+        await activeStatusFile.writeAsString(
           '0\nhttp://127.0.0.1:1/dav/01.mkv\n0\n1.5\n100\n',
         );
         // 等待监控轮询（1s/轮）读到状态文件并上报。
@@ -472,8 +466,8 @@ void main() {
         );
         expect(durations.first, 100);
       } finally {
-        if (statusFile.existsSync()) {
-          await statusFile.delete();
+        if (statusFile?.existsSync() ?? false) {
+          await statusFile!.delete();
         }
       }
     });
@@ -589,17 +583,14 @@ void main() {
         // 用户模板手动配置缓存参数（首集应被尊重、跳过注入）。
         playerArgs: const ['--cache-secs=999', '{url}'],
       );
-      final statusFile = File(
-        p.join(
-          (await AppPaths.cacheDirectory()).path,
-          ExternalPlayerService.sessionStatusFileName('session_userargs'),
-        ),
-      );
+      File? statusFile;
       try {
-        await service.launch(
+        final result = await service.launch(
           entries: const [MediaEntry(url: 'http://127.0.0.1:1/dav/ep01.mkv')],
           sessionId: 'session_userargs',
         );
+        final activeStatusFile = File(result.statusFilePath!);
+        statusFile = activeStatusFile;
         // 首集：用户手动参数已传入（尊重手动配置）。
         expect(
           provider.userArgCalls.single,
@@ -607,9 +598,9 @@ void main() {
           reason: '首集必须传入用户手动缓存参数',
         );
         // 模拟切集到第二集。
-        await statusFile.writeAsString(
+        await activeStatusFile.writeAsString(
           '1\nhttp://127.0.0.1:1/dav/ep02.mkv\n0\n5.0\n1800\n0\n'
-          '104857600\n512000\n0\n',
+          '512000\n0\n',
         );
         await waitUntil(() => provider.buildCalls >= 2, reason: '切集后应重新计算缓存参数');
         // 切集重算必须沿用用户手动参数（否则手动配置在下一集失效）。
@@ -619,8 +610,8 @@ void main() {
           reason: '切集重算必须沿用用户手动缓存参数',
         );
       } finally {
-        if (statusFile.existsSync()) {
-          await statusFile.delete();
+        if (statusFile?.existsSync() ?? false) {
+          await statusFile!.delete();
         }
       }
     });
@@ -636,28 +627,25 @@ void main() {
         ),
       );
       final (service, _) = await makeService(cachePolicy: provider);
-      final statusFile = File(
-        p.join(
-          (await AppPaths.cacheDirectory()).path,
-          ExternalPlayerService.sessionStatusFileName('session_ts_switch'),
-        ),
-      );
+      File? statusFile;
       try {
-        await service.launch(
+        final result = await service.launch(
           entries: const [MediaEntry(url: 'http://127.0.0.1:1/dav/ep01.m2ts')],
           sessionId: 'session_ts_switch',
         );
+        final activeStatusFile = File(result.statusFilePath!);
+        statusFile = activeStatusFile;
         final callsBefore = provider.buildCalls;
-        await statusFile.writeAsString(
+        await activeStatusFile.writeAsString(
           '1\nhttp://127.0.0.1:1/dav/ep02.mkv\n0\n5.0\n1800\n0\n'
-          '104857600\n512000\n0\ndiag\n0\n0\n0\n1920x1080\n',
+          '512000\n0\ndiag\n0\n0\n0\n1920x1080\n',
         );
         await waitUntil(
           () => provider.buildCalls > callsBefore,
           reason: '首集 TS 不能关闭唯一的切集 watcher',
         );
       } finally {
-        if (statusFile.existsSync()) await statusFile.delete();
+        if (statusFile?.existsSync() ?? false) await statusFile!.delete();
       }
     });
 
@@ -670,24 +658,21 @@ void main() {
         ),
       );
       final (service, _) = await makeService(cachePolicy: provider);
-      final statusFile = File(
-        p.join(
-          (await AppPaths.cacheDirectory()).path,
-          ExternalPlayerService.sessionStatusFileName('session_duplicate'),
-        ),
-      );
+      File? statusFile;
       try {
         const sameUrl = 'http://127.0.0.1:1/dav/repeat.mkv';
-        await service.launch(
+        final result = await service.launch(
           entries: const [
             MediaEntry(url: sameUrl),
             MediaEntry(url: sameUrl),
           ],
           sessionId: 'session_duplicate',
         );
+        final activeStatusFile = File(result.statusFilePath!);
+        statusFile = activeStatusFile;
         final callsBefore = provider.buildCalls;
-        await statusFile.writeAsString(
-          '1\n$sameUrl\n0\n5.0\n1800\n0\n104857600\n512000\n0\n'
+        await activeStatusFile.writeAsString(
+          '1\n$sameUrl\n0\n5.0\n1800\n0\n512000\n0\n'
           'diag\n0\n0\n0\n1920x1080\n',
         );
         await waitUntil(
@@ -695,7 +680,7 @@ void main() {
           reason: '同 URL 重复条目必须用 playlist-pos 区分',
         );
       } finally {
-        if (statusFile.existsSync()) await statusFile.delete();
+        if (statusFile?.existsSync() ?? false) await statusFile!.delete();
       }
     });
 
@@ -716,22 +701,19 @@ void main() {
         ),
       );
       final (service, _) = await makeService(cachePolicy: provider);
-      final statusFile = File(
-        p.join(
-          (await AppPaths.cacheDirectory()).path,
-          ExternalPlayerService.sessionStatusFileName('session_switch'),
-        ),
-      );
+      File? statusFile;
       try {
-        await service.launch(
+        final result = await service.launch(
           entries: const [MediaEntry(url: 'http://127.0.0.1:1/dav/ep01.mkv')],
           sessionId: 'session_switch',
         );
+        final activeStatusFile = File(result.statusFilePath!);
+        statusFile = activeStatusFile;
         final callsBefore = provider.buildCalls;
         // 模拟 mpv 播完第一集后自动切到第二集：状态文件 path 行变化。
-        await statusFile.writeAsString(
+        await activeStatusFile.writeAsString(
           '1\nhttp://127.0.0.1:1/dav/ep02.mkv\n0\n5.0\n1800\n0\n'
-          '104857600\n512000\n0\n',
+          '512000\n0\n',
         );
         // 轮询等待（最多 8s）监控感知切集（并发负载下轮询节奏不定）。
         await waitUntil(
@@ -746,8 +728,8 @@ void main() {
           reason: '切集后时长应关联新集、监控基准应更新到新集',
         );
       } finally {
-        if (statusFile.existsSync()) {
-          await statusFile.delete();
+        if (statusFile?.existsSync() ?? false) {
+          await statusFile!.delete();
         }
       }
     });
@@ -800,9 +782,6 @@ class _ThrowingProvider implements CachePolicyProvider {
   void stopMonitor(String sessionId, {bool clearSession = false}) {}
 
   @override
-  CachePolicyResult? lastResultFor(String url) => null;
-
-  @override
   CachePolicySessionState? sessionState(String sessionId) => null;
 
   @override
@@ -833,7 +812,7 @@ class _RecordingProvider implements CachePolicyProvider {
   /// 每次 buildCacheArgs 收到的 userArgs（切集沿用用户参数验证用）。
   final List<List<String>> userArgCalls = [];
 
-  /// 返回给 lastResultFor 的固定结果（null 表示不提供）。
+  /// 注入当前会话状态的固定策略结果（null 表示跳过注入）。
   final CachePolicyResult? fixedResult;
   final Map<String, CachePolicySessionState> _states = {};
   void Function(CacheAdjustment adjustment)? adjustmentCallback;
@@ -901,9 +880,6 @@ class _RecordingProvider implements CachePolicyProvider {
   void stopMonitor(String sessionId, {bool clearSession = false}) {
     if (clearSession) _states.remove(sessionId);
   }
-
-  @override
-  CachePolicyResult? lastResultFor(String url) => fixedResult;
 
   @override
   CachePolicySessionState? sessionState(String sessionId) => _states[sessionId];

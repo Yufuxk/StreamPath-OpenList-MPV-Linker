@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../localization/app_localizations.dart';
+import '../localization/app_text.dart';
 import 'package:flutter/services.dart';
 
 /// 无系统标题栏时的自绘窗口标题栏。
@@ -166,7 +169,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                   const SizedBox(width: 20),
                   _TitleBarMark(color: scheme.primary),
                   const SizedBox(width: 8),
-                  Text(
+                  AppText(
                     'StreamPath',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: scheme.onSurfaceVariant,
@@ -181,7 +184,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
               key: WindowTitleBar.minimizeButtonKey,
               icon: _WindowControlIconType.minimize,
               iconKey: WindowTitleBar.minimizeIconKey,
-              tooltip: '最小化',
+              tooltip: context.l10n.text('最小化'),
               onPressed: () => _invoke('minimize'),
             ),
             _WindowButton(
@@ -190,14 +193,14 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                   ? _WindowControlIconType.restore
                   : _WindowControlIconType.maximize,
               iconKey: WindowTitleBar.maximizeIconKey,
-              tooltip: _maximized ? '还原' : '最大化',
+              tooltip: context.l10n.text(_maximized ? '还原' : '最大化'),
               onPressed: _toggleMaximize,
             ),
             _WindowButton(
               key: WindowTitleBar.closeButtonKey,
               icon: _WindowControlIconType.close,
               iconKey: WindowTitleBar.closeIconKey,
-              tooltip: '关闭',
+              tooltip: context.l10n.text('关闭'),
               onPressed: () => _invoke('close'),
               close: true,
             ),
@@ -317,7 +320,7 @@ class _WindowsCaptionGlyph extends StatelessWidget {
       child: SizedBox.square(
         dimension: _size,
         child: Center(
-          child: Text(
+          child: AppText(
             _glyph,
             textScaler: TextScaler.noScaling,
             style: TextStyle(

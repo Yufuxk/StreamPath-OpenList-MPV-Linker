@@ -125,6 +125,7 @@ end)
     String progressFile,
     Directory base, {
     required String sessionId,
+    String? launchEpoch,
   }) async {
     final script =
         '''
@@ -133,6 +134,7 @@ local utils = require "mp.utils"
 local OUT = ${_luaQuote(outFile)}
 local CMD = ${_luaQuote(commandFile)}
 local PROGRESS = ${_luaQuote(progressFile)}
+local EPOCH = ${_luaQuote(launchEpoch ?? '')}
 
 local has_loaded = false
 local last_playlist_pos = -1
@@ -144,6 +146,7 @@ local last_entry_recorded = false
 local function append_progress(outcome, reason, file_error)
     if last_playlist_pos < 0 and last_path == "" then return end
     local record = {
+        epoch = EPOCH,
         outcome = outcome,
         playlist_pos = last_playlist_pos,
         path = last_path,
@@ -250,7 +253,7 @@ mp.observe_property("idle-active", "bool", function(_, value)
     if value and has_loaded then
         local file = io.open(OUT, "w")
         if file then
-            file:write("-1\\n\\n0\\n-1\\n-1")
+            file:write("-1\\n" .. tostring(last_playlist_pos) .. "\\n" .. EPOCH)
             file:close()
         end
     end
@@ -266,7 +269,9 @@ end)
 
 mp.add_periodic_timer(0.25, poll_command)
 mp.add_periodic_timer(1.0, function()
-    if has_loaded then write_status(false) end
+    if has_loaded and not mp.get_property_bool("idle-active", false) then
+        write_status(false)
+    end
 end)
 ''';
     return _write(

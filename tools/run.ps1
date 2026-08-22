@@ -1,13 +1,18 @@
 ﻿# =============================================================
 # StreamPath 运行脚本（通用版）
 # 功能：选择运行 Debug 或 Release 模式，选择后开始运行。
-# 用法（放在项目根目录）：
-#   powershell -ExecutionPolicy Bypass -File .\run.ps1
+# 用法（在项目根目录执行）：
+#   powershell -ExecutionPolicy Bypass -File .\tools\run.ps1
 # =============================================================
 
 $ErrorActionPreference = 'Stop'
-$Root = $PSScriptRoot
-Set-Location $Root
+$ScriptRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$ProjectRoot = [IO.Path]::GetFullPath((Split-Path $ScriptRoot -Parent))
+$ProjectMarker = Join-Path $ProjectRoot 'pubspec.yaml'
+if (-not (Test-Path -LiteralPath $ProjectMarker -PathType Leaf)) {
+    throw "无法确认 StreamPath 项目根：$ProjectRoot"
+}
+Set-Location -LiteralPath $ProjectRoot
 
 Write-Host '=== StreamPath 运行 ===' -ForegroundColor Cyan
 

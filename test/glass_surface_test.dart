@@ -54,12 +54,58 @@ void main() {
     );
 
     await tester.tap(find.text('打开'));
-    await tester.pumpAndSettle();
+    await tester.pump();
     expect(find.byType(BackdropFilter), findsOneWidget);
     expect(find.byType(AlertDialog), findsOneWidget);
+    final initialBackdrop = tester.widget<GlassDialogBackdrop>(
+      find.byKey(const Key('glass-dialog-backdrop')),
+    );
+    expect(initialBackdrop.progress, 0);
+    expect(
+      tester
+          .widget<ColoredBox>(
+            find.byKey(const Key('glass-dialog-barrier-color')),
+          )
+          .color
+          .a,
+      0,
+    );
+
+    await tester.pump(const Duration(milliseconds: 100));
+    final middleBackdrop = tester.widget<GlassDialogBackdrop>(
+      find.byKey(const Key('glass-dialog-backdrop')),
+    );
+    final middleBarrier = tester.widget<ColoredBox>(
+      find.byKey(const Key('glass-dialog-barrier-color')),
+    );
+    final tokens = Theme.of(
+      tester.element(find.byType(AlertDialog)),
+    ).extension<GlassTokens>()!;
+    expect(middleBackdrop.progress, greaterThan(0));
+    expect(middleBackdrop.progress, lessThan(1));
+    expect(middleBarrier.color.a, greaterThan(0));
+    expect(middleBarrier.color.a, lessThan(tokens.modalBarrierColor.a));
+
+    await tester.pumpAndSettle();
+    final finalBackdrop = tester.widget<GlassDialogBackdrop>(
+      find.byKey(const Key('glass-dialog-backdrop')),
+    );
+    final finalBarrier = tester.widget<ColoredBox>(
+      find.byKey(const Key('glass-dialog-barrier-color')),
+    );
+    expect(finalBackdrop.progress, 1);
+    expect(finalBarrier.color.a, closeTo(tokens.modalBarrierColor.a, 0.001));
     expect(tester.takeException(), isNull);
 
     await tester.tap(find.text('关闭'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 52));
+    final earlyReverseBackdrop = tester.widget<GlassDialogBackdrop>(
+      find.byKey(const Key('glass-dialog-backdrop')),
+    );
+    expect(earlyReverseBackdrop.progress, greaterThan(0.9));
+    expect(earlyReverseBackdrop.progress, lessThan(0.94));
+
     await tester.pumpAndSettle();
     expect(find.byType(AlertDialog), findsNothing);
   });

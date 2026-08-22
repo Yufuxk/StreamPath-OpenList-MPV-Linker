@@ -140,6 +140,50 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('索引结果用所在文件夹替代协议未提供的修改时间', (tester) async {
+      const file = WebDavFile(
+        name: 'movie.mkv',
+        href: '影视/movie.mkv',
+        isDirectory: false,
+        size: 1024,
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                FileListHeader(metadataColumnLabel: '所在文件夹'),
+                FileTile(
+                  file: file,
+                  subtitle: '影视/电影',
+                  metadataColumnText: '电影',
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('所在文件夹'), findsOneWidget);
+      expect(find.text('影视/电影'), findsOneWidget);
+      expect(find.text('电影'), findsOneWidget);
+      expect(find.text('修改时间'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('影视/电影')).dx,
+        tester.getTopLeft(find.text('movie.mkv')).dx,
+      );
+      expect(
+        tester.getCenter(find.text('影视/电影')).dy,
+        greaterThan(tester.getCenter(find.text('movie.mkv')).dy),
+      );
+      expect(
+        tester.getCenter(find.text('电影')).dx,
+        greaterThan(tester.getCenter(find.text('影视/电影')).dx),
+      );
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('宽窗口中的目录以短杠表示大小并显示修改时间', (tester) async {
       final directory = WebDavFile(
         name: 'Season 1',

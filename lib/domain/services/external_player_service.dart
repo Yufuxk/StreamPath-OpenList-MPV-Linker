@@ -7,13 +7,13 @@ import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/cache/cache_retention_policy.dart';
-import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
 import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
 import '../../features/cache_control/cache_policy_service.dart';
 import '../../features/cache_control/models/cache_policy_result.dart';
@@ -21,10 +21,14 @@ import '../../features/cache_control/models/cache_policy_session_state.dart';
 import '../../features/cache_control/utils/container_rules.dart';
 import '../../features/cache_control/monitor/playback_monitor.dart';
 import 'mpv_playback_progress_sync.dart';
-import 'mpv_scripts.dart';
+import 'mpv_idle_completion_marker.dart';
 import 'mpv_session_controller.dart';
+import 'mpv_scripts.dart';
 import 'mpv_watch_later_sync.dart';
+import 'openlist_process_restart_service.dart';
 import 'openlist_recovery_service.dart';
+import 'player_process_controller.dart';
+import 'session_progress_sync_coordinator.dart';
 
 /// 测试或平台适配可注入的 mpv 缓存属性更新器。
 typedef MpvCacheIpcUpdater =
@@ -42,19 +46,80 @@ class PlayerLaunchResult {
     required this.process,
     required this.args,
     required this.sessionId,
+    required this.launchEpoch,
+    this.processIdentity,
     this.ipcPipeName,
     this.statusFilePath,
     this.commandFilePath,
     this.progressFilePath,
+    this.artifactPaths = const [],
   });
 
   final Process process;
   final List<String> args;
   final String sessionId;
+  final String launchEpoch;
+  final PlayerProcessIdentity? processIdentity;
   final String? ipcPipeName;
   final String? statusFilePath;
   final String? commandFilePath;
   final String? progressFilePath;
+  final List<String> artifactPaths;
+}
+
+/// 一次播放从启动到自动恢复共用的不可变配置快照。
+class _PlaybackLaunchContext {
+  const _PlaybackLaunchContext({
+    required this.player,
+    required this.serverUrl,
+    required this.recovery,
+    required this.profileId,
+    required this.username,
+    required this.password,
+  });
+
+  factory _PlaybackLaunchContext.capture({
+    required PlayerConfig player,
+    required String serverUrl,
+    required OpenListRecoveryConfig recovery,
+    required String profileId,
+    required String? username,
+    required String? password,
+  }) {
+    return _PlaybackLaunchContext(
+      player: PlayerConfig(
+        name: player.name,
+        executable: player.executable,
+        args: List<String>.unmodifiable(player.args),
+        subtitleInjectionEnabled: player.subtitleInjectionEnabled,
+        subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
+        resumeEnabled: player.resumeEnabled,
+        hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
+        hiddenExtensions: List<String>.unmodifiable(player.hiddenExtensions),
+        defaultSortMode: player.defaultSortMode,
+        defaultSortDirection: player.defaultSortDirection,
+        playerStartupTimeoutSeconds: player.playerStartupTimeoutSeconds,
+      ),
+      serverUrl: serverUrl,
+      recovery: OpenListRecoveryConfig(
+        enabled: recovery.enabled,
+        baseUrl: recovery.baseUrl,
+        username: recovery.username,
+        password: recovery.password,
+        token: recovery.token,
+      ),
+      profileId: profileId,
+      username: username,
+      password: password,
+    );
+  }
+
+  final PlayerConfig player;
+  final String serverUrl;
+  final OpenListRecoveryConfig recovery;
+  final String profileId;
+  final String? username;
+  final String? password;
 }
 
 enum PlaybackRecoveryStage { preparing, relaunched, failed }
@@ -79,24 +144,33 @@ class _PlayerSessionRuntime {
     required this.sessionId,
     required this.pid,
     required this.isMpv,
-    this.launchedHere = false,
+    this.processIdentity,
+    required this.livenessTracker,
     this.statusFilePath,
     this.commandFilePath,
     this.progressFilePath,
     this.ipcPipeName,
     required this.epoch,
+    required this.launchEpoch,
+    required this.artifactSessionId,
+    required this.progressGeneration,
+    required this.ownershipGeneration,
     this.currentTrackUrl,
     this.currentPlaylistPos,
     this.entries = const [],
     this.watchLaterUrls = const [],
     this.username,
     this.password,
+    this.profileId = '',
+    this.launchContext,
+    this.artifactPaths = const [],
   });
 
   final String sessionId;
   final int? pid;
   final bool isMpv;
-  final bool launchedHere;
+  final PlayerProcessIdentity? processIdentity;
+  final PlayerProcessLivenessTracker livenessTracker;
   final String? statusFilePath;
   final String? commandFilePath;
   final String? progressFilePath;
@@ -106,18 +180,25 @@ class _PlayerSessionRuntime {
 
   /// 服务生命周期内唯一的 runtime 代际；不因 sessionId 复用而重复。
   final int epoch;
+  final String launchEpoch;
+  final String artifactSessionId;
+  final int progressGeneration;
+  final int ownershipGeneration;
   String? currentTrackUrl;
   int? currentPlaylistPos;
   final List<MediaEntry> entries;
   final List<String> watchLaterUrls;
   final String? username;
   final String? password;
+  final String profileId;
+  final _PlaybackLaunchContext? launchContext;
+  final List<String> artifactPaths;
   int trackGeneration = 0;
-  int progressJournalLinesRead = 0;
+  int failureJournalByteOffset = 0;
+  int temporaryProgressJournalByteOffset = 0;
 
-  bool? aliveCache;
-  DateTime? aliveCacheAt;
   Future<void>? exitSyncFuture;
+  Future<PlayerTerminationOutcome>? terminationFuture;
 }
 
 class _PlaybackRecoveryState {
@@ -160,10 +241,14 @@ class ExternalPlayerService {
     void Function(String message)? cacheLogger,
     this._cacheIpcUpdater,
     PlaybackLinkRecoveryProvider? linkRecoveryProvider,
+    PlaybackServerRestarter? serverRestarter,
+    PlayerProcessController? processController,
   }) : _configStore = configStore, // ignore: prefer_initializing_formals
        _cacheLogger = cacheLogger ?? _defaultCacheLogger,
        _linkRecoveryProvider =
-           linkRecoveryProvider ?? OpenListRecoveryService();
+           linkRecoveryProvider ?? OpenListRecoveryService(),
+       _serverRestarter = serverRestarter ?? OpenListProcessRestartService(),
+       _processController = processController ?? PlayerProcessController();
 
   final StreamPathConfigStore _configStore;
 
@@ -181,6 +266,8 @@ class ExternalPlayerService {
   final void Function(PlaybackRecoveryEvent event)? onPlaybackRecovery;
 
   final PlaybackLinkRecoveryProvider _linkRecoveryProvider;
+  final PlaybackServerRestarter _serverRestarter;
+  final PlayerProcessController _processController;
 
   /// 缓存系统集成层诊断日志；默认输出到 flutter run 控制台。
   final void Function(String message) _cacheLogger;
@@ -193,7 +280,12 @@ class ExternalPlayerService {
 
   final Map<String, _PlayerSessionRuntime> _sessions = {};
   final Map<String, _PlaybackRecoveryState> _recoveryStates = {};
+  final Map<String, int> _launchOwnership = {};
+  final SessionProgressSyncCoordinator _progressSyncCoordinator =
+      SessionProgressSyncCoordinator();
   int _launchSequence = 0;
+  int _ownershipSequence = 0;
+  int _anonymousSessionSequence = 0;
   int _runtimeEpoch = 0;
   String? _lastSessionId;
 
@@ -212,6 +304,27 @@ class ExternalPlayerService {
       _cacheLogger('[SPCacheSystem] $message');
     } catch (_) {
       // 日志失败不影响播放链路。
+    }
+  }
+
+  bool _ownsLaunch(String sessionId, int generation) =>
+      _launchOwnership[sessionId] == generation;
+
+  void _ensureLaunchOwnership(String sessionId, int generation) {
+    if (!_ownsLaunch(sessionId, generation)) {
+      throw AppException.process('该播放启动已被同会话的新请求取代');
+    }
+  }
+
+  /// 在连接或用户刷新成功后更新本机 OpenList/AList 进程身份。
+  Future<void> captureOpenListProcessIdentity() async {
+    try {
+      final config = (await _configStore.load()).openListRecovery;
+      if (config.enabled && config.baseUrl.trim().isNotEmpty) {
+        await _serverRestarter.capture(config.baseUrl);
+      }
+    } catch (_) {
+      // 进程识别是第三次恢复的可选前置；失败不影响连接、浏览或播放。
     }
   }
 
@@ -237,22 +350,97 @@ class ExternalPlayerService {
     if (playlistStart < 0 || playlistStart >= entries.length) {
       playlistStart = 0;
     }
-    final fullConfig = await _configStore.load();
-    final config = fullConfig.toPlayerConfig();
+    final resolvedSessionId =
+        sessionId ?? 'session_${++_anonymousSessionSequence}';
+    final ownershipGeneration = ++_ownershipSequence;
+    _launchOwnership[resolvedSessionId] = ownershipGeneration;
+    final existing = _sessions[resolvedSessionId];
+    try {
+      if (existing != null) {
+        final liveness = await _processController.probeOwned(
+          existing.processIdentity,
+        );
+        _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
+        if (liveness != PlayerProcessLiveness.exited) {
+          throw AppException.process('该播放会话仍在运行，请先关闭或删除后再继续');
+        }
+        if (identical(_sessions[resolvedSessionId], existing)) {
+          _sessions.remove(resolvedSessionId);
+          _cleanupCacheRuntime(existing);
+        }
+      }
+      final fullConfig = await _configStore.load();
+      _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
+      final launchContext = _PlaybackLaunchContext.capture(
+        player: fullConfig.toPlayerConfig(),
+        serverUrl: fullConfig.serverUrl,
+        recovery: fullConfig.openListRecovery,
+        profileId: fullConfig.profileId,
+        username: username,
+        password: password,
+      );
+      return await _launchWithContext(
+        entries: entries,
+        sessionId: resolvedSessionId,
+        playlistStart: playlistStart,
+        resumeSeconds: resumeSeconds,
+        automaticRecovery: automaticRecovery,
+        launchContext: launchContext,
+        ownershipGeneration: ownershipGeneration,
+      );
+    } catch (_) {
+      if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
+        if (existing != null &&
+            identical(_sessions[resolvedSessionId], existing)) {
+          _launchOwnership[resolvedSessionId] = existing.ownershipGeneration;
+        } else if (_sessions[resolvedSessionId] == null) {
+          _launchOwnership.remove(resolvedSessionId);
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<PlayerLaunchResult> _launchWithContext({
+    required List<MediaEntry> entries,
+    required _PlaybackLaunchContext launchContext,
+    String? sessionId,
+    int playlistStart = 0,
+    int? resumeSeconds,
+    bool automaticRecovery = false,
+    required int ownershipGeneration,
+  }) async {
+    if (entries.isEmpty) {
+      throw AppException.config('播放列表为空，无法启动播放器');
+    }
+    if (playlistStart < 0 || playlistStart >= entries.length) {
+      playlistStart = 0;
+    }
+    final config = launchContext.player;
     final launchNumber = ++_launchSequence;
     // 本次注入的缓存策略结果（供播放中动态监控的初值/码率基准）。
     CachePolicySessionState? cacheSession;
     final resolvedSessionId = sessionId ?? 'session_$launchNumber';
-    final assetSessionId = sessionId;
+    final launchEpoch =
+        '${DateTime.now().microsecondsSinceEpoch}_$launchNumber';
+    final artifactSessionId = '${resolvedSessionId}__e$launchEpoch';
+    final artifactPaths = <String>{};
+    Future<void> ensureOwned() async {
+      if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) return;
+      await _deleteLaunchArtifacts(
+        sessionId: resolvedSessionId,
+        launchEpoch: launchEpoch,
+        artifactSessionId: artifactSessionId,
+        artifactPaths: artifactPaths,
+      );
+      _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
+    }
 
-    final existing = _sessions[resolvedSessionId];
-    if (existing != null && await isPlayerRunning(resolvedSessionId)) {
-      throw AppException.process('该播放会话仍在运行，请先关闭或删除后再继续');
-    }
-    if (existing != null) {
-      _sessions.remove(resolvedSessionId);
-      _cleanupCacheRuntime(existing);
-    }
+    _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
+    final progressGeneration = await _progressSyncCoordinator.claimAndDrain(
+      resolvedSessionId,
+    );
+    await ensureOwned();
 
     // ── 1. 配置校验 ───────────────────────────────────────────
     if (config.executable.trim().isEmpty) {
@@ -261,12 +449,17 @@ class ExternalPlayerService {
 
     // ── 2. 认证注入 ───────────────────────────────────────────
     final isMpv = _isMpvExecutable(config.executable);
+    if (isMpv && launchContext.recovery.enabled) {
+      unawaited(_serverRestarter.capture(launchContext.recovery.baseUrl));
+    }
+    final username = launchContext.username;
+    final password = launchContext.password;
     final authHeader = (username != null && username.isNotEmpty)
         ? 'Basic ${base64Encode(utf8.encode('$username:${password ?? ''}'))}'
         : null;
 
     String authUrl(String url) =>
-        authHeader != null && isSameOrigin(fullConfig.serverUrl, url)
+        authHeader != null && isSameOrigin(launchContext.serverUrl, url)
         ? embedCredentials(url, username!, password ?? '')
         : url;
     final watchLaterUrls = entries
@@ -277,23 +470,28 @@ class ExternalPlayerService {
     final subtitleInjectionEnabled = config.subtitleInjectionEnabled;
     final subtitleAutoSelectEnabled =
         subtitleInjectionEnabled && config.subtitleAutoSelectEnabled;
+    final scriptBase = isMpv ? await _scriptBase() : null;
+    await ensureOwned();
 
     // ── 3. 组装参数 ───────────────────────────────────────────
     final listMode = isMpv && entries.length > 1;
     // 每次启动使用唯一 named pipe，作为会话身份与未来 IPC 扩展入口。
-    final pipeToken = '${DateTime.now().microsecondsSinceEpoch}_$launchNumber';
+    final pipeToken = launchEpoch;
     final ipcPipe = isMpv ? '${r'\\.\pipe\mpvsocket_'}$pipeToken' : null;
     String? progressFilePath;
+    Directory? sessionDataDir;
     // 多集模式：生成 m3u 播放列表（EXTINF 标题 + EXTVLCOPT 窗口标题
     // + 直链 URL），由 mpv 原生绑定标题。
     final playlistPath = listMode
         ? await MpvScripts.ensurePlaylistM3u(
             entries,
             authUrl,
-            await _scriptBase(),
-            sessionId: assetSessionId,
+            scriptBase!,
+            sessionId: artifactSessionId,
           )
         : null;
+    if (playlistPath != null) artifactPaths.add(playlistPath);
+    await ensureOwned();
     final args = listMode
         ? _buildListArgs(
             config: config,
@@ -339,6 +537,7 @@ class ExternalPlayerService {
       }
       if (config.resumeEnabled) {
         final dir = await _ensureWatchLaterDir();
+        await ensureOwned();
         try {
           await const MpvWatchLaterSync().purgeExpiredRecords(
             dir,
@@ -350,6 +549,7 @@ class ExternalPlayerService {
         } catch (_) {
           // 续播缓存维护失败不阻断播放器启动。
         }
+        await ensureOwned();
         args.addAll([
           '--save-position-on-quit',
           '--watch-later-directory=${dir.path}',
@@ -364,48 +564,77 @@ class ExternalPlayerService {
       // sub-add select；关闭时使用 auto 并恢复原 sid，仅加入轨道且
       // 保留当前内封字幕。
       if (subtitleInjectionEnabled && entries.any((e) => e.subtitle != null)) {
-        args.add(
-          '--script=${listMode ? await MpvScripts.ensurePlaylistSubtitles(entries, authUrl, await _scriptBase(), autoSelect: subtitleAutoSelectEnabled, sessionId: assetSessionId) : await MpvScripts.ensureSingleSubtitle(entries.first.subtitle!, authUrl, await _scriptBase(), autoSelect: subtitleAutoSelectEnabled, sessionId: assetSessionId)}',
-        );
+        final subtitleScript = listMode
+            ? await MpvScripts.ensurePlaylistSubtitles(
+                entries,
+                authUrl,
+                scriptBase!,
+                autoSelect: subtitleAutoSelectEnabled,
+                sessionId: artifactSessionId,
+              )
+            : await MpvScripts.ensureSingleSubtitle(
+                entries.first.subtitle!,
+                authUrl,
+                scriptBase!,
+                autoSelect: subtitleAutoSelectEnabled,
+                sessionId: artifactSessionId,
+              );
+        await ensureOwned();
+        artifactPaths.add(subtitleScript);
+        args.add('--script=$subtitleScript');
       }
       // 多集标题兜底脚本（与字幕脚本独立，始终注入）。
       if (listMode) {
-        args.add(
-          '--script=${await MpvScripts.ensureTitles(entries, await _scriptBase(), sessionId: assetSessionId)}',
+        final titlesScript = await MpvScripts.ensureTitles(
+          entries,
+          scriptBase!,
+          sessionId: artifactSessionId,
         );
+        await ensureOwned();
+        artifactPaths.add(titlesScript);
+        args.add('--script=$titlesScript');
       }
       // 当前播放状态上报脚本：file-loaded（含自动切集）与暂停变化时
       // 写 mpv-current.txt，供软件同步「继续播放」条（单集同样注入）。
       {
         final dataDir = await AppPaths.cacheDirectory(); // mpv 会话产物
+        await ensureOwned();
+        sessionDataDir = dataDir;
         final currentPath = p.join(
           dataDir.path,
-          assetSessionId == null
-              ? AppConstants.mpvCurrentFileName
-              : sessionStatusFileName(resolvedSessionId),
+          sessionStatusFileName(resolvedSessionId, launchEpoch: launchEpoch),
         );
         final commandPath = p.join(
           dataDir.path,
-          assetSessionId == null
-              ? AppConstants.mpvCommandFileName
-              : sessionCommandFileName(resolvedSessionId),
+          sessionCommandFileName(resolvedSessionId, launchEpoch: launchEpoch),
         );
         progressFilePath = p.join(
           dataDir.path,
-          sessionProgressFileName(resolvedSessionId),
+          sessionProgressFileName(resolvedSessionId, launchEpoch: launchEpoch),
         );
+        artifactPaths.addAll([currentPath, commandPath, progressFilePath]);
         try {
           final progressFile = File(progressFilePath);
           if (await progressFile.exists()) await progressFile.delete();
         } on FileSystemException {
           // 旧日志清理失败不阻断播放器；同步侧会忽略不完整 JSON 行。
         }
+        await ensureOwned();
         // 启动前清除残留的「已播完」标记（首行 -1），避免 mpv 加载
         // 文件期间 UI 轮询误读旧状态。
         await clearStaleFinishedMark(File(currentPath));
-        args.add(
-          '--script=${await MpvScripts.ensureCurrent(currentPath, commandPath, await _scriptBase(), sessionId: assetSessionId, progressFile: progressFilePath)}',
+        await ensureOwned();
+        final currentScript = await MpvScripts.ensureCurrent(
+          currentPath,
+          commandPath,
+          scriptBase!,
+          sessionId: artifactSessionId,
+          progressFile: progressFilePath,
+          launchEpoch: launchEpoch,
         );
+        await ensureOwned();
+        artifactPaths.add(currentScript);
+        args.add('--script=$currentScript');
       }
       // 多集续播：`--start` 是全局选项（作用于每一集），因此改为
       // 预写播放起点集的 watch_later 文件，由 mpv 原生恢复；后续集
@@ -415,11 +644,14 @@ class ExternalPlayerService {
         final startEntry = entries[playlistStart];
         if (listMode && startSec != null) {
           await _writeResumeStart(authUrl(startEntry.url), startSec);
+          await ensureOwned();
         } else if (startSec == null) {
           await _clearWatchLater(startEntry.url);
+          await ensureOwned();
           final playerUrl = authUrl(startEntry.url);
           if (playerUrl != startEntry.url) {
             await _clearWatchLater(playerUrl);
+            await ensureOwned();
           }
           args.add('--no-resume-playback');
           // TS 续播由时间轴重映射处理，MPV 参数仍从媒体起点读取。
@@ -442,6 +674,7 @@ class ExternalPlayerService {
             authHeader: authHeader,
             userArgs: config.args,
           );
+          await ensureOwned();
           args.addAll(cacheArgs);
           // 凭**本次会话状态**（非 URL 历史结果）决定是否启动监控。
           cacheSession = _cachePolicy.sessionState(resolvedSessionId);
@@ -454,6 +687,7 @@ class ExternalPlayerService {
     }
 
     // ── 4. 启动进程 ───────────────────────────────────────────
+    await ensureOwned();
     final Process process;
     try {
       // detached 模式：子进程独立运行、正常弹出播放器窗口。
@@ -465,9 +699,50 @@ class ExternalPlayerService {
         mode: ProcessStartMode.detached,
       );
     } on FileSystemException catch (e) {
+      await _deleteLaunchArtifacts(
+        sessionId: resolvedSessionId,
+        launchEpoch: launchEpoch,
+        artifactSessionId: artifactSessionId,
+        artifactPaths: artifactPaths,
+      );
+      if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
+        _cachePolicy?.stopMonitor(resolvedSessionId, clearSession: true);
+        _authHeaders.remove(resolvedSessionId);
+        _cacheIpcStates.remove(resolvedSessionId);
+      }
       throw AppException.process('无法启动播放器「${config.executable}」：文件不存在或路径错误', e);
     } on ProcessException catch (e) {
+      await _deleteLaunchArtifacts(
+        sessionId: resolvedSessionId,
+        launchEpoch: launchEpoch,
+        artifactSessionId: artifactSessionId,
+        artifactPaths: artifactPaths,
+      );
+      if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
+        _cachePolicy?.stopMonitor(resolvedSessionId, clearSession: true);
+        _authHeaders.remove(resolvedSessionId);
+        _cacheIpcStates.remove(resolvedSessionId);
+      }
       throw AppException.process('播放器启动失败：${e.message}（请检查可执行文件与系统 PATH）', e);
+    }
+    final processIdentity = await _processController.capture(process.pid);
+    if (!_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
+      final termination = await _terminateCapturedProcess(
+        pid: process.pid,
+        expected: processIdentity,
+        ipcPipeName: ipcPipe,
+        requirePipeOwner: isMpv,
+      );
+      await _deleteLaunchArtifacts(
+        sessionId: resolvedSessionId,
+        launchEpoch: launchEpoch,
+        artifactSessionId: artifactSessionId,
+        artifactPaths: artifactPaths,
+      );
+      if (!termination.isSafeToRelaunch) {
+        throw AppException.process('启动已过期，且无法确认旧播放器进程归属');
+      }
+      _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
     }
 
     if (!automaticRecovery) {
@@ -480,41 +755,55 @@ class ExternalPlayerService {
     }
 
     // ── 5. 注册独立会话并监听退出 ─────────────────────────────
-    final dataDir = isMpv ? await AppPaths.cacheDirectory() : null; // 会话产物
-    final runtime =
-        _PlayerSessionRuntime(
-            sessionId: resolvedSessionId,
-            pid: process.pid,
-            isMpv: isMpv,
-            launchedHere: true,
-            statusFilePath: isMpv
-                ? p.join(
-                    dataDir!.path,
-                    assetSessionId == null
-                        ? AppConstants.mpvCurrentFileName
-                        : sessionStatusFileName(resolvedSessionId),
-                  )
-                : null,
-            commandFilePath: isMpv
-                ? p.join(
-                    dataDir!.path,
-                    assetSessionId == null
-                        ? AppConstants.mpvCommandFileName
-                        : sessionCommandFileName(resolvedSessionId),
-                  )
-                : null,
-            progressFilePath: progressFilePath,
-            ipcPipeName: ipcPipe,
-            epoch: ++_runtimeEpoch,
-            currentTrackUrl: entries[playlistStart].url,
-            currentPlaylistPos: playlistStart,
-            entries: List<MediaEntry>.unmodifiable(entries),
-            watchLaterUrls: List<String>.unmodifiable(watchLaterUrls),
-            username: username,
-            password: password,
-          )
-          ..aliveCache = true
-          ..aliveCacheAt = DateTime.now();
+    final dataDir = sessionDataDir;
+    final livenessTracker = PlayerProcessLivenessTracker(
+      controller: _processController,
+      expectedIdentity: processIdentity,
+      initialStatus: processIdentity == null
+          ? PlayerProcessLiveness.unknown
+          : PlayerProcessLiveness.alive,
+    );
+    final runtime = _PlayerSessionRuntime(
+      sessionId: resolvedSessionId,
+      pid: process.pid,
+      isMpv: isMpv,
+      processIdentity: processIdentity,
+      livenessTracker: livenessTracker,
+      statusFilePath: isMpv
+          ? p.join(
+              dataDir!.path,
+              sessionStatusFileName(
+                resolvedSessionId,
+                launchEpoch: launchEpoch,
+              ),
+            )
+          : null,
+      commandFilePath: isMpv
+          ? p.join(
+              dataDir!.path,
+              sessionCommandFileName(
+                resolvedSessionId,
+                launchEpoch: launchEpoch,
+              ),
+            )
+          : null,
+      progressFilePath: progressFilePath,
+      ipcPipeName: ipcPipe,
+      epoch: ++_runtimeEpoch,
+      launchEpoch: launchEpoch,
+      artifactSessionId: artifactSessionId,
+      progressGeneration: progressGeneration,
+      ownershipGeneration: ownershipGeneration,
+      currentTrackUrl: entries[playlistStart].url,
+      currentPlaylistPos: playlistStart,
+      entries: List<MediaEntry>.unmodifiable(entries),
+      watchLaterUrls: List<String>.unmodifiable(watchLaterUrls),
+      username: username,
+      password: password,
+      profileId: launchContext.profileId,
+      launchContext: launchContext,
+      artifactPaths: List<String>.unmodifiable(artifactPaths),
+    );
     _sessions[resolvedSessionId] = runtime;
     _lastSessionId = resolvedSessionId;
     // 第二阶段：播放中动态监控（内存压力/网络异常/卡顿记录）。
@@ -566,12 +855,7 @@ class ExternalPlayerService {
         ),
       );
     }
-    final exitSync = _watchExitAndSync(
-      runtime,
-      process,
-      entries,
-      syncProgress: isMpv,
-    );
+    final exitSync = _watchExitAndSync(runtime, entries, syncProgress: isMpv);
     runtime.exitSyncFuture = exitSync;
     unawaited(exitSync);
 
@@ -579,10 +863,13 @@ class ExternalPlayerService {
       process: process,
       args: args,
       sessionId: resolvedSessionId,
+      launchEpoch: launchEpoch,
+      processIdentity: processIdentity,
       ipcPipeName: ipcPipe,
       statusFilePath: runtime.statusFilePath,
       commandFilePath: runtime.commandFilePath,
       progressFilePath: runtime.progressFilePath,
+      artifactPaths: runtime.artifactPaths,
     );
   }
 
@@ -647,12 +934,12 @@ class ExternalPlayerService {
       if (!identical(_sessions[sessionId], runtime)) return;
       try {
         if (!file.existsSync()) {
-          if (!await isPlayerRunning(sessionId)) return;
+          if (!await _shouldContinueRuntimeWork(runtime)) return;
           continue;
         }
         final lines = await file.readAsLines();
         if (lines.length < 2) {
-          if (!await isPlayerRunning(sessionId)) return;
+          if (!await _shouldContinueRuntimeWork(runtime)) return;
           continue;
         }
         // ── 播放列表切集检测（状态文件第 2 行为当前 path） ──
@@ -707,7 +994,7 @@ class ExternalPlayerService {
           );
           if (DateTime.now().difference(firstStableAt) <
               const Duration(seconds: 2)) {
-            if (!await isPlayerRunning(sessionId)) return;
+            if (!await _shouldContinueRuntimeWork(runtime)) return;
             continue;
           }
           final enabled = await _enableTsRuntimeCache(
@@ -730,8 +1017,8 @@ class ExternalPlayerService {
             policy.sessionState(sessionId)?.shouldMonitor == true &&
             file.lastModifiedSync().isAfter(launchCutoff) &&
             reportedDurationGenerations.add(runtime.trackGeneration)) {
-          final resolution = lines.length > 13 && lines[13].trim().isNotEmpty
-              ? lines[13].trim()
+          final resolution = lines.length > 12 && lines[12].trim().isNotEmpty
+              ? lines[12].trim()
               : null;
           policy.recordDuration(
             sessionId,
@@ -744,7 +1031,7 @@ class ExternalPlayerService {
         _logCache('Duration monitor: status file read failed, stopped ($e)');
         return; // 增强层：监控失败静默。
       }
-      if (!await isPlayerRunning(sessionId)) return;
+      if (!await _shouldContinueRuntimeWork(runtime)) return;
     }
   }
 
@@ -781,7 +1068,7 @@ class ExternalPlayerService {
       // 过期检查：期间又发生了更新的切集 → 本结果丢弃（窄竞态防护）。
       if (!_isRuntimeCurrent(runtime, generation)) return;
       // 更新播放中动态监控的基准（新集码率/大小/缓存初值）。
-      // 注意：TS 直链/跳过分支不写入策略结果（lastResultFor 为 null），
+      // 注意：TS 直链/跳过分支的会话状态不允许启动动态监控，
       // 此时必须停止上一集遗留的监控——否则旧监控会继续以旧基准
       // 采样同一状态文件的新集数据，产生错误调整。
       _applyPolicyState(
@@ -1023,7 +1310,7 @@ class ExternalPlayerService {
               return;
             }
             try {
-              if (!await isPlayerRunning(runtime.sessionId)) {
+              if (!await _shouldContinueRuntimeWork(runtime)) {
                 _logCache(
                   'IPC cache update skipped: session=${runtime.sessionId}, '
                   'player not running | requested ${_cacheIpcSummary(state)}',
@@ -1257,28 +1544,47 @@ class ExternalPlayerService {
   /// 进程消失后执行进度同步（逐媒体日志 + watch_later → 进度库）。
   Future<void> _watchExitAndSync(
     _PlayerSessionRuntime runtime,
-    Process process,
     List<MediaEntry> entries, {
     required bool syncProgress,
   }) async {
-    final pid = process.pid;
-    while (await _isProcessAlive(pid)) {
-      await Future.delayed(const Duration(seconds: 2));
-      if (await _tryHandlePlaybackFailure(runtime)) return;
+    // watcher、界面查询和诊断共享同一个 tracker；unknown 只允许继续等待，
+    // 探活重试耗尽时保留 runtime，不清理也不把状态改成已退出。
+    final tracker = runtime.livenessTracker;
+    while (true) {
+      final liveness = await tracker.sample();
+      if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
+          !identical(_sessions[runtime.sessionId], runtime)) {
+        return;
+      }
+      if (liveness == PlayerProcessLiveness.exited) break;
+      if (liveness == PlayerProcessLiveness.unknown) {
+        if (tracker.unknownRetryExhausted) return;
+      } else if (await _hasOwnedIdleCompletion(runtime)) {
+        final termination = await _terminateRuntimeProcess(runtime);
+        if (termination == PlayerTerminationOutcome.alreadyExited) break;
+        // 只有确认已发出定向终止时才继续等待退出；身份未知或终止失败
+        // 均保持会话，避免 watcher 反复尝试破坏性操作。
+        if (termination != PlayerTerminationOutcome.terminated) return;
+      }
+      await _syncTemporaryProgress(runtime);
+      // 探活未知时不能把残留的失败日志解释为当前进程失败，
+      // 否则恢复链可能在无法确认归属时终止或重启播放器。
+      if (liveness == PlayerProcessLiveness.alive &&
+          await _tryHandlePlaybackFailure(runtime)) {
+        return;
+      }
+      final delay = tracker.nextProbeDelay;
+      if (delay == null) return;
+      await Future<void>.delayed(delay);
     }
     // 初次打开失败时 MPV 可能在一个轮询周期内退出；进程消失后再读一次
     // JSONL，避免遗漏 shutdown 前刚写入的 end-file error。
+    await _syncTemporaryProgress(runtime);
     if (await _tryHandlePlaybackFailure(runtime)) return;
     // 只更新仍指向本 runtime 的会话；同 ID 已重新启动时不干预新进程。
-    if (identical(_sessions[runtime.sessionId], runtime)) {
-      runtime.aliveCache = false;
-      runtime.aliveCacheAt = DateTime.now();
-      // 会话退出：停止本会话的播放中动态监控并清理认证头与切集代际。
-      // （回调均已携带/捕获 sessionId，无需 URL 映射即可正确路由；
-      //  清理必须在 identical 保护块内——同 ID 快速重启时，旧退出
-      //  监听不得停掉新会话的监控/代际。）
-      _cleanupCacheRuntime(runtime);
-    }
+    if (!identical(_sessions[runtime.sessionId], runtime)) return;
+    // 会话退出：停止本会话的播放中动态监控并清理认证头与切集代际。
+    _cleanupCacheRuntime(runtime);
     if (syncProgress) {
       try {
         await _syncProgress(runtime, entries);
@@ -1289,118 +1595,236 @@ class ExternalPlayerService {
     }
   }
 
+  Future<bool> _hasOwnedIdleCompletion(_PlayerSessionRuntime runtime) async {
+    final path = runtime.statusFilePath;
+    if (path == null ||
+        runtime.launchEpoch.isEmpty ||
+        runtime.entries.isEmpty) {
+      return false;
+    }
+    try {
+      final marker = MpvIdleCompletionMarker.parse(
+        await File(path).readAsLines(),
+      );
+      return marker?.matches(
+            expectedLastPlaylistPos: runtime.entries.length - 1,
+            expectedLaunchEpoch: runtime.launchEpoch,
+          ) ??
+          false;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  Future<void> _syncTemporaryProgress(_PlayerSessionRuntime runtime) async {
+    final progressService = _progressService;
+    final path = runtime.progressFilePath;
+    if (progressService == null || path == null || runtime.entries.isEmpty) {
+      return;
+    }
+    try {
+      final nextOffset = await _progressSyncCoordinator.run<int>(
+        sessionId: runtime.sessionId,
+        generation: runtime.progressGeneration,
+        action: () =>
+            const MpvPlaybackProgressSynchronizer().syncTemporaryCheckpoints(
+              progressService: progressService,
+              profileId: runtime.profileId,
+              entries: runtime.entries,
+              journalFile: File(path),
+              startLine: runtime.temporaryProgressJournalByteOffset,
+              expectedEpoch: runtime.launchEpoch.isEmpty
+                  ? null
+                  : runtime.launchEpoch,
+            ),
+      );
+      if (nextOffset != null) {
+        runtime.temporaryProgressJournalByteOffset = nextOffset;
+      }
+    } catch (_) {
+      // 临时播放点属于容错增强；落库失败不影响播放器退出监听。
+    }
+  }
+
   Future<bool> _tryHandlePlaybackFailure(_PlayerSessionRuntime runtime) async {
     if (!runtime.isMpv || runtime.entries.isEmpty) return false;
-    final config = _configStore.current.openListRecovery;
+    // 查询未知时不读取失败记录并触发定向终止；等待 tracker 确认 alive。
+    if (runtime.livenessTracker.status != PlayerProcessLiveness.alive) {
+      return false;
+    }
+    final launchContext = runtime.launchContext;
+    if (launchContext == null) return false;
+    final config = launchContext.recovery;
     if (!config.enabled) return false;
     final state = _recoveryStates[runtime.sessionId];
-    if (state == null || state.recovering || state.attempts >= 2) return false;
+    if (state == null || state.recovering || state.attempts >= 3) return false;
+    if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
+        !identical(_sessions[runtime.sessionId], runtime)) {
+      return true;
+    }
+    if (runtime.livenessTracker.status != PlayerProcessLiveness.alive) {
+      return false;
+    }
 
     final failure = await _readNextPlaybackFailure(runtime);
+    if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
+        !identical(_sessions[runtime.sessionId], runtime)) {
+      return true;
+    }
     if (failure == null) return false;
-    state.attempts++;
     state.recovering = true;
-    _emitPlaybackRecovery(
-      PlaybackRecoveryEvent(
-        sessionId: runtime.sessionId,
-        stage: PlaybackRecoveryStage.preparing,
-        message: '检测到 MPV 播放失败，正在恢复链接（${state.attempts}/2）…',
-      ),
-    );
 
     // 媒体失败后 MPV 可能自动跳到下一集。先定向结束旧进程并保存失败
     // 位置，确保后台刷新期间不会播放错误的列表项。
-    await _stopRuntimeForRecovery(runtime);
-    if (!identical(_recoveryStates[runtime.sessionId], state)) return true;
+    final termination = await _stopRuntimeForRecovery(runtime);
+    if (!_isRecoveryCurrent(runtime, state)) return true;
+    if (!termination.isSafeToRelaunch) {
+      state.recovering = false;
+      _emitPlaybackRecovery(
+        PlaybackRecoveryEvent(
+          sessionId: runtime.sessionId,
+          stage: PlaybackRecoveryStage.failed,
+          message: '无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程',
+        ),
+      );
+      return true;
+    }
 
     final entryIndex = _failureEntryIndex(runtime, failure);
     final entry = runtime.entries[entryIndex];
-    OpenListRecoveryResult preparation;
-    try {
-      preparation = await _linkRecoveryProvider.prepare(
-        config: config,
-        mediaUrl: entry.url,
-        webDavUsername: runtime.username,
-        webDavPassword: runtime.password,
-        // 第一次允许直接重新取链；第二次仅在地址仍不可读时强制刷新存储，
-        // 地址可读则按非链接失效停止恢复。
-        forceStorageReload: state.attempts > 1,
-      );
-    } catch (_) {
-      if (!identical(_recoveryStates[runtime.sessionId], state)) return true;
-      state.recovering = false;
+    while (state.attempts < 3) {
+      state.attempts++;
+      final attempt = state.attempts;
       _emitPlaybackRecovery(
         PlaybackRecoveryEvent(
           sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.failed,
-          message: '自动恢复服务发生异常，已保留继续播放记录',
+          stage: PlaybackRecoveryStage.preparing,
+          message: attempt == 3
+              ? '前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…'
+              : '检测到 MPV 播放失败，正在恢复链接（$attempt/3）…',
         ),
       );
-      return true;
-    }
-    if (!identical(_recoveryStates[runtime.sessionId], state)) return true;
-    if (!preparation.success) {
-      state.recovering = false;
-      _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
-          sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.failed,
-          message: '自动恢复失败：${preparation.message}，已保留继续播放记录',
-        ),
-      );
-      return true;
-    }
 
-    final rawPosition = failure.positionSeconds;
-    final resumeSeconds = rawPosition == null || rawPosition < 0
-        ? null
-        : (rawPosition.floor() - 2).clamp(0, 1 << 31).toInt();
-    try {
-      final result = await launch(
-        entries: runtime.entries,
-        sessionId: runtime.sessionId,
-        playlistStart: entryIndex,
-        resumeSeconds: resumeSeconds,
-        username: runtime.username,
-        password: runtime.password,
-        automaticRecovery: true,
-      );
-      if (!identical(_recoveryStates[runtime.sessionId], state)) {
-        await terminateSession(runtime.sessionId);
+      var serverRestarted = false;
+      if (attempt == 3) {
+        final restart = await _serverRestarter.restart(config.baseUrl);
+        if (!_isRecoveryCurrent(runtime, state)) return true;
+        if (!restart.success) {
+          state.recovering = false;
+          _emitPlaybackRecovery(
+            PlaybackRecoveryEvent(
+              sessionId: runtime.sessionId,
+              stage: PlaybackRecoveryStage.failed,
+              message: '第三次自动恢复失败：${restart.message}，已保留继续播放记录',
+            ),
+          );
+          return true;
+        }
+        serverRestarted = true;
+      }
+
+      OpenListRecoveryResult? preparation;
+      try {
+        preparation = await _linkRecoveryProvider.prepare(
+          config: config,
+          mediaUrl: entry.url,
+          webDavUsername: launchContext.username,
+          webDavPassword: launchContext.password,
+          // 第二次才强制刷新；第三次先等待刚重启的服务自行加载存储。
+          forceStorageReload: attempt == 2,
+          serverRestarted: serverRestarted,
+        );
+      } catch (_) {
+        // 前两次准备异常继续进入下一层恢复；第三次才形成最终失败。
+      }
+      if (!_isRecoveryCurrent(runtime, state)) return true;
+      if (preparation?.terminal ?? false) {
+        state.recovering = false;
+        _emitPlaybackRecovery(
+          PlaybackRecoveryEvent(
+            sessionId: runtime.sessionId,
+            stage: PlaybackRecoveryStage.failed,
+            message: '${preparation!.message}，已停止自动恢复并保留继续播放记录',
+          ),
+        );
         return true;
       }
-      state.recovering = false;
-      _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
+      if (preparation == null || preparation.retryable) {
+        if (attempt < 3) continue;
+        state.recovering = false;
+        _emitPlaybackRecovery(
+          PlaybackRecoveryEvent(
+            sessionId: runtime.sessionId,
+            stage: PlaybackRecoveryStage.failed,
+            message: preparation == null
+                ? '第三次自动恢复发生异常，已保留继续播放记录'
+                : '第三次自动恢复失败：${preparation.message}，已保留继续播放记录',
+          ),
+        );
+        return true;
+      }
+
+      final rawPosition = failure.positionSeconds;
+      final resumeSeconds = rawPosition == null || rawPosition < 0
+          ? null
+          : (rawPosition.floor() - 2).clamp(0, 1 << 31).toInt();
+      try {
+        final result = await _launchWithContext(
+          entries: runtime.entries,
+          launchContext: launchContext,
           sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.relaunched,
-          message: preparation.storageReloaded
-              ? 'OpenList/AList 存储已刷新，播放器已从失败位置恢复'
-              : '已重新获取播放链接，播放器已从失败位置恢复',
-          launchResult: result,
-        ),
-      );
-    } on AppException catch (error) {
-      state.recovering = false;
-      _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
-          sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.failed,
-          message: '链接已恢复，但重新启动播放器失败：${error.message}',
-        ),
-      );
-    } catch (_) {
-      state.recovering = false;
-      _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
-          sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.failed,
-          message: '自动恢复过程中出现异常，已保留继续播放记录',
-        ),
-      );
+          playlistStart: entryIndex,
+          resumeSeconds: resumeSeconds,
+          automaticRecovery: true,
+          ownershipGeneration: runtime.ownershipGeneration,
+        );
+        if (!_isRecoveryCurrent(runtime, state)) {
+          await terminateLaunch(result);
+          return true;
+        }
+        state.recovering = false;
+        _emitPlaybackRecovery(
+          PlaybackRecoveryEvent(
+            sessionId: runtime.sessionId,
+            stage: PlaybackRecoveryStage.relaunched,
+            message: serverRestarted
+                ? 'OpenList/AList 已安全重启，播放器已从失败位置恢复'
+                : preparation.storageReloaded
+                ? 'OpenList/AList 存储已刷新，播放器已从失败位置恢复'
+                : '已重新获取播放链接，播放器已从失败位置恢复',
+            launchResult: result,
+          ),
+        );
+      } on AppException catch (error) {
+        state.recovering = false;
+        _emitPlaybackRecovery(
+          PlaybackRecoveryEvent(
+            sessionId: runtime.sessionId,
+            stage: PlaybackRecoveryStage.failed,
+            message: '链接已恢复，但重新启动播放器失败：${error.message}',
+          ),
+        );
+      } catch (_) {
+        state.recovering = false;
+        _emitPlaybackRecovery(
+          PlaybackRecoveryEvent(
+            sessionId: runtime.sessionId,
+            stage: PlaybackRecoveryStage.failed,
+            message: '自动恢复过程中出现异常，已保留继续播放记录',
+          ),
+        );
+      }
+      return true;
     }
     return true;
   }
+
+  bool _isRecoveryCurrent(
+    _PlayerSessionRuntime runtime,
+    _PlaybackRecoveryState state,
+  ) =>
+      _ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) &&
+      identical(_recoveryStates[runtime.sessionId], state);
 
   Future<MpvPlaybackFailureRecord?> _readNextPlaybackFailure(
     _PlayerSessionRuntime runtime,
@@ -1410,13 +1834,21 @@ class ExternalPlayerService {
     try {
       final file = File(path);
       if (!await file.exists()) return null;
-      final lines = await file.readAsLines();
-      var start = runtime.progressJournalLinesRead;
-      if (start > lines.length) start = 0;
-      runtime.progressJournalLinesRead = lines.length;
+      final chunk = await const MpvCompleteJsonlReader().read(
+        file,
+        startOffset: runtime.failureJournalByteOffset,
+      );
+      runtime.failureJournalByteOffset = chunk.nextOffset;
       MpvPlaybackFailureRecord? latest;
-      for (var index = start; index < lines.length; index++) {
-        latest = MpvPlaybackFailureRecord.tryParse(lines[index]) ?? latest;
+      for (final line in chunk.lines) {
+        latest =
+            MpvPlaybackFailureRecord.tryParse(
+              line,
+              expectedEpoch: runtime.launchEpoch.isEmpty
+                  ? null
+                  : runtime.launchEpoch,
+            ) ??
+            latest;
       }
       return latest;
     } on FileSystemException {
@@ -1438,32 +1870,100 @@ class ExternalPlayerService {
     return 0;
   }
 
-  Future<void> _stopRuntimeForRecovery(_PlayerSessionRuntime runtime) async {
+  Future<PlayerTerminationOutcome> _stopRuntimeForRecovery(
+    _PlayerSessionRuntime runtime,
+  ) async {
+    final termination = await _terminateRuntimeProcess(runtime);
+    if (!termination.isSafeToRelaunch) return termination;
     if (identical(_sessions[runtime.sessionId], runtime)) {
       _sessions.remove(runtime.sessionId);
       _cleanupCacheRuntime(runtime);
-    }
-    final pid = runtime.pid;
-    if (pid != null && await _isProcessAlive(pid)) {
-      final canForceTerminate =
-          runtime.launchedHere || (runtime.isMpv && await _isMpvProcess(pid));
-      if (canForceTerminate) {
-        try {
-          await Process.run(
-            Platform.isWindows ? 'taskkill' : 'kill',
-            Platform.isWindows
-                ? ['/PID', '$pid', '/T', '/F']
-                : ['-TERM', '$pid'],
-          );
-        } catch (_) {}
-      }
     }
     try {
       await _syncProgress(runtime, runtime.entries);
     } catch (_) {
       // 失败位置已经包含在恢复事件中；进度同步异常不得阻断取链恢复。
     }
-    await _deleteSessionArtifacts(runtime.sessionId);
+    await _deleteSessionArtifacts(runtime);
+    return termination;
+  }
+
+  Future<PlayerTerminationOutcome> _terminateRuntimeProcess(
+    _PlayerSessionRuntime runtime,
+  ) async {
+    final pending = runtime.terminationFuture;
+    if (pending != null) return pending;
+    final operation = _terminateRuntimeProcessOnce(runtime);
+    runtime.terminationFuture = operation;
+    try {
+      return await operation;
+    } finally {
+      if (identical(runtime.terminationFuture, operation)) {
+        runtime.terminationFuture = null;
+      }
+    }
+  }
+
+  Future<PlayerTerminationOutcome> _terminateRuntimeProcessOnce(
+    _PlayerSessionRuntime runtime,
+  ) async {
+    final pid = runtime.pid;
+    if (pid == null) {
+      return PlayerTerminationOutcome.alreadyExited;
+    }
+    final tracker = runtime.livenessTracker;
+    var liveness = tracker.status;
+    if (liveness == PlayerProcessLiveness.unknown) {
+      // 新启动请求可能正等待同一个探活；终止不能再等待该查询，
+      // 否则会破坏“后进入启动抢占旧请求”的所有权收敛。
+      if (tracker.hasInFlightProbe) {
+        return PlayerTerminationOutcome.refused;
+      }
+      liveness = await tracker.sample();
+    }
+    if (liveness == PlayerProcessLiveness.unknown) {
+      return PlayerTerminationOutcome.refused;
+    }
+    if (liveness == PlayerProcessLiveness.exited) {
+      return PlayerTerminationOutcome.alreadyExited;
+    }
+    return _processController.terminateIfOwned(
+      pid: pid,
+      expected: runtime.processIdentity,
+      ipcPipeName: runtime.ipcPipeName,
+      requirePipeOwner: runtime.isMpv,
+    );
+  }
+
+  Future<PlayerTerminationOutcome> _terminateCapturedProcess({
+    required int pid,
+    required PlayerProcessIdentity? expected,
+    required String? ipcPipeName,
+    required bool requirePipeOwner,
+  }) async {
+    var outcome = await _processController.terminateIfOwned(
+      pid: pid,
+      expected: expected,
+      ipcPipeName: ipcPipeName,
+      requirePipeOwner: requirePipeOwner,
+    );
+    if (!requirePipeOwner || expected == null) return outcome;
+    // Process.start 返回后 named pipe 可能仍在建立。只针对这次启动捕获的
+    // 完整身份做短暂重试，绝不按映像名或宽泛 PID 清理其他 MPV。
+    for (
+      var attempt = 0;
+      attempt < 20 && !outcome.isSafeToRelaunch;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outcome = await _processController.terminateIfOwned(
+        pid: pid,
+        expected: expected,
+        ipcPipeName: ipcPipeName,
+        requirePipeOwner: true,
+      );
+    }
+    return outcome;
   }
 
   void _emitPlaybackRecovery(PlaybackRecoveryEvent event) {
@@ -1471,40 +1971,6 @@ class ExternalPlayerService {
       onPlaybackRecovery?.call(event);
     } catch (_) {
       // 界面提示异常不影响恢复链路。
-    }
-  }
-
-  /// 探测进程是否存活（Windows 用 tasklist 精确比对 PID）。
-  ///
-  /// PID 按行精确比对（`/FO CSV` 第二列为 PID），避免
-  /// `stdout.contains(pid)` 子串误命中（如映像名含数字）。
-  /// 非 Windows 分支为防御性保留（当前仅支持 Windows）。
-  Future<bool> _isProcessAlive(int pid) async {
-    try {
-      final result = await Process.run(
-        Platform.isWindows ? 'tasklist' : 'kill',
-        Platform.isWindows
-            ? ['/FI', 'PID eq $pid', '/NH', '/FO', 'CSV']
-            : ['-0', '$pid'],
-      );
-      if (Platform.isWindows) {
-        final out = result.stdout.toString();
-        for (final line in out.split(RegExp(r'\r?\n'))) {
-          if (line.trim().isEmpty) continue;
-          final cols = line.split(',');
-          if (cols.length >= 2) {
-            final pidField = cols[1].trim().replaceAll(
-              String.fromCharCodes([34]),
-              '',
-            );
-            if (pidField == pid.toString()) return true;
-          }
-        }
-        return false;
-      }
-      return result.exitCode == 0;
-    } catch (_) {
-      return true; // 查询失败时保守认为存活。
     }
   }
 
@@ -1516,15 +1982,20 @@ class ExternalPlayerService {
     final ps = _progressService;
     final dir = _watchLaterDir;
     if (ps == null || dir == null) return;
-    const synchronizer = MpvPlaybackProgressSynchronizer();
-    await synchronizer.sync(
-      progressService: ps,
-      watchLaterDirectory: dir,
-      entries: entries,
-      watchLaterUrls: runtime.watchLaterUrls,
-      journalFile: runtime.progressFilePath == null
-          ? null
-          : File(runtime.progressFilePath!),
+    await _progressSyncCoordinator.run<void>(
+      sessionId: runtime.sessionId,
+      generation: runtime.progressGeneration,
+      action: () => const MpvPlaybackProgressSynchronizer().sync(
+        progressService: ps,
+        profileId: runtime.profileId,
+        watchLaterDirectory: dir,
+        entries: entries,
+        watchLaterUrls: runtime.watchLaterUrls,
+        journalFile: runtime.progressFilePath == null
+            ? null
+            : File(runtime.progressFilePath!),
+        expectedEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+      ),
     );
   }
 
@@ -1549,46 +2020,100 @@ class ExternalPlayerService {
   Future<void> restoreSession({
     required String sessionId,
     required int? pid,
+    String? executablePath,
+    int? creationTime,
     String? ipcPipeName,
+    String? launchEpoch,
   }) async {
     if (_sessions.containsKey(sessionId)) return;
     final dataDir = await AppPaths.cacheDirectory(); // mpv 会话产物
+    final processIdentity = PlayerProcessIdentity.fromStored(
+      pid: pid,
+      executablePath: executablePath,
+      creationTime: creationTime,
+    );
     final runtime = _PlayerSessionRuntime(
       sessionId: sessionId,
       pid: pid,
       isMpv: ipcPipeName != null,
-      statusFilePath: p.join(dataDir.path, sessionStatusFileName(sessionId)),
-      commandFilePath: p.join(dataDir.path, sessionCommandFileName(sessionId)),
+      processIdentity: processIdentity,
+      livenessTracker: PlayerProcessLivenessTracker(
+        controller: _processController,
+        expectedIdentity: processIdentity,
+      ),
+      statusFilePath: p.join(
+        dataDir.path,
+        sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
+      ),
+      commandFilePath: p.join(
+        dataDir.path,
+        sessionCommandFileName(sessionId, launchEpoch: launchEpoch),
+      ),
       progressFilePath: p.join(
         dataDir.path,
-        sessionProgressFileName(sessionId),
+        sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
       ),
       ipcPipeName: ipcPipeName,
       epoch: ++_runtimeEpoch,
+      launchEpoch: launchEpoch ?? '',
+      artifactSessionId: launchEpoch == null || launchEpoch.isEmpty
+          ? sessionId
+          : '${sessionId}__e$launchEpoch',
+      progressGeneration: _progressSyncCoordinator.claim(sessionId),
+      ownershipGeneration: ++_ownershipSequence,
+      profileId: _configStore.current.profileId,
     );
     _sessions[sessionId] = runtime;
+    _launchOwnership[sessionId] = runtime.ownershipGeneration;
     _lastSessionId = sessionId;
-    if (pid != null && ipcPipeName != null && await _isProcessAlive(pid)) {
-      runtime.aliveCache = true;
-      runtime.aliveCacheAt = DateTime.now();
-    }
   }
 
   /// 探测指定会话播放器是否仍在运行；不传 ID 时兼容最近会话。
   Future<bool> isPlayerRunning([String? sessionId]) async {
     final id = sessionId ?? _lastSessionId;
     final runtime = id == null ? null : _sessions[id];
-    final pid = runtime?.pid;
-    if (pid == null) return false;
-    final now = DateTime.now();
-    if (runtime!.aliveCacheAt != null &&
-        now.difference(runtime.aliveCacheAt!) < const Duration(seconds: 2)) {
-      return runtime.aliveCache ?? true;
+    if (runtime?.pid == null) return false;
+    final liveness = await runtime!.livenessTracker.sample();
+    // unknown 不能降级为 false；否则 UI 会误删仍可能存活的会话。
+    return liveness != PlayerProcessLiveness.exited;
+  }
+
+  /// 缓存与 IPC 后台任务需要在探活未知重试耗尽时停止，
+  /// 但公共运行状态仍对 UI 保持保守的 true。
+  Future<bool> _shouldContinueRuntimeWork(_PlayerSessionRuntime runtime) async {
+    final tracker = runtime.livenessTracker;
+    final liveness = await tracker.sample();
+    if (liveness == PlayerProcessLiveness.exited) return false;
+    return !tracker.unknownRetryExhausted;
+  }
+
+  /// 对当前存活的 MPV 会话执行一次只读 JSON-RPC 查询；没有活动会话时返回 null。
+  Future<bool?> diagnoseMpvIpc() async {
+    for (final runtime in _sessions.values) {
+      final pipe = runtime.ipcPipeName;
+      if (!runtime.isMpv || pipe == null) {
+        continue;
+      }
+      final liveness = await runtime.livenessTracker.sample();
+      // 只有确认 alive 才建立 IPC；unknown 时返回 null，避免把探活失败
+      // 误报为 IPC/播放器故障。
+      if (liveness != PlayerProcessLiveness.alive) {
+        continue;
+      }
+      final controller = MpvSessionController(pipeName: pipe);
+      try {
+        if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+          return false;
+        }
+        await controller.getProperty('mpv-version');
+        return true;
+      } catch (_) {
+        return false;
+      } finally {
+        await controller.dispose();
+      }
     }
-    final alive = await _isProcessAlive(pid);
-    runtime.aliveCache = alive;
-    runtime.aliveCacheAt = now;
-    return alive;
+    return null;
   }
 
   /// 等待对应进程退出后的播放进度同步完成。
@@ -1606,6 +2131,13 @@ class ExternalPlayerService {
     } catch (_) {
       // 超时或同步失败时继续使用状态文件与已有进度，不阻塞下边栏。
     }
+  }
+
+  /// 自动切集时同步当前会话已产生的 JSONL 与 watch_later。
+  Future<void> syncActiveProgress(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null || runtime.entries.isEmpty) return;
+    await _syncProgress(runtime, runtime.entries);
   }
 
   Future<void> sendPause([String? sessionId]) =>
@@ -1631,91 +2163,139 @@ class ExternalPlayerService {
     }
   }
 
-  /// 终止并移除指定播放会话，只作用于该会话 PID。
-  Future<void> terminateSession(String sessionId) async {
-    _recoveryStates.remove(sessionId);
-    final runtime = _sessions.remove(sessionId);
-    if (runtime != null) {
+  /// 页面在启动完成前失效时，只收敛 [result] 对应的那次启动。
+  Future<PlayerTerminationOutcome> terminateLaunch(
+    PlayerLaunchResult result,
+  ) async {
+    final runtime = _sessions[result.sessionId];
+    final termination =
+        runtime != null && runtime.launchEpoch == result.launchEpoch
+        ? await _terminateRuntimeProcess(runtime)
+        : await _terminateCapturedProcess(
+            pid: result.process.pid,
+            expected: result.processIdentity,
+            ipcPipeName: result.ipcPipeName,
+            requirePipeOwner: result.ipcPipeName != null,
+          );
+    if (!termination.isSafeToRelaunch) return termination;
+    if (runtime != null &&
+        runtime.launchEpoch == result.launchEpoch &&
+        identical(_sessions[result.sessionId], runtime)) {
+      _sessions.remove(result.sessionId);
       _cleanupCacheRuntime(runtime);
-      final pid = runtime.pid;
-      if (pid != null) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-        final canForceTerminate =
-            runtime.launchedHere || (runtime.isMpv && await _isMpvProcess(pid));
-        if (canForceTerminate && await _isProcessAlive(pid)) {
-          try {
-            await Process.run(
-              Platform.isWindows ? 'taskkill' : 'kill',
-              Platform.isWindows
-                  ? ['/PID', '$pid', '/T', '/F']
-                  : ['-TERM', '$pid'],
-            );
-          } catch (_) {}
-        }
+      _recoveryStates.remove(result.sessionId);
+      if (_ownsLaunch(result.sessionId, runtime.ownershipGeneration)) {
+        _launchOwnership.remove(result.sessionId);
       }
     }
-    await _deleteSessionArtifacts(sessionId);
+    await _deleteLaunchArtifacts(
+      sessionId: result.sessionId,
+      launchEpoch: result.launchEpoch,
+      artifactSessionId: '${result.sessionId}__e${result.launchEpoch}',
+      artifactPaths: result.artifactPaths,
+    );
+    return termination;
+  }
+
+  /// 终止并移除指定播放会话，只作用于该会话 PID。
+  Future<PlayerTerminationOutcome> terminateSession(String sessionId) async {
+    _recoveryStates.remove(sessionId);
+    final runtime = _sessions[sessionId];
+    _launchOwnership.remove(sessionId);
+    var termination = PlayerTerminationOutcome.alreadyExited;
+    if (runtime != null) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      termination = await _terminateRuntimeProcess(runtime);
+      if (!termination.isSafeToRelaunch) {
+        return termination;
+      }
+      if (identical(_sessions[sessionId], runtime)) {
+        _sessions.remove(sessionId);
+        _cleanupCacheRuntime(runtime);
+      }
+    }
+    if (runtime != null) {
+      await _deleteSessionArtifacts(runtime);
+    } else {
+      await _deleteLaunchArtifacts(
+        sessionId: sessionId,
+        launchEpoch: null,
+        artifactSessionId: sessionId,
+      );
+    }
     if (_lastSessionId == sessionId) {
       _lastSessionId = _sessions.isEmpty ? null : _sessions.keys.last;
     }
-  }
-
-  /// 重启恢复的 PID 可能已被系统复用；强制结束前确认它仍是 MPV。
-  Future<bool> _isMpvProcess(int pid) async {
-    if (!Platform.isWindows) return false;
-    try {
-      final result = await Process.run('tasklist', [
-        '/FI',
-        'PID eq $pid',
-        '/NH',
-        '/FO',
-        'CSV',
-      ]);
-      for (final line in result.stdout.toString().split(RegExp(r'\r?\n'))) {
-        if (line.trim().isEmpty) continue;
-        final columns = line.split(',');
-        if (columns.length < 2) continue;
-        final imageName = columns.first
-            .replaceAll('"', '')
-            .trim()
-            .toLowerCase();
-        final pidField = columns[1].replaceAll('"', '').trim();
-        if (pidField == '$pid' && imageName.contains('mpv')) return true;
-      }
-    } catch (_) {
-      // 无法确认进程身份时不执行强制结束。
-    }
-    return false;
+    return termination;
   }
 
   /// 播放列表自然结束后释放会话控制资源，不额外终止已经退出/空闲的进程。
   void releaseSession(String sessionId) {
     _recoveryStates.remove(sessionId);
     final runtime = _sessions.remove(sessionId);
+    if (runtime != null &&
+        _ownsLaunch(sessionId, runtime.ownershipGeneration)) {
+      _launchOwnership.remove(sessionId);
+    }
     if (runtime != null) _cleanupCacheRuntime(runtime);
-    unawaited(_deleteSessionArtifacts(sessionId));
+    if (runtime != null) unawaited(_deleteSessionArtifacts(runtime));
     if (_lastSessionId == sessionId) {
       _lastSessionId = _sessions.isEmpty ? null : _sessions.keys.last;
     }
   }
 
   void _cleanupCacheRuntime(_PlayerSessionRuntime runtime) {
+    runtime.livenessTracker.stop();
     runtime.trackGeneration++;
     _cachePolicy?.stopMonitor(runtime.sessionId, clearSession: true);
     _authHeaders.remove(runtime.sessionId);
     _cacheIpcStates.remove(runtime.sessionId);
   }
 
-  Future<void> _deleteSessionArtifacts(String sessionId) async {
+  Future<void> _deleteSessionArtifacts(_PlayerSessionRuntime runtime) =>
+      _deleteLaunchArtifacts(
+        sessionId: runtime.sessionId,
+        launchEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+        artifactSessionId: runtime.artifactSessionId,
+        artifactPaths: runtime.artifactPaths,
+      );
+
+  Future<void> _deleteLaunchArtifacts({
+    required String sessionId,
+    required String? launchEpoch,
+    required String artifactSessionId,
+    Iterable<String> artifactPaths = const [],
+  }) async {
     try {
+      final exactPaths = artifactPaths.toSet();
+      if (exactPaths.isNotEmpty) {
+        for (final path in exactPaths) {
+          final file = File(path);
+          if (await file.exists()) {
+            try {
+              await file.delete();
+            } catch (_) {}
+          }
+        }
+        return;
+      }
       final dataDir = await AppPaths.cacheDirectory(); // mpv 会话产物
       final base = await _scriptBase();
       final paths = <String>[
-        p.join(dataDir.path, sessionStatusFileName(sessionId)),
-        p.join(dataDir.path, sessionCommandFileName(sessionId)),
-        p.join(dataDir.path, sessionProgressFileName(sessionId)),
+        p.join(
+          dataDir.path,
+          sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
+        ),
+        p.join(
+          dataDir.path,
+          sessionCommandFileName(sessionId, launchEpoch: launchEpoch),
+        ),
+        p.join(
+          dataDir.path,
+          sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
+        ),
         ...MpvScripts.sessionArtifactNames(
-          sessionId,
+          artifactSessionId,
         ).map((name) => p.join(base.path, name)),
       ];
       for (final path in paths) {
@@ -1729,14 +2309,26 @@ class ExternalPlayerService {
     } catch (_) {}
   }
 
-  static String sessionStatusFileName(String sessionId) =>
-      'mpv-current-${MpvScripts.safeSessionToken(sessionId)}.txt';
+  static String sessionStatusFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-current-${_artifactToken(sessionId, launchEpoch)}.txt';
 
-  static String sessionCommandFileName(String sessionId) =>
-      'mpv-command-${MpvScripts.safeSessionToken(sessionId)}.txt';
+  static String sessionCommandFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-command-${_artifactToken(sessionId, launchEpoch)}.txt';
 
-  static String sessionProgressFileName(String sessionId) =>
-      'mpv-progress-${MpvScripts.safeSessionToken(sessionId)}.jsonl';
+  static String sessionProgressFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-progress-${_artifactToken(sessionId, launchEpoch)}.jsonl';
+
+  static String _artifactToken(String sessionId, String? launchEpoch) {
+    final session = MpvScripts.safeSessionToken(sessionId);
+    if (launchEpoch == null || launchEpoch.isEmpty) return session;
+    return '${session}__e${MpvScripts.safeSessionToken(launchEpoch)}';
+  }
 
   /// 清除 mpv 状态文件中残留的「已播完」标记（首行 `-1`），
   /// 供启动播放前调用；正常状态（首行非 -1）原样保留。

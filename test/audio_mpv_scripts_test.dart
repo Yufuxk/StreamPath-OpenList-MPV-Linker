@@ -120,12 +120,26 @@ void main() {
       '${directory.path}/progress.jsonl',
       directory,
       sessionId: 'one',
+      launchEpoch: 'audio-epoch-one',
     );
     final script = await File(path).readAsString();
 
     expect(script, contains('mp.register_event("end-file"'));
     expect(script, contains('append_progress("completed"'));
     expect(script, contains('mp.add_periodic_timer(0.25, poll_command)'));
+    expect(
+      script,
+      contains(
+        'file:write("-1\\n" .. tostring(last_playlist_pos) .. '
+        '"\\n" .. EPOCH)',
+      ),
+    );
+    expect(
+      script,
+      contains(
+        'if has_loaded and not mp.get_property_bool("idle-active", false) then',
+      ),
+    );
     expect(script, isNot(contains('cache-')));
     expect(script, isNot(contains('demuxer-cache')));
   });

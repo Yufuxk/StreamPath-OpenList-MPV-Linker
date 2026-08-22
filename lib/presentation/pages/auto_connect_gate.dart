@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../localization/app_text.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/errors/app_exception.dart';
@@ -32,6 +34,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
         baseUrl: config.serverUrl.trim(),
         username: config.username.trim(),
         password: config.password,
+        profileId: config.profileId,
       );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
@@ -60,7 +63,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 16),
-            Text('正在连接服务器…', style: Theme.of(context).textTheme.bodyMedium),
+            AppText('正在连接服务器…', style: Theme.of(context).textTheme.bodyMedium),
           ],
         ),
       ),

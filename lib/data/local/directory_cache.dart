@@ -8,22 +8,55 @@ import '../../core/constants.dart';
 import '../../core/utils/cache_expiration.dart';
 import '../models/web_dav_file.dart';
 
+typedef DirectoryCacheBoxOpener = Future<Box<Map>> Function(String boxName);
+
 /// 目录元数据快照（缓存读取结果）。
 class CacheSnapshot {
   const CacheSnapshot({
     required this.entries,
     required this.cachedAt,
     DateTime? lastAccessedAt,
+    this.sourceId,
+    this.path,
   }) : lastAccessedAt = lastAccessedAt ?? cachedAt;
 
   final List<WebDavFile> entries;
   final DateTime cachedAt;
   final DateTime lastAccessedAt;
+
+  /// 匿名连接来源标识；旧版快照可能缺失。
+  final String? sourceId;
+
+  /// 相对 WebDAV 根目录的路径；旧版快照可能缺失。
+  final String? path;
+}
+
+/// 可供访问型全局搜索使用的目录快照。
+class VisitedDirectorySnapshot {
+  const VisitedDirectorySnapshot({
+    required this.path,
+    required this.entries,
+    required this.lastAccessedAt,
+  });
+
+  final String path;
+  final List<WebDavFile> entries;
+  final DateTime lastAccessedAt;
+}
+
+class DirectoryCacheDiagnostics {
+  const DirectoryCacheDiagnostics({
+    required this.initialized,
+    required this.entryCount,
+  });
+
+  final bool initialized;
+  final int entryCount;
 }
 
 /// Hive 目录元数据缓存。
 ///
-/// 以账号隔离的规范化 URL 为 key，存储 PROPFIND 解析结果 + 缓存时间戳，
+/// 以服务器档案隔离的规范化 URL 为 key，存储 PROPFIND 解析结果 + 缓存时间戳，
 /// 配合 [isFresh] 实现 TTL 失效与 stale-while-revalidate：
 ///  - 未过期 → 直接返回，目录"秒开"；
 ///  - 已过期 → 先返回旧数据渲染，后台拉新后覆盖。
@@ -36,19 +69,28 @@ class DirectoryCache {
     DateTime Function()? now,
     String boxName = _boxName,
     CacheRetentionPolicyProvider? policyProvider,
+    DirectoryCacheBoxOpener? boxOpener,
   }) : _now = now ?? DateTime.now,
        _policyProvider = policyProvider ?? _defaultPolicyProvider,
+       _boxOpener = boxOpener ?? _openBox,
        _resolvedBoxName = boxName;
 
   Box<Map>? _box;
   final DateTime Function() _now;
   final CacheRetentionPolicyProvider _policyProvider;
+  final DirectoryCacheBoxOpener _boxOpener;
   final String _resolvedBoxName;
   Future<void> _pending = Future<void>.value();
 
   /// 打开缓存箱（应用启动时调用一次）。
   Future<void> init() async {
-    _box = await Hive.openBox<Map>(_resolvedBoxName);
+    try {
+      _box = await _boxOpener(_resolvedBoxName);
+    } catch (_) {
+      // Hive 文件不可用时降级为无缓存，基础浏览仍可启动。
+      _box = null;
+      return;
+    }
     try {
       await purgeExpired();
     } catch (_) {
@@ -98,6 +140,8 @@ class DirectoryCache {
           now,
           lastAccessedAt,
         ),
+        sourceId: raw['sourceId'] as String?,
+        path: raw['path'] as String?,
       );
     } catch (_) {
       // 单条缓存损坏不应影响浏览，忽略并视为未命中。
@@ -106,7 +150,12 @@ class DirectoryCache {
   }
 
   /// 写入缓存（同步，Hive 内部异步落盘）。
-  void write(String key, List<WebDavFile> entries) {
+  void write(
+    String key,
+    List<WebDavFile> entries, {
+    String? sourceId,
+    String? path,
+  }) {
     final box = _box;
     if (box == null) return;
     final nowMs = _now().millisecondsSinceEpoch;
@@ -116,11 +165,63 @@ class DirectoryCache {
         'entries': serializedEntries,
         'cachedAt': nowMs,
         'lastAccessedAt': nowMs,
+        'sourceId': ?sourceId,
+        'path': ?path,
       });
       if (box.length > AppConstants.maxDirectoryCacheEntries) {
         await _prune(box, _now());
       }
     });
+  }
+
+  /// 枚举当前连接已访问的未过期目录快照。
+  ///
+  /// 该读取不刷新访问时间，全局搜索不会因枚举行为延长缓存寿命。
+  List<VisitedDirectorySnapshot> visitedDirectories(String sourceId) {
+    final box = _box;
+    if (box == null || sourceId.isEmpty) return const [];
+    final now = _now();
+    final snapshots = <VisitedDirectorySnapshot>[];
+    for (final key in box.keys) {
+      final raw = box.get(key);
+      if (raw is! Map || raw['sourceId'] != sourceId) continue;
+      final path = raw['path'];
+      final entriesRaw = raw['entries'];
+      final cachedAtMs = raw['cachedAt'];
+      final accessMs = raw['lastAccessedAt'] ?? cachedAtMs;
+      if (path is! String ||
+          entriesRaw is! List ||
+          cachedAtMs is! int ||
+          accessMs is! int) {
+        continue;
+      }
+      try {
+        final lastAccessedAt = DateTime.fromMillisecondsSinceEpoch(accessMs);
+        if (CacheExpiration.isExpired(
+          lastUsedAt: lastAccessedAt,
+          retention: _policyProvider().directoryRetention,
+          now: now,
+        )) {
+          continue;
+        }
+        snapshots.add(
+          VisitedDirectorySnapshot(
+            path: path,
+            entries: entriesRaw
+                .whereType<Map>()
+                .map(WebDavFile.fromCacheMap)
+                .toList(growable: false),
+            lastAccessedAt: lastAccessedAt,
+          ),
+        );
+      } catch (_) {
+        // 单个快照损坏时跳过，不影响其他搜索结果。
+      }
+    }
+    snapshots.sort(
+      (left, right) => right.lastAccessedAt.compareTo(left.lastAccessedAt),
+    );
+    return snapshots;
   }
 
   /// 清空全部目录快照，并保持 Hive 箱可继续使用。
@@ -139,6 +240,11 @@ class DirectoryCache {
     if (box == null) return Future<int>.value(0);
     return _enqueue(() => _prune(box, now ?? _now()));
   }
+
+  DirectoryCacheDiagnostics diagnostics() => DirectoryCacheDiagnostics(
+    initialized: _box != null,
+    entryCount: _box?.length ?? 0,
+  );
 
   /// TTL 内是否视为新鲜。
   bool isFresh(CacheSnapshot snapshot) => !CacheExpiration.isExpired(
@@ -262,4 +368,7 @@ class DirectoryCache {
 
   static CacheRetentionPolicy _defaultPolicyProvider() =>
       const DefaultCacheRetentionPolicy();
+
+  static Future<Box<Map>> _openBox(String boxName) =>
+      Hive.openBox<Map>(boxName);
 }

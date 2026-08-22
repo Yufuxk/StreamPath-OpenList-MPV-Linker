@@ -28,7 +28,7 @@ void main() {
     }) async {
       await file.writeAsString(
         '0\nhttp://host/video.mkv\n$paused\n$position\n100\n100\n'
-        '1000000\n$speedBps\n0\ndiag\n$pausedForCache\n0\n0\n1920x1080\n',
+        '$speedBps\n0\ndiag\n$pausedForCache\n0\n0\n1920x1080\n',
         flush: true,
       );
       await monitor.sampleOnce();

@@ -9,7 +9,10 @@ class PlaybackHistory {
     DateTime? createdAt,
     this.playlistFileNames = const [],
     this.playerPid,
+    this.playerExecutablePath,
+    this.playerCreationTime,
     this.ipcPipeName,
+    this.launchEpoch,
   }) : createdAt = createdAt ?? updatedAt;
 
   /// 稳定播放会话 ID；同一条下边栏续播时保持不变。
@@ -36,8 +39,17 @@ class PlaybackHistory {
   /// 对应外部播放器 PID；应用重启后用于恢复存活检测和定向关闭。
   final int? playerPid;
 
+  /// 启动时读取的播放器规范化绝对路径，用于拒绝 PID 复用。
+  final String? playerExecutablePath;
+
+  /// 启动时读取的 Windows FILETIME 原始创建时间。
+  final int? playerCreationTime;
+
   /// 对应 MPV IPC named pipe；应用重启后可重新建立定向控制。
   final String? ipcPipeName;
+
+  /// 当前播放进程对应的磁盘工件代次。
+  final String? launchEpoch;
 
   PlaybackHistory copyWith({
     String? sessionId,
@@ -49,8 +61,14 @@ class PlaybackHistory {
     List<String>? playlistFileNames,
     int? playerPid,
     bool clearPlayerPid = false,
+    String? playerExecutablePath,
+    bool clearPlayerExecutablePath = false,
+    int? playerCreationTime,
+    bool clearPlayerCreationTime = false,
     String? ipcPipeName,
     bool clearIpcPipeName = false,
+    String? launchEpoch,
+    bool clearLaunchEpoch = false,
   }) => PlaybackHistory(
     sessionId: sessionId ?? this.sessionId,
     dirCrumbs: dirCrumbs ?? this.dirCrumbs,
@@ -60,7 +78,14 @@ class PlaybackHistory {
     createdAt: createdAt ?? this.createdAt,
     playlistFileNames: playlistFileNames ?? this.playlistFileNames,
     playerPid: clearPlayerPid ? null : (playerPid ?? this.playerPid),
+    playerExecutablePath: clearPlayerPid || clearPlayerExecutablePath
+        ? null
+        : (playerExecutablePath ?? this.playerExecutablePath),
+    playerCreationTime: clearPlayerPid || clearPlayerCreationTime
+        ? null
+        : (playerCreationTime ?? this.playerCreationTime),
     ipcPipeName: clearIpcPipeName ? null : (ipcPipeName ?? this.ipcPipeName),
+    launchEpoch: clearLaunchEpoch ? null : (launchEpoch ?? this.launchEpoch),
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -72,7 +97,10 @@ class PlaybackHistory {
     'createdAt': createdAt.millisecondsSinceEpoch,
     'playlistFileNames': playlistFileNames,
     'playerPid': playerPid,
+    'playerExecutablePath': playerExecutablePath,
+    'playerCreationTime': playerCreationTime,
     'ipcPipeName': ipcPipeName,
+    'launchEpoch': launchEpoch,
   };
 
   factory PlaybackHistory.fromJson(
@@ -93,6 +121,9 @@ class PlaybackHistory {
         (json['playlistFileNames'] as List?)?.whereType<String>().toList() ??
         const [],
     playerPid: (json['playerPid'] as num?)?.toInt(),
+    playerExecutablePath: json['playerExecutablePath'] as String?,
+    playerCreationTime: (json['playerCreationTime'] as num?)?.toInt(),
     ipcPipeName: json['ipcPipeName'] as String?,
+    launchEpoch: json['launchEpoch'] as String?,
   );
 }

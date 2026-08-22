@@ -174,6 +174,23 @@ void main() {
       expect(namedFile.existsSync(), isFalse);
     });
 
+    test('反序枚举时小写 MD5 直达记录仍优先于注释兜底记录', () async {
+      const url = 'http://host/dav/direct-wins.mp4';
+      final fallback = File('${dir.path}${Platform.pathSeparator}fallback')
+        ..writeAsStringSync('# $url\nstart=10\n');
+      final direct = File(
+        '${dir.path}${Platform.pathSeparator}'
+        '${MpvWatchLaterSync.md5FileName(url).toLowerCase()}',
+      )..writeAsStringSync('start=20\n');
+      final sync = MpvWatchLaterSync(
+        fileLister: (_) => [fallback, direct],
+      );
+
+      final index = await sync.buildIndex(dir, const [url]);
+
+      expect(index.recordFor(url)?.startSeconds, 20);
+    });
+
     test('过期 MD5 记录不会恢复进度并自动删除', () async {
       const url = 'http://host/dav/expired.mp4';
       final now = DateTime.utc(2026, 1, 1);

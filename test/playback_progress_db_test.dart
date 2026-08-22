@@ -88,6 +88,30 @@ void main() {
       );
     });
 
+    test('同一 URL 按 profileId 严格隔离', () async {
+      const url = 'https://shared.test/dav/movie.mkv';
+      await service.saveProgress(
+        url: url,
+        positionMs: 11000,
+        profileId: 'profile-a',
+      );
+      await service.saveProgress(
+        url: url,
+        positionMs: 22000,
+        profileId: 'profile-b',
+      );
+
+      expect(
+        (await service.getProgress(url, profileId: 'profile-a'))?.positionMs,
+        11000,
+      );
+      expect(
+        (await service.getProgress(url, profileId: 'profile-b'))?.positionMs,
+        22000,
+      );
+      expect(await service.getProgress(url), isNull);
+    });
+
     test('无记录返回 null', () async {
       expect(await service.getProgress('http://host/dav/never.mp4'), isNull);
     });
@@ -105,6 +129,45 @@ void main() {
       await service.saveProgress(url: url, positionMs: 90000);
       await service.deleteProgress(url);
       expect(await service.getProgress(url), isNull);
+    });
+
+    test('成功写入和删除会按 URL 通知已打开的界面', () async {
+      const url = 'http://host/dav/live.mp4';
+      final changes = <PlaybackProgressChange>[];
+      void listener(PlaybackProgressChange change) => changes.add(change);
+      service.addListener(listener);
+
+      await service.saveProgress(url: url, positionMs: 26000);
+      await service.deleteProgress(url);
+
+      expect(changes.map((change) => change.url), [url, url]);
+      service.removeListener(listener);
+      await service.saveProgress(url: url, positionMs: 30000);
+      expect(changes, hasLength(2));
+    });
+
+    test('临时播放点与正式进度严格隔离并优先用于续播', () async {
+      const url = 'http://host/dav/stalled.mp4';
+      await service.saveTemporaryProgress(url: url, positionMs: 45000);
+      await service.saveProgress(url: url, positionMs: 0);
+
+      expect((await service.getProgress(url))?.positionMs, 0);
+      expect((await service.getTemporaryProgress(url))?.positionMs, 45000);
+      expect((await service.getResumeProgress(url))?.positionMs, 45000);
+
+      await service.deleteTemporaryProgress(url);
+      expect((await service.getResumeProgress(url))?.positionMs, 0);
+    });
+
+    test('清空缓存会同时清除正式进度与临时播放点', () async {
+      const url = 'http://host/dav/clear.mp4';
+      await service.saveProgress(url: url, positionMs: 30000);
+      await service.saveTemporaryProgress(url: url, positionMs: 25000);
+
+      await service.clearAll();
+
+      expect(await service.getProgress(url), isNull);
+      expect(await service.getTemporaryProgress(url), isNull);
     });
 
     test('超过持久化保留期后不再返回并在读取时清除', () async {
@@ -134,5 +197,93 @@ void main() {
       policy = const CacheExpirationConfig(playbackRetentionDays: 1);
       expect(await service.getProgress(url), isNull);
     });
+  });
+
+  test('旧版数据库升级后保留正式进度并新增临时播放点表', () async {
+    final dir = Directory.systemTemp.createTempSync('progress_upgrade_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}${Platform.pathSeparator}legacy.db';
+    final legacy = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, version) async {
+          await db.execute('''
+            CREATE TABLE playback_progress (
+              url TEXT PRIMARY KEY,
+              position_ms INTEGER NOT NULL,
+              duration_ms INTEGER,
+              updated_at INTEGER NOT NULL
+            )
+          ''');
+        },
+      ),
+    );
+    await legacy.insert('playback_progress', {
+      'url': 'http://host/dav/legacy.mp4',
+      'position_ms': 12000,
+      'duration_ms': 100000,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    });
+    await legacy.close();
+
+    final upgraded = await PlaybackProgressService.open(
+      path,
+      factory: databaseFactoryFfi,
+      legacyProfileId: 'legacy-profile',
+    );
+    addTearDown(upgraded.close);
+    expect(
+      (await upgraded.getProgress(
+        'http://host/dav/legacy.mp4',
+        profileId: 'legacy-profile',
+      ))?.positionMs,
+      12000,
+    );
+    await upgraded.saveTemporaryProgress(
+      url: 'http://host/dav/legacy.mp4',
+      positionMs: 18000,
+      profileId: 'legacy-profile',
+    );
+    expect(
+      (await upgraded.getTemporaryProgress(
+        'http://host/dav/legacy.mp4',
+        profileId: 'legacy-profile',
+      ))?.positionMs,
+      18000,
+    );
+  });
+
+  test('完整性检查与非破坏性维护先生成备份且保留进度', () async {
+    final dir = Directory.systemTemp.createTempSync('progress_maintenance_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}${Platform.pathSeparator}progress.db';
+    final persisted = await PlaybackProgressService.open(
+      path,
+      factory: databaseFactoryFfi,
+      legacyProfileId: 'profile-a',
+    );
+    addTearDown(persisted.close);
+    await persisted.saveProgress(
+      url: 'https://example.test/movie.mkv',
+      positionMs: 45000,
+      profileId: 'profile-a',
+    );
+
+    expect((await persisted.checkIntegrity()).ok, isTrue);
+    final result = await persisted.repairNonDestructive();
+    final repeated = await persisted.repairNonDestructive();
+
+    expect(File(result.backupPath).existsSync(), isTrue);
+    expect(File(repeated.backupPath).existsSync(), isTrue);
+    expect(repeated.backupPath, isNot(result.backupPath));
+    expect(result.integrity.ok, isTrue);
+    expect(
+      (await persisted.getProgress(
+        'https://example.test/movie.mkv',
+        profileId: 'profile-a',
+      ))?.positionMs,
+      45000,
+    );
   });
 }

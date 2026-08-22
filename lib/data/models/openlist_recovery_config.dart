@@ -1,3 +1,5 @@
+import '../../core/utils/url_utils.dart';
+
 /// OpenList / AList 播放失败自动恢复配置。
 ///
 /// 默认关闭，确保升级后不改变既有播放器、WebDAV、字幕和续播行为。
@@ -33,19 +35,20 @@ class OpenListRecoveryConfig {
 
   bool get isUsable => enabled && baseUrl.trim().isNotEmpty && hasCredentials;
 
-  Map<String, dynamic> toJson() => <String, dynamic>{
-    'enabled': enabled,
-    'baseUrl': baseUrl,
-    'username': username,
-    'password': password,
-    'token': token,
-  };
+  Map<String, dynamic> toJson({bool includeSecrets = true}) =>
+      <String, dynamic>{
+        'enabled': enabled,
+        'baseUrl': baseUrl,
+        'username': username,
+        if (includeSecrets) 'password': password,
+        if (includeSecrets) 'token': token,
+      };
 
   factory OpenListRecoveryConfig.fromJson(Map<String, dynamic>? json) {
     if (json == null) return const OpenListRecoveryConfig();
     return OpenListRecoveryConfig(
       enabled: json['enabled'] as bool? ?? false,
-      baseUrl: json['baseUrl'] as String? ?? '',
+      baseUrl: stripUserInfo(json['baseUrl'] as String? ?? ''),
       username: json['username'] as String? ?? '',
       password: json['password'] as String? ?? '',
       token: json['token'] as String? ?? '',

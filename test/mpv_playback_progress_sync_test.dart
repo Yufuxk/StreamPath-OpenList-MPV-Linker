@@ -32,7 +32,7 @@ void main() {
   });
 
   Future<void> writeJournal(List<Map<String, Object?>> records) =>
-      journalFile.writeAsString(records.map(jsonEncode).join('\n'));
+      journalFile.writeAsString('${records.map(jsonEncode).join('\n')}\n');
 
   File watchLaterFile(String url) => File(
     '${watchLaterDir.path}${Platform.pathSeparator}'
@@ -77,6 +77,7 @@ void main() {
   test('自然播放完成会删除 SQLite 与残留 watch_later', () async {
     const url = 'http://host/dav/done.mp4';
     await progressService.saveProgress(url: url, positionMs: 90000);
+    await progressService.saveTemporaryProgress(url: url, positionMs: 85000);
     final watchLater = watchLaterFile(url)..writeAsStringSync('start=90\n');
     await writeJournal([
       {
@@ -96,6 +97,7 @@ void main() {
     );
 
     expect(await progressService.getProgress(url), isNull);
+    expect(await progressService.getTemporaryProgress(url), isNull);
     expect(watchLater.existsSync(), isFalse);
   });
 
@@ -152,6 +154,121 @@ void main() {
     expect(progress.durationMs, 7200000);
   });
 
+  test('缓冲检查点独立保存且不被普通正式进度覆盖', () async {
+    const url = 'http://host/dav/stalled.mp4';
+    await writeJournal([
+      {
+        'outcome': 'temporary_checkpoint',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 45,
+        'duration': 200,
+      },
+      {
+        'outcome': 'position',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 0,
+        'duration': 200,
+      },
+    ]);
+
+    await synchronizer.sync(
+      progressService: progressService,
+      watchLaterDirectory: watchLaterDir,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+    );
+
+    expect((await progressService.getProgress(url))?.positionMs, 0);
+    expect(
+      (await progressService.getTemporaryProgress(url))?.positionMs,
+      45000,
+    );
+    expect((await progressService.getResumeProgress(url))?.positionMs, 45000);
+  });
+
+  test('健康播放事件只清除对应临时播放点', () async {
+    const url = 'http://host/dav/recovered.mp4';
+    await progressService.saveTemporaryProgress(url: url, positionMs: 45000);
+    await writeJournal([
+      {
+        'outcome': 'temporary_cleared',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 50,
+        'duration': 200,
+      },
+    ]);
+
+    final lines = await synchronizer.syncTemporaryCheckpoints(
+      progressService: progressService,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+    );
+
+    expect(lines, await journalFile.length());
+    expect(await progressService.getTemporaryProgress(url), isNull);
+  });
+
+  test('JSONL 未完整尾行不推进游标，补全后只处理一次', () async {
+    const url = 'http://host/dav/partial.mp4';
+    const firstPart =
+        '{"outcome":"temporary_checkpoint","playlist_pos":0,'
+        '"path":"$url","position":45';
+    await journalFile.writeAsString(firstPart, flush: true);
+
+    final cursorAfterPartial = await synchronizer.syncTemporaryCheckpoints(
+      progressService: progressService,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+    );
+
+    expect(cursorAfterPartial, 0, reason: '只有完整换行才能提交字节游标');
+    expect(await progressService.getTemporaryProgress(url), isNull);
+
+    await journalFile.writeAsString(
+      ',"duration":200}\n',
+      mode: FileMode.append,
+      flush: true,
+    );
+    final cursorAfterComplete = await synchronizer.syncTemporaryCheckpoints(
+      progressService: progressService,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+      startLine: cursorAfterPartial,
+    );
+
+    expect(cursorAfterComplete, await journalFile.length());
+    expect(
+      (await progressService.getTemporaryProgress(url))?.positionMs,
+      45000,
+    );
+  });
+
+  test('播放达到 99% 时清除缓冲临时播放点', () async {
+    const url = 'http://host/dav/near-end.mp4';
+    await progressService.saveTemporaryProgress(url: url, positionMs: 45000);
+    await writeJournal([
+      {
+        'outcome': 'position',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 99,
+        'duration': 100,
+      },
+    ]);
+
+    await synchronizer.sync(
+      progressService: progressService,
+      watchLaterDirectory: watchLaterDir,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+    );
+
+    expect(await progressService.getTemporaryProgress(url), isNull);
+  });
+
   test('认证播放 URL 的 watch_later 位置写回无凭据的数据库键', () async {
     const cleanUrl = 'http://host/dav/auth.mp4';
     const playbackUrl = 'http://viewer@host/dav/auth.mp4';
@@ -166,6 +283,45 @@ void main() {
 
     expect((await progressService.getProgress(cleanUrl))!.positionMs, 12500);
     expect(await progressService.getProgress(playbackUrl), isNull);
+  });
+
+  test('N 条媒体只枚举一次 watch_later 目录且每个文件只读一次', () async {
+    final entries = List.generate(
+      20,
+      (index) => MediaEntry(url: 'http://host/dav/$index.mp4'),
+    );
+    for (var index = 0; index < entries.length; index++) {
+      await watchLaterFile(
+        entries[index].url,
+      ).writeAsString('start=${index + 1}\nduration=100\n');
+    }
+    var listCount = 0;
+    var readCount = 0;
+    final indexedSynchronizer = MpvPlaybackProgressSynchronizer(
+      watchLaterSync: MpvWatchLaterSync(
+        fileLister: (directory) {
+          listCount++;
+          return directory.listSync().whereType<File>();
+        },
+        fileReader: (file) {
+          readCount++;
+          return file.readAsString();
+        },
+      ),
+    );
+
+    await indexedSynchronizer.sync(
+      progressService: progressService,
+      watchLaterDirectory: watchLaterDir,
+      entries: entries,
+    );
+
+    expect(listCount, 1);
+    expect(readCount, entries.length);
+    expect(
+      (await progressService.getProgress(entries.last.url))?.positionMs,
+      20000,
+    );
   });
 
   test('认证 URL 缺少记录时兼容读取旧版无凭据 watch_later', () async {

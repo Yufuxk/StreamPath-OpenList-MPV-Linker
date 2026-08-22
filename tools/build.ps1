@@ -3,12 +3,12 @@
 # 一键完成：flutter analyze → flutter test → flutter build
 # windows → 打包便携版（可选）。便携交付默认使用 Release/AOT。
 #
-# 用法（放在项目根目录）：
-#   powershell -ExecutionPolicy Bypass -File .\build.ps1
+# 用法（在项目根目录执行）：
+#   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1
 #   # 打包到指定目录（不询问确认）：
-#   powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target "D:\portable" -Yes
+#   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target "D:\portable" -Yes
 #   # 跳过某一步（调试用）：
-#   powershell -ExecutionPolicy Bypass -File .\build.ps1 -SkipTest -SkipPackage
+#   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipTest -SkipPackage
 #
 # 参数：
 #   -Mode         release（默认）/ profile / debug
@@ -32,8 +32,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Root = $PSScriptRoot
-Set-Location $Root
+$ScriptRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$ProjectRoot = [IO.Path]::GetFullPath((Split-Path $ScriptRoot -Parent))
+$ProjectMarker = Join-Path $ProjectRoot 'pubspec.yaml'
+if (-not (Test-Path -LiteralPath $ProjectMarker -PathType Leaf)) {
+    throw "无法确认 StreamPath 项目根：$ProjectRoot"
+}
+Set-Location -LiteralPath $ProjectRoot
 
 function Resolve-SafePackageTarget {
     param(
@@ -156,11 +161,11 @@ $ModeDirectory = @{
     release = 'Release'
 }[$Mode]
 $BuildOutput = [IO.Path]::GetFullPath(
-    (Join-Path $Root "build\windows\x64\runner\$ModeDirectory")
+    (Join-Path $ProjectRoot "build\windows\x64\runner\$ModeDirectory")
 )
 if ($ValidateTargetOnly) {
     $ValidatedTarget = Resolve-SafePackageTarget -Path $Target `
-        -ProjectRoot $Root -BuildOutput $BuildOutput
+        -ProjectRoot $ProjectRoot -BuildOutput $BuildOutput
     Write-Host "打包目标校验通过：$ValidatedTarget" -ForegroundColor Green
     exit 0
 }
@@ -217,7 +222,7 @@ if (-not $SkipPackage) {
     # 目标目录：-Target 优先；只有 Release 缺省探测正式便携目录，
     # 防止 Debug/Profile 产物覆盖正式交付目录。
     if (-not $Target -and $Mode -eq 'release') {
-        $DefaultTarget = Join-Path (Split-Path $Root -Parent) 'StreamPath_Release\StreamPath 20260809 V0.1 test portable'
+        $DefaultTarget = Join-Path (Split-Path $ProjectRoot -Parent) 'StreamPath_Release\StreamPath 20260809 V0.1 test portable'
         if (Test-Path $DefaultTarget) {
             $Target = $DefaultTarget
         }
@@ -236,7 +241,7 @@ if (-not $SkipPackage) {
     }
     if ($Target) {
         $Target = Resolve-SafePackageTarget -Path $Target `
-            -ProjectRoot $Root -BuildOutput $BuildOutput
+            -ProjectRoot $ProjectRoot -BuildOutput $BuildOutput
 
         $BuildItem = Get-Item -LiteralPath $BuildOutput -Force
         if (-not $BuildItem.PSIsContainer -or

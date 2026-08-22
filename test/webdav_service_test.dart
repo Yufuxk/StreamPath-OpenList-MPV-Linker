@@ -90,6 +90,30 @@ void main() {
       expect((await second).single.name, '仅请求一次.mp4');
       expect(requestCount, 1);
     });
+
+    test('profileId 同时隔离目录缓存键与访问型索引来源', () async {
+      final cacheA = _MemoryDirectoryCache();
+      final cacheB = _MemoryDirectoryCache();
+      final client = _FakeWebDavClient(
+        (_) async => _directoryXml('影片.mkv'),
+        username: 'same-user',
+      );
+
+      await WebDAVService(
+        client: client,
+        profileId: 'profile-a',
+        cache: cacheA,
+      ).refreshDirectory('movies');
+      await WebDAVService(
+        client: client,
+        profileId: 'profile-b',
+        cache: cacheB,
+      ).refreshDirectory('movies');
+
+      expect(cacheA.lastKey, isNot(cacheB.lastKey));
+      expect(cacheA.lastSourceId, 'profile-a');
+      expect(cacheB.lastSourceId, 'profile-b');
+    });
   });
 }
 
@@ -111,6 +135,8 @@ class _MemoryDirectoryCache extends DirectoryCache {
 
   CacheSnapshot? snapshot;
   int writeCount = 0;
+  String? lastKey;
+  String? lastSourceId;
 
   @override
   CacheSnapshot? read(String key) => snapshot;
@@ -119,8 +145,15 @@ class _MemoryDirectoryCache extends DirectoryCache {
   bool isFresh(CacheSnapshot snapshot) => true;
 
   @override
-  void write(String key, List<WebDavFile> entries) {
+  void write(
+    String key,
+    List<WebDavFile> entries, {
+    String? sourceId,
+    String? path,
+  }) {
     writeCount++;
+    lastKey = key;
+    lastSourceId = sourceId;
     snapshot = CacheSnapshot(
       entries: List<WebDavFile>.unmodifiable(entries),
       cachedAt: DateTime.now(),

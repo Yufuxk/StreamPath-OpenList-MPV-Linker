@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
+import '../localization/app_localizations.dart';
+import '../localization/app_text.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
@@ -9,26 +12,33 @@ import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
 import '../../core/utils/expiring_lru_cache.dart';
-import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../core/utils/url_utils.dart';
-import '../../data/models/playback_history.dart';
+import '../../data/local/playback_progress_db.dart';
 import '../../data/models/audio_media_entry.dart';
 import '../../data/models/audio_playback_history.dart';
+import '../../data/models/media_library_item.dart';
+import '../../data/models/playback_history.dart';
 import '../../data/models/playback_progress.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/media_entry.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/audio_player_service.dart';
-import '../../domain/services/playback_activation_guard.dart';
+import '../../domain/services/mpv_idle_completion_marker.dart';
+import '../../domain/services/openlist_index_service.dart';
+import '../../domain/services/player_process_controller.dart';
 import '../../domain/services/webdav_service.dart';
+import '../controllers/directory_browser_controller.dart';
+import '../presenters/playback_session_presenter.dart';
 import '../state/app_state.dart';
 import '../theme/glass_tokens.dart';
+import '../widgets/clipboard_history_menu.dart';
 import '../widgets/directory_wheel_scroll_region.dart';
 import '../widgets/file_tile.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 import 'home_page.dart';
+import 'media_library_page.dart';
 import 'settings_page.dart';
 
 /// 文件浏览页：WebDAV 目录虚拟列表浏览 + 视频一键外部播放。
@@ -43,51 +53,6 @@ class BrowserPage extends StatefulWidget {
 
   @override
   State<BrowserPage> createState() => _BrowserPageState();
-}
-
-class _PlaybackUiSession {
-  _PlaybackUiSession(this.history)
-    : statusNotBefore = history.createdAt,
-      lastSyncedPos = history.videoIndex;
-
-  PlaybackHistory history;
-  DateTime statusNotBefore;
-  int lastSyncedPos;
-  int finishPending = 0;
-  bool? paused;
-  bool syncBusy = false;
-  bool deleting = false;
-  bool launching = false;
-  bool recovering = false;
-  final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
-  double? lastReportedPositionSeconds;
-  double? lastReportedDurationSeconds;
-
-  List<String> get playlistFileNames => history.playlistFileNames.isEmpty
-      ? [history.fileName]
-      : history.playlistFileNames;
-}
-
-class _AudioPlaybackUiSession {
-  _AudioPlaybackUiSession(this.history)
-    : statusNotBefore = history.createdAt,
-      lastSyncedPos = history.trackIndex;
-
-  AudioPlaybackHistory history;
-  DateTime statusNotBefore;
-  int lastSyncedPos;
-  int finishPending = 0;
-  bool? paused;
-  bool syncBusy = false;
-  bool deleting = false;
-  bool launching = false;
-  final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
-  double? lastReportedPositionSeconds;
-  double? lastReportedDurationSeconds;
-
-  List<String> get playlistFileNames => history.playlistFileNames.isEmpty
-      ? [history.fileName]
-      : history.playlistFileNames;
 }
 
 /// 独立管理播放底栏悬停动画，鼠标经过时只重建这一条底栏，不触发
@@ -144,7 +109,7 @@ class _PlaybackBarState extends State<_PlaybackBar> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    AppText(
                       widget.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -153,7 +118,7 @@ class _PlaybackBarState extends State<_PlaybackBar> {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    Text(
+                    AppText(
                       widget.dirLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -173,7 +138,7 @@ class _PlaybackBarState extends State<_PlaybackBar> {
               const SizedBox(width: 4),
               IconButton(
                 icon: const Icon(Icons.delete_outline),
-                tooltip: '删除并关闭对应播放器',
+                tooltip: context.l10n.text('删除并关闭对应播放器'),
                 onPressed: widget.deleting ? null : widget.onDelete,
               ),
             ],
@@ -185,21 +150,12 @@ class _PlaybackBarState extends State<_PlaybackBar> {
 }
 
 class _BrowserPageState extends State<BrowserPage> {
-  /// 当前目录面包屑（每段为目录名；空列表 = 根目录）。
-  final List<String> _crumbs = [];
-
-  List<WebDavFile> _files = const [];
-  String? _error;
-  bool _refreshing = false;
-  FileSortMode _sortMode = FileSortMode.name;
-  FileSortDirection _sortDirection = FileSortDirection.ascending;
-  List<WebDavFile>? _visibleFilesCache;
-  List<WebDavFile>? _visibleFilesSource;
-  List<String>? _visibleFilesHiddenExtensions;
-  bool? _visibleFilesHiddenExtensionsEnabled;
-  FileSortMode? _visibleFilesSortMode;
-  FileSortDirection? _visibleFilesSortDirection;
-  bool _cachedCanSortBySize = false;
+  late final DirectoryBrowserController _directoryBrowser;
+  late final PlaybackSessionPresenter _playbackPresenter;
+  final TextEditingController _directorySearchController =
+      TextEditingController();
+  final FocusNode _directorySearchFocusNode = FocusNode();
+  Set<String> _favoriteKeys = const {};
 
   /// 文件列表与右侧滚动条共用的显式控制器。
   ///
@@ -211,18 +167,6 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 分目录、排序保存的滚动位置，只存在于当前页面内存中。
   late final ExpiringLruCache<String, double> _directoryScrollPositions;
 
-  /// 目录加载序号：仅最后一次导航/刷新请求允许更新当前页面。
-  /// 防止较早请求晚返回后把新目录内容覆盖掉。
-  int _directoryLoadId = 0;
-
-  /// 播放会话（最早创建在前；界面反向绘制，使越早播放越靠下）。
-  final List<_PlaybackUiSession> _playbackSessions = [];
-  Timer? _playMonitor;
-  int _sessionSequence = 0;
-  final List<_AudioPlaybackUiSession> _audioPlaybackSessions = [];
-  Timer? _audioPlayMonitor;
-  int _audioSessionSequence = 0;
-
   /// MPV 状态目录在应用生命周期内固定，只解析一次，避免播放监控每轮
   /// 重复执行路径探测和可写目录检查。
   late final Future<Directory?> _sessionCacheDirectory;
@@ -233,22 +177,50 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   void dispose() {
-    _playMonitor?.cancel();
-    _audioPlayMonitor?.cancel();
     _cacheWarningSub?.cancel();
     _playbackRecoverySub?.cancel();
+    _directoryBrowser
+      ..removeListener(_handleDirectoryBrowserChanged)
+      ..dispose();
+    _playbackPresenter
+      ..removeListener(_handlePlaybackPresenterChanged)
+      ..dispose();
+    _directorySearchController.dispose();
+    _directorySearchFocusNode.dispose();
     _directoryScrollController.dispose();
     super.dispose();
   }
 
   WebDAVService get _service => context.read<AppState>().webDavService!;
 
-  String get _currentPath => _crumbs.join('/');
+  List<String> get _crumbs => _directoryBrowser.crumbs;
+  List<WebDavFile> get _files => _directoryBrowser.files;
+  String? get _error => _directoryBrowser.error;
+  bool get _refreshing => _directoryBrowser.refreshing;
+  FileSortMode get _sortMode => _directoryBrowser.sortMode;
+  FileSortDirection get _sortDirection => _directoryBrowser.sortDirection;
+  bool get _directorySearchOpen => _directoryBrowser.searchOpen;
+  String get _directorySearchQuery => _directoryBrowser.searchQuery;
+  DirectorySearchScope get _directorySearchScope =>
+      _directoryBrowser.searchScope;
+  String get _currentPath => _directoryBrowser.currentPath;
+  List<WebDavFile> get _visibleFiles => _directoryBrowser.visibleFiles;
+  bool get _canSortBySize => _directoryBrowser.canSortBySize;
+  List<PlaybackUiSession> get _playbackSessions =>
+      _playbackPresenter.videoSessions;
+  List<AudioPlaybackUiSession> get _audioPlaybackSessions =>
+      _playbackPresenter.audioSessions;
+  Timer? get _playMonitor => _playbackPresenter.videoMonitor;
+  set _playMonitor(Timer? value) => _playbackPresenter.videoMonitor = value;
+  Timer? get _audioPlayMonitor => _playbackPresenter.audioMonitor;
+  set _audioPlayMonitor(Timer? value) =>
+      _playbackPresenter.audioMonitor = value;
 
   /// 当前目录列表的内存状态键。
   String get _directoryScrollCacheKey =>
       'directory-scroll:${_sortMode.jsonValue}:'
-      '${_sortDirection.jsonValue}:$_currentPath';
+      '${_sortDirection.jsonValue}:$_currentPath:'
+      '${_directorySearchOpen ? '${_directorySearchScope.name}:$_directorySearchQuery' : ''}';
 
   ValueKey<String> get _directoryScrollKey =>
       ValueKey<String>(_directoryScrollCacheKey);
@@ -279,72 +251,15 @@ class _BrowserPageState extends State<BrowserPage> {
 
   void _changeDirectoryScrollScope(VoidCallback mutation) {
     _rememberDirectoryScroll();
-    setState(mutation);
+    mutation();
     _scheduleDirectoryScrollRestore();
-  }
-
-  /// 隐藏后缀（用户配置，规范化后小写含点；如 ['.ass']）。
-  List<String> get _hiddenExtensions =>
-      context.read<AppState>().configStore.current.hiddenExtensions;
-
-  bool get _hiddenExtensionsEnabled =>
-      context.read<AppState>().configStore.current.hiddenExtensionsEnabled;
-
-  /// 显示列表：应用隐藏后缀过滤；后台全量数据 [\_files] 保持不变，
-  /// 保证字幕自动匹配、播放列表切集等功能不受影响。
-  List<WebDavFile> get _visibleFiles {
-    _ensureVisibleFilesCache();
-    return _visibleFilesCache!;
-  }
-
-  void _ensureVisibleFilesCache() {
-    final hiddenExtensions = _hiddenExtensions;
-    final hiddenExtensionsEnabled = _hiddenExtensionsEnabled;
-    if (identical(_visibleFilesSource, _files) &&
-        identical(_visibleFilesHiddenExtensions, hiddenExtensions) &&
-        _visibleFilesHiddenExtensionsEnabled == hiddenExtensionsEnabled &&
-        _visibleFilesSortMode == _sortMode &&
-        _visibleFilesSortDirection == _sortDirection &&
-        _visibleFilesCache != null) {
-      return;
-    }
-
-    final hidden = hiddenExtensions.toSet();
-    final visible =
-        (hidden.isEmpty
-                ? _files
-                : _files.where(
-                    (f) => !shouldHideFile(
-                      f,
-                      hidden,
-                      enabled: hiddenExtensionsEnabled,
-                    ),
-                  ))
-            .toList();
-    _cachedCanSortBySize = canSortWebDavFilesBySize(visible);
-    _visibleFilesCache = _sortMode == FileSortMode.size && !_cachedCanSortBySize
-        ? visible
-        : sortedWebDavFiles(
-            visible,
-            mode: _sortMode,
-            direction: _sortDirection,
-          );
-    _visibleFilesSource = _files;
-    _visibleFilesHiddenExtensions = hiddenExtensions;
-    _visibleFilesHiddenExtensionsEnabled = hiddenExtensionsEnabled;
-    _visibleFilesSortMode = _sortMode;
-    _visibleFilesSortDirection = _sortDirection;
-  }
-
-  bool get _canSortBySize {
-    _ensureVisibleFilesCache();
-    return _cachedCanSortBySize;
   }
 
   @override
   void initState() {
     super.initState();
-    final expirationStore = context.read<AppState>().cacheExpirationConfigStore;
+    final appState = context.read<AppState>();
+    final expirationStore = appState.cacheExpirationConfigStore;
     _directoryScrollPositions = ExpiringLruCache(
       maxEntries: AppConstants.maxDirectoryScrollEntries,
       idleTtl: AppConstants.directoryScrollRetention,
@@ -352,21 +267,40 @@ class _BrowserPageState extends State<BrowserPage> {
           ? null
           : () => expirationStore.current.directoryScrollRetention,
     );
+    _directoryBrowser = DirectoryBrowserController(
+      service: _service,
+      configStore: appState.configStore,
+      onDirectoryLoaded: _recordRecentDirectory,
+      onForcedRefresh: appState.playerService.captureOpenListProcessIdentity,
+      openListIndexSearch: appState.searchOpenListIndex,
+    )..addListener(_handleDirectoryBrowserChanged);
+    _playbackPresenter = PlaybackSessionPresenter()
+      ..addListener(_handlePlaybackPresenterChanged);
     _sessionCacheDirectory = _resolveSessionCacheDirectory();
     _initLoad();
+    _loadFavoriteKeys();
     _loadPlaybackSessions();
     _loadAudioPlaybackSessions();
     // 播放中动态保护警告（如网络带宽不足）：SnackBar 展示。
-    _cacheWarningSub = context.read<AppState>().cacheWarnings.listen((message) {
+    _cacheWarningSub = appState.cacheWarnings.listen((message) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(message)));
+        ..showSnackBar(SnackBar(content: AppText(message)));
     });
-    _playbackRecoverySub = context
-        .read<AppState>()
-        .playbackRecoveryEvents
-        .listen(_handlePlaybackRecoveryEvent);
+    _playbackRecoverySub = appState.playbackRecoveryEvents.listen(
+      _handlePlaybackRecoveryEvent,
+    );
+  }
+
+  void _handleDirectoryBrowserChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _handlePlaybackPresenterChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _handlePlaybackRecoveryEvent(PlaybackRecoveryEvent event) {
@@ -398,6 +332,10 @@ class _BrowserPageState extends State<BrowserPage> {
                 .toInt();
             final history = session.history.copyWith(
               playerPid: result.process.pid,
+              playerExecutablePath: result.processIdentity?.executablePath,
+              clearPlayerExecutablePath: result.processIdentity == null,
+              playerCreationTime: result.processIdentity?.creationTime,
+              clearPlayerCreationTime: result.processIdentity == null,
               ipcPipeName: result.ipcPipeName,
               updatedAt: now,
             );
@@ -432,7 +370,176 @@ class _BrowserPageState extends State<BrowserPage> {
     }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(event.message)));
+      ..showSnackBar(SnackBar(content: AppText(event.message)));
+  }
+
+  void _resetDirectorySearch() {
+    _directoryBrowser.closeSearch();
+    _directorySearchController.clear();
+    _directorySearchFocusNode.unfocus();
+  }
+
+  void _openDirectorySearch() {
+    _changeDirectoryScrollScope(_directoryBrowser.openSearch);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _directorySearchOpen) {
+        _directorySearchFocusNode.requestFocus();
+      }
+    });
+  }
+
+  void _closeDirectorySearch() {
+    _changeDirectoryScrollScope(_resetDirectorySearch);
+  }
+
+  void _onDirectorySearchChanged(String query) {
+    if (query == _directorySearchQuery) return;
+    _changeDirectoryScrollScope(
+      () => _directoryBrowser.updateSearchQuery(query),
+    );
+  }
+
+  Future<void> _loadFavoriteKeys() async {
+    final appState = context.read<AppState>();
+    final store = appState.mediaLibraryStore;
+    final sourceId = appState.mediaSourceId;
+    if (store == null || sourceId == null) return;
+    try {
+      final favorites = await store.favorites(sourceId);
+      if (!mounted || sourceId != context.read<AppState>().mediaSourceId) {
+        return;
+      }
+      setState(() {
+        _favoriteKeys = favorites
+            .map((record) => record.item.stableKey)
+            .toSet();
+      });
+    } catch (_) {
+      // 个人资产读取失败不阻止目录浏览和播放。
+    }
+  }
+
+  MediaLibraryItem? _libraryItemForFile(WebDavFile file, {String? parentPath}) {
+    final sourceId = context.read<AppState>().mediaSourceId;
+    final kind = MediaLibraryKindX.fromFile(file);
+    if (sourceId == null || kind == null) return null;
+    return MediaLibraryItem(
+      sourceId: sourceId,
+      parentPath: parentPath ?? _currentPath,
+      name: file.name,
+      kind: kind,
+    );
+  }
+
+  Future<void> _toggleFavorite(WebDavFile file) async {
+    final item = _libraryItemForFile(file);
+    final store = context.read<AppState>().mediaLibraryStore;
+    if (item == null || store == null) return;
+    try {
+      final added = await store.toggleFavorite(item);
+      if (!mounted) return;
+      setState(() {
+        final keys = Set<String>.of(_favoriteKeys);
+        if (added) {
+          keys.add(item.stableKey);
+        } else {
+          keys.remove(item.stableKey);
+        }
+        _favoriteKeys = keys;
+      });
+    } catch (error) {
+      _showLibraryError('保存收藏失败：$error');
+    }
+  }
+
+  Future<void> _recordRecentDirectory(String path) async {
+    final normalized = normalizeLibraryPath(path);
+    if (normalized.isEmpty) return;
+    final appState = context.read<AppState>();
+    final store = appState.mediaLibraryStore;
+    final sourceId = appState.mediaSourceId;
+    if (store == null || sourceId == null) return;
+    final segments = normalized.split('/');
+    final item = MediaLibraryItem(
+      sourceId: sourceId,
+      parentPath: segments.length == 1
+          ? ''
+          : segments.sublist(0, segments.length - 1).join('/'),
+      name: segments.last,
+      kind: MediaLibraryKind.directory,
+    );
+    try {
+      await store.recordRecentDirectory(item);
+    } catch (error) {
+      _showLibraryError('保存最近目录失败：$error');
+    }
+  }
+
+  Future<void> _recordPlaybackFile(
+    WebDavFile file, {
+    required String parentPath,
+    required String playbackSessionId,
+  }) async {
+    final item = _libraryItemForFile(file, parentPath: parentPath);
+    final store = context.read<AppState>().mediaLibraryStore;
+    if (item == null || store == null || !item.kind.isMedia) return;
+    try {
+      await store.recordPlayback(item, playbackSessionId: playbackSessionId);
+    } catch (error) {
+      _showLibraryError('保存最近播放失败：$error');
+    }
+  }
+
+  Future<void> _recordPlaybackByName({
+    required List<String> dirCrumbs,
+    required String fileName,
+    required bool audio,
+    required String playbackSessionId,
+  }) async {
+    final appState = context.read<AppState>();
+    final store = appState.mediaLibraryStore;
+    final sourceId = appState.mediaSourceId;
+    if (store == null || sourceId == null) return;
+    final parentPath = normalizeLibraryPath(dirCrumbs.join('/'));
+    WebDavFile? matched;
+    if (normalizeLibraryPath(_currentPath) == parentPath) {
+      matched = _files
+          .where((file) => file.name == fileName && !file.isDirectory)
+          .firstOrNull;
+    }
+    if (matched == null) {
+      for (final snapshot in appState.directoryCache.visitedDirectories(
+        sourceId,
+      )) {
+        if (normalizeLibraryPath(snapshot.path) != parentPath) continue;
+        matched = snapshot.entries
+            .where((file) => file.name == fileName && !file.isDirectory)
+            .firstOrNull;
+        break;
+      }
+    }
+    final kind = matched == null
+        ? (audio ? MediaLibraryKind.audio : MediaLibraryKind.video)
+        : MediaLibraryKindX.fromFile(matched);
+    if (kind == null || !kind.isMedia) return;
+    final item = MediaLibraryItem(
+      sourceId: sourceId,
+      parentPath: parentPath,
+      name: fileName,
+      kind: kind,
+    );
+    try {
+      await store.recordPlayback(item, playbackSessionId: playbackSessionId);
+    } catch (error) {
+      _showLibraryError('保存最近播放失败：$error');
+    }
+  }
+
+  void _showLibraryError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: AppText(message)));
   }
 
   Future<Directory?> _resolveSessionCacheDirectory() async {
@@ -478,34 +585,26 @@ class _BrowserPageState extends State<BrowserPage> {
     final appState = context.read<AppState>();
     final histories = await appState.playbackHistoryStore.loadAll();
     if (!mounted) return;
-    final sessions = histories.map(_PlaybackUiSession.new).toList();
-    setState(() {
-      _playbackSessions
-        ..clear()
-        ..addAll(sessions);
-    });
+    _playbackPresenter.replaceVideoSessions(histories);
     for (final history in histories) {
       await appState.playerService.restoreSession(
         sessionId: history.sessionId,
         pid: history.playerPid,
+        executablePath: history.playerExecutablePath,
+        creationTime: history.playerCreationTime,
         ipcPipeName: history.ipcPipeName,
+        launchEpoch: history.launchEpoch,
       );
     }
     _refreshPlaybackMonitor();
   }
 
-  _PlaybackUiSession? _sessionById(String sessionId) {
-    for (final session in _playbackSessions) {
-      if (session.history.sessionId == sessionId) return session;
-    }
-    return null;
-  }
+  PlaybackUiSession? _sessionById(String sessionId) =>
+      _playbackPresenter.videoSessionById(sessionId);
 
-  String _newSessionId() =>
-      'play_${DateTime.now().microsecondsSinceEpoch}_${++_sessionSequence}';
+  String _newSessionId() => _playbackPresenter.newVideoSessionId();
 
-  String _newAudioSessionId() =>
-      'audio_${DateTime.now().microsecondsSinceEpoch}_${++_audioSessionSequence}';
+  String _newAudioSessionId() => _playbackPresenter.newAudioSessionId();
 
   bool get _needsAudioPlaybackMonitor => _audioPlaybackSessions.any(
     (session) =>
@@ -540,126 +639,76 @@ class _BrowserPageState extends State<BrowserPage> {
     if (store == null || player == null) return;
     final histories = await store.loadAll();
     if (!mounted) return;
-    final sessions = histories.map(_AudioPlaybackUiSession.new).toList();
-    setState(() {
-      _audioPlaybackSessions
-        ..clear()
-        ..addAll(sessions);
-    });
+    _playbackPresenter.replaceAudioSessions(histories);
     for (final history in histories) {
       await player.restoreSession(
         sessionId: history.sessionId,
         pid: history.playerPid,
+        executablePath: history.playerExecutablePath,
+        creationTime: history.playerCreationTime,
         ipcPipeName: history.ipcPipeName,
+        launchEpoch: history.launchEpoch,
       );
     }
     _refreshAudioPlaybackMonitor();
   }
 
-  _AudioPlaybackUiSession? _audioSessionById(String sessionId) {
-    for (final session in _audioPlaybackSessions) {
-      if (session.history.sessionId == sessionId) return session;
-    }
-    return null;
-  }
+  AudioPlaybackUiSession? _audioSessionById(String sessionId) =>
+      _playbackPresenter.audioSessionById(sessionId);
 
   /// 首帧加载：先同步读缓存秒开，再走网络/缓存编排。
   Future<void> _initLoad() async {
-    // 确保配置文件已加载（隐藏后缀过滤生效；配置损坏时回退默认，不阻塞浏览）。
-    try {
-      await context.read<AppState>().configStore.load();
-    } on AppException {
-      // 配置损坏时使用默认值。
-    }
-    if (mounted) {
-      setState(() {
-        _sortMode = context
-            .read<AppState>()
-            .configStore
-            .current
-            .defaultSortMode;
-        _sortDirection = context
-            .read<AppState>()
-            .configStore
-            .current
-            .defaultSortDirection;
-      });
-      _scheduleDirectoryScrollRestore();
-    }
-    final cached = _service.cachedDirectory(_currentPath);
-    if (cached != null && mounted) {
-      setState(() => _files = cached);
-      _scheduleDirectoryScrollRestore();
-    }
-    await _load();
+    await _directoryBrowser.initialize();
+    if (mounted) _scheduleDirectoryScrollRestore();
   }
 
   /// 加载当前目录（[force] 为 true 时强制刷新网络）。
   Future<void> _load({bool force = false}) async {
-    if (!mounted) return;
-    final loadId = ++_directoryLoadId;
-    final path = _currentPath;
-    setState(() {
-      _error = null;
-      _refreshing = force;
-    });
-    try {
-      final files = await _service.fetchDirectory(path, forceRefresh: force);
-      if (!mounted || loadId != _directoryLoadId || path != _currentPath) {
-        return;
-      }
-      setState(() => _files = files);
-      _scheduleDirectoryScrollRestore();
-    } on AppException catch (e) {
-      if (!mounted || loadId != _directoryLoadId || path != _currentPath) {
-        return;
-      }
-      setState(() => _error = e.message);
-    } finally {
-      if (mounted && loadId == _directoryLoadId) {
-        setState(() => _refreshing = false);
-      }
-    }
+    await _directoryBrowser.load(force: force);
+    if (mounted) _scheduleDirectoryScrollRestore();
   }
 
   // ── 目录导航 ─────────────────────────────────────────────────
 
   void _enterDirectory(WebDavFile dir) {
     _changeDirectoryScrollScope(() {
-      _crumbs.add(dir.name);
-      _files = const [];
+      _directorySearchController.clear();
+      _directorySearchFocusNode.unfocus();
+      _directoryBrowser.enterDirectory(dir);
     });
-    _load();
+    unawaited(_load());
   }
 
   void _backTo(int index) {
     // index 为面包屑位置；切到该层（含其子层移除）。
     _changeDirectoryScrollScope(() {
-      _crumbs.removeRange(index + 1, _crumbs.length);
-      _files = const [];
+      _directorySearchController.clear();
+      _directorySearchFocusNode.unfocus();
+      _directoryBrowser.backTo(index);
     });
-    _load();
+    unawaited(_load());
   }
 
   // ── 视频播放联动（自动切集） ─────────────────────────────────
 
   Future<void> _playVideo(WebDavFile video, {String? sessionId}) async {
     final appState = context.read<AppState>();
+    final libraryParentPath = _currentPath;
     final existingSession = sessionId == null ? null : _sessionById(sessionId);
     if (sessionId == null &&
         _playbackSessions.length >= AppConstants.maxPlaybackSessions) {
       await showGlassDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('播放位置已占满'),
-          content: Text(
+          title: const AppText('播放位置已占满'),
+          content: AppText(
             '当前最多同时保留 ${AppConstants.maxPlaybackSessions} 个播放会话，'
             '请先关闭或删除一个下边栏后再播放。',
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('知道了'),
+              child: const AppText('知道了'),
             ),
           ],
         ),
@@ -718,7 +767,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (entries.isEmpty || clickedIndex < 0) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无法播放「${video.name}」：strm 内容无效或读取失败')),
+          SnackBar(content: AppText('无法播放「${video.name}」：strm 内容无效或读取失败')),
         );
       }
       return;
@@ -738,7 +787,7 @@ class _BrowserPageState extends State<BrowserPage> {
       createdAt: existingSession?.history.createdAt ?? now,
       playlistFileNames: activeVideos.map((v) => v.name).toList(),
     );
-    final session = existingSession ?? _PlaybackUiSession(history);
+    final session = existingSession ?? PlaybackUiSession(history);
     session
       ..history = history
       ..lastSyncedPos = playStart
@@ -749,20 +798,14 @@ class _BrowserPageState extends State<BrowserPage> {
     session.activationGuard.reset();
     session
       ..lastReportedPositionSeconds = null
-      ..lastReportedDurationSeconds = null;
-    if (mounted) {
-      setState(() {
-        if (existingSession == null) {
-          _playbackSessions.add(session);
-          _playbackSessions.sort(
-            (a, b) => a.history.createdAt.compareTo(b.history.createdAt),
-          );
-        }
-      });
+      ..lastReportedDurationSeconds = null
+      ..lastProgressPersistedAt = null;
+    if (mounted && existingSession == null) {
+      _playbackPresenter.addVideoSession(session);
     }
     final stored = await appState.playbackHistoryStore.upsert(history);
     if (!stored) {
-      if (mounted) setState(() => _playbackSessions.remove(session));
+      if (mounted) _playbackPresenter.removeVideoSession(session);
       return;
     }
 
@@ -771,8 +814,9 @@ class _BrowserPageState extends State<BrowserPage> {
     //    避免 mpv 从片尾恢复导致秒切下一集。
     PlaybackProgress? progress;
     try {
-      progress = await appState.progressService.getProgress(
+      progress = await appState.progressService.getResumeProgress(
         entries[playStart].url,
+        profileId: appState.mediaSourceId,
       );
       // 已看完（时长已知且位置接近片尾，剩余不足 1 分钟）→ 从头播放，
       // 避免 mpv 从片尾恢复导致秒切下一集。
@@ -796,10 +840,18 @@ class _BrowserPageState extends State<BrowserPage> {
         username: appState.username,
         password: appState.password,
       );
-      if (!mounted || !_playbackSessions.contains(session)) return;
+      if (!mounted || !_playbackSessions.contains(session)) {
+        await appState.playerService.terminateLaunch(result);
+        return;
+      }
       final launchedHistory = session.history.copyWith(
         playerPid: result.process.pid,
+        playerExecutablePath: result.processIdentity?.executablePath,
+        clearPlayerExecutablePath: result.processIdentity == null,
+        playerCreationTime: result.processIdentity?.creationTime,
+        clearPlayerCreationTime: result.processIdentity == null,
         ipcPipeName: result.ipcPipeName,
+        launchEpoch: result.launchEpoch,
         updatedAt: DateTime.now(),
       );
       setState(() {
@@ -824,6 +876,13 @@ class _BrowserPageState extends State<BrowserPage> {
       });
       _refreshPlaybackMonitor();
       unawaited(appState.playbackHistoryStore.upsert(launchedHistory));
+      unawaited(
+        _recordPlaybackFile(
+          video,
+          parentPath: libraryParentPath,
+          playbackSessionId: resolvedSessionId,
+        ),
+      );
 
       final subtitle = entries[playStart].subtitle;
       final parts = <String>[
@@ -833,7 +892,7 @@ class _BrowserPageState extends State<BrowserPage> {
       ];
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(parts.join(' · ')),
+          content: AppText(parts.join(' · ')),
           duration: const Duration(seconds: 3),
         ),
       );
@@ -848,7 +907,7 @@ class _BrowserPageState extends State<BrowserPage> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(e.message)));
+      ).showSnackBar(SnackBar(content: AppText(e.message)));
     }
   }
 
@@ -856,13 +915,14 @@ class _BrowserPageState extends State<BrowserPage> {
 
   Future<void> _playAudio(WebDavFile audio, {String? sessionId}) async {
     final appState = context.read<AppState>();
+    final libraryParentPath = _currentPath;
     final player = appState.audioPlayerService;
     final historyStore = appState.audioPlaybackHistoryStore;
     final progressService = appState.audioProgressService;
     if (player == null || historyStore == null || progressService == null) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('音频播放模块初始化失败，视频播放不受影响')));
+      ).showSnackBar(const SnackBar(content: AppText('音频播放模块初始化失败，视频播放不受影响')));
       return;
     }
     final existingSession = sessionId == null
@@ -873,15 +933,15 @@ class _BrowserPageState extends State<BrowserPage> {
       await showGlassDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('音频播放位置已占满'),
-          content: Text(
+          title: const AppText('音频播放位置已占满'),
+          content: AppText(
             '当前最多同时保留 ${AppConstants.maxPlaybackSessions} 个音频会话，'
             '请先关闭或删除一个音频下边栏后再播放。',
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('知道了'),
+              child: const AppText('知道了'),
             ),
           ],
         ),
@@ -941,7 +1001,7 @@ class _BrowserPageState extends State<BrowserPage> {
       createdAt: existingSession?.history.createdAt ?? now,
       playlistFileNames: ordered.map((file) => file.name).toList(),
     );
-    final session = existingSession ?? _AudioPlaybackUiSession(history);
+    final session = existingSession ?? AudioPlaybackUiSession(history);
     session
       ..history = history
       ..lastSyncedPos = playStart
@@ -949,20 +1009,14 @@ class _BrowserPageState extends State<BrowserPage> {
       ..paused = null
       ..launching = true
       ..lastReportedPositionSeconds = null
-      ..lastReportedDurationSeconds = null;
+      ..lastReportedDurationSeconds = null
+      ..lastProgressPersistedAt = null;
     session.activationGuard.reset();
-    if (mounted) {
-      setState(() {
-        if (existingSession == null) {
-          _audioPlaybackSessions.add(session);
-          _audioPlaybackSessions.sort(
-            (a, b) => a.history.createdAt.compareTo(b.history.createdAt),
-          );
-        }
-      });
+    if (mounted && existingSession == null) {
+      _playbackPresenter.addAudioSession(session);
     }
     if (!await historyStore.upsert(history)) {
-      if (mounted) setState(() => _audioPlaybackSessions.remove(session));
+      if (mounted) _playbackPresenter.removeAudioSession(session);
       return;
     }
 
@@ -973,8 +1027,12 @@ class _BrowserPageState extends State<BrowserPage> {
         entries: entries,
         username: appState.username,
         password: appState.password,
+        launchEpoch: existingSession?.history.launchEpoch,
       );
-      progress = await progressService.getProgress(entries[playStart].url);
+      progress = await progressService.getProgress(
+        entries[playStart].url,
+        profileId: appState.mediaSourceId,
+      );
       if (progress != null && progress.isFinishedNearEnd()) progress = null;
     } on AppException {
       // 音频进度读取失败时从头播放，视频链路不受影响。
@@ -993,12 +1051,17 @@ class _BrowserPageState extends State<BrowserPage> {
             _service.fetchFileBytes(url, maxBytes: maxBytes, timeout: timeout),
       );
       if (!mounted || !_audioPlaybackSessions.contains(session)) {
-        await player.terminateSession(resolvedSessionId);
+        await player.terminateLaunch(result);
         return;
       }
       final launchedHistory = session.history.copyWith(
         playerPid: result.process.pid,
+        playerExecutablePath: result.processIdentity?.executablePath,
+        clearPlayerExecutablePath: result.processIdentity == null,
+        playerCreationTime: result.processIdentity?.creationTime,
+        clearPlayerCreationTime: result.processIdentity == null,
         ipcPipeName: result.ipcPipeName,
+        launchEpoch: result.launchEpoch,
         updatedAt: DateTime.now(),
       );
       setState(() {
@@ -1023,6 +1086,13 @@ class _BrowserPageState extends State<BrowserPage> {
       });
       _refreshAudioPlaybackMonitor();
       unawaited(historyStore.upsert(launchedHistory));
+      unawaited(
+        _recordPlaybackFile(
+          audio,
+          parentPath: libraryParentPath,
+          playbackSessionId: resolvedSessionId,
+        ),
+      );
 
       final current = entries[playStart];
       final parts = <String>[
@@ -1033,7 +1103,7 @@ class _BrowserPageState extends State<BrowserPage> {
       ];
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(parts.join(' · '))));
+      ).showSnackBar(SnackBar(content: AppText(parts.join(' · '))));
     } on AppException catch (error) {
       if (!mounted) return;
       if (_audioPlaybackSessions.contains(session)) {
@@ -1045,7 +1115,7 @@ class _BrowserPageState extends State<BrowserPage> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
+      ).showSnackBar(SnackBar(content: AppText(error.message)));
     } catch (_) {
       if (!mounted) return;
       if (_audioPlaybackSessions.contains(session)) {
@@ -1057,12 +1127,12 @@ class _BrowserPageState extends State<BrowserPage> {
       }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('音频播放模块发生错误，视频播放不受影响')));
+      ).showSnackBar(const SnackBar(content: AppText('音频播放模块发生错误，视频播放不受影响')));
     }
   }
 
   void _syncAudioPlaybackSessions() {
-    for (final session in List<_AudioPlaybackUiSession>.of(
+    for (final session in List<AudioPlaybackUiSession>.of(
       _audioPlaybackSessions,
     )) {
       if (session.syncBusy || session.deleting || session.launching) continue;
@@ -1076,9 +1146,7 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  Future<void> _syncAudioPlaybackSession(
-    _AudioPlaybackUiSession session,
-  ) async {
+  Future<void> _syncAudioPlaybackSession(AudioPlaybackUiSession session) async {
     if (!_audioPlaybackSessions.contains(session)) return;
     final names = session.playlistFileNames;
     if (names.isEmpty) return;
@@ -1099,7 +1167,13 @@ class _BrowserPageState extends State<BrowserPage> {
     final Directory? dataDir = await _sessionCacheDirectory;
     if (dataDir == null) return;
     final statusFile = File(
-      p.join(dataDir.path, AudioPlayerService.sessionStatusFileName(sessionId)),
+      p.join(
+        dataDir.path,
+        AudioPlayerService.sessionStatusFileName(
+          sessionId,
+          launchEpoch: session.history.launchEpoch,
+        ),
+      ),
     );
     DateTime? statusModifiedAt;
     try {
@@ -1150,9 +1224,13 @@ class _BrowserPageState extends State<BrowserPage> {
           ? null
           : int.tryParse(lines.first.trim());
       final naturallyFinished =
-          pos == -1 &&
-          session.lastSyncedPos == names.length - 1 &&
-          _isFreshStatus(statusModifiedAt);
+          _isFreshStatus(statusModifiedAt) &&
+          (_isOwnedIdleCompletion(
+                lines,
+                expectedLastPos: names.length - 1,
+                expectedEpoch: session.history.launchEpoch,
+              ) ||
+              (pos == -1 && session.lastSyncedPos == names.length - 1));
       var completed = _hasReachedAudioCompletion(session, lines);
       if (!completed) {
         completed = await _hasPersistedAudioCompletion(session, lines);
@@ -1181,12 +1259,18 @@ class _BrowserPageState extends State<BrowserPage> {
     if (lines == null || lines.length < 2) return;
     final pos = int.tryParse(lines.first.trim());
     if (pos == null || pos < 0 || pos >= names.length) {
-      final reachedLast = session.lastSyncedPos == names.length - 1;
+      final reachedLast =
+          session.lastSyncedPos == names.length - 1 ||
+          _isOwnedIdleCompletion(
+            lines,
+            expectedLastPos: names.length - 1,
+            expectedEpoch: session.history.launchEpoch,
+          );
       if (pos == -1 && reachedLast && _isFreshStatus(statusModifiedAt)) {
         session.finishPending++;
         if (session.finishPending >= 2) {
           session.finishPending = 0;
-          await _removeAudioPlaybackSession(session, terminateProcess: false);
+          await _removeAudioPlaybackSession(session, terminateProcess: true);
         }
       } else {
         session.finishPending = 0;
@@ -1195,6 +1279,27 @@ class _BrowserPageState extends State<BrowserPage> {
     }
     session.finishPending = 0;
     final paused = lines.length >= 3 ? lines[2].trim() == '1' : false;
+    final pauseChanged = paused != session.paused;
+    final mediaChanged = pos != session.lastSyncedPos;
+    if (mediaChanged) {
+      try {
+        await player.syncActiveProgress(sessionId);
+      } catch (_) {
+        // 切歌进度同步失败不影响播放列表和下边栏更新。
+      }
+    }
+    final progressService = appState.audioProgressService;
+    if (progressService != null) {
+      await _persistLiveProgress(
+        service: progressService,
+        profileId: appState.mediaSourceId,
+        lines: lines,
+        running: running,
+        force: pauseChanged || mediaChanged,
+        lastPersistedAt: session.lastProgressPersistedAt,
+        onPersisted: (value) => session.lastProgressPersistedAt = value,
+      );
+    }
     if (paused != session.paused && mounted) {
       setState(() => session.paused = paused);
     }
@@ -1206,11 +1311,19 @@ class _BrowserPageState extends State<BrowserPage> {
       updatedAt: DateTime.now(),
     );
     await store.upsert(session.history);
+    unawaited(
+      _recordPlaybackByName(
+        dirCrumbs: session.history.dirCrumbs,
+        fileName: names[pos],
+        audio: true,
+        playbackSessionId: session.history.sessionId,
+      ),
+    );
     if (mounted && _audioPlaybackSessions.contains(session)) setState(() {});
   }
 
   void _rememberAudioProgress(
-    _AudioPlaybackUiSession session,
+    AudioPlaybackUiSession session,
     List<String>? lines, {
     required bool running,
   }) {
@@ -1233,8 +1346,43 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
+  Future<void> _persistLiveProgress({
+    required PlaybackProgressService service,
+    required String? profileId,
+    required List<String> lines,
+    required bool running,
+    required bool force,
+    required DateTime? lastPersistedAt,
+    required ValueChanged<DateTime> onPersisted,
+  }) async {
+    if (!running || lines.length < 5) return;
+    final url = lines[1].trim();
+    final position = double.tryParse(lines[3].trim());
+    final duration = double.tryParse(lines[4].trim());
+    if (url.isEmpty || position == null || position < 0) return;
+    final now = DateTime.now();
+    if (!force &&
+        lastPersistedAt != null &&
+        now.difference(lastPersistedAt) < const Duration(seconds: 10)) {
+      return;
+    }
+    try {
+      await service.saveProgress(
+        url: stripUserInfo(url),
+        positionMs: (position * 1000).round(),
+        durationMs: duration != null && duration > 0
+            ? (duration * 1000).round()
+            : null,
+        profileId: profileId,
+      );
+      onPersisted(now);
+    } on AppException {
+      // 运行中进度属于旁路刷新，失败时仍由退出同步提供最终进度。
+    }
+  }
+
   bool _hasReachedAudioCompletion(
-    _AudioPlaybackUiSession session,
+    AudioPlaybackUiSession session,
     List<String>? lines,
   ) => hasReachedExitCompletion(
     positionSeconds: lines != null && lines.length >= 5
@@ -1248,7 +1396,7 @@ class _BrowserPageState extends State<BrowserPage> {
   );
 
   Future<bool> _hasPersistedAudioCompletion(
-    _AudioPlaybackUiSession session,
+    AudioPlaybackUiSession session,
     List<String>? lines,
   ) async {
     if (lines == null || lines.length < 2 || lines[1].trim().isEmpty) {
@@ -1259,6 +1407,7 @@ class _BrowserPageState extends State<BrowserPage> {
     try {
       final progress = await progressService.getProgress(
         stripUserInfo(lines[1].trim()),
+        profileId: context.read<AppState>().mediaSourceId,
       );
       final updatedAt = progress?.updatedAt;
       if (progress == null ||
@@ -1273,7 +1422,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _removeAudioPlaybackSession(
-    _AudioPlaybackUiSession session, {
+    AudioPlaybackUiSession session, {
     required bool terminateProcess,
   }) async {
     if (session.deleting || !_audioPlaybackSessions.contains(session)) return;
@@ -1283,35 +1432,43 @@ class _BrowserPageState extends State<BrowserPage> {
     final player = appState.audioPlayerService;
     final store = appState.audioPlaybackHistoryStore;
     if (terminateProcess) {
-      await player?.terminateSession(session.history.sessionId);
+      final termination = await player?.terminateSession(
+        session.history.sessionId,
+      );
+      if (termination != null && !termination.isSafeToRelaunch) {
+        session.deleting = false;
+        if (mounted) {
+          setState(() {});
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: AppText('无法确认音频播放器身份，已保留会话且未终止进程')),
+          );
+        }
+        return;
+      }
     } else {
       player?.releaseSession(session.history.sessionId);
     }
     await store?.remove(session.history.sessionId);
     if (!mounted) return;
-    setState(() => _audioPlaybackSessions.remove(session));
+    _playbackPresenter.removeAudioSession(session);
     _refreshAudioPlaybackMonitor();
   }
 
   Future<void> _resumeAudioPlaybackSession(
-    _AudioPlaybackUiSession session,
+    AudioPlaybackUiSession session,
   ) async {
     if (session.launching || session.deleting) return;
     final history = session.history;
-    setState(() {
-      _crumbs
-        ..clear()
-        ..addAll(history.dirCrumbs);
-      _files = const [];
-      _error = null;
-    });
+    _directorySearchController.clear();
+    _directorySearchFocusNode.unfocus();
+    _directoryBrowser.navigateToPath(history.dirCrumbs.join('/'));
     try {
       await _load();
     } on AppException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
+      ).showSnackBar(SnackBar(content: AppText(error.message)));
       return;
     }
     if (!mounted) return;
@@ -1319,7 +1476,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (audioFiles.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('该目录下没有可播放的音频')));
+      ).showSnackBar(const SnackBar(content: AppText('该目录下没有可播放的音频')));
       return;
     }
     var index = audioFiles.indexWhere((file) => file.name == history.fileName);
@@ -1328,7 +1485,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   void _syncPlaybackSessions() {
-    for (final session in List<_PlaybackUiSession>.of(_playbackSessions)) {
+    for (final session in List<PlaybackUiSession>.of(_playbackSessions)) {
       if (session.syncBusy || session.deleting || session.launching) continue;
       session.syncBusy = true;
       unawaited(
@@ -1341,12 +1498,13 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   /// 独立同步一个下边栏对应的 PID、状态文件、暂停状态与切集位置。
-  Future<void> _syncPlaybackSession(_PlaybackUiSession session) async {
+  Future<void> _syncPlaybackSession(PlaybackUiSession session) async {
     if (!_playbackSessions.contains(session)) return;
     final names = session.playlistFileNames;
     if (names.isEmpty) return;
-    final store = context.read<AppState>().playbackHistoryStore;
-    final playerService = context.read<AppState>().playerService;
+    final appState = context.read<AppState>();
+    final store = appState.playbackHistoryStore;
+    final playerService = appState.playerService;
     final sessionId = session.history.sessionId;
     final now = DateTime.now();
     final guard = session.activationGuard;
@@ -1364,7 +1522,10 @@ class _BrowserPageState extends State<BrowserPage> {
       statusFile = File(
         p.join(
           dataDir.path,
-          ExternalPlayerService.sessionStatusFileName(sessionId),
+          ExternalPlayerService.sessionStatusFileName(
+            sessionId,
+            launchEpoch: session.history.launchEpoch,
+          ),
         ),
       );
     } catch (_) {
@@ -1430,9 +1591,13 @@ class _BrowserPageState extends State<BrowserPage> {
           ? null
           : int.tryParse(lines[0].trim());
       final naturallyFinished =
-          pos == -1 &&
-          session.lastSyncedPos == names.length - 1 &&
-          _isFreshStatus(statusModifiedAt);
+          _isFreshStatus(statusModifiedAt) &&
+          (_isOwnedIdleCompletion(
+                lines,
+                expectedLastPos: names.length - 1,
+                expectedEpoch: session.history.launchEpoch,
+              ) ||
+              (pos == -1 && session.lastSyncedPos == names.length - 1));
       var reachedCompletion = _hasReachedCompletionThreshold(session, lines);
       if (!reachedCompletion) {
         reachedCompletion = await _hasPersistedCompletionThreshold(
@@ -1467,12 +1632,18 @@ class _BrowserPageState extends State<BrowserPage> {
     if (lines.length < 2) return;
     final pos = int.tryParse(lines[0].trim());
     if (pos == null || pos < 0 || pos >= names.length) {
-      final reachedSortedLast = session.lastSyncedPos == names.length - 1;
+      final reachedSortedLast =
+          session.lastSyncedPos == names.length - 1 ||
+          _isOwnedIdleCompletion(
+            lines,
+            expectedLastPos: names.length - 1,
+            expectedEpoch: session.history.launchEpoch,
+          );
       if (pos == -1 && reachedSortedLast && _isFreshStatus(statusModifiedAt)) {
         session.finishPending++;
         if (session.finishPending >= 2) {
           session.finishPending = 0;
-          await _removePlaybackSession(session, terminateProcess: false);
+          await _removePlaybackSession(session, terminateProcess: true);
         }
       } else {
         session.finishPending = 0;
@@ -1482,6 +1653,24 @@ class _BrowserPageState extends State<BrowserPage> {
     session.finishPending = 0;
 
     final paused = lines.length >= 3 ? lines[2].trim() == '1' : false;
+    final pauseChanged = paused != session.paused;
+    final mediaChanged = pos != session.lastSyncedPos;
+    if (mediaChanged) {
+      try {
+        await playerService.syncActiveProgress(sessionId);
+      } catch (_) {
+        // 切集进度同步失败不影响播放列表和下边栏更新。
+      }
+    }
+    await _persistLiveProgress(
+      service: appState.progressService,
+      profileId: appState.mediaSourceId,
+      lines: lines,
+      running: running,
+      force: pauseChanged || mediaChanged,
+      lastPersistedAt: session.lastProgressPersistedAt,
+      onPersisted: (value) => session.lastProgressPersistedAt = value,
+    );
     if (paused != session.paused && mounted) {
       setState(() => session.paused = paused);
     }
@@ -1495,13 +1684,21 @@ class _BrowserPageState extends State<BrowserPage> {
     );
     session.history = history;
     await store.upsert(history);
+    unawaited(
+      _recordPlaybackByName(
+        dirCrumbs: history.dirCrumbs,
+        fileName: names[pos],
+        audio: false,
+        playbackSessionId: history.sessionId,
+      ),
+    );
     if (!mounted || !_playbackSessions.contains(session)) return;
     setState(() {});
   }
 
   /// 只供“MPV 进程已经退出”分支使用；运行中的 99% 不提前隐藏。
   bool _hasReachedCompletionThreshold(
-    _PlaybackUiSession session,
+    PlaybackUiSession session,
     List<String>? lines,
   ) {
     final positionSeconds = lines != null && lines.length >= 5
@@ -1519,7 +1716,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   void _rememberReportedProgress(
-    _PlaybackUiSession session,
+    PlaybackUiSession session,
     List<String>? lines, {
     required bool running,
   }) {
@@ -1547,7 +1744,7 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 兼容旧版三行状态脚本：进程退出同步 watch_later 后，从进度库复核。
   /// 只接受本次会话启动后的记录，避免旧的 99% 进度误清当前会话。
   Future<bool> _hasPersistedCompletionThreshold(
-    _PlaybackUiSession session,
+    PlaybackUiSession session,
     List<String>? lines,
   ) async {
     if (lines == null || lines.length < 2 || lines[1].trim().isEmpty) {
@@ -1557,7 +1754,10 @@ class _BrowserPageState extends State<BrowserPage> {
       final progress = await context
           .read<AppState>()
           .progressService
-          .getProgress(stripUserInfo(lines[1].trim()));
+          .getProgress(
+            stripUserInfo(lines[1].trim()),
+            profileId: context.read<AppState>().mediaSourceId,
+          );
       final updatedAt = progress?.updatedAt;
       if (progress == null ||
           updatedAt == null ||
@@ -1572,8 +1772,21 @@ class _BrowserPageState extends State<BrowserPage> {
 
   bool _isStatusForSession(
     DateTime? statusModifiedAt,
-    _PlaybackUiSession session,
+    PlaybackUiSession session,
   ) => statusModifiedAt?.isAfter(session.statusNotBefore) ?? false;
+
+  bool _isOwnedIdleCompletion(
+    List<String>? lines, {
+    required int expectedLastPos,
+    required String? expectedEpoch,
+  }) {
+    if (expectedEpoch == null) return false;
+    return MpvIdleCompletionMarker.parse(lines)?.matches(
+          expectedLastPlaylistPos: expectedLastPos,
+          expectedLaunchEpoch: expectedEpoch,
+        ) ??
+        false;
+  }
 
   /// 状态文件是否「新鲜」（最近 [Duration] 内写入）。
   ///
@@ -1588,7 +1801,7 @@ class _BrowserPageState extends State<BrowserPage> {
       DateTime.now().difference(statusModifiedAt) <= maxAge;
 
   Future<void> _removePlaybackSession(
-    _PlaybackUiSession session, {
+    PlaybackUiSession session, {
     required bool terminateProcess,
   }) async {
     if (session.deleting || !_playbackSessions.contains(session)) return;
@@ -1597,38 +1810,44 @@ class _BrowserPageState extends State<BrowserPage> {
     final appState = context.read<AppState>();
     final sessionId = session.history.sessionId;
     if (terminateProcess) {
-      await appState.playerService.terminateSession(sessionId);
+      final termination = await appState.playerService.terminateSession(
+        sessionId,
+      );
+      if (!termination.isSafeToRelaunch) {
+        session.deleting = false;
+        if (mounted) {
+          setState(() {});
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: AppText('无法确认视频播放器身份，已保留会话且未终止进程')),
+          );
+        }
+        return;
+      }
     } else {
       appState.playerService.releaseSession(sessionId);
     }
     await appState.playbackHistoryStore.remove(sessionId);
     if (!mounted) return;
-    setState(() {
-      _playbackSessions.remove(session);
-    });
+    _playbackPresenter.removeVideoSession(session);
     _refreshPlaybackMonitor();
   }
 
   /// 「继续播放」：进入上次目录全量扫描，定位上次视频索引，
   /// 复用常规播放逻辑（字幕匹配、播放列表切集、进度由 MPV 原生恢复）。
-  Future<void> _resumePlaybackSession(_PlaybackUiSession session) async {
+  Future<void> _resumePlaybackSession(PlaybackUiSession session) async {
     if (session.launching || session.deleting) return;
     final history = session.history;
 
-    setState(() {
-      _crumbs
-        ..clear()
-        ..addAll(history.dirCrumbs);
-      _files = const [];
-      _error = null;
-    });
+    _directorySearchController.clear();
+    _directorySearchFocusNode.unfocus();
+    _directoryBrowser.navigateToPath(history.dirCrumbs.join('/'));
     try {
       await _load();
     } on AppException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(e.message)));
+      ).showSnackBar(SnackBar(content: AppText(e.message)));
       return;
     }
     if (!mounted) return;
@@ -1637,7 +1856,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (videos.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('该目录下没有可播放的视频')));
+      ).showSnackBar(const SnackBar(content: AppText('该目录下没有可播放的视频')));
       return;
     }
     // 优先按文件名定位（strm 解析失败剔除后索引可能错位）；
@@ -1647,6 +1866,56 @@ class _BrowserPageState extends State<BrowserPage> {
       index = history.videoIndex.clamp(0, videos.length - 1);
     }
     await _playVideo(videos[index], sessionId: history.sessionId);
+  }
+
+  Future<void> _openMediaLibrary() async {
+    final appState = context.read<AppState>();
+    final store = appState.mediaLibraryStore;
+    final sourceId = appState.mediaSourceId;
+    if (store == null || sourceId == null) {
+      _showLibraryError('媒体中心暂时不可用，目录浏览和播放不受影响');
+      return;
+    }
+    final selected = await Navigator.of(context).push<MediaLibraryItem>(
+      MaterialPageRoute<MediaLibraryItem>(
+        builder: (_) => MediaLibraryPage(
+          sourceId: sourceId,
+          store: store,
+          config: appState.configStore.current.mediaLibrary,
+          directoryCache: appState.directoryCache,
+          videoProgressService: appState.progressService,
+          audioProgressService: appState.audioProgressService,
+          resolveUrl: _service.resolveUrl,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _loadFavoriteKeys();
+    if (selected != null) await _openLibraryItem(selected);
+  }
+
+  Future<void> _openLibraryItem(MediaLibraryItem item) async {
+    final sourceId = context.read<AppState>().mediaSourceId;
+    if (sourceId == null || item.sourceId != sourceId) {
+      _showLibraryError('该条目不属于当前连接来源');
+      return;
+    }
+    final destination = item.kind == MediaLibraryKind.directory
+        ? item.targetPath
+        : item.normalizedParentPath;
+    _changeDirectoryScrollScope(() {
+      _directorySearchController.clear();
+      _directorySearchFocusNode.unfocus();
+      _directoryBrowser.navigateToPath(normalizeLibraryPath(destination));
+    });
+    await _load();
+    if (!mounted || item.kind == MediaLibraryKind.directory) return;
+    final file = _files.where(item.matches).firstOrNull;
+    if (file == null) {
+      _showLibraryError('未在当前服务器目录中找到「${item.name}」');
+      return;
+    }
+    _onFileTap(file);
   }
 
   void _onFileTap(WebDavFile file) {
@@ -1664,30 +1933,99 @@ class _BrowserPageState extends State<BrowserPage> {
     // 其他文件：暂无操作（可后续扩展下载/预览）。
   }
 
+  Future<void> _openIndexEntry(OpenListIndexEntry entry) async {
+    final destination = entry.isDirectory ? entry.path : entry.parent;
+    _changeDirectoryScrollScope(() {
+      _directorySearchController.clear();
+      _directorySearchFocusNode.unfocus();
+      _directoryBrowser.navigateToPath(destination);
+    });
+    await _load();
+    if (!mounted || entry.isDirectory) return;
+    final file = _files
+        .where((item) => !item.isSelfEntry && item.name == entry.name)
+        .firstOrNull;
+    if (file == null) {
+      _showLibraryError('索引条目已失效，请更新索引后重试');
+      return;
+    }
+    _onFileTap(file);
+  }
+
   // ── UI ───────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: _buildTitle(),
+        title: _directorySearchOpen
+            ? TextField(
+                key: const Key('browser-directory-search'),
+                controller: _directorySearchController,
+                focusNode: _directorySearchFocusNode,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                onChanged: _onDirectorySearchChanged,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText:
+                      _directorySearchScope ==
+                          DirectorySearchScope.currentDirectory
+                      ? '搜索当前目录'
+                      : '搜索全部索引（至少 2 个字符）',
+                  prefixIcon: const Icon(Icons.search),
+                  border: InputBorder.none,
+                ),
+              )
+            : _buildTitle(),
         actions: [
+          if (_directorySearchOpen)
+            PopupMenuButton<DirectorySearchScope>(
+              key: const Key('browser-search-scope'),
+              tooltip: context.l10n.text('搜索范围'),
+              icon: const Icon(Icons.manage_search),
+              initialValue: _directorySearchScope,
+              onSelected: (scope) => _changeDirectoryScrollScope(
+                () => _directoryBrowser.updateSearchScope(scope),
+              ),
+              itemBuilder: (context) => [
+                CheckedPopupMenuItem(
+                  value: DirectorySearchScope.currentDirectory,
+                  checked:
+                      _directorySearchScope ==
+                      DirectorySearchScope.currentDirectory,
+                  child: const AppText('当前目录（默认）'),
+                ),
+                CheckedPopupMenuItem(
+                  value: DirectorySearchScope.openListIndex,
+                  checked:
+                      _directorySearchScope ==
+                      DirectorySearchScope.openListIndex,
+                  child: const AppText('OpenList 全部索引'),
+                ),
+              ],
+            ),
           PopupMenuButton<String>(
-            tooltip: '排序：${_sortMode.label} · ${_sortDirection.label}',
+            tooltip: context.l10n.text(
+              '排序：${_sortMode.label} · ${_sortDirection.label}',
+            ),
             icon: const Icon(Icons.sort),
             onSelected: (value) {
               _changeDirectoryScrollScope(() {
                 switch (value) {
                   case 'mode:name':
-                    _sortMode = FileSortMode.name;
+                    _directoryBrowser.updateSortMode(FileSortMode.name);
                   case 'mode:modified':
-                    _sortMode = FileSortMode.modified;
+                    _directoryBrowser.updateSortMode(FileSortMode.modified);
                   case 'mode:size':
-                    _sortMode = FileSortMode.size;
+                    _directoryBrowser.updateSortMode(FileSortMode.size);
                   case 'direction:ascending':
-                    _sortDirection = FileSortDirection.ascending;
+                    _directoryBrowser.updateSortDirection(
+                      FileSortDirection.ascending,
+                    );
                   case 'direction:descending':
-                    _sortDirection = FileSortDirection.descending;
+                    _directoryBrowser.updateSortDirection(
+                      FileSortDirection.descending,
+                    );
                 }
               });
             },
@@ -1695,20 +2033,20 @@ class _BrowserPageState extends State<BrowserPage> {
               const PopupMenuItem<String>(
                 enabled: false,
                 height: 32,
-                child: Text('排序方式'),
+                child: AppText('排序方式'),
               ),
               for (final mode in FileSortMode.values)
                 CheckedPopupMenuItem<String>(
                   value: 'mode:${mode.jsonValue}',
                   checked: mode == _sortMode,
                   enabled: mode != FileSortMode.size || _canSortBySize,
-                  child: Text(mode.label),
+                  child: AppText(mode.label),
                 ),
               const PopupMenuDivider(),
               const PopupMenuItem<String>(
                 enabled: false,
                 height: 32,
-                child: Text('排序顺序'),
+                child: AppText('排序顺序'),
               ),
               for (final direction in FileSortDirection.values)
                 CheckedPopupMenuItem<String>(
@@ -1723,20 +2061,40 @@ class _BrowserPageState extends State<BrowserPage> {
                         size: 18,
                       ),
                       const SizedBox(width: 8),
-                      Text(direction.label),
+                      AppText(direction.label),
                     ],
                   ),
                 ),
             ],
           ),
+          if (_directorySearchOpen)
+            IconButton(
+              key: const Key('close-browser-directory-search'),
+              icon: const Icon(Icons.close),
+              tooltip: context.l10n.text('关闭搜索'),
+              onPressed: _closeDirectorySearch,
+            )
+          else
+            IconButton(
+              key: const Key('open-browser-directory-search'),
+              icon: const Icon(Icons.search),
+              tooltip: context.l10n.text('搜索当前目录'),
+              onPressed: _openDirectorySearch,
+            ),
+          IconButton(
+            key: const Key('open-media-library'),
+            icon: const Icon(Icons.video_library_outlined),
+            tooltip: context.l10n.text('媒体中心'),
+            onPressed: _openMediaLibrary,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: '刷新',
+            tooltip: context.l10n.text('刷新'),
             onPressed: () => _load(force: true),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
-            tooltip: '设置',
+            tooltip: context.l10n.text('设置'),
             onPressed: () async {
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
@@ -1746,13 +2104,14 @@ class _BrowserPageState extends State<BrowserPage> {
               await Future.wait([
                 _loadPlaybackSessions(),
                 _loadAudioPlaybackSessions(),
+                _loadFavoriteKeys(),
               ]);
               if (mounted) setState(() {});
             },
           ),
           IconButton(
             icon: const Icon(Icons.logout),
-            tooltip: '断开连接',
+            tooltip: context.l10n.text('断开连接'),
             onPressed: () {
               context.read<AppState>().disconnect();
               // 进入登录界面：清空导航栈（BrowserPage 为 pushReplacement
@@ -1804,7 +2163,7 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  Widget _buildAudioPlaybackBar(_AudioPlaybackUiSession session) {
+  Widget _buildAudioPlaybackBar(AudioPlaybackUiSession session) {
     final history = session.history;
     final sessionId = history.sessionId;
     final dirLabel = history.dirCrumbs.isEmpty
@@ -1856,7 +2215,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _showAudioSessionMenu(
-    _AudioPlaybackUiSession session,
+    AudioPlaybackUiSession session,
     Offset globalPosition,
   ) async {
     if (session.deleting) return;
@@ -1874,7 +2233,7 @@ class _BrowserPageState extends State<BrowserPage> {
             children: [
               Icon(Icons.delete_outline),
               SizedBox(width: 10),
-              Text('删除并关闭音频播放器'),
+              AppText('删除并关闭音频播放器'),
             ],
           ),
         ),
@@ -1885,7 +2244,7 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  Widget _buildPlaybackBar(_PlaybackUiSession session) {
+  Widget _buildPlaybackBar(PlaybackUiSession session) {
     final history = session.history;
     final sessionId = history.sessionId;
     final dirLabel = history.dirCrumbs.isEmpty
@@ -1941,7 +2300,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _showSessionMenu(
-    _PlaybackUiSession session,
+    PlaybackUiSession session,
     Offset globalPosition,
   ) async {
     if (session.deleting) return;
@@ -1959,7 +2318,7 @@ class _BrowserPageState extends State<BrowserPage> {
             children: [
               Icon(Icons.delete_outline),
               SizedBox(width: 10),
-              Text('删除并关闭播放器'),
+              AppText('删除并关闭播放器'),
             ],
           ),
         ),
@@ -1990,7 +2349,7 @@ class _BrowserPageState extends State<BrowserPage> {
               children: [
                 Icon(Icons.home_outlined, size: 18),
                 SizedBox(width: 6),
-                Text('根目录'),
+                AppText('根目录'),
               ],
             ),
           ),
@@ -2003,7 +2362,7 @@ class _BrowserPageState extends State<BrowserPage> {
             TextButton(
               onPressed: () => _backTo(i),
               style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-              child: Text(_crumbs[i]),
+              child: AppText(_crumbs[i]),
             ),
           ],
         ],
@@ -2011,7 +2370,38 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  Widget? _buildFileTrailing(WebDavFile file, int index) {
+    if (_refreshing && index == 0) {
+      return const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    if (context.read<AppState>().mediaLibraryStore == null) return null;
+    final item = _libraryItemForFile(file);
+    if (item == null) return null;
+    final selected = _favoriteKeys.contains(item.stableKey);
+    return SizedBox(
+      width: 32,
+      height: 32,
+      child: IconButton(
+        key: ValueKey<String>('favorite-${item.stableKey}'),
+        tooltip: context.l10n.text(selected ? '取消收藏' : '收藏'),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+        iconSize: 20,
+        onPressed: () => _toggleFavorite(file),
+        icon: Icon(selected ? Icons.star : Icons.star_border),
+      ),
+    );
+  }
+
   Widget _buildBody() {
+    if (_directorySearchOpen &&
+        _directorySearchScope == DirectorySearchScope.openListIndex) {
+      return _buildIndexSearchBody();
+    }
     if (_error != null && _files.isEmpty) {
       return Center(
         child: Column(
@@ -2025,13 +2415,13 @@ class _BrowserPageState extends State<BrowserPage> {
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(_error!, textAlign: TextAlign.center),
+              child: AppText(_error!, textAlign: TextAlign.center),
             ),
             const SizedBox(height: 16),
             OutlinedButton.icon(
               onPressed: () => _load(force: true),
               icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
+              label: const AppText('重试'),
             ),
           ],
         ),
@@ -2049,9 +2439,13 @@ class _BrowserPageState extends State<BrowserPage> {
             controller: _directoryScrollController,
             // RefreshIndicator 需要可滚动子组件
             physics: const AlwaysScrollableScrollPhysics(),
-            children: const [
-              SizedBox(height: 200),
-              Center(child: Text('空目录')),
+            children: [
+              const SizedBox(height: 200),
+              Center(
+                child: AppText(
+                  _directorySearchQuery.trim().isEmpty ? '空目录' : '未找到匹配项',
+                ),
+              ),
             ],
           )
         : ListView.builder(
@@ -2067,13 +2461,7 @@ class _BrowserPageState extends State<BrowserPage> {
               return FileTile(
                 file: file,
                 onTap: () => _onFileTap(file),
-                trailing: _refreshing && index == 0
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : null,
+                trailing: _buildFileTrailing(file, index),
               );
             },
           );
@@ -2102,6 +2490,56 @@ class _BrowserPageState extends State<BrowserPage> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIndexSearchBody() {
+    final query = _directorySearchQuery.trim();
+    final results = _directoryBrowser.indexSearchResults;
+    final error = _directoryBrowser.indexSearchError;
+    Widget content;
+    if (query.length < 2) {
+      content = const Center(child: AppText('请输入至少 2 个字符后搜索全部索引'));
+    } else if (_directoryBrowser.indexSearching && results.isEmpty) {
+      content = const Center(child: CircularProgressIndicator());
+    } else if (error != null) {
+      content = Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: AppText(error, textAlign: TextAlign.center),
+        ),
+      );
+    } else if (results.isEmpty) {
+      content = const Center(child: AppText('索引中未找到匹配项'));
+    } else {
+      content = ListView.builder(
+        key: _directoryScrollKey,
+        controller: _directoryScrollController,
+        itemCount: results.length,
+        itemBuilder: (context, index) {
+          final entry = results[index];
+          final file = WebDavFile(
+            name: entry.name,
+            href: entry.path,
+            isDirectory: entry.isDirectory,
+            size: entry.size,
+          );
+          return FileTile(
+            file: file,
+            subtitle: entry.parent.isEmpty ? '/' : entry.parent,
+            metadataColumnText: entry.parentFolderName,
+            onTap: () => _openIndexEntry(entry),
+          );
+        },
+      );
+    }
+    return FileListSurface(
+      child: Column(
+        children: [
+          const FileListHeader(metadataColumnLabel: '所在文件夹'),
+          Expanded(child: content),
         ],
       ),
     );

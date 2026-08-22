@@ -33,7 +33,6 @@ class PlaybackSample {
     this.paused,
     this.durationSec,
     this.bufferingState,
-    this.cacheUsedBytes,
     this.networkSpeedBps,
     this.cacheIdle,
     this.pausedForCache,
@@ -55,9 +54,6 @@ class PlaybackSample {
   /// 判断卡顿；真值见 [pausedForCache]。
   final int? bufferingState;
 
-  /// 当前缓存占用（字节）；未知为 null。
-  final int? cacheUsedBytes;
-
   /// 实时下载速度（bytes/s）；未知为 null。
   final double? networkSpeedBps;
 
@@ -67,9 +63,7 @@ class PlaybackSample {
   ///
   /// 用于区分 `cache-buffering-state=100` 的两种含义：
   /// 缓存满（下载追上播放，正常）vs 等待数据（真卡顿）。
-  /// 也是「文件已全部下载完、缓存速度归 0」时的防误报主信号：
-  /// 0.41 默认内存缓存下 `file-cache-bytes` 缺失，`cacheUsedBytes` 为
-  /// null，`fullyCached` 判定不可用，只能靠 idle 区分。
+  /// 也是「文件已全部下载完、缓存速度归 0」时的防误报主信号。
   final bool? cacheIdle;
 
   /// mpv `paused-for-cache`：这是播放器是否因缓存不足而暂停的真值。
@@ -90,7 +84,7 @@ class PlaybackSample {
     return b != null && b > 0 && b < 100;
   }
 
-  /// 网络数据是否可用（状态文件含第 6~8 行且值有效）。
+  /// 网络数据是否可用（状态文件含第 6~7 行且值有效）。
   bool get networkKnown =>
       networkSpeedBps != null &&
       networkSpeedBps!.isFinite &&
@@ -109,7 +103,7 @@ class PlaybackSample {
 /// 播放中动态监控与保护（设计文档第 9 节：9.1 内存压力保护 /
 /// 9.2 网络异常保护 / 卡顿记录）。
 ///
-/// 周期性（默认 5 秒）读取 mpv 状态文件（十四行，含
+/// 周期性（默认 5 秒）读取 mpv 状态文件（十三行，含
 /// paused-for-cache / bof-cached / eof-cached）与系统可用内存，按纯算法输出：
 /// - **内存压力**：可用内存 < 当前上限 × [memoryPressureFactor] 时
 ///   认为缓存占用威胁系统稳定，动态降低 `demuxer-max-bytes`
@@ -461,7 +455,6 @@ class PlaybackMonitor {
         paused: sample.paused,
         durationSec: sample.durationSec,
         bufferingState: sample.bufferingState,
-        cacheUsedBytes: sample.cacheUsedBytes,
         networkSpeedBps: sample.networkSpeedBps,
         cacheIdle: sample.cacheIdle,
         pausedForCache: sample.pausedForCache,
@@ -490,18 +483,17 @@ class PlaybackMonitor {
       final timePos = parse(3);
       final duration = parse(4);
       final buffering = parse(5)?.round().toInt();
-      final cacheUsed = parse(6)?.round().toInt();
-      final speed = parse(7);
-      final idleRaw = lines.length > 8 ? lines[8].trim() : '';
-      final pausedForCacheRaw = lines.length > 10 ? lines[10].trim() : '';
-      final bofCachedRaw = lines.length > 11 ? lines[11].trim() : '';
-      final eofCachedRaw = lines.length > 12 ? lines[12].trim() : '';
+      final speed = parse(6);
+      final idleRaw = lines.length > 7 ? lines[7].trim() : '';
+      final pausedForCacheRaw = lines.length > 9 ? lines[9].trim() : '';
+      final bofCachedRaw = lines.length > 10 ? lines[10].trim() : '';
+      final eofCachedRaw = lines.length > 11 ? lines[11].trim() : '';
       final pausedRaw = lines.length > 2 ? lines[2].trim() : '';
-      // 速度不可用时关闭速度判定，仅保留卡顿驱动；第十行记录
+      // 速度不可用时关闭速度判定，仅保留卡顿驱动；第九行记录
       // speed_src|speed|idle_src|idle_raw，便于定位属性版本差异。
       if ((speed == null || speed < 0) && !_speedUnavailableLogged) {
         _speedUnavailableLogged = true;
-        final diagRaw = lines.length > 9 ? lines[9].trim() : '<none>';
+        final diagRaw = lines.length > 8 ? lines[8].trim() : '<none>';
         _logger(
           'Monitor: speed data unavailable (mpv demuxer-cache-state '
           'diagnostic: $diagRaw) -> network checks degraded to '
@@ -513,7 +505,6 @@ class PlaybackMonitor {
         paused: pausedRaw == '1' ? true : (pausedRaw == '0' ? false : null),
         durationSec: duration != null && duration > 0 ? duration : null,
         bufferingState: buffering != null && buffering >= 0 ? buffering : null,
-        cacheUsedBytes: cacheUsed != null && cacheUsed > 0 ? cacheUsed : null,
         networkSpeedBps: speed != null && speed >= 0 ? speed : null,
         cacheIdle: idleRaw == '1' ? true : (idleRaw == '0' ? false : null),
         pausedForCache: pausedForCacheRaw == '1'
@@ -544,8 +535,7 @@ class PlaybackMonitor {
     // ── 前置：网络空闲状态判定（暂停/播完/全缓存/缓存满） ──
     // 顺序在卡顿统计**之前**：暂停瞬间残留的 buffering 状态不得触发
     // 「持续缓冲」误报，速度为 0 属正常也不判网络不足。
-    // file-cache-bytes 含开销和已裁剪数据，不能证明完整缓存；只有
-    // 可寻址范围同时覆盖文件头尾才视为全缓存。cacheIdle 仍作为 EOF/
+    // 只有可寻址范围同时覆盖文件头尾才视为全缓存。cacheIdle 仍作为 EOF/
     // cache-idle 还用于排除 EOF 或缓存已满后的零速样本。
     final fullyCached = sample.bofCached == true && sample.eofCached == true;
     final networkIdle =

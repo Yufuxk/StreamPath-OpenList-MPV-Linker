@@ -24,8 +24,10 @@ class MpvPropertyEvent {
 ///  - 连接 mpv 的 `--input-ipc-server` named pipe（含创建等待重试）；
 ///  - 发送 JSON-RPC 请求（get/set property、命令），按 `request_id`
 ///    匹配异步响应；
-///  - 后台 isolate 阻塞读取管道并解析 JSON 行，`property-change`
-///    事件经广播流分发；
+///  - 每个请求在后台 isolate 内按顺序完成 overlapped WriteFile/ReadFile，
+///    主 isolate 不执行阻塞 I/O；
+///  - 解析响应前夹带的 `property-change` 并经广播流分发；当前生产代码
+///    不使用持续观察，事件流不承诺在没有后续请求时主动排空；
 ///  - 断开（mpv 退出/崩溃）检测与资源释放。
 ///
 /// 线程模型：写入在主 isolate（消息小、低频）；读取在独立 isolate
@@ -38,25 +40,15 @@ class MpvSessionController {
 
   final _propertyEvents = StreamController<MpvPropertyEvent>.broadcast();
 
-  /// 属性变化事件流（observe_property 注册后实时推送）。
+  /// 属性变化事件流；事件在后续请求读取响应时一并分发。
   Stream<MpvPropertyEvent> get propertyEvents => _propertyEvents.stream;
-
-  final _incoming = StreamController<String>();
-  final _pending = <int, Completer<Object?>>{};
 
   int _nextRequestId = 1;
   int _handle = INVALID_HANDLE_VALUE;
   bool _disposed = false;
-
-  /// 事件流是否已关闭（与 [_disposed] 分离：断连也会关闭事件流）。
   bool _eventsClosed = false;
-  Isolate? _reader;
-  ReceivePort? _readerPort;
-
-  /// 写入 isolate：named pipe 写入在独立线程执行，
-  /// 避免主 isolate 因管道缓冲满而同步阻塞（UI 卡死）。
-  Isolate? _writer;
-  SendPort? _writerPort;
+  Future<void> _requestTail = Future<void>.value();
+  Uint8List _readRemainder = Uint8List(0);
 
   /// 是否已连接。
   bool get isConnected => _handle != INVALID_HANDLE_VALUE;
@@ -72,9 +64,6 @@ class MpvSessionController {
       final h = _tryOpenPipe();
       if (h != INVALID_HANDLE_VALUE) {
         _handle = h;
-        _incoming.stream.listen(_handleLine);
-        _startReader();
-        await _startWriter();
         return true;
       }
       await Future<void>.delayed(retryInterval);
@@ -84,27 +73,16 @@ class MpvSessionController {
 
   /// 断开连接并释放资源（不终止 mpv）。
   Future<void> disconnect() async {
-    // 先终止后台读取/写入 isolate，避免 CloseHandle 与挂起的
-    // ReadFile/WriteFile 竞态。
-    if (_reader != null) {
-      _reader!.kill(priority: Isolate.immediate);
-      _reader = null;
+    try {
+      await _requestTail;
+    } catch (_) {
+      // 请求失败后仍需释放连接。
     }
-    if (_writer != null) {
-      _writer!.kill(priority: Isolate.immediate);
-      _writer = null;
-    }
-    _writerPort = null;
-    _readerPort?.close();
-    _readerPort = null;
     if (_handle != INVALID_HANDLE_VALUE) {
       CloseHandle(_handle);
       _handle = INVALID_HANDLE_VALUE;
     }
-    for (final c in _pending.values) {
-      c.completeError(StateError('IPC 已断开'));
-    }
-    _pending.clear();
+    _readRemainder = Uint8List(0);
   }
 
   /// 查询属性值（如 `time-pos`、`duration`、`pause`）。
@@ -117,7 +95,7 @@ class MpvSessionController {
     'command': ['set_property', name, value],
   });
 
-  /// 注册属性观察：属性变化时经 [propertyEvents] 推送事件。
+  /// 注册属性观察：后续请求读取到变化时经 [propertyEvents] 推送。
   /// [observeId] 由调用方自定（1..N，用于区分同名属性多次观察）。
   Future<void> observe(String name, int observeId) => _request({
     'command': ['observe_property', observeId, name],
@@ -133,17 +111,12 @@ class MpvSessionController {
     Duration timeout = const Duration(seconds: 3),
   }) {
     final id = _nextRequestId++;
-    final completer = Completer<Object?>();
-    _pending[id] = completer;
     msg['request_id'] = id;
-    _send(msg);
-    return completer.future.timeout(
-      timeout,
-      onTimeout: () {
-        _pending.remove(id);
-        throw TimeoutException('mpv IPC 请求超时: ${msg['command']}');
-      },
+    final operation = _requestTail.then(
+      (_) => _exchangeRequest(msg, id, timeout),
     );
+    _requestTail = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
   }
 
   // ── 内部 ───────────────────────────────────────────────────
@@ -157,163 +130,265 @@ class MpvSessionController {
       0,
       nullptr,
       OPEN_EXISTING,
-      0,
+      FILE_FLAG_OVERLAPPED,
       0,
     );
     free(name);
     return h;
   }
 
-  /// 发送一条 JSON-RPC 消息（追加换行）。
-  ///
-  /// 经写入 isolate 队列发出：`WriteFile` 在独立线程执行，
-  /// 管道缓冲满时不会阻塞主 isolate（UI 线程）。
-  void _send(Map<String, Object?> msg) {
-    final port = _writerPort;
-    if (port == null) return;
-    final data = Uint8List.fromList(utf8.encode('${jsonEncode(msg)}\n'));
-    port.send(data);
-  }
-
-  /// 启动写入 isolate：持有句柄，循环处理写入队列。
-  Future<void> _startWriter() async {
-    final ready = ReceivePort();
-    _writer = await Isolate.spawn(_writeLoop, [_handle, ready.sendPort]);
-    // 等待写 isolate 回传其队列 SendPort（异步初始化完成）。
-    _writerPort = await ready.first as SendPort;
-    ready.close();
-  }
-
-  /// 写入循环（isolate 入口）：收到字节流后同步 WriteFile。
-  static void _writeLoop(List<dynamic> args) {
-    final handle = args[0] as int;
-    final readyPort = args[1] as SendPort;
-    final queue = ReceivePort();
-    readyPort.send(queue.sendPort);
-    queue.listen((msg) {
-      if (msg is Uint8List && msg.isNotEmpty) {
-        final buffer = calloc<Uint8>(msg.length);
-        buffer.asTypedList(msg.length).setAll(0, msg);
-        final written = calloc<Uint32>();
-        WriteFile(handle, buffer, msg.length, written, nullptr);
-        free(buffer);
-        free(written);
-      }
-    });
-  }
-
-  /// 启动后台读取 isolate：阻塞 ReadFile 循环，按行回传。
-  void _startReader() {
-    final port = ReceivePort();
-    _readerPort = port;
-    port.listen((msg) {
-      if (msg is String) {
-        _incoming.add(msg);
-      } else {
-        // null = EOF（mpv 退出）
-        _incoming.add('__eof__');
-      }
-    });
-    unawaited(
-      Isolate.spawn(_readLoop, [_handle, port.sendPort]).then((reader) {
-        if (_disposed || !identical(_readerPort, port)) {
-          reader.kill(priority: Isolate.immediate);
-          return;
-        }
-        _reader = reader;
-      }),
+  Future<Object?> _exchangeRequest(
+    Map<String, Object?> message,
+    int requestId,
+    Duration timeout,
+  ) async {
+    final handle = _handle;
+    if (_disposed || handle == INVALID_HANDLE_VALUE) {
+      throw StateError('IPC 未连接');
+    }
+    final bytes = Uint8List.fromList(utf8.encode('${jsonEncode(message)}\n'));
+    final remainder = _readRemainder;
+    final exchanged = await Isolate.run(
+      () => MpvSessionController._exchangePipe(
+        handle: handle,
+        request: bytes,
+        requestId: requestId,
+        initialRemainder: remainder,
+        timeoutMilliseconds: timeout.inMilliseconds,
+      ),
     );
-  }
-
-  /// 处理一行 JSON。
-  void _handleLine(String line) {
-    if (line == '__eof__') {
-      _onDisconnected();
-      return;
-    }
-    Object? decoded;
-    try {
-      decoded = jsonDecode(line);
-    } catch (_) {
-      return;
-    }
-    if (decoded is! Map) return;
-    if (decoded.containsKey('request_id')) {
-      final id = decoded['request_id'];
-      final completer = id is int ? _pending.remove(id) : null;
-      if (completer != null) {
-        final error = decoded['error'];
-        if (error == null || error == 'success') {
-          completer.complete(decoded['data']);
-        } else {
-          completer.completeError(StateError('mpv 错误: $error'));
-        }
+    if (exchanged['timedOut'] == true) {
+      if (_handle == handle) {
+        CloseHandle(_handle);
+        _handle = INVALID_HANDLE_VALUE;
       }
-    } else if (decoded['event'] == 'property-change') {
-      final name = decoded['name'];
-      if (name is String) {
-        _propertyEvents.add(
-          MpvPropertyEvent(name: name, value: decoded['data']),
-        );
-      }
+      throw TimeoutException('mpv IPC 请求超时: ${message['command']}');
     }
-  }
-
-  void _onDisconnected() {
-    if (_handle != INVALID_HANDLE_VALUE) {
+    if (_handle != handle) throw StateError('IPC 已断开');
+    final nativeError = exchanged['nativeError'];
+    if (nativeError is int) {
       CloseHandle(_handle);
       _handle = INVALID_HANDLE_VALUE;
+      throw StateError(
+        'mpv IPC ${exchanged['phase'] ?? 'exchange'} 失败: '
+        'Windows error $nativeError',
+      );
     }
-    for (final c in _pending.values) {
-      c.completeError(StateError('mpv 已退出'));
+    _readRemainder = exchanged['remainder']! as Uint8List;
+
+    var responseSeen = false;
+    Object? response;
+    Object? responseError;
+    for (final line in exchanged['lines']! as List<String>) {
+      Object? decoded;
+      try {
+        decoded = jsonDecode(line);
+      } catch (_) {
+        continue;
+      }
+      if (decoded is! Map) continue;
+      if (decoded['request_id'] == requestId) {
+        responseSeen = true;
+        response = decoded['data'];
+        responseError = decoded['error'];
+      } else if (decoded['event'] == 'property-change' && !_eventsClosed) {
+        final name = decoded['name'];
+        if (name is String) {
+          _propertyEvents.add(
+            MpvPropertyEvent(name: name, value: decoded['data']),
+          );
+        }
+      }
     }
-    _pending.clear();
-    // 事件流只关闭一次（与 dispose 状态分离：mpv 正常退出也触发本方法）。
-    if (!_eventsClosed) {
-      _eventsClosed = true;
-      unawaited(_propertyEvents.close());
+    if (!responseSeen) throw StateError('mpv IPC 响应缺少 request_id=$requestId');
+    if (responseError != null && responseError != 'success') {
+      throw StateError('mpv 错误: $responseError');
+    }
+    return response;
+  }
+
+  /// 同一个 pipe handle 上按顺序写请求再读响应；overlapped I/O 的等待、
+  /// 超时取消与 OVERLAPPED 生命周期全部留在本 isolate 内。
+  static Map<String, Object?> _exchangePipe({
+    required int handle,
+    required Uint8List request,
+    required int requestId,
+    required Uint8List initialRemainder,
+    required int timeoutMilliseconds,
+  }) {
+    final writeBuffer = calloc<Uint8>(request.length);
+    final written = calloc<Uint32>();
+    final writeOverlapped = calloc<OVERLAPPED>();
+    final readBuffer = calloc<Uint8>(4096);
+    final read = calloc<Uint32>();
+    final readOverlapped = calloc<OVERLAPPED>();
+    final writeEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    final readEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    final deadline = DateTime.now().add(
+      Duration(
+        milliseconds: timeoutMilliseconds <= 0 ? 1 : timeoutMilliseconds,
+      ),
+    );
+    try {
+      if (writeEvent == 0 || readEvent == 0) {
+        return <String, Object?>{
+          'nativeError': GetLastError(),
+          'phase': 'create-event',
+          'lines': <String>[],
+          'remainder': initialRemainder,
+        };
+      }
+      writeOverlapped.ref.hEvent = writeEvent;
+      readOverlapped.ref.hEvent = readEvent;
+      writeBuffer.asTypedList(request.length).setAll(0, request);
+      if (WriteFile(
+            handle,
+            writeBuffer,
+            request.length,
+            written,
+            writeOverlapped,
+          ) ==
+          0) {
+        final pendingError = GetLastError();
+        // win32 FFI 的 GetLastError 在部分环境不会保留 Read/WriteFile
+        // 返回前的 997；overlapped 调用返回 0 且 last-error=0 时仍由
+        // GetOverlappedResultEx 判定最终结果。
+        if (pendingError != ERROR_IO_PENDING && pendingError != 0) {
+          return <String, Object?>{
+            'nativeError': pendingError,
+            'phase': 'write-start',
+            'lines': <String>[],
+            'remainder': initialRemainder,
+          };
+        }
+        final completionError = _completeOverlapped(
+          handle: handle,
+          overlapped: writeOverlapped,
+          transferred: written,
+          deadline: deadline,
+        );
+        if (completionError != null) {
+          return <String, Object?>{
+            if (completionError == WAIT_TIMEOUT) 'timedOut': true,
+            if (completionError != WAIT_TIMEOUT) 'nativeError': completionError,
+            'phase': 'write-complete',
+            'lines': <String>[],
+            'remainder': initialRemainder,
+          };
+        }
+      }
+
+      var pending = initialRemainder.toList(growable: true);
+      final lines = <String>[];
+      while (true) {
+        readOverlapped.ref
+          ..Internal = 0
+          ..InternalHigh = 0
+          ..Offset = 0
+          ..OffsetHigh = 0
+          ..hEvent = readEvent;
+        ResetEvent(readEvent);
+        if (ReadFile(handle, readBuffer, 4096, read, readOverlapped) == 0) {
+          final pendingError = GetLastError();
+          if (pendingError != ERROR_IO_PENDING && pendingError != 0) {
+            return <String, Object?>{
+              'nativeError': pendingError,
+              'phase': 'read-start',
+              'lines': lines,
+              'remainder': Uint8List.fromList(pending),
+            };
+          }
+          final completionError = _completeOverlapped(
+            handle: handle,
+            overlapped: readOverlapped,
+            transferred: read,
+            deadline: deadline,
+          );
+          if (completionError != null) {
+            return <String, Object?>{
+              if (completionError == WAIT_TIMEOUT) 'timedOut': true,
+              if (completionError != WAIT_TIMEOUT)
+                'nativeError': completionError,
+              'phase': 'read-complete',
+              'lines': lines,
+              'remainder': Uint8List.fromList(pending),
+            };
+          }
+        }
+        final count = read.value;
+        if (count == 0) {
+          return <String, Object?>{
+            'nativeError': ERROR_BROKEN_PIPE,
+            'phase': 'read-empty',
+            'lines': lines,
+            'remainder': Uint8List.fromList(pending),
+          };
+        }
+        pending.addAll(readBuffer.asTypedList(count));
+        var consumed = 0;
+        var responseSeen = false;
+        for (var index = 0; index < pending.length; index++) {
+          if (pending[index] != 10) continue;
+          final line = utf8
+              .decode(pending.sublist(consumed, index), allowMalformed: true)
+              .replaceFirst(RegExp(r'\r$'), '');
+          lines.add(line);
+          consumed = index + 1;
+          try {
+            final decoded = jsonDecode(line);
+            if (decoded is Map && decoded['request_id'] == requestId) {
+              responseSeen = true;
+            }
+          } catch (_) {
+            // 非 JSON 行不影响后续完整响应。
+          }
+        }
+        if (consumed > 0) pending = pending.sublist(consumed);
+        if (responseSeen) {
+          return <String, Object?>{
+            'lines': lines,
+            'remainder': Uint8List.fromList(pending),
+          };
+        }
+      }
+    } finally {
+      if (writeEvent != 0) CloseHandle(writeEvent);
+      if (readEvent != 0) CloseHandle(readEvent);
+      free(writeBuffer);
+      free(written);
+      free(writeOverlapped);
+      free(readBuffer);
+      free(read);
+      free(readOverlapped);
     }
   }
 
-  /// 后台读取循环（isolate 入口）：ReadFile 阻塞读，按 `\n` 切行回传。
-  static void _readLoop(List<dynamic> args) {
-    final handle = args[0] as int;
-    final sendPort = args[1] as SendPort;
-
-    final buffer = calloc<Uint8>(4096);
-    final read = calloc<Uint32>();
-    var pending = <int>[];
-
-    while (true) {
-      final ok = ReadFile(handle, buffer, 4096, read, nullptr);
-      if (ok == 0) {
-        sendPort.send(null);
-        break;
+  static int? _completeOverlapped({
+    required int handle,
+    required Pointer<OVERLAPPED> overlapped,
+    required Pointer<Uint32> transferred,
+    required DateTime deadline,
+  }) {
+    final remaining = deadline.difference(DateTime.now()).inMilliseconds;
+    if (remaining <= 0 ||
+        GetOverlappedResultEx(
+              handle,
+              overlapped,
+              transferred,
+              remaining,
+              FALSE,
+            ) ==
+            0) {
+      final error = remaining <= 0 ? WAIT_TIMEOUT : GetLastError();
+      if (error == WAIT_TIMEOUT) {
+        CancelIoEx(handle, overlapped);
+        // 等待本 isolate 发起的 I/O 完成取消，之后调用方才会释放
+        // OVERLAPPED、event 与 pipe handle。
+        GetOverlappedResult(handle, overlapped, transferred, TRUE);
       }
-      final n = read.value;
-      if (n == 0) {
-        sendPort.send(null);
-        break;
-      }
-      pending.addAll(buffer.asTypedList(n));
-      // 按行切分（保留最后不完整段）
-      var start = 0;
-      for (var i = 0; i < pending.length; i++) {
-        if (pending[i] == 10) {
-          final line = utf8.decode(
-            pending.sublist(start, i),
-            allowMalformed: true,
-          );
-          sendPort.send(line);
-          start = i + 1;
-        }
-      }
-      if (start > 0) {
-        pending = pending.sublist(start);
-      }
+      return error;
     }
-    free(buffer);
-    free(read);
+    return null;
   }
 
   /// 释放资源（不再使用后调用；幂等，可重复调用）。
@@ -321,6 +396,9 @@ class MpvSessionController {
     if (_disposed) return;
     _disposed = true;
     await disconnect();
-    await _incoming.close();
+    if (!_eventsClosed) {
+      _eventsClosed = true;
+      await _propertyEvents.close();
+    }
   }
 }

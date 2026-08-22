@@ -3,7 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:hive/hive.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
@@ -14,6 +15,8 @@ import 'data/local/directory_cache.dart';
 import 'data/local/playback_history_store.dart';
 import 'data/local/audio_playback_history_store.dart';
 import 'data/local/playback_progress_db.dart';
+import 'data/local/media_library_store.dart';
+import 'data/models/app_language.dart';
 import 'domain/services/cache_cleanup_service.dart';
 import 'domain/services/mpv_watch_later_sync.dart';
 import 'features/cache_control/cache_policy_service.dart';
@@ -25,6 +28,7 @@ import 'features/cache_control/store/media_metadata_store.dart';
 import 'features/cache_expiration/store/cache_expiration_config_store.dart';
 import 'presentation/pages/auto_connect_gate.dart';
 import 'presentation/pages/home_page.dart';
+import 'presentation/localization/app_localizations.dart';
 import 'presentation/state/app_state.dart';
 import 'presentation/theme/app_theme.dart';
 import 'presentation/theme/appearance_controller.dart';
@@ -73,34 +77,46 @@ Future<void> main() async {
     ]).then<void>((_) {}),
   );
 
-  // 互不依赖的本地存储并行初始化。
+  // 配置先于 SQLite 加载，使旧进度迁移能绑定到稳定 profileId。
+  final configStore = await StreamPathConfigStore.create();
+  await configStore.loadForStartup();
+
+  // 其余互不依赖的本地存储并行初始化。
   final directoryCacheInit = directoryCache.init();
   final progressServiceFuture = PlaybackProgressService.create(
     policyProvider: retentionPolicyProvider,
+    legacyProfileId: configStore.current.profileId,
   );
   final audioProgressServiceFuture =
       PlaybackProgressService.createAudio(
             policyProvider: retentionPolicyProvider,
+            legacyProfileId: configStore.current.profileId,
           )
           .then<PlaybackProgressService?>((service) => service)
           .catchError((_) => null);
-  final configStoreFuture = StreamPathConfigStore.create().then((store) async {
-    await store.loadForStartup();
-    return store;
-  });
   final playbackHistoryStoreFuture = PlaybackHistoryStore.create(
     policyProvider: retentionPolicyProvider,
   );
   final audioPlaybackHistoryStoreFuture = AudioPlaybackHistoryStore.create(
     policyProvider: retentionPolicyProvider,
   ).then<AudioPlaybackHistoryStore?>((store) => store).catchError((_) => null);
+  final mediaLibraryStoreFuture = MediaLibraryStore.create()
+      .then<MediaLibraryStore?>((store) => store)
+      .catchError((_) => null);
 
   await directoryCacheInit;
   final progressService = await progressServiceFuture;
   final audioProgressService = await audioProgressServiceFuture;
-  final configStore = await configStoreFuture;
   final playbackHistoryStore = await playbackHistoryStoreFuture;
   final audioPlaybackHistoryStore = await audioPlaybackHistoryStoreFuture;
+  final mediaLibraryStore = await mediaLibraryStoreFuture;
+  if (mediaLibraryStore != null) {
+    try {
+      await mediaLibraryStore.applyConfig(configStore.current.mediaLibrary);
+    } catch (_) {
+      // 个人资产容量应用失败不阻止应用启动，后续写入仍使用已加载限制。
+    }
+  }
   await clipboardInstall;
 
   // 缓存策略是独立增强层，初始化失败不得改变基础播放链路。
@@ -166,6 +182,7 @@ Future<void> main() async {
     progressService: progressService,
     audioPlaybackHistoryStore: audioPlaybackHistoryStore,
     audioProgressService: audioProgressService,
+    mediaLibraryStore: mediaLibraryStore,
     directoryCache: directoryCache,
     cachePolicy: cachePolicy,
     cachePolicyConfigStore: cachePolicyStore,
@@ -214,21 +231,37 @@ class StreamPathApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: appearanceController),
       ],
       child: AnimatedBuilder(
-        animation: appearanceController,
+        animation: Listenable.merge([appearanceController, appState]),
         builder: (context, child) {
           final appearance = appearanceController.config;
           final glass = appearanceController.glassActive;
+          final actualBackdrop =
+              appearanceController.lastResult?.actualBackdrop ??
+              WindowBackdropType.none;
           return MaterialApp(
-            title: 'StreamPath — WebDAV 浏览器',
+            onGenerateTitle: (context) =>
+                context.l10n.text('StreamPath — WebDAV 浏览器'),
             debugShowCheckedModeBanner: false,
+            locale: appState.language.locale,
+            supportedLocales: AppLanguage.values.map(
+              (language) => language.locale,
+            ),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
             color: glass ? Colors.transparent : null,
             theme: AppTheme.light(
               glass: glass,
               glassOpacity: appearance.glassOpacity,
+              windowBackdrop: actualBackdrop,
             ),
             darkTheme: AppTheme.dark(
               glass: glass,
               glassOpacity: appearance.glassOpacity,
+              windowBackdrop: actualBackdrop,
             ),
             builder: (context, navigator) => _buildWindowChrome(navigator),
             home: child,

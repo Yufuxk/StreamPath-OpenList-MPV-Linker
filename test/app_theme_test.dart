@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/theme/page_transitions.dart';
+import 'package:streampath/presentation/theme/window_appearance_status.dart';
 
 void main() {
   test('亮暗主题保持桌面视觉与低渲染成本约束', () {
@@ -56,5 +57,40 @@ void main() {
       clearerGlass.appBarTheme.backgroundColor,
       clearerTokens.chromeSurface,
     );
+  });
+
+  test('Acrylic 与 Mica 使用独立的模态层材质', () {
+    final acrylic = AppTheme.dark(
+      glass: true,
+      windowBackdrop: WindowBackdropType.systemAcrylic,
+    );
+    final mica = AppTheme.dark(
+      glass: true,
+      windowBackdrop: WindowBackdropType.mica,
+    );
+    final acrylicTokens = acrylic.extension<GlassTokens>()!;
+    final micaTokens = mica.extension<GlassTokens>()!;
+
+    expect(acrylicTokens.material, GlassMaterial.acrylic);
+    expect(micaTokens.material, GlassMaterial.mica);
+    expect(
+      acrylicTokens.modalBlurSigma,
+      greaterThan(micaTokens.modalBlurSigma),
+    );
+    expect(acrylicTokens.modalSurface.a, lessThan(micaTokens.modalSurface.a));
+    expect(
+      acrylicTokens.modalElevation,
+      greaterThan(micaTokens.modalElevation),
+    );
+    expect(
+      acrylicTokens.modalShadowColor.a,
+      greaterThan(micaTokens.modalShadowColor.a),
+    );
+    expect(acrylicTokens.modalBorderColor.a, lessThan(0.10));
+    expect(micaTokens.modalBorderColor.a, lessThan(0.07));
+    expect(acrylic.dialogTheme.backgroundColor, acrylicTokens.modalSurface);
+    expect(mica.dialogTheme.backgroundColor, micaTokens.modalSurface);
+    expect(acrylic.dialogTheme.elevation, acrylicTokens.modalElevation);
+    expect(mica.dialogTheme.elevation, micaTokens.modalElevation);
   });
 }

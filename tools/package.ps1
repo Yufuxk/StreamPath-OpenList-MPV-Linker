@@ -11,8 +11,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = $PSScriptRoot
-$BuildScript = Join-Path $ProjectRoot 'build.ps1'
+$ScriptRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$ProjectRoot = [IO.Path]::GetFullPath((Split-Path $ScriptRoot -Parent))
+$ProjectMarker = Join-Path $ProjectRoot 'pubspec.yaml'
+if (-not (Test-Path -LiteralPath $ProjectMarker -PathType Leaf)) {
+    throw "无法确认 StreamPath 项目根：$ProjectRoot"
+}
+$BuildScript = Join-Path $ScriptRoot 'build.ps1'
 $DefaultTarget = Join-Path (Split-Path $ProjectRoot -Parent) `
     'StreamPath 20260809 V0.1 portable'
 

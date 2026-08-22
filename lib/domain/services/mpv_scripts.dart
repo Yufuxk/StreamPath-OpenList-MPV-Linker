@@ -182,7 +182,7 @@ end)
 
   /// 写入当前播放状态上报脚本：
   ///  - `file-loaded` 与 `pause` 变化时，把 `playlist-pos`、当前文件
-  ///    URL、暂停状态、当前位置和总时长（十四行，含缓冲/缓存/速度）
+  ///    URL、暂停状态、当前位置和总时长（十三行，含缓冲/速度）
   ///    写入 [outFile]；
   ///  - 播放中每秒以及 MPV 退出前刷新状态，供直接关窗时判断完成度；
   ///  - 在 [progressFile] 追加逐媒体 JSONL 结果，明确区分完成、0 秒和
@@ -196,19 +196,21 @@ end)
     Directory base, {
     String? sessionId,
     String? progressFile,
+    String? launchEpoch,
   }) async {
     final resolvedProgressFile = progressFile ?? '$outFile.progress.jsonl';
     final script =
         '''
 -- StreamPath: 当前播放状态上报 + 命令执行。
--- OUT 十四行：playlist-pos / path / paused(1|0) / time-pos / duration
---           / buffering(0-100) / cache-used-bytes / net-speed(B/s)
+-- OUT 十三行：playlist-pos / path / paused(1|0) / time-pos / duration
+--           / buffering(0-100) / net-speed(B/s)
 --           / cache-idle(1|0|-1) / 诊断行（speed_src|speed|idle_src|idle_raw）
 --           / paused-for-cache / bof-cached / eof-cached / resolution
 local utils = require "mp.utils"
 local OUT = ${_luaQuote(outFile)}
 local CMD = ${_luaQuote(cmdFile)}
 local PROGRESS = ${_luaQuote(resolvedProgressFile)}
+local EPOCH = ${_luaQuote(launchEpoch ?? '')}
 
 local has_loaded = false
 local last_playlist_pos = -1
@@ -217,12 +219,18 @@ local last_time_pos = -1
 local last_duration = -1
 local last_entry_recorded = false
 local entry_started = false
+local checkpoint_armed_at = -1
+local temporary_checkpoint_active = false
+local temporary_clear_written = false
+local healthy_since = nil
+local was_stalling = false
 
 local function append_progress(outcome, reason, file_error)
     -- 初次打开即失败时 path 在部分 mpv 版本中可能为空，但 playlist-pos
     -- 仍足以映射原播放项，不能因此丢失恢复事件。
     if last_playlist_pos < 0 and last_path == "" then return end
     local record = {
+        epoch = EPOCH,
         outcome = outcome,
         playlist_pos = last_playlist_pos,
         path = last_path,
@@ -240,6 +248,54 @@ local function append_progress(outcome, reason, file_error)
         f:write(line .. "\\n")
         f:flush()
         f:close()
+    end
+end
+
+local function clear_temporary_checkpoint()
+    if temporary_clear_written and not temporary_checkpoint_active then return end
+    append_progress("temporary_cleared", nil, nil)
+    temporary_checkpoint_active = false
+    temporary_clear_written = true
+    healthy_since = nil
+    was_stalling = false
+end
+
+local function update_temporary_checkpoint()
+    if not has_loaded or mp.get_property_bool("idle-active", false) then return end
+    if last_duration > 0 and last_time_pos >= 0 and
+        last_time_pos / last_duration >= 0.99 then
+        clear_temporary_checkpoint()
+        return
+    end
+    local now = mp.get_time()
+    if checkpoint_armed_at < 0 or now < checkpoint_armed_at then return end
+    local paused_for_cache = mp.get_property("paused-for-cache", nil)
+    local stalling = paused_for_cache == "yes"
+    if paused_for_cache == nil then
+        local buffering = mp.get_property_number("cache-buffering-state", -1)
+        local cache_idle = mp.get_property("demuxer-cache-idle", nil)
+        if cache_idle == nil then cache_idle = mp.get_property("cache-idle", nil) end
+        stalling = buffering > 0 and buffering < 100 and cache_idle ~= "yes"
+    end
+    if stalling then
+        healthy_since = nil
+        if not was_stalling and last_time_pos > 0 then
+            append_progress("temporary_checkpoint", nil, nil)
+            temporary_checkpoint_active = true
+            temporary_clear_written = false
+        end
+        was_stalling = true
+        return
+    end
+    was_stalling = false
+    if mp.get_property_bool("pause", false) then
+        healthy_since = nil
+        return
+    end
+    if healthy_since == nil then
+        healthy_since = now
+    elseif now - healthy_since >= 5 then
+        clear_temporary_checkpoint()
     end
 end
 
@@ -270,7 +326,7 @@ local function write_status(use_cached_progress, skip_diagnostics)
             last_duration = duration
         end
     end
-    -- 播放中动态保护采样（第二阶段）：缓冲状态 / 缓存占用 / 实时下载速度。
+    -- 播放中动态保护采样（第二阶段）：缓冲状态 / 实时下载速度。
     -- 旧版 mpv 或属性不可用时全部回落 -1，监控侧按「未知」降级处理。
     -- shutdown 阶段只保存前五行必要进度，不再同步读取 demuxer-cache-state；
     -- 网络源正在拆卸时该属性可能明显阻塞窗口关闭。
@@ -285,7 +341,6 @@ local function write_status(use_cached_progress, skip_diagnostics)
     local cache_idle = -1
     local net_speed = -1
     local speed_src = "shutdown-fast"
-    local cache_used = -1
     local bof_cached = -1
     local eof_cached = -1
     local resolution = ""
@@ -315,10 +370,10 @@ local function write_status(use_cached_progress, skip_diagnostics)
     -- 2) 回退读 demuxer-cache-state 顶层 `raw-input-rate`（0.41 结构
     --    无 reader 子表；该键仅当速率 >0 时存在）。
     -- 3) 旧版 mpv 两者皆无时回落 -1（网络判定降级为缓冲驱动）。
+        local cstate = mp.get_property_native("demuxer-cache-state", nil)
         net_speed = mp.get_property_number("cache-speed", nil)
         speed_src = "cache-speed"
         if net_speed == nil then
-            local cstate = mp.get_property_native("demuxer-cache-state", nil)
             speed_src = "cstate"
             if type(cstate) == "table" then
                 net_speed = cstate["raw-input-rate"]
@@ -329,19 +384,12 @@ local function write_status(use_cached_progress, skip_diagnostics)
             end
             if net_speed == nil then net_speed = -1 end
         end
-        -- 缓存占用（bytes）：0.41 结构顶层 file-cache-bytes（≥0 时存在）；
-        -- 旧版回退 cstate.cache.bytes。均不可用时 -1（全量缓存判定降级）。
-        local cstate2 = mp.get_property_native("demuxer-cache-state", nil)
-        if type(cstate2) == "table" then
-            cache_used = cstate2["file-cache-bytes"] or -1
-            if cache_used < 0 and type(cstate2["cache"]) == "table" then
-                cache_used = cstate2["cache"]["bytes"] or -1
+        if type(cstate) == "table" then
+            if cstate["bof-cached"] ~= nil then
+                bof_cached = cstate["bof-cached"] and 1 or 0
             end
-            if cstate2["bof-cached"] ~= nil then
-                bof_cached = cstate2["bof-cached"] and 1 or 0
-            end
-            if cstate2["eof-cached"] ~= nil then
-                eof_cached = cstate2["eof-cached"] and 1 or 0
+            if cstate["eof-cached"] ~= nil then
+                eof_cached = cstate["eof-cached"] and 1 or 0
             end
         end
         local width = mp.get_property_number("width", -1)
@@ -352,11 +400,11 @@ local function write_status(use_cached_progress, skip_diagnostics)
     end
     local f = io.open(OUT, "w")
     if f then
-        -- 第 10 行：诊断行（speed_src|speed|idle_src|idle_raw），供排查
+        -- 第 9 行：诊断行（speed_src|speed|idle_src|idle_raw），供排查
         -- net-speed / cache-idle 缺失。
         f:write(tostring(pos) .. "\\n" .. tostring(path) .. "\\n" ..
             (paused and "1" or "0") .. "\\n" .. tostring(time_pos) .. "\\n" .. tostring(duration) ..
-            "\\n" .. tostring(buffering) .. "\\n" .. tostring(cache_used) .. "\\n" .. tostring(net_speed) ..
+            "\\n" .. tostring(buffering) .. "\\n" .. tostring(net_speed) ..
             "\\n" .. tostring(cache_idle) .. "\\n" .. speed_src .. "|" .. tostring(net_speed) ..
             "|" .. idle_src .. "|" .. tostring(idle_raw) ..
             "\\n" .. tostring(paused_for_cache) .. "\\n" .. tostring(bof_cached) ..
@@ -374,6 +422,11 @@ mp.register_event("start-file", function()
     last_time_pos = -1
     last_duration = -1
     last_entry_recorded = false
+    checkpoint_armed_at = -1
+    temporary_checkpoint_active = false
+    temporary_clear_written = false
+    healthy_since = nil
+    was_stalling = false
     local pos = mp.get_property_number("playlist-pos", -1)
     local path = mp.get_property("path", "")
     if pos >= 0 then last_playlist_pos = pos end
@@ -382,10 +435,18 @@ end)
 mp.register_event("file-loaded", function()
     has_loaded = true
     entry_started = true
+    -- 起播阶段的瞬时缓冲不建立临时播放点；稳定窗口结束后才启用。
+    checkpoint_armed_at = mp.get_time() + 5
     write_status(false, false)
 end)
 mp.observe_property("pause", "bool", function()
     write_status(false, false)
+end)
+mp.observe_property("paused-for-cache", "bool", function()
+    if has_loaded then
+        write_status(false, false)
+        update_temporary_checkpoint()
+    end
 end)
 -- 初次起播与 seek 完成后立即采样；尤其要及时保留用户主动跳回 0 秒。
 mp.register_event("playback-restart", function()
@@ -414,6 +475,7 @@ end)
 mp.add_periodic_timer(1.0, function()
     if has_loaded and not mp.get_property_bool("idle-active", false) then
         write_status(false, false)
+        update_temporary_checkpoint()
     end
 end)
 
@@ -447,7 +509,7 @@ mp.observe_property("idle-active", "bool", function(name, val)
             if mp.get_property_bool("idle-active") then
                 local f = io.open(OUT, "w")
                 if f then
-                    f:write("-1\\n\\n")
+                    f:write("-1\\n" .. tostring(last_playlist_pos) .. "\\n" .. EPOCH)
                     f:close()
                 end
             end
