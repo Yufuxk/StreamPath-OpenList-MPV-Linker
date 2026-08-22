@@ -63,7 +63,7 @@ abstract class CachePolicyProvider {
   ///
   /// 由集成方在播放器启动并注册会话后调用；[sessionId] 标识会话，
   /// 多会话各自独立监控（互不干扰；同会话重复启动自动替换）。
-  /// [statusFilePath] 为 mpv 十四行状态文件路径，包含播放位置、缓冲、
+  /// [statusFilePath] 为 mpv 十三行状态文件路径，包含播放位置、缓冲、
   /// 缓存边界、网络速度与分辨率；旧版缺失字段按未知值降级。
   /// [initialDemuxerMaxBytes]/[initialCacheSecs] 为本次注入的策略初值，
   /// [bitrateMbps] 为决策码率；未知时使用保守的绝对速度阈值。
@@ -88,10 +88,6 @@ abstract class CachePolicyProvider {
   /// 停止指定会话的播放中动态监控（幂等；不影响其他会话）。
   void stopMonitor(String sessionId, {bool clearSession = false});
 
-  /// 最近一次 [buildCacheArgs] 的策略结果（按 URL）；未计算过返回
-  /// null。供集成方获取监控初值（demuxer-max-bytes/cache-secs/码率）。
-  CachePolicyResult? lastResultFor(String url);
-
   /// 本次播放会话的策略状态（按 sessionId）；未启动过返回 null。
   ///
   /// 集成方用 [CachePolicySessionState.shouldMonitor] 判断是否启动
@@ -101,7 +97,7 @@ abstract class CachePolicyProvider {
   /// 运行态诊断快照（只读，问题排查用；不含敏感信息）。
   ///
   /// 返回结构：`activeSessions`（监控中的会话）、`monitorUrls`、
-  /// `sessionStates`（各会话注入状态摘要）、`lastResultsCount`。
+  /// `sessionStates`（各会话注入状态摘要）。
   Map<String, Object?> diagnosticsSnapshot();
 }
 
@@ -280,8 +276,6 @@ class CachePolicyService implements CachePolicyProvider {
           injected: false,
         );
         _recordSessionState(_sessionStates[sessionId]!);
-        // 配置关闭：删除该 URL 的旧自动结果，防止旧结果重新触发监控。
-        _lastResults.remove(url);
         return const [];
       }
       // 用户已在播放器模板中手动配置缓存参数：尊重手动配置，跳过
@@ -294,8 +288,6 @@ class CachePolicyService implements CachePolicyProvider {
           injected: false,
         );
         _recordSessionState(_sessionStates[sessionId]!);
-        // 手动配置优先：删除旧自动结果，保证用户参数最高优先级。
-        _lastResults.remove(url);
         return const [];
       }
       final isTsContainer = isTsContainerUrl(url);
@@ -306,7 +298,6 @@ class CachePolicyService implements CachePolicyProvider {
             config: config,
             availableMemoryBytes: memory,
           );
-          _lastResults[url] = result;
           final state = CachePolicySessionState(
             sessionId: sessionId,
             url: url,
@@ -362,11 +353,6 @@ class CachePolicyService implements CachePolicyProvider {
       final policyText = _formatTargetSummary(result);
       _log('Cache: $sizeText | $bitrateText -> $policyText');
       _log('Injected: ${result.args.join(' ')}');
-      _lastResults[url] = result;
-      // LRU 上限：超过 200 条淘汰最久未用的（LinkedHashMap 插入序）。
-      if (_lastResults.length > _lastResultsLimit) {
-        _lastResults.remove(_lastResults.keys.first);
-      }
       _sessionStates[sessionId] = CachePolicySessionState(
         sessionId: sessionId,
         url: url,
@@ -706,7 +692,6 @@ class CachePolicyService implements CachePolicyProvider {
       );
       _sessionStates[sessionId] = refreshedState;
       _recordSessionState(refreshedState);
-      _lastResults[url] = updated;
       // 码率就绪：同步给**本会话**的播放中监控（从绝对阈值兜底切换
       // 到相对码率判定）；其他会话不受影响。
       _monitors[sessionId]?.updatePolicy(
@@ -735,16 +720,6 @@ class CachePolicyService implements CachePolicyProvider {
   /// 监控工厂（测试注入：每会话一个实例；null 时用真实实现）。
   final PlaybackMonitor Function()? _monitorFactory;
 
-  /// 最近一次 [buildCacheArgs] 的策略结果（按 URL，供集成方做
-  /// 播放中监控的初值/码率基准；未计算过为 null）。
-  ///
-  /// LRU 语义：读取时把该键移到末尾（最久未用优先淘汰）。
-  final Map<String, CachePolicyResult> _lastResults =
-      <String, CachePolicyResult>{};
-
-  /// [_lastResults] 容量上限（超出淘汰最久未用的条目）。
-  static const int _lastResultsLimit = 200;
-
   /// 本次播放会话的策略状态（按 sessionId；见 [CachePolicySessionState]）。
   final Map<String, CachePolicySessionState> _sessionStates = {};
 
@@ -765,13 +740,6 @@ class CachePolicyService implements CachePolicyProvider {
 
   /// [_sessionStates] 容量上限（超出淘汰最久未用的会话条目）。
   static const int _sessionStatesLimit = 200;
-
-  @override
-  CachePolicyResult? lastResultFor(String url) {
-    final value = _lastResults.remove(url);
-    if (value != null) _lastResults[url] = value; // 移到末尾（LRU）。
-    return value;
-  }
 
   @override
   CachePolicySessionState? sessionState(String sessionId) {
@@ -801,7 +769,6 @@ class CachePolicyService implements CachePolicyProvider {
         },
       }),
     ),
-    'lastResultsCount': _lastResults.length,
   };
 
   /// 诊断用 URL 脱敏：仅保留 `scheme://host[:port]/path`，
@@ -913,7 +880,6 @@ class CachePolicyService implements CachePolicyProvider {
     _monitorUrls.clear();
     _knownSizes.clear();
     _knownProbes.clear();
-    _lastResults.clear();
     _sessionStates.clear();
     _sessionConfigs.clear();
     _sessionAuthHeaders.clear();

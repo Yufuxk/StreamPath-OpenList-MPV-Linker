@@ -121,7 +121,8 @@ class WebDavClient {
     Map<String, Object?> headers = const {},
     Duration? requestTimeout,
   }) async {
-    var current = Uri.parse(url);
+    final original = Uri.parse(url);
+    var current = original;
     for (var redirectCount = 0; ; redirectCount++) {
       if (current.scheme != 'http' && current.scheme != 'https') {
         throw AppException.parse('不支持的网络协议：${current.scheme}');
@@ -154,8 +155,13 @@ class WebDavClient {
       if (redirectCount >= _maxRedirects) {
         throw AppException.network('服务器重定向次数超过 $_maxRedirects 次');
       }
+      final next = current.resolve(location);
+      if (method.toUpperCase() != 'GET' &&
+          !isSameOrigin(original.toString(), next.toString())) {
+        throw AppException.network('非 GET 请求拒绝跨来源重定向');
+      }
       await _cancelStreamBody(response.data);
-      current = current.resolve(location);
+      current = next;
     }
   }
 

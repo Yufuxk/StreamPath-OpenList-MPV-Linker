@@ -28,6 +28,9 @@ void main() {
         fileName: 'AIR S01E02.mkv',
         videoIndex: 1,
         updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
+        playerPid: 123,
+        playerExecutablePath: r'C:\MPV\mpv.exe',
+        playerCreationTime: 133700000000000000,
       ),
     );
     final loaded = await store.loadAll();
@@ -35,11 +38,27 @@ void main() {
     expect(loaded.first.dirCrumbs, ['动漫', '2024秋']);
     expect(loaded.first.fileName, 'AIR S01E02.mkv');
     expect(loaded.first.videoIndex, 1);
+    expect(loaded.first.playerPid, 123);
+    expect(loaded.first.playerExecutablePath, r'C:\MPV\mpv.exe');
+    expect(loaded.first.playerCreationTime, 133700000000000000);
     expect(
       loaded.first.updatedAt.isAfter(DateTime.fromMillisecondsSinceEpoch(0)),
       isTrue,
       reason: '保存时自动更新为当前时间',
     );
+  });
+
+  test('旧视频历史缺少完整进程身份时保持为空且不会伪造', () {
+    final history = PlaybackHistory.fromJson(<String, dynamic>{
+      'sessionId': 'legacy-process',
+      'fileName': 'old.mkv',
+      'playerPid': 456,
+      'ipcPipeName': r'\\.\pipe\old-mpv',
+    });
+
+    expect(history.playerPid, 456);
+    expect(history.playerExecutablePath, isNull);
+    expect(history.playerCreationTime, isNull);
   });
 
   test('文件不存在时返回 null', () async {

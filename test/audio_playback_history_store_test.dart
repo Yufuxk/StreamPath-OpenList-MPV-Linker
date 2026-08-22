@@ -29,6 +29,9 @@ void main() {
       updatedAt: createdAt,
       createdAt: createdAt,
       playlistFileNames: const ['01.flac', '02.flac'],
+      playerPid: 789,
+      playerExecutablePath: r'C:\MPV\mpv.exe',
+      playerCreationTime: 133700000000000001,
     );
 
     expect(await store.upsert(history), isTrue);
@@ -38,9 +41,25 @@ void main() {
     final updated = (await store.loadAll()).single;
     expect(updated.fileName, '02.flac');
     expect(updated.trackIndex, 1);
+    expect(updated.playerPid, 789);
+    expect(updated.playerExecutablePath, r'C:\MPV\mpv.exe');
+    expect(updated.playerCreationTime, 133700000000000001);
 
     await store.remove('audio-1');
     expect(await store.loadAll(), isEmpty);
+  });
+
+  test('旧音频历史缺少完整进程身份时保持为空且不会伪造', () {
+    final history = AudioPlaybackHistory.fromJson(<String, dynamic>{
+      'sessionId': 'audio-legacy-process',
+      'fileName': 'old.flac',
+      'playerPid': 987,
+      'ipcPipeName': r'\\.\pipe\old-audio-mpv',
+    });
+
+    expect(history.playerPid, 987);
+    expect(history.playerExecutablePath, isNull);
+    expect(history.playerCreationTime, isNull);
   });
 
   test('损坏的音频历史只返回空列表', () async {

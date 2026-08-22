@@ -4,6 +4,7 @@ import '../../core/errors/app_exception.dart';
 import '../../core/utils/strm_parser.dart';
 import '../../core/utils/url_utils.dart' as url_utils;
 import '../../data/local/directory_cache.dart';
+import '../../data/models/media_library_item.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/remote/webdav_client.dart';
 import '../../data/remote/webdav_xml_parser.dart';
@@ -20,14 +21,18 @@ import '../repositories/directory_repository.dart';
 class WebDAVService implements DirectoryRepository {
   WebDAVService({
     required this._client,
+    String? profileId,
     DirectoryCache? cache,
     WebDavXmlParser? parser,
   }) : _cache = cache ?? DirectoryCache(),
-       _parser = parser ?? const WebDavXmlParser();
+       _parser = parser ?? const WebDavXmlParser(),
+       // ignore: prefer_initializing_formals
+       _profileId = profileId;
 
   final WebDavClient _client;
   final DirectoryCache _cache;
   final WebDavXmlParser _parser;
+  final String? _profileId;
 
   /// 正在进行的加载（key → Future），用于请求合并。
   final Map<String, Future<List<WebDavFile>>> _inFlight = {};
@@ -134,12 +139,19 @@ class WebDAVService implements DirectoryRepository {
   @override
   String get baseUrl => _client.baseUrl;
 
+  /// 当前服务器根地址与用户名对应的匿名来源标识。
+  String get sourceId => _profileId?.trim().isNotEmpty == true
+      ? _profileId!.trim()
+      : mediaSourceId(baseUrl: baseUrl, username: _client.username ?? '');
+
   // ── 内部 ─────────────────────────────────────────────────────
 
   String _key(String path) => url_utils.cacheKeyFor(
     baseUrl: baseUrl,
     path: path,
-    namespace: _client.username ?? '',
+    namespace: _profileId?.trim().isNotEmpty == true
+        ? _profileId!
+        : _client.username ?? '',
   );
 
   /// 等待同目录旧请求收尾后发起新请求；只用成功响应覆盖缓存。
@@ -168,7 +180,7 @@ class WebDAVService implements DirectoryRepository {
       try {
         final xml = await _client.propfind(path);
         final files = _parser.parse(xml, requestUrl: fullUrl(path));
-        _cache.write(key, files);
+        _cache.write(key, files, sourceId: sourceId, path: path);
         return files;
       } finally {
         _inFlight.remove(key);

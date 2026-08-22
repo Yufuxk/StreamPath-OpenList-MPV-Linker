@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 /// 玻璃表面的视觉层级。
 enum GlassSurfaceLevel { base, chrome, content, raised, floating }
 
+/// 当前玻璃主题实际采用的窗口材质。
+enum GlassMaterial { acrylic, mica }
+
 /// 玻璃界面的表现层参数，不承载窗口或业务状态。
 @immutable
 class GlassTokens extends ThemeExtension<GlassTokens> {
@@ -17,13 +20,22 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     required this.dividerColor,
     required this.innerHighlight,
     required this.shadowColor,
+    required this.material,
+    required this.modalSurface,
+    required this.modalBorderColor,
+    required this.modalShadowColor,
+    required this.modalBarrierColor,
     required this.modalBlurSigma,
+    required this.modalElevation,
+    required this.modalScaleBegin,
+    required this.modalSlideOffset,
   });
 
   factory GlassTokens.fromScheme(
     ColorScheme scheme, {
     required bool enabled,
     required double opacityProgress,
+    GlassMaterial material = GlassMaterial.acrylic,
   }) {
     if (!enabled) {
       return GlassTokens(
@@ -37,7 +49,15 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
         dividerColor: scheme.outlineVariant,
         innerHighlight: Colors.transparent,
         shadowColor: Colors.transparent,
+        material: material,
+        modalSurface: scheme.surface,
+        modalBorderColor: scheme.outlineVariant,
+        modalShadowColor: Colors.black.withValues(alpha: 0.24),
+        modalBarrierColor: Colors.black.withValues(alpha: 0.32),
         modalBlurSigma: 0,
+        modalElevation: 6,
+        modalScaleBegin: 0.985,
+        modalSlideOffset: 6,
       );
     }
 
@@ -48,6 +68,13 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     final chromeTarget = (baseTarget + 0.16).clamp(0.0, 0.84);
     final raisedTarget = (baseTarget + 0.24).clamp(0.0, 0.88);
     final floatingTarget = (baseTarget + 0.38).clamp(0.0, 0.94);
+    final isMica = material == GlassMaterial.mica;
+    final modalTarget = isMica
+        ? (baseTarget + 0.62).clamp(0.0, 0.97)
+        : (baseTarget + 0.5).clamp(0.0, 0.90);
+    final modalSurfaceBase = isMica
+        ? scheme.surface
+        : scheme.surfaceContainerLow;
 
     return GlassTokens(
       enabled: true,
@@ -72,7 +99,23 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
           : const Color(0xFF506078).withValues(alpha: 0.14),
       innerHighlight: Colors.white.withValues(alpha: isDark ? 0.05 : 0.18),
       shadowColor: Colors.black.withValues(alpha: isDark ? 0.12 : 0.06),
-      modalBlurSigma: 12,
+      material: material,
+      modalSurface: modalSurfaceBase.withValues(
+        alpha: _overlayAlpha(baseTarget, modalTarget),
+      ),
+      modalBorderColor: isDark
+          ? Colors.white.withValues(alpha: isMica ? 0.06 : 0.09)
+          : const Color(0xFF506078).withValues(alpha: isMica ? 0.11 : 0.15),
+      modalShadowColor: Colors.black.withValues(
+        alpha: isDark ? (isMica ? 0.13 : 0.27) : (isMica ? 0.06 : 0.08),
+      ),
+      modalBarrierColor:
+          (isDark ? const Color(0xFF080B10) : const Color(0xFF18202A))
+              .withValues(alpha: isMica ? 0.26 : 0.55),
+      modalBlurSigma: isMica ? 3.5 : 8.0,
+      modalElevation: isMica ? 2 : 4,
+      modalScaleBegin: isMica ? 0.992 : 0.985,
+      modalSlideOffset: isMica ? 4 : 7,
     );
   }
 
@@ -86,7 +129,15 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
   final Color dividerColor;
   final Color innerHighlight;
   final Color shadowColor;
+  final GlassMaterial material;
+  final Color modalSurface;
+  final Color modalBorderColor;
+  final Color modalShadowColor;
+  final Color modalBarrierColor;
   final double modalBlurSigma;
+  final double modalElevation;
+  final double modalScaleBegin;
+  final double modalSlideOffset;
 
   Color surfaceFor(GlassSurfaceLevel level) => switch (level) {
     GlassSurfaceLevel.base => baseSurface,
@@ -131,7 +182,15 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     Color? dividerColor,
     Color? innerHighlight,
     Color? shadowColor,
+    GlassMaterial? material,
+    Color? modalSurface,
+    Color? modalBorderColor,
+    Color? modalShadowColor,
+    Color? modalBarrierColor,
     double? modalBlurSigma,
+    double? modalElevation,
+    double? modalScaleBegin,
+    double? modalSlideOffset,
   }) => GlassTokens(
     enabled: enabled ?? this.enabled,
     baseSurface: baseSurface ?? this.baseSurface,
@@ -143,7 +202,15 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     dividerColor: dividerColor ?? this.dividerColor,
     innerHighlight: innerHighlight ?? this.innerHighlight,
     shadowColor: shadowColor ?? this.shadowColor,
+    material: material ?? this.material,
+    modalSurface: modalSurface ?? this.modalSurface,
+    modalBorderColor: modalBorderColor ?? this.modalBorderColor,
+    modalShadowColor: modalShadowColor ?? this.modalShadowColor,
+    modalBarrierColor: modalBarrierColor ?? this.modalBarrierColor,
     modalBlurSigma: modalBlurSigma ?? this.modalBlurSigma,
+    modalElevation: modalElevation ?? this.modalElevation,
+    modalScaleBegin: modalScaleBegin ?? this.modalScaleBegin,
+    modalSlideOffset: modalSlideOffset ?? this.modalSlideOffset,
   );
 
   @override
@@ -160,7 +227,27 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
       dividerColor: Color.lerp(dividerColor, other.dividerColor, t)!,
       innerHighlight: Color.lerp(innerHighlight, other.innerHighlight, t)!,
       shadowColor: Color.lerp(shadowColor, other.shadowColor, t)!,
+      material: t < 0.5 ? material : other.material,
+      modalSurface: Color.lerp(modalSurface, other.modalSurface, t)!,
+      modalBorderColor: Color.lerp(
+        modalBorderColor,
+        other.modalBorderColor,
+        t,
+      )!,
+      modalShadowColor: Color.lerp(
+        modalShadowColor,
+        other.modalShadowColor,
+        t,
+      )!,
+      modalBarrierColor: Color.lerp(
+        modalBarrierColor,
+        other.modalBarrierColor,
+        t,
+      )!,
       modalBlurSigma: _mix(modalBlurSigma, other.modalBlurSigma, t),
+      modalElevation: _mix(modalElevation, other.modalElevation, t),
+      modalScaleBegin: _mix(modalScaleBegin, other.modalScaleBegin, t),
+      modalSlideOffset: _mix(modalSlideOffset, other.modalSlideOffset, t),
     );
   }
 

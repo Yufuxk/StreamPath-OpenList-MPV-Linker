@@ -13,14 +13,19 @@ import '../../data/local/stream_path_config_store.dart';
 import '../../data/models/audio_media_entry.dart';
 import 'audio_lyrics_localizer.dart';
 import 'audio_mpv_scripts.dart';
+import 'mpv_idle_completion_marker.dart';
 import 'mpv_playback_progress_sync.dart';
 import 'mpv_watch_later_sync.dart';
+import 'player_process_controller.dart';
+import 'session_progress_sync_coordinator.dart';
 
 class AudioPlayerLaunchResult {
   const AudioPlayerLaunchResult({
     required this.process,
     required this.args,
     required this.sessionId,
+    required this.launchEpoch,
+    this.processIdentity,
     required this.ipcPipeName,
     required this.statusFilePath,
     required this.commandFilePath,
@@ -31,6 +36,8 @@ class AudioPlayerLaunchResult {
   final Process process;
   final List<String> args;
   final String sessionId;
+  final String launchEpoch;
+  final PlayerProcessIdentity? processIdentity;
   final String ipcPipeName;
   final String statusFilePath;
   final String commandFilePath;
@@ -42,7 +49,8 @@ class _AudioSessionRuntime {
   _AudioSessionRuntime({
     required this.sessionId,
     required this.pid,
-    required this.launchedHere,
+    this.processIdentity,
+    required this.livenessTracker,
     required this.ipcPipeName,
     required this.statusFilePath,
     required this.commandFilePath,
@@ -50,11 +58,17 @@ class _AudioSessionRuntime {
     required this.entries,
     required this.watchLaterUrls,
     required this.localizedLyricsFiles,
+    required this.launchEpoch,
+    required this.artifactSessionId,
+    required this.progressGeneration,
+    required this.ownershipGeneration,
+    this.profileId = '',
   });
 
   final String sessionId;
   final int? pid;
-  final bool launchedHere;
+  final PlayerProcessIdentity? processIdentity;
+  final PlayerProcessLivenessTracker livenessTracker;
   final String? ipcPipeName;
   final String statusFilePath;
   final String commandFilePath;
@@ -62,9 +76,13 @@ class _AudioSessionRuntime {
   final List<AudioMediaEntry> entries;
   final List<String> watchLaterUrls;
   final List<File> localizedLyricsFiles;
-  bool? aliveCache;
-  DateTime? aliveCacheAt;
+  final String launchEpoch;
+  final String artifactSessionId;
+  final int progressGeneration;
+  final int ownershipGeneration;
+  final String profileId;
   Future<void>? exitSyncFuture;
+  Future<PlayerTerminationOutcome>? terminationFuture;
 }
 
 /// 独立的 MPV 音频播放服务。
@@ -77,20 +95,41 @@ class AudioPlayerService {
     required StreamPathConfigStore configStore,
     required PlaybackProgressService progressService,
     Directory? watchLaterDirectory,
-  }) => AudioPlayerService._(configStore, progressService, watchLaterDirectory);
+    PlayerProcessController? processController,
+  }) => AudioPlayerService._(
+    configStore,
+    progressService,
+    watchLaterDirectory,
+    processController ?? PlayerProcessController(),
+  );
 
   AudioPlayerService._(
     this._configStore,
     this._progressService,
     this._watchLaterDirectory,
+    this._processController,
   );
 
   final StreamPathConfigStore _configStore;
   final PlaybackProgressService _progressService;
+  final PlayerProcessController _processController;
   Directory? _watchLaterDirectory;
   final Map<String, _AudioSessionRuntime> _sessions = {};
+  final Map<String, int> _launchOwnership = {};
+  final SessionProgressSyncCoordinator _progressSyncCoordinator =
+      SessionProgressSyncCoordinator();
   final AudioLyricsLocalizer _lyricsLocalizer = const AudioLyricsLocalizer();
   int _launchSequence = 0;
+  int _ownershipSequence = 0;
+
+  bool _ownsLaunch(String sessionId, int generation) =>
+      _launchOwnership[sessionId] == generation;
+
+  void _ensureLaunchOwnership(String sessionId, int generation) {
+    if (!_ownsLaunch(sessionId, generation)) {
+      throw AppException.process('该音频启动已被同会话的新请求取代');
+    }
+  }
 
   Future<AudioPlayerLaunchResult> launch({
     required List<AudioMediaEntry> entries,
@@ -107,177 +146,268 @@ class AudioPlayerService {
     if (playlistStart < 0 || playlistStart >= entries.length) {
       playlistStart = 0;
     }
+    final ownershipGeneration = ++_ownershipSequence;
+    _launchOwnership[sessionId] = ownershipGeneration;
     final existing = _sessions[sessionId];
-    if (existing != null && await isPlayerRunning(sessionId)) {
-      throw AppException.process('该音频播放会话仍在运行，请先关闭或删除后再继续');
-    }
-    if (existing != null) _sessions.remove(sessionId);
-
-    final fullConfig = await _configStore.load();
-    final config = fullConfig.toPlayerConfig();
-    final subtitleInjectionEnabled = config.subtitleInjectionEnabled;
-    final subtitleAutoSelectEnabled =
-        subtitleInjectionEnabled && config.subtitleAutoSelectEnabled;
-    if (config.executable.trim().isEmpty) {
-      throw AppException.config('未配置播放器路径，请先在「设置」中配置');
-    }
-    if (!_isMpvExecutable(config.executable)) {
-      throw AppException.config('音频播放、LRC 与封面功能需要使用 MPV 播放器');
-    }
-
-    final authHeader = username != null && username.isNotEmpty
-        ? 'Basic ${base64Encode(utf8.encode('$username:${password ?? ''}'))}'
-        : null;
-    String authUrl(String url) =>
-        authHeader != null && isSameOrigin(fullConfig.serverUrl, url)
-        ? embedCredentials(url, username!, password ?? '')
-        : url;
-
-    final dataDir = await AppPaths.cacheDirectory();
-    final base = await _scriptBase();
-    final statusFilePath = p.join(
-      dataDir.path,
-      sessionStatusFileName(sessionId),
-    );
-    final commandFilePath = p.join(
-      dataDir.path,
-      sessionCommandFileName(sessionId),
-    );
-    final progressFilePath = p.join(
-      dataDir.path,
-      sessionProgressFileName(sessionId),
-    );
-    await _deleteIfExists(File(progressFilePath));
-    await _clearStaleFinishedMark(File(statusFilePath));
-
-    final lyricsLocalization = subtitleInjectionEnabled
-        ? await _lyricsLocalizer.localize(
-            entries: entries,
-            base: base,
-            sessionId: sessionId,
-            loader: lyricsLoader,
-          )
-        : AudioLyricsLocalizationResult(
-            entries: List.unmodifiable(entries),
-            sessionFiles: const [],
-          );
-
-    final playlistFilePath = await AudioMpvScripts.ensurePlaylistM3u8(
-      entries,
-      authUrl,
-      base,
-      sessionId: sessionId,
-    );
-    final companionScript = await AudioMpvScripts.ensureCompanions(
-      lyricsLocalization.entries,
-      authUrl,
-      base,
-      sessionId: sessionId,
-      lyricsInjectionEnabled: subtitleInjectionEnabled,
-      lyricsAutoSelectEnabled: subtitleAutoSelectEnabled,
-    );
-    final currentScript = await AudioMpvScripts.ensureCurrent(
-      statusFilePath,
-      commandFilePath,
-      progressFilePath,
-      base,
-      sessionId: sessionId,
-    );
-
-    final args = _stripTemplateTokens(filterCacheArgs(config.args))
-      ..addAll([
-        '--playlist=$playlistFilePath',
-        if (playlistStart > 0) '--playlist-start=$playlistStart',
-        '--input-ipc-server=${_newPipeName()}',
-        '--audio-display=embedded-first',
-        '--cover-art-auto=no',
-        if (subtitleInjectionEnabled) '--sub-auto=no',
-        '--script=$companionScript',
-        '--script=$currentScript',
-      ]);
-    final ipcPipeName = args
-        .firstWhere((arg) => arg.startsWith('--input-ipc-server='))
-        .substring('--input-ipc-server='.length);
-
-    final watchLaterDirectory = await _ensureWatchLaterDirectory();
-    if (config.resumeEnabled) {
-      try {
-        await const MpvWatchLaterSync().purgeExpiredRecords(
-          watchLaterDirectory,
-          entries.map((entry) => authUrl(entry.url)),
-          maxAge: _progressService.retention,
-        );
-      } catch (_) {
-        // 续播缓存维护失败不阻断音频播放。
-      }
-      args.addAll([
-        '--save-position-on-quit',
-        '--watch-later-directory=${watchLaterDirectory.path}',
-      ]);
-      final startEntry = entries[playlistStart];
-      if (resumeSeconds != null) {
-        await _writeResumeStart(authUrl(startEntry.url), resumeSeconds);
-      } else {
-        await _clearWatchLater(startEntry.url);
-        final playbackUrl = authUrl(startEntry.url);
-        if (playbackUrl != startEntry.url) {
-          await _clearWatchLater(playbackUrl);
-        }
-        args.addAll(['--no-resume-playback', '--start=0']);
-      }
-    }
-
-    final Process process;
     try {
-      process = await Process.start(
-        config.executable,
-        args,
-        mode: ProcessStartMode.detached,
+      if (existing != null) {
+        final liveness = await _processController.probeOwned(
+          existing.processIdentity,
+        );
+        _ensureLaunchOwnership(sessionId, ownershipGeneration);
+        if (liveness != PlayerProcessLiveness.exited) {
+          throw AppException.process('该音频播放会话仍在运行，请先关闭或删除后再继续');
+        }
+        if (identical(_sessions[sessionId], existing)) {
+          _sessions.remove(sessionId);
+          existing.livenessTracker.stop();
+        }
+      }
+      final launchEpoch =
+          '${DateTime.now().microsecondsSinceEpoch}_${++_launchSequence}';
+      final artifactSessionId = '${sessionId}__e$launchEpoch';
+      Future<void> ensureOwned({
+        Iterable<File> localizedFiles = const [],
+      }) async {
+        if (_ownsLaunch(sessionId, ownershipGeneration)) return;
+        await _deleteLaunchArtifacts(
+          sessionId: sessionId,
+          launchEpoch: launchEpoch,
+          artifactSessionId: artifactSessionId,
+          localizedLyricsFiles: localizedFiles,
+        );
+        _ensureLaunchOwnership(sessionId, ownershipGeneration);
+      }
+
+      final progressGeneration = await _progressSyncCoordinator.claimAndDrain(
+        sessionId,
       );
-    } on FileSystemException catch (error) {
-      await _lyricsLocalizer.deleteSessionFiles(
-        lyricsLocalization.sessionFiles,
+      await ensureOwned();
+
+      final fullConfig = await _configStore.load();
+      await ensureOwned();
+      final config = fullConfig.toPlayerConfig();
+      final subtitleInjectionEnabled = config.subtitleInjectionEnabled;
+      final subtitleAutoSelectEnabled =
+          subtitleInjectionEnabled && config.subtitleAutoSelectEnabled;
+      if (config.executable.trim().isEmpty) {
+        throw AppException.config('未配置播放器路径，请先在「设置」中配置');
+      }
+      if (!_isMpvExecutable(config.executable)) {
+        throw AppException.config('音频播放、LRC 与封面功能需要使用 MPV 播放器');
+      }
+
+      final authHeader = username != null && username.isNotEmpty
+          ? 'Basic ${base64Encode(utf8.encode('$username:${password ?? ''}'))}'
+          : null;
+      String authUrl(String url) =>
+          authHeader != null && isSameOrigin(fullConfig.serverUrl, url)
+          ? embedCredentials(url, username!, password ?? '')
+          : url;
+
+      final dataDir = await AppPaths.cacheDirectory();
+      await ensureOwned();
+      final base = await _scriptBase();
+      await ensureOwned();
+      final statusFilePath = p.join(
+        dataDir.path,
+        sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
       );
-      throw AppException.process(
-        '无法启动播放器「${config.executable}」：文件不存在或路径错误',
-        error,
+      final commandFilePath = p.join(
+        dataDir.path,
+        sessionCommandFileName(sessionId, launchEpoch: launchEpoch),
       );
-    } on ProcessException catch (error) {
-      await _lyricsLocalizer.deleteSessionFiles(
-        lyricsLocalization.sessionFiles,
+      final progressFilePath = p.join(
+        dataDir.path,
+        sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
       );
-      throw AppException.process('播放器启动失败：${error.message}', error);
+
+      final lyricsLocalization = subtitleInjectionEnabled
+          ? await _lyricsLocalizer.localize(
+              entries: entries,
+              base: base,
+              sessionId: artifactSessionId,
+              loader: lyricsLoader,
+            )
+          : AudioLyricsLocalizationResult(
+              entries: List.unmodifiable(entries),
+              sessionFiles: const [],
+            );
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+
+      final playlistFilePath = await AudioMpvScripts.ensurePlaylistM3u8(
+        entries,
+        authUrl,
+        base,
+        sessionId: artifactSessionId,
+      );
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      final companionScript = await AudioMpvScripts.ensureCompanions(
+        lyricsLocalization.entries,
+        authUrl,
+        base,
+        sessionId: artifactSessionId,
+        lyricsInjectionEnabled: subtitleInjectionEnabled,
+        lyricsAutoSelectEnabled: subtitleAutoSelectEnabled,
+      );
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      final currentScript = await AudioMpvScripts.ensureCurrent(
+        statusFilePath,
+        commandFilePath,
+        progressFilePath,
+        base,
+        sessionId: artifactSessionId,
+        launchEpoch: launchEpoch,
+      );
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+
+      final args = _stripTemplateTokens(filterCacheArgs(config.args))
+        ..addAll([
+          '--playlist=$playlistFilePath',
+          if (playlistStart > 0) '--playlist-start=$playlistStart',
+          '--input-ipc-server=${_newPipeName(launchEpoch)}',
+          '--audio-display=embedded-first',
+          '--cover-art-auto=no',
+          if (subtitleInjectionEnabled) '--sub-auto=no',
+          '--script=$companionScript',
+          '--script=$currentScript',
+        ]);
+      final ipcPipeName = args
+          .firstWhere((arg) => arg.startsWith('--input-ipc-server='))
+          .substring('--input-ipc-server='.length);
+
+      final watchLaterDirectory = await _ensureWatchLaterDirectory();
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      if (config.resumeEnabled) {
+        try {
+          await const MpvWatchLaterSync().purgeExpiredRecords(
+            watchLaterDirectory,
+            entries.map((entry) => authUrl(entry.url)),
+            maxAge: _progressService.retention,
+          );
+        } catch (_) {
+          // 续播缓存维护失败不阻断音频播放。
+        }
+        await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+        args.addAll([
+          '--save-position-on-quit',
+          '--watch-later-directory=${watchLaterDirectory.path}',
+        ]);
+        final startEntry = entries[playlistStart];
+        if (resumeSeconds != null) {
+          await _writeResumeStart(authUrl(startEntry.url), resumeSeconds);
+          await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+        } else {
+          await _clearWatchLater(startEntry.url);
+          await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+          final playbackUrl = authUrl(startEntry.url);
+          if (playbackUrl != startEntry.url) {
+            await _clearWatchLater(playbackUrl);
+            await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+          }
+          args.addAll(['--no-resume-playback', '--start=0']);
+        }
+      }
+
+      await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      final Process process;
+      try {
+        process = await Process.start(
+          config.executable,
+          args,
+          mode: ProcessStartMode.detached,
+        );
+      } on FileSystemException catch (error) {
+        await _deleteLaunchArtifacts(
+          sessionId: sessionId,
+          launchEpoch: launchEpoch,
+          artifactSessionId: artifactSessionId,
+          localizedLyricsFiles: lyricsLocalization.sessionFiles,
+        );
+        throw AppException.process(
+          '无法启动播放器「${config.executable}」：文件不存在或路径错误',
+          error,
+        );
+      } on ProcessException catch (error) {
+        await _deleteLaunchArtifacts(
+          sessionId: sessionId,
+          launchEpoch: launchEpoch,
+          artifactSessionId: artifactSessionId,
+          localizedLyricsFiles: lyricsLocalization.sessionFiles,
+        );
+        throw AppException.process('播放器启动失败：${error.message}', error);
+      }
+      final processIdentity = await _processController.capture(process.pid);
+      if (!_ownsLaunch(sessionId, ownershipGeneration)) {
+        final termination = await _terminateCapturedProcess(
+          pid: process.pid,
+          expected: processIdentity,
+          ipcPipeName: ipcPipeName,
+          requirePipeOwner: true,
+        );
+        await _deleteLaunchArtifacts(
+          sessionId: sessionId,
+          launchEpoch: launchEpoch,
+          artifactSessionId: artifactSessionId,
+          localizedLyricsFiles: lyricsLocalization.sessionFiles,
+        );
+        if (!termination.isSafeToRelaunch) {
+          throw AppException.process('音频启动已过期，且无法确认旧 MPV 进程归属');
+        }
+        _ensureLaunchOwnership(sessionId, ownershipGeneration);
+      }
+
+      final livenessTracker = PlayerProcessLivenessTracker(
+        controller: _processController,
+        expectedIdentity: processIdentity,
+        initialStatus: processIdentity == null
+            ? PlayerProcessLiveness.unknown
+            : PlayerProcessLiveness.alive,
+      );
+      final runtime = _AudioSessionRuntime(
+        sessionId: sessionId,
+        pid: process.pid,
+        processIdentity: processIdentity,
+        livenessTracker: livenessTracker,
+        ipcPipeName: ipcPipeName,
+        statusFilePath: statusFilePath,
+        commandFilePath: commandFilePath,
+        progressFilePath: progressFilePath,
+        entries: List.unmodifiable(entries),
+        watchLaterUrls: entries.map((entry) => authUrl(entry.url)).toList(),
+        localizedLyricsFiles: lyricsLocalization.sessionFiles,
+        launchEpoch: launchEpoch,
+        artifactSessionId: artifactSessionId,
+        progressGeneration: progressGeneration,
+        ownershipGeneration: ownershipGeneration,
+        profileId: fullConfig.profileId,
+      );
+      _sessions[sessionId] = runtime;
+      runtime.exitSyncFuture = _watchExitAndSync(runtime);
+      unawaited(runtime.exitSyncFuture);
+
+      return AudioPlayerLaunchResult(
+        process: process,
+        args: args,
+        sessionId: sessionId,
+        launchEpoch: launchEpoch,
+        processIdentity: processIdentity,
+        ipcPipeName: ipcPipeName,
+        statusFilePath: statusFilePath,
+        commandFilePath: commandFilePath,
+        progressFilePath: progressFilePath,
+        playlistFilePath: playlistFilePath,
+      );
+    } catch (_) {
+      if (_ownsLaunch(sessionId, ownershipGeneration)) {
+        if (existing != null && identical(_sessions[sessionId], existing)) {
+          _launchOwnership[sessionId] = existing.ownershipGeneration;
+        } else if (_sessions[sessionId] == null) {
+          _launchOwnership.remove(sessionId);
+        }
+      }
+      rethrow;
     }
-
-    final runtime =
-        _AudioSessionRuntime(
-            sessionId: sessionId,
-            pid: process.pid,
-            launchedHere: true,
-            ipcPipeName: ipcPipeName,
-            statusFilePath: statusFilePath,
-            commandFilePath: commandFilePath,
-            progressFilePath: progressFilePath,
-            entries: List.unmodifiable(entries),
-            watchLaterUrls: entries.map((entry) => authUrl(entry.url)).toList(),
-            localizedLyricsFiles: lyricsLocalization.sessionFiles,
-          )
-          ..aliveCache = true
-          ..aliveCacheAt = DateTime.now();
-    _sessions[sessionId] = runtime;
-    runtime.exitSyncFuture = _watchExitAndSync(runtime);
-    unawaited(runtime.exitSyncFuture);
-
-    return AudioPlayerLaunchResult(
-      process: process,
-      args: args,
-      sessionId: sessionId,
-      ipcPipeName: ipcPipeName,
-      statusFilePath: statusFilePath,
-      commandFilePath: commandFilePath,
-      progressFilePath: progressFilePath,
-      playlistFilePath: playlistFilePath,
-    );
   }
 
   /// 移除模板中的 MPV 缓存参数，避免音频进入应用缓存控制或优化路径。
@@ -309,7 +439,11 @@ class AudioPlayerService {
   }
 
   static bool _isCacheArgumentWithSeparateValue(String value) {
-    switch (value.toLowerCase()) {
+    final token = value.toLowerCase();
+    if (token.startsWith('--demuxer-readahead-') && !token.contains('=')) {
+      return true;
+    }
+    switch (token) {
       case '--cache':
       case '--cache-secs':
       case '--cache-pause-wait':
@@ -365,6 +499,7 @@ class AudioPlayerService {
       '--demuxer-max-bytes',
       '--demuxer-max-back-bytes',
       '--demuxer-seekable-cache=',
+      '--demuxer-readahead-',
       '--demuxer-donate-buffer',
       '--demuxer-donate-buffer=',
       '--demuxer-hysteresis-secs',
@@ -378,47 +513,60 @@ class AudioPlayerService {
   Future<void> restoreSession({
     required String sessionId,
     required int? pid,
+    String? executablePath,
+    int? creationTime,
     String? ipcPipeName,
+    String? launchEpoch,
   }) async {
     if (_sessions.containsKey(sessionId)) return;
     final dataDir = await AppPaths.cacheDirectory();
+    final processIdentity = PlayerProcessIdentity.fromStored(
+      pid: pid,
+      executablePath: executablePath,
+      creationTime: creationTime,
+    );
     final runtime = _AudioSessionRuntime(
       sessionId: sessionId,
       pid: pid,
-      launchedHere: false,
+      processIdentity: processIdentity,
+      livenessTracker: PlayerProcessLivenessTracker(
+        controller: _processController,
+        expectedIdentity: processIdentity,
+      ),
       ipcPipeName: ipcPipeName,
-      statusFilePath: p.join(dataDir.path, sessionStatusFileName(sessionId)),
-      commandFilePath: p.join(dataDir.path, sessionCommandFileName(sessionId)),
+      statusFilePath: p.join(
+        dataDir.path,
+        sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
+      ),
+      commandFilePath: p.join(
+        dataDir.path,
+        sessionCommandFileName(sessionId, launchEpoch: launchEpoch),
+      ),
       progressFilePath: p.join(
         dataDir.path,
-        sessionProgressFileName(sessionId),
+        sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
       ),
       entries: const [],
       watchLaterUrls: const [],
       localizedLyricsFiles: const [],
+      launchEpoch: launchEpoch ?? '',
+      artifactSessionId: launchEpoch == null || launchEpoch.isEmpty
+          ? sessionId
+          : '${sessionId}__e$launchEpoch',
+      progressGeneration: _progressSyncCoordinator.claim(sessionId),
+      ownershipGeneration: ++_ownershipSequence,
+      profileId: _configStore.current.profileId,
     );
     _sessions[sessionId] = runtime;
-    if (pid != null && ipcPipeName != null && await _isProcessAlive(pid)) {
-      runtime
-        ..aliveCache = true
-        ..aliveCacheAt = DateTime.now();
-    }
+    _launchOwnership[sessionId] = runtime.ownershipGeneration;
   }
 
   Future<bool> isPlayerRunning(String sessionId) async {
     final runtime = _sessions[sessionId];
-    final pid = runtime?.pid;
-    if (runtime == null || pid == null) return false;
-    final now = DateTime.now();
-    if (runtime.aliveCacheAt != null &&
-        now.difference(runtime.aliveCacheAt!) < const Duration(seconds: 2)) {
-      return runtime.aliveCache ?? true;
-    }
-    final alive = await _isProcessAlive(pid);
-    runtime
-      ..aliveCache = alive
-      ..aliveCacheAt = now;
-    return alive;
+    if (runtime?.pid == null) return false;
+    final liveness = await runtime!.livenessTracker.sample();
+    // unknown 不能降级为 false；否则 UI 会误删仍可能存活的会话。
+    return liveness != PlayerProcessLiveness.exited;
   }
 
   Future<void> waitForExitSync(
@@ -434,6 +582,13 @@ class AudioPlayerService {
     }
   }
 
+  /// 自动切歌时同步当前会话已产生的 JSONL 与 watch_later。
+  Future<void> syncActiveProgress(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return;
+    await _syncProgress(runtime);
+  }
+
   /// 继续播放前同步该会话遗留的 JSONL 与 watch_later。
   ///
   /// 处理“应用先退出、MPV 后关闭”的场景：新的应用进程没有原运行时
@@ -443,6 +598,7 @@ class AudioPlayerService {
     required List<AudioMediaEntry> entries,
     String? username,
     String? password,
+    String? launchEpoch,
     @visibleForTesting File? journalFile,
   }) async {
     if (entries.isEmpty) return;
@@ -458,6 +614,7 @@ class AudioPlayerService {
     final dataDir = await AppPaths.cacheDirectory();
     await const MpvPlaybackProgressSynchronizer().sync(
       progressService: _progressService,
+      profileId: config.profileId,
       watchLaterDirectory: directory,
       entries: entries,
       watchLaterUrls: entries
@@ -465,7 +622,13 @@ class AudioPlayerService {
           .toList(growable: false),
       journalFile:
           journalFile ??
-          File(p.join(dataDir.path, sessionProgressFileName(sessionId))),
+          File(
+            p.join(
+              dataDir.path,
+              sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
+            ),
+          ),
+      expectedEpoch: launchEpoch,
     );
   }
 
@@ -484,39 +647,182 @@ class AudioPlayerService {
     }
   }
 
-  Future<void> terminateSession(String sessionId) async {
-    final runtime = _sessions.remove(sessionId);
-    final pid = runtime?.pid;
-    if (runtime != null && pid != null) {
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      final canTerminate = runtime.launchedHere || await _isMpvProcess(pid);
-      if (canTerminate && await _isProcessAlive(pid)) {
-        try {
-          await Process.run('taskkill', ['/PID', '$pid', '/T', '/F']);
-        } catch (_) {
-          // 结束失败由后续进程探测反映，不扩大清理范围。
-        }
+  /// 页面失效时精确回滚已完成的这一次音频启动。
+  Future<PlayerTerminationOutcome> terminateLaunch(
+    AudioPlayerLaunchResult result,
+  ) async {
+    final runtime = _sessions[result.sessionId];
+    final termination =
+        runtime != null && runtime.launchEpoch == result.launchEpoch
+        ? await _terminateRuntimeProcess(runtime)
+        : await _terminateCapturedProcess(
+            pid: result.process.pid,
+            expected: result.processIdentity,
+            ipcPipeName: result.ipcPipeName,
+            requirePipeOwner: true,
+          );
+    if (!termination.isSafeToRelaunch) return termination;
+    if (runtime != null &&
+        runtime.launchEpoch == result.launchEpoch &&
+        identical(_sessions[result.sessionId], runtime)) {
+      _sessions.remove(result.sessionId);
+      runtime.livenessTracker.stop();
+      if (_ownsLaunch(result.sessionId, runtime.ownershipGeneration)) {
+        _launchOwnership.remove(result.sessionId);
       }
     }
-    if (pid != null && await _isProcessAlive(pid)) return;
-    await _deleteSessionArtifacts(sessionId);
+    await _deleteLaunchArtifacts(
+      sessionId: result.sessionId,
+      launchEpoch: result.launchEpoch,
+      artifactSessionId: '${result.sessionId}__e${result.launchEpoch}',
+      localizedLyricsFiles: runtime?.launchEpoch == result.launchEpoch
+          ? runtime!.localizedLyricsFiles
+          : const [],
+    );
+    return termination;
+  }
+
+  Future<PlayerTerminationOutcome> terminateSession(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    _launchOwnership.remove(sessionId);
+    var termination = PlayerTerminationOutcome.alreadyExited;
+    if (runtime != null) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      termination = await _terminateRuntimeProcess(runtime);
+      if (!termination.isSafeToRelaunch) return termination;
+      if (identical(_sessions[sessionId], runtime)) {
+        _sessions.remove(sessionId);
+        runtime.livenessTracker.stop();
+      }
+    }
+    if (runtime != null) {
+      await _deleteSessionArtifacts(runtime);
+    } else {
+      await _deleteLaunchArtifacts(
+        sessionId: sessionId,
+        launchEpoch: null,
+        artifactSessionId: sessionId,
+        localizedLyricsFiles: const [],
+      );
+    }
+    return termination;
+  }
+
+  Future<PlayerTerminationOutcome> _terminateRuntimeProcess(
+    _AudioSessionRuntime runtime,
+  ) async {
+    final pending = runtime.terminationFuture;
+    if (pending != null) return pending;
+    final operation = _terminateRuntimeProcessOnce(runtime);
+    runtime.terminationFuture = operation;
+    try {
+      return await operation;
+    } finally {
+      if (identical(runtime.terminationFuture, operation)) {
+        runtime.terminationFuture = null;
+      }
+    }
+  }
+
+  Future<PlayerTerminationOutcome> _terminateRuntimeProcessOnce(
+    _AudioSessionRuntime runtime,
+  ) async {
+    final pid = runtime.pid;
+    if (pid == null) {
+      return PlayerTerminationOutcome.alreadyExited;
+    }
+    final tracker = runtime.livenessTracker;
+    var liveness = tracker.status;
+    if (liveness == PlayerProcessLiveness.unknown) {
+      // 新启动请求可能正等待同一个探活；终止不能等待在途查询，
+      // 否则会把同 session 的所有权抢占一并卡住。
+      if (tracker.hasInFlightProbe) {
+        return PlayerTerminationOutcome.refused;
+      }
+      liveness = await tracker.sample();
+    }
+    if (liveness == PlayerProcessLiveness.unknown) {
+      return PlayerTerminationOutcome.refused;
+    }
+    if (liveness == PlayerProcessLiveness.exited) {
+      return PlayerTerminationOutcome.alreadyExited;
+    }
+    return _processController.terminateIfOwned(
+      pid: pid,
+      expected: runtime.processIdentity,
+      ipcPipeName: runtime.ipcPipeName,
+      requirePipeOwner: true,
+    );
+  }
+
+  Future<PlayerTerminationOutcome> _terminateCapturedProcess({
+    required int pid,
+    required PlayerProcessIdentity? expected,
+    required String ipcPipeName,
+    required bool requirePipeOwner,
+  }) async {
+    var outcome = await _processController.terminateIfOwned(
+      pid: pid,
+      expected: expected,
+      ipcPipeName: ipcPipeName,
+      requirePipeOwner: requirePipeOwner,
+    );
+    if (!requirePipeOwner || expected == null) return outcome;
+    for (
+      var attempt = 0;
+      attempt < 20 && !outcome.isSafeToRelaunch;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      outcome = await _processController.terminateIfOwned(
+        pid: pid,
+        expected: expected,
+        ipcPipeName: ipcPipeName,
+        requirePipeOwner: true,
+      );
+    }
+    return outcome;
   }
 
   void releaseSession(String sessionId) {
-    _sessions.remove(sessionId);
-    unawaited(_deleteSessionArtifacts(sessionId));
+    final runtime = _sessions.remove(sessionId);
+    if (runtime != null &&
+        _ownsLaunch(sessionId, runtime.ownershipGeneration)) {
+      _launchOwnership.remove(sessionId);
+    }
+    if (runtime != null) {
+      runtime.livenessTracker.stop();
+      unawaited(_deleteSessionArtifacts(runtime));
+    }
   }
 
   Future<void> _watchExitAndSync(_AudioSessionRuntime runtime) async {
-    final pid = runtime.pid;
-    if (pid == null) return;
-    while (await _isProcessAlive(pid)) {
-      await Future<void>.delayed(const Duration(seconds: 2));
+    if (runtime.pid == null) return;
+    final tracker = runtime.livenessTracker;
+    while (true) {
+      final liveness = await tracker.sample();
+      if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
+          !identical(_sessions[runtime.sessionId], runtime)) {
+        return;
+      }
+      if (liveness == PlayerProcessLiveness.exited) break;
+      if (liveness == PlayerProcessLiveness.unknown) {
+        if (tracker.unknownRetryExhausted) return;
+      } else if (await _hasOwnedIdleCompletion(runtime)) {
+        final termination = await _terminateRuntimeProcess(runtime);
+        if (termination == PlayerTerminationOutcome.alreadyExited) break;
+        if (termination != PlayerTerminationOutcome.terminated) return;
+      }
+      final delay = tracker.nextProbeDelay;
+      if (delay == null) return;
+      await Future<void>.delayed(delay);
+      if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
+          !identical(_sessions[runtime.sessionId], runtime)) {
+        return;
+      }
     }
     if (!identical(_sessions[runtime.sessionId], runtime)) return;
-    runtime
-      ..aliveCache = false
-      ..aliveCacheAt = DateTime.now();
+    runtime.livenessTracker.stop();
     try {
       await _syncProgress(runtime);
     } catch (_) {
@@ -526,15 +832,37 @@ class AudioPlayerService {
     }
   }
 
+  Future<bool> _hasOwnedIdleCompletion(_AudioSessionRuntime runtime) async {
+    if (runtime.launchEpoch.isEmpty || runtime.entries.isEmpty) return false;
+    try {
+      final marker = MpvIdleCompletionMarker.parse(
+        await File(runtime.statusFilePath).readAsLines(),
+      );
+      return marker?.matches(
+            expectedLastPlaylistPos: runtime.entries.length - 1,
+            expectedLaunchEpoch: runtime.launchEpoch,
+          ) ??
+          false;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   Future<void> _syncProgress(_AudioSessionRuntime runtime) async {
     final directory = _watchLaterDirectory;
     if (directory == null || runtime.entries.isEmpty) return;
-    await const MpvPlaybackProgressSynchronizer().sync(
-      progressService: _progressService,
-      watchLaterDirectory: directory,
-      entries: runtime.entries,
-      watchLaterUrls: runtime.watchLaterUrls,
-      journalFile: File(runtime.progressFilePath),
+    await _progressSyncCoordinator.run<void>(
+      sessionId: runtime.sessionId,
+      generation: runtime.progressGeneration,
+      action: () => const MpvPlaybackProgressSynchronizer().sync(
+        progressService: _progressService,
+        profileId: runtime.profileId,
+        watchLaterDirectory: directory,
+        entries: runtime.entries,
+        watchLaterUrls: runtime.watchLaterUrls,
+        journalFile: File(runtime.progressFilePath),
+        expectedEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+      ),
     );
   }
 
@@ -588,78 +916,55 @@ class AudioPlayerService {
     await const MpvWatchLaterSync().deleteRecord(directory, url);
   }
 
-  Future<void> _deleteSessionArtifacts(String sessionId) async {
+  Future<void> _deleteSessionArtifacts(_AudioSessionRuntime runtime) =>
+      _deleteLaunchArtifacts(
+        sessionId: runtime.sessionId,
+        launchEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+        artifactSessionId: runtime.artifactSessionId,
+        localizedLyricsFiles: runtime.localizedLyricsFiles,
+      );
+
+  Future<void> _deleteLaunchArtifacts({
+    required String sessionId,
+    required String? launchEpoch,
+    required String artifactSessionId,
+    required Iterable<File> localizedLyricsFiles,
+  }) async {
     try {
       final dataDir = await AppPaths.cacheDirectory();
       final base = await _scriptBase();
       final paths = [
-        p.join(dataDir.path, sessionStatusFileName(sessionId)),
-        p.join(dataDir.path, sessionCommandFileName(sessionId)),
-        p.join(dataDir.path, sessionProgressFileName(sessionId)),
+        p.join(
+          dataDir.path,
+          sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
+        ),
+        p.join(
+          dataDir.path,
+          sessionCommandFileName(sessionId, launchEpoch: launchEpoch),
+        ),
+        p.join(
+          dataDir.path,
+          sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
+        ),
         ...AudioMpvScripts.sessionArtifactNames(
-          sessionId,
+          artifactSessionId,
         ).map((name) => p.join(base.path, name)),
       ];
       for (final path in paths) {
         await _deleteIfExists(File(path));
       }
+      await _lyricsLocalizer.deleteSessionFiles(localizedLyricsFiles);
       await _lyricsLocalizer.deleteSessionArtifacts(
         base: base,
-        sessionId: sessionId,
+        sessionId: artifactSessionId,
       );
     } catch (_) {
       // 会话清理失败不能波及其他模块。
     }
   }
 
-  Future<bool> _isProcessAlive(int pid) async {
-    try {
-      final result = await Process.run(
-        Platform.isWindows ? 'tasklist' : 'kill',
-        Platform.isWindows
-            ? ['/FI', 'PID eq $pid', '/NH', '/FO', 'CSV']
-            : ['-0', '$pid'],
-      );
-      if (!Platform.isWindows) return result.exitCode == 0;
-      for (final line in result.stdout.toString().split(RegExp(r'\r?\n'))) {
-        final columns = line.split(',');
-        if (columns.length < 2) continue;
-        if (columns[1].replaceAll('"', '').trim() == '$pid') return true;
-      }
-      return false;
-    } catch (_) {
-      return true;
-    }
-  }
-
-  Future<bool> _isMpvProcess(int pid) async {
-    if (!Platform.isWindows) return false;
-    try {
-      final result = await Process.run('tasklist', [
-        '/FI',
-        'PID eq $pid',
-        '/NH',
-        '/FO',
-        'CSV',
-      ]);
-      for (final line in result.stdout.toString().split(RegExp(r'\r?\n'))) {
-        final columns = line.split(',');
-        if (columns.length < 2) continue;
-        final image = columns.first.replaceAll('"', '').trim().toLowerCase();
-        final foundPid = columns[1].replaceAll('"', '').trim();
-        if (foundPid == '$pid' && image.contains('mpv')) return true;
-      }
-    } catch (_) {
-      return false;
-    }
-    return false;
-  }
-
-  String _newPipeName() {
-    final token =
-        '${DateTime.now().microsecondsSinceEpoch}_${++_launchSequence}';
-    return '${r'\\.\pipe\streampath_audio_'}$token';
-  }
+  String _newPipeName(String launchEpoch) =>
+      '${r'\\.\pipe\streampath_audio_'}$launchEpoch';
 
   static bool _isMpvExecutable(String executable) =>
       p.basenameWithoutExtension(executable).toLowerCase().contains('mpv');
@@ -672,22 +977,24 @@ class AudioPlayerService {
     }
   }
 
-  static Future<void> _clearStaleFinishedMark(File file) async {
-    try {
-      if (!await file.exists()) return;
-      final lines = await file.readAsLines();
-      if (lines.isNotEmpty && lines.first.trim() == '-1') await file.delete();
-    } on FileSystemException {
-      // 状态清理失败不阻塞播放。
-    }
+  static String sessionStatusFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-audio-current-${_artifactToken(sessionId, launchEpoch)}.txt';
+
+  static String sessionCommandFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-audio-command-${_artifactToken(sessionId, launchEpoch)}.txt';
+
+  static String sessionProgressFileName(
+    String sessionId, {
+    String? launchEpoch,
+  }) => 'mpv-audio-progress-${_artifactToken(sessionId, launchEpoch)}.jsonl';
+
+  static String _artifactToken(String sessionId, String? launchEpoch) {
+    final session = AudioMpvScripts.safeSessionToken(sessionId);
+    if (launchEpoch == null || launchEpoch.isEmpty) return session;
+    return '${session}__e${AudioMpvScripts.safeSessionToken(launchEpoch)}';
   }
-
-  static String sessionStatusFileName(String sessionId) =>
-      'mpv-audio-current-${AudioMpvScripts.safeSessionToken(sessionId)}.txt';
-
-  static String sessionCommandFileName(String sessionId) =>
-      'mpv-audio-command-${AudioMpvScripts.safeSessionToken(sessionId)}.txt';
-
-  static String sessionProgressFileName(String sessionId) =>
-      'mpv-audio-progress-${AudioMpvScripts.safeSessionToken(sessionId)}.jsonl';
 }

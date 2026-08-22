@@ -1,10 +1,13 @@
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../core/constants.dart';
+import 'app_language.dart';
 import 'appearance_config.dart';
 import 'connection_config.dart';
+import 'media_library_config.dart';
 import 'openlist_recovery_config.dart';
 import 'player_config.dart';
+import 'server_profile.dart';
 
 /// StreamPath 统一用户配置（平铺结构，集中存放，用户可自行编辑）。
 ///
@@ -30,13 +33,26 @@ import 'player_config.dart';
 ///     "glassOpacity": 0.82
 ///   },
 ///   "playerStartupTimeoutSeconds": 60,
+///   "mediaLibrary": {
+///     "maxFavoritesPerSource": 2000,
+///     "maxContinuePerLane": 500,
+///     "maxRecentPlaybackPerLane": 500,
+///     "maxRecentDirectoriesPerSource": 100
+///   },
 ///   "openListRecovery": {"enabled": false}
 /// }
 /// ```
 /// 由 [StreamPathConfigStore] 读写；兼容旧的 player_config.json 与
 /// connection_config.json（首次启动自动迁移合并）。
 class StreamPathConfig {
+  static const int currentSchemaVersion = 4;
+
   const StreamPathConfig({
+    this.schemaVersion = currentSchemaVersion,
+    this.profiles = const [],
+    this.activeProfileId = '',
+    this.credentialStorageMode = CredentialStorageMode.windowsCredential,
+    this.language = AppLanguage.simplifiedChinese,
     this.serverUrl = '',
     this.username = '',
     this.password = '',
@@ -58,6 +74,7 @@ class StreamPathConfig {
     this.appearance = const AppearanceConfig(),
     this.playerStartupTimeoutSeconds =
         AppConstants.defaultPlayerStartupTimeoutSeconds,
+    this.mediaLibrary = const MediaLibraryConfig(),
     this.openListRecovery = const OpenListRecoveryConfig(),
   }) : subtitleInjectionEnabled = subtitleEnabled ?? subtitleInjectionEnabled,
        subtitleAutoSelectEnabled =
@@ -65,6 +82,11 @@ class StreamPathConfig {
            (subtitleEnabled ?? subtitleAutoSelectEnabled);
 
   // ── 连接信息 ─────────────────────────────────────────────────
+  final int schemaVersion;
+  final List<ServerProfile> profiles;
+  final String activeProfileId;
+  final CredentialStorageMode credentialStorageMode;
+  final AppLanguage language;
   final String serverUrl;
   final String username;
   final String password;
@@ -102,8 +124,21 @@ class StreamPathConfig {
   /// 新启动的 MPV 等待首个有效播放状态的最长时间（秒）。
   final int playerStartupTimeoutSeconds;
 
+  /// 媒体中心容量与显示数量配置。
+  final MediaLibraryConfig mediaLibrary;
+
   /// MPV 网络播放失败后的 OpenList / AList 自动恢复配置。
   final OpenListRecoveryConfig openListRecovery;
+
+  ServerProfile? get activeProfile {
+    if (profiles.isEmpty) return null;
+    for (final profile in profiles) {
+      if (profile.profileId == activeProfileId) return profile;
+    }
+    return profiles.first;
+  }
+
+  String get profileId => activeProfile?.profileId ?? '';
 
   /// 是否具备自动连接所需的地址与用户名；密码允许为空。
   bool get isConnectionComplete =>
@@ -137,6 +172,12 @@ class StreamPathConfig {
     ConnectionConfig connection, {
     OpenListRecoveryConfig openListRecovery = const OpenListRecoveryConfig(),
     AppearanceConfig appearance = const AppearanceConfig(),
+    MediaLibraryConfig mediaLibrary = const MediaLibraryConfig(),
+    List<ServerProfile> profiles = const [],
+    String activeProfileId = '',
+    CredentialStorageMode credentialStorageMode =
+        CredentialStorageMode.windowsCredential,
+    AppLanguage language = AppLanguage.simplifiedChinese,
   }) {
     return StreamPathConfig(
       serverUrl: connection.baseUrl,
@@ -153,8 +194,13 @@ class StreamPathConfig {
       defaultSortMode: player.defaultSortMode,
       defaultSortDirection: player.defaultSortDirection,
       playerStartupTimeoutSeconds: player.playerStartupTimeoutSeconds,
+      mediaLibrary: mediaLibrary,
       openListRecovery: openListRecovery,
       appearance: appearance,
+      profiles: profiles,
+      activeProfileId: activeProfileId,
+      credentialStorageMode: credentialStorageMode,
+      language: language,
     );
   }
 
@@ -164,18 +210,152 @@ class StreamPathConfig {
     ConnectionConfig? connection,
     OpenListRecoveryConfig? recovery,
   }) {
+    final nextConnection = connection ?? toConnectionConfig();
+    final nextRecovery = recovery ?? openListRecovery;
+    final nextProfiles = [...profiles];
+    if (nextProfiles.isNotEmpty) {
+      final index = nextProfiles.indexWhere(
+        (profile) => profile.profileId == profileId,
+      );
+      if (index >= 0) {
+        nextProfiles[index] = nextProfiles[index].copyWith(
+          serverUrl: nextConnection.baseUrl,
+          username: nextConnection.username,
+          password: nextConnection.password,
+          openListRecovery: nextRecovery,
+        );
+      }
+    }
     return StreamPathConfig.fromParts(
       player ?? toPlayerConfig(),
-      connection ?? toConnectionConfig(),
-      openListRecovery: recovery ?? openListRecovery,
+      nextConnection,
+      openListRecovery: nextRecovery,
       appearance: appearance,
+      mediaLibrary: mediaLibrary,
+      profiles: nextProfiles,
+      activeProfileId: activeProfileId,
+      credentialStorageMode: credentialStorageMode,
+      language: language,
     );
   }
+
+  /// 切换活动档案，同时刷新旧调用链读取的顶层连接兼容视图。
+  StreamPathConfig activateProfile(String id) {
+    final profile = profiles.where((item) => item.profileId == id).firstOrNull;
+    if (profile == null) throw ArgumentError.value(id, 'id', '服务器档案不存在');
+    return _copyWithProfileState(profiles, profile.profileId, profile);
+  }
+
+  /// 新增或更新档案；档案 ID 是唯一且稳定的数据隔离主键。
+  StreamPathConfig upsertProfile(
+    ServerProfile profile, {
+    bool activate = true,
+  }) {
+    final next = [...profiles];
+    final index = next.indexWhere(
+      (item) => item.profileId == profile.profileId,
+    );
+    if (index < 0) {
+      next.add(profile);
+    } else {
+      next[index] = profile;
+    }
+    final activeId = activate ? profile.profileId : activeProfileId;
+    final active = next.firstWhere(
+      (item) => item.profileId == activeId,
+      orElse: () => next.first,
+    );
+    return _copyWithProfileState(next, active.profileId, active);
+  }
+
+  StreamPathConfig removeProfile(String id) {
+    final next = profiles.where((item) => item.profileId != id).toList();
+    if (next.isEmpty) return _copyWithProfileState(const [], '', null);
+    final active = next.firstWhere(
+      (item) => item.profileId == activeProfileId,
+      orElse: () => next.first,
+    );
+    return _copyWithProfileState(next, active.profileId, active);
+  }
+
+  StreamPathConfig withCredentialStorageMode(CredentialStorageMode mode) =>
+      _copyWithProfileState(
+        profiles,
+        activeProfileId,
+        activeProfile,
+        credentialStorageMode: mode,
+      );
+
+  StreamPathConfig copyWithGlobalSettings({
+    required PlayerConfig player,
+    required AppearanceConfig appearance,
+    required MediaLibraryConfig mediaLibrary,
+    AppLanguage? language,
+  }) => StreamPathConfig(
+    schemaVersion: currentSchemaVersion,
+    profiles: profiles,
+    activeProfileId: activeProfileId,
+    credentialStorageMode: credentialStorageMode,
+    language: language ?? this.language,
+    serverUrl: serverUrl,
+    username: username,
+    password: password,
+    playerName: player.name,
+    playerExecutable: player.executable,
+    playerArgs: player.args,
+    subtitleInjectionEnabled: player.subtitleInjectionEnabled,
+    subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
+    resumeEnabled: player.resumeEnabled,
+    hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
+    hiddenExtensions: player.hiddenExtensions,
+    defaultSortMode: player.defaultSortMode,
+    defaultSortDirection: player.defaultSortDirection,
+    appearance: appearance,
+    playerStartupTimeoutSeconds: player.playerStartupTimeoutSeconds,
+    mediaLibrary: mediaLibrary,
+    openListRecovery: openListRecovery,
+  );
+
+  StreamPathConfig _copyWithProfileState(
+    List<ServerProfile> nextProfiles,
+    String nextActiveId,
+    ServerProfile? nextActive, {
+    CredentialStorageMode? credentialStorageMode,
+  }) => StreamPathConfig(
+    schemaVersion: currentSchemaVersion,
+    profiles: List.unmodifiable(nextProfiles),
+    activeProfileId: nextActiveId,
+    credentialStorageMode: credentialStorageMode ?? this.credentialStorageMode,
+    language: language,
+    serverUrl: nextActive?.serverUrl ?? '',
+    username: nextActive?.username ?? '',
+    password: nextActive?.password ?? '',
+    playerName: playerName,
+    playerExecutable: playerExecutable,
+    playerArgs: playerArgs,
+    subtitleInjectionEnabled: subtitleInjectionEnabled,
+    subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
+    resumeEnabled: resumeEnabled,
+    hiddenExtensionsEnabled: hiddenExtensionsEnabled,
+    hiddenExtensions: hiddenExtensions,
+    defaultSortMode: defaultSortMode,
+    defaultSortDirection: defaultSortDirection,
+    appearance: appearance,
+    playerStartupTimeoutSeconds: playerStartupTimeoutSeconds,
+    mediaLibrary: mediaLibrary,
+    openListRecovery:
+        nextActive?.openListRecovery ?? const OpenListRecoveryConfig(),
+  );
 
   /// 内置默认配置（mpv）。
   static StreamPathConfig defaults() => const StreamPathConfig();
 
   Map<String, dynamic> toJson() => <String, dynamic>{
+    'schemaVersion': currentSchemaVersion,
+    'profiles': profiles.map((profile) => profile.toJson()).toList(),
+    'activeProfileId': activeProfileId,
+    'credentialStorageMode': credentialStorageMode.jsonValue,
+    'language': language.configValue,
     'serverUrl': serverUrl,
     'username': username,
     'password': password,
@@ -191,10 +371,39 @@ class StreamPathConfig {
     'defaultSortDirection': defaultSortDirection.jsonValue,
     'appearance': appearance.toJson(),
     'playerStartupTimeoutSeconds': playerStartupTimeoutSeconds,
+    'mediaLibrary': mediaLibrary.toJson(),
     'openListRecovery': openListRecovery.toJson(),
   };
 
   factory StreamPathConfig.fromJson(Map<String, dynamic> json) {
+    final rawSchemaVersion = json['schemaVersion'];
+    final schemaVersion = rawSchemaVersion is num
+        ? rawSchemaVersion.toInt()
+        : rawSchemaVersion is String
+        ? int.tryParse(rawSchemaVersion) ?? 0
+        : 0;
+    if (schemaVersion > currentSchemaVersion) {
+      throw FormatException('配置版本 $schemaVersion 高于当前支持版本');
+    }
+    final profiles =
+        (json['profiles'] as List?)
+            ?.whereType<Map>()
+            .map(
+              (item) => ServerProfile.fromJson(Map<String, dynamic>.from(item)),
+            )
+            .toList(growable: false) ??
+        const <ServerProfile>[];
+    final profileIds = profiles.map((profile) => profile.profileId).toSet();
+    if (profileIds.length != profiles.length) {
+      throw const FormatException('服务器档案 profileId 必须唯一');
+    }
+    final requestedActiveId = (json['activeProfileId'] as String?) ?? '';
+    final selectedProfile = profiles.isEmpty
+        ? null
+        : profiles.firstWhere(
+            (profile) => profile.profileId == requestedActiveId,
+            orElse: () => profiles.first,
+          );
     final legacyEnabled = json['subtitleEnabled'] as bool?;
     final injectionEnabled =
         (json['subtitleInjectionEnabled'] as bool?) ?? legacyEnabled ?? true;
@@ -202,9 +411,19 @@ class StreamPathConfig {
         injectionEnabled &&
         ((json['subtitleAutoSelectEnabled'] as bool?) ?? legacyEnabled ?? true);
     return StreamPathConfig(
-      serverUrl: (json['serverUrl'] as String?) ?? '',
-      username: (json['username'] as String?) ?? '',
-      password: (json['password'] as String?) ?? '',
+      schemaVersion: schemaVersion == 0 ? currentSchemaVersion : schemaVersion,
+      profiles: profiles,
+      activeProfileId: selectedProfile?.profileId ?? '',
+      credentialStorageMode: CredentialStorageModeJson.fromJson(
+        json['credentialStorageMode'],
+      ),
+      language: AppLanguage.fromJson(json['language']),
+      serverUrl:
+          selectedProfile?.serverUrl ?? (json['serverUrl'] as String?) ?? '',
+      username:
+          selectedProfile?.username ?? (json['username'] as String?) ?? '',
+      password:
+          selectedProfile?.password ?? (json['password'] as String?) ?? '',
       playerName: (json['playerName'] as String?) ?? '播放器',
       playerExecutable: (json['playerExecutable'] as String?) ?? '',
       playerArgs:
@@ -234,11 +453,18 @@ class StreamPathConfig {
       playerStartupTimeoutSeconds: playerStartupTimeoutSecondsFromJson(
         json['playerStartupTimeoutSeconds'],
       ),
-      openListRecovery: OpenListRecoveryConfig.fromJson(
-        json['openListRecovery'] is Map
-            ? Map<String, dynamic>.from(json['openListRecovery'] as Map)
+      mediaLibrary: MediaLibraryConfig.fromJson(
+        json['mediaLibrary'] is Map
+            ? Map<String, dynamic>.from(json['mediaLibrary'] as Map)
             : null,
       ),
+      openListRecovery:
+          selectedProfile?.openListRecovery ??
+          OpenListRecoveryConfig.fromJson(
+            json['openListRecovery'] is Map
+                ? Map<String, dynamic>.from(json['openListRecovery'] as Map)
+                : null,
+          ),
     );
   }
 }

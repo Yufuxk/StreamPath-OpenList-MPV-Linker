@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/utils/clipboard_history_fix.dart';
 import '../../core/utils/clipboard_history_store.dart';
 import '../../core/utils/clipboard_service.dart';
+import '../localization/app_localizations.dart';
 
 /// 输入框右键菜单构建器：在系统默认菜单之前插入「剪贴板历史」区，
 /// 点击历史条目即可粘贴（不依赖系统 Win+V 注入，任何输入框可直接使用）：
@@ -23,6 +24,7 @@ Widget buildClipboardHistoryMenu(
     buttonItems: [
       ...clipboardHistoryMenuItems(
         store,
+        localizations: context.l10n,
         onPick: (text) {
           Navigator.pop(context);
           ClipboardHistoryFix.injectPaste(text);
@@ -60,6 +62,7 @@ Future<void> _pasteCurrentClipboard(BuildContext context) async {
 @visibleForTesting
 List<ContextMenuButtonItem> clipboardHistoryMenuItems(
   ClipboardHistoryStore store, {
+  AppLocalizations? localizations,
   required void Function(String text) onPick,
   required VoidCallback onPickCurrentClipboard,
   required VoidCallback onClearHistory,
@@ -68,18 +71,25 @@ List<ContextMenuButtonItem> clipboardHistoryMenuItems(
   String labelOf(String text) => text.length > maxLabelLength
       ? '${text.substring(0, maxLabelLength)}…'
       : text;
+  String localized(String source) => localizations?.text(source) ?? source;
 
   return [
     if (store.items.isEmpty)
-      const ContextMenuButtonItem(label: '剪贴板历史为空', onPressed: null)
+      ContextMenuButtonItem(label: localized('剪贴板历史为空'), onPressed: null)
     else
       for (final item in store.items.take(5))
         ContextMenuButtonItem(
           label: labelOf(item),
           onPressed: () => onPick(item),
         ),
-    ContextMenuButtonItem(label: '粘贴当前剪贴板', onPressed: onPickCurrentClipboard),
+    ContextMenuButtonItem(
+      label: localized('粘贴当前剪贴板'),
+      onPressed: onPickCurrentClipboard,
+    ),
     if (store.items.isNotEmpty)
-      ContextMenuButtonItem(label: '清空剪贴板历史', onPressed: onClearHistory),
+      ContextMenuButtonItem(
+        label: localized('清空剪贴板历史'),
+        onPressed: onClearHistory,
+      ),
   ];
 }

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -10,8 +11,13 @@ import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
+import 'package:streampath/data/models/app_language.dart';
+import 'package:streampath/data/models/openlist_recovery_config.dart';
+import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/cache_cleanup_service.dart';
+import 'package:streampath/domain/services/openlist_index_service.dart';
+import 'package:streampath/domain/services/openlist_recovery_service.dart';
 import 'package:streampath/features/cache_control/models/cache_intelligence_config.dart';
 import 'package:streampath/features/cache_control/models/cache_policy_config.dart';
 import 'package:streampath/features/cache_control/store/cache_intelligence_config_store.dart';
@@ -89,7 +95,7 @@ void main() {
     }
   });
 
-  Widget buildSettings() {
+  Widget buildSettings({ValueChanged<SettingsSection>? onSectionBuilt}) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<AppState>.value(value: appState),
@@ -97,7 +103,7 @@ void main() {
           value: appearanceController,
         ),
       ],
-      child: const MaterialApp(home: SettingsPage()),
+      child: MaterialApp(home: SettingsPage(onSectionBuilt: onSectionBuilt)),
     );
   }
 
@@ -112,9 +118,17 @@ void main() {
 
     expect(find.byKey(const Key('settings-section-server')), findsOneWidget);
     expect(find.byKey(const Key('settings-section-playback')), findsOneWidget);
+    expect(
+      find.byKey(const Key('settings-section-mediaLibrary')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('settings-section-cache')), findsOneWidget);
     expect(
       find.byKey(const Key('settings-section-appearance')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('settings-section-diagnostics')),
       findsOneWidget,
     );
     expect(find.byKey(const Key('settings-section-general')), findsOneWidget);
@@ -133,6 +147,280 @@ void main() {
 
     expect(find.byKey(const Key('cache-enabled-switch')), findsOneWidget);
     expect(find.byKey(const Key('server-url-field')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('已确认缺少增强端点时禁用恢复与索引更新并显示能力摘要', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const profile = ServerProfile(
+      profileId: 'alist-360',
+      name: 'AList 3.6.0',
+      serverUrl: 'https://alist.test/dav',
+      username: 'viewer',
+      password: 'secret',
+      openListRecovery: OpenListRecoveryConfig(
+        enabled: true,
+        baseUrl: 'https://alist.test',
+        token: 'admin-token',
+      ),
+    );
+    await tester.runAsync(
+      () => configStore
+          .save(StreamPathConfig.defaults().upsertProfile(profile))
+          .timeout(const Duration(seconds: 5)),
+    );
+    final progressService = appState.progressService;
+    appState.dispose();
+    appState = AppState(
+      configStore: configStore,
+      playbackHistoryStore: PlaybackHistoryStore.forPath(
+        '${tempDir.path}${Platform.pathSeparator}playback_history_capability.json',
+      ),
+      progressService: progressService,
+      openListIndexService: OpenListIndexService(
+        requestSender: (uri, {required method, headers, body, timeout}) async {
+          if (uri.path == '/api/public/settings') {
+            return const OpenListHttpResponse(
+              statusCode: 200,
+              data: {
+                'code': 200,
+                'data': {'version': 'v3.6.0'},
+              },
+            );
+          }
+          if (uri.path == '/api/admin/index/progress') {
+            return const OpenListHttpResponse(
+              statusCode: 200,
+              data: {
+                'code': 200,
+                'data': {'is_done': true},
+              },
+            );
+          }
+          return const OpenListHttpResponse(statusCode: 404);
+        },
+      ),
+      cachePolicyConfigStore: cachePolicyStore,
+      cacheIntelligenceConfigStore: intelligenceStore,
+      cacheExpirationConfigStore: expirationStore,
+      cacheCleaner: cacheCleaner,
+      learningDataCleaner: learningDataCleaner,
+    );
+
+    await tester.pumpWidget(buildSettings());
+    for (var i = 0; i < 12; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    final recovery = tester.widget<SwitchListTile>(
+      find.byKey(const Key('openlist-recovery-switch')),
+    );
+    final indexUpdate = tester.widget<SwitchListTile>(
+      find.byKey(const Key('openlist-index-auto-update-switch')),
+    );
+    expect(recovery.onChanged, isNull);
+    expect(indexUpdate.onChanged, isNull);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('openlist-capability-summary')),
+        matching: find.textContaining('存储恢复 不可用'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('索引轮询只重建服务器分类并保留七个表单', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const profile = ServerProfile(
+      profileId: 'openlist-polling',
+      name: 'OpenList polling',
+      serverUrl: 'https://openlist.test/dav',
+      username: 'viewer',
+      password: 'secret',
+      openListRecovery: OpenListRecoveryConfig(
+        baseUrl: 'https://openlist.test',
+        token: 'admin-token',
+      ),
+    );
+    await tester.runAsync(
+      () =>
+          configStore.save(StreamPathConfig.defaults().upsertProfile(profile)),
+    );
+    final progressService = appState.progressService;
+    appState.dispose();
+    var progressRequests = 0;
+    appState = AppState(
+      configStore: configStore,
+      playbackHistoryStore: PlaybackHistoryStore.forPath(
+        '${tempDir.path}${Platform.pathSeparator}playback_history_polling.json',
+      ),
+      progressService: progressService,
+      openListIndexService: OpenListIndexService(
+        requestSender: (uri, {required method, headers, body, timeout}) async {
+          if (uri.path == '/api/public/settings') {
+            return const OpenListHttpResponse(
+              statusCode: 200,
+              data: {
+                'code': 200,
+                'data': {'version': 'v4.1.4'},
+              },
+            );
+          }
+          if (uri.path == '/api/admin/index/progress') {
+            progressRequests++;
+            return OpenListHttpResponse(
+              statusCode: 200,
+              data: {
+                'code': 200,
+                'data': {
+                  'is_done': progressRequests >= 2,
+                  'obj_count': progressRequests,
+                },
+              },
+            );
+          }
+          return const OpenListHttpResponse(statusCode: 404);
+        },
+      ),
+      cachePolicyConfigStore: cachePolicyStore,
+      cacheIntelligenceConfigStore: intelligenceStore,
+      cacheExpirationConfigStore: expirationStore,
+      cacheCleaner: cacheCleaner,
+      learningDataCleaner: learningDataCleaner,
+    );
+    final builds = <SettingsSection, int>{};
+    await tester.pumpWidget(
+      buildSettings(
+        onSectionBuilt: (section) =>
+            builds.update(section, (count) => count + 1, ifAbsent: () => 1),
+      ),
+    );
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      if (progressRequests >= 1 &&
+          find
+              .byKey(const Key('openlist-index-progress-status'))
+              .evaluate()
+              .isNotEmpty) {
+        break;
+      }
+    }
+    expect(progressRequests, 1);
+    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    builds.clear();
+
+    await tester.pump(const Duration(seconds: 2));
+    for (var i = 0; i < 10 && progressRequests < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    expect(progressRequests, 2);
+    expect(builds[SettingsSection.server] ?? 0, greaterThan(0));
+    for (final section in SettingsSection.values) {
+      if (section == SettingsSection.server) continue;
+      expect(builds[section] ?? 0, 0, reason: '索引轮询不应重建 ${section.name} 分类');
+    }
+  });
+
+  testWidgets('背景密度滑块只重建界面分类', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final builds = <SettingsSection, int>{};
+    await tester.pumpWidget(
+      buildSettings(
+        onSectionBuilt: (section) =>
+            builds.update(section, (count) => count + 1, ifAbsent: () => 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    tester
+        .widget<SegmentedButton<InterfaceStyle>>(
+          find.byKey(const Key('interface-style-selector')),
+        )
+        .onSelectionChanged!({InterfaceStyle.glass});
+    await tester.pump();
+    builds.clear();
+
+    for (final value in const [0.61, 0.62, 0.63]) {
+      tester
+          .widget<Slider>(find.byKey(const Key('glass-opacity-slider')))
+          .onChanged!(value);
+      await tester.pump();
+    }
+
+    expect(builds[SettingsSection.appearance], 3);
+    for (final section in SettingsSection.values) {
+      if (section == SettingsSection.appearance) continue;
+      expect(builds[section] ?? 0, 0, reason: '滑块采样不应重建 ${section.name} 分类');
+    }
+  });
+
+  testWidgets('外观能力刷新只重建界面分类并保留七个表单', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final builds = <SettingsSection, int>{};
+    await tester.pumpWidget(
+      buildSettings(
+        onSectionBuilt: (section) =>
+            builds.update(section, (count) => count + 1, ifAbsent: () => 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    builds.clear();
+    final previousQueries = appearanceDriver.queryCount;
+    final refreshButton = find.byKey(
+      const Key('refresh-window-capabilities-button'),
+    );
+
+    await tester.ensureVisible(refreshButton);
+    await tester.pump();
+    await tester.tap(refreshButton);
+    for (var attempt = 0; attempt < 10; attempt++) {
+      await tester.pump(const Duration(milliseconds: 10));
+      if (!appearanceController.checkingCapabilities) break;
+    }
+
+    expect(appearanceDriver.queryCount, previousQueries + 1);
+    expect(builds[SettingsSection.appearance] ?? 0, greaterThan(0));
+    for (final section in SettingsSection.values) {
+      if (section == SettingsSection.appearance) continue;
+      expect(builds[section] ?? 0, 0, reason: '能力刷新不应重建 ${section.name} 分类');
+    }
+    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+  });
+
+  testWidgets('诊断页提供检查、脱敏导出和非破坏性数据库维护入口', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-diagnostics')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('run-diagnostics-button')), findsOneWidget);
+    expect(find.byKey(const Key('export-diagnostics-button')), findsOneWidget);
+    expect(find.byKey(const Key('repair-databases-button')), findsOneWidget);
+    expect(find.textContaining('脱敏边界'), findsOneWidget);
+    expect(SettingsPageMemory.selectedSection, SettingsSection.diagnostics);
     expect(tester.takeException(), isNull);
   });
 
@@ -187,10 +475,14 @@ void main() {
 
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('settings-section-appearance')),
+    );
+    await tester.pump();
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
 
-    expect(find.text('磨砂玻璃'), findsOneWidget);
+    expect(find.text('Windows 材质'), findsOneWidget);
     expect(
       find.byKey(const Key('windows-appearance-capabilities-section')),
       findsOneWidget,
@@ -301,6 +593,10 @@ void main() {
 
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('settings-section-appearance')),
+    );
+    await tester.pump();
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     await tester.ensureVisible(
@@ -334,6 +630,56 @@ void main() {
     await tester.tap(find.byKey(const Key('hidden-extensions-enabled-switch')));
     await tester.pump();
     expect(field.controller?.text, '.ass, .mkv');
+  });
+
+  testWidgets('基础设置保存语言后同步持久化并更新全局状态', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-general')));
+    await tester.pumpAndSettle();
+
+    final languageField = find.byKey(const Key('app-language-field'));
+    expect(languageField, findsOneWidget);
+    await tester.ensureVisible(languageField);
+    final dropdown = tester.widget<DropdownButton<AppLanguage>>(
+      find.descendant(
+        of: languageField,
+        matching: find.byType(DropdownButton<AppLanguage>),
+      ),
+    );
+    dropdown.onChanged!(AppLanguage.english);
+    await tester.pump();
+
+    final saveButton = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(() async {
+      saveButton.onPressed!();
+      for (var i = 0; i < 200; i++) {
+        if (configStore.current.language == AppLanguage.english) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(configStore.current.language, AppLanguage.english);
+    expect(appState.language, AppLanguage.english);
+    final persisted = await tester.runAsync(
+      () async =>
+          jsonDecode(
+                await File(
+                  '${tempDir.path}${Platform.pathSeparator}stream_path_config.json',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>,
+    );
+    expect(persisted!['language'], 'en');
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('全部设置重置需要确认且不会清理缓存', (tester) async {

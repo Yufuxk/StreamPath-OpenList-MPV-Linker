@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
+import 'package:streampath/core/utils/app_paths.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
@@ -9,6 +12,40 @@ import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/subtitle_item.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
+import 'package:streampath/domain/services/player_process_controller.dart';
+
+class _SharedProbeController extends PlayerProcessController {
+  final probeStarted = Completer<void>();
+  final releaseProbe = Completer<PlayerProcessLiveness>();
+  int probeCalls = 0;
+  int terminateCalls = 0;
+
+  @override
+  Future<PlayerProcessIdentity?> capture(int pid) async =>
+      PlayerProcessIdentity(
+        pid: pid,
+        executablePath: r'C:\TestMPV\mpv.exe',
+        creationTime: pid + 9000,
+      );
+
+  @override
+  Future<PlayerProcessLiveness> probeOwned(PlayerProcessIdentity? expected) {
+    probeCalls++;
+    if (!probeStarted.isCompleted) probeStarted.complete();
+    return releaseProbe.future;
+  }
+
+  @override
+  Future<PlayerTerminationOutcome> terminateIfOwned({
+    required int pid,
+    required PlayerProcessIdentity? expected,
+    String? ipcPipeName,
+    required bool requirePipeOwner,
+  }) async {
+    terminateCalls++;
+    return PlayerTerminationOutcome.terminated;
+  }
+}
 
 /// launch 集成测试：mpv 字幕注入脚本 + 多集续播（预写 watch_later）。
 ///
@@ -50,6 +87,8 @@ void main() {
     bool subtitleInjectionEnabled = true,
     bool subtitleAutoSelectEnabled = true,
     bool resumeEnabled = true,
+    PlayerProcessController? processController,
+    bool useDefaultWatchLaterDirectory = false,
   }) async {
     final dir = Directory.systemTemp.createTempSync('sp_launch_');
     var resolvedExecutable = executable;
@@ -75,18 +114,57 @@ void main() {
     return (
       ExternalPlayerService(
         configStore: cfg,
-        watchLaterDir: Directory('${dir.path}${Platform.pathSeparator}wl'),
+        watchLaterDir: useDefaultWatchLaterDirectory
+            ? null
+            : Directory('${dir.path}${Platform.pathSeparator}wl'),
+        processController: processController,
       ),
       dir,
     );
   }
 
+  test('视频 runtime 的 watcher 与 isPlayerRunning 共享同一探活查询', () async {
+    final controller = _SharedProbeController();
+    final (service, dir) = await makeService(processController: controller);
+    addTearDown(() async {
+      if (!controller.releaseProbe.isCompleted) {
+        controller.releaseProbe.complete(PlayerProcessLiveness.exited);
+      }
+      await service.terminateSession('shared-liveness');
+      try {
+        await dir.delete(recursive: true);
+      } catch (_) {}
+    });
+
+    await service.launch(
+      entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+      sessionId: 'shared-liveness',
+    );
+    await controller.probeStarted.future;
+
+    final running = service.isPlayerRunning('shared-liveness');
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.probeCalls, 1);
+
+    controller.releaseProbe.complete(PlayerProcessLiveness.alive);
+    expect(await running, isTrue);
+    expect(
+      await service.terminateSession('shared-liveness'),
+      PlayerTerminationOutcome.terminated,
+    );
+    expect(controller.terminateCalls, 1);
+  });
+
   /// 取字幕脚本（single-subtitle / playlist-subtitles）；current.lua
   /// 状态上报脚本不算（单集模式也注入）。
   String? scriptArgOf(List<String> args) {
     for (final a in args) {
-      if (a.startsWith('--script=') && !a.endsWith('current.lua')) {
-        return a.substring('--script='.length);
+      if (!a.startsWith('--script=')) continue;
+      final path = a.substring('--script='.length);
+      final name = p.basename(path);
+      if (!name.startsWith('streampath-current-') &&
+          !name.startsWith('streampath-titles-')) {
+        return path;
       }
     }
     return null;
@@ -95,9 +173,9 @@ void main() {
   /// 取 current.lua 状态上报脚本路径（单集/多集均注入）。
   String? currentScriptOf(List<String> args) {
     for (final a in args) {
-      if (a.startsWith('--script=') && a.endsWith('current.lua')) {
-        return a.substring('--script='.length);
-      }
+      if (!a.startsWith('--script=')) continue;
+      final path = a.substring('--script='.length);
+      if (p.basename(path).startsWith('streampath-current-')) return path;
     }
     return null;
   }
@@ -181,6 +259,367 @@ void main() {
         matches(RegExp(r'^\\\\.\\pipe\\mpvsocket_\d+_\d+$')),
         reason: 'pipe 名应包含进程时间 nonce 与单调序号，避免应用重启后复用',
       );
+    });
+
+    test('同一 sessionId 重启时所有磁盘工件使用新 epoch', () async {
+      var currentPid = 0;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) async {
+          currentPid = pid;
+          return PlayerProcessLookupResult.found(
+            PlayerProcessIdentity(
+              pid: pid,
+              executablePath: r'C:\TestMPV\mpv.exe',
+              creationTime: pid + 1000,
+            ),
+          );
+        },
+        pipeServerPidLoader: (_) async => currentPid,
+        processTreeTerminator: (_) async => true,
+      );
+      final (service, dir) = await makeService(processController: controller);
+      addTearDown(() async {
+        await service.terminateSession('stable-session');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+
+      final first = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'stable-session',
+      );
+      expect(
+        await service.terminateSession('stable-session'),
+        PlayerTerminationOutcome.terminated,
+      );
+      await File(first.statusFilePath!).writeAsString('0\nold-url\n1\n');
+      await File(first.commandFilePath!).writeAsString('pause');
+      await File(
+        first.progressFilePath!,
+      ).writeAsString('{"outcome":"position","reason":"error"}\n');
+
+      final second = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'stable-session',
+      );
+
+      expect(second.statusFilePath, isNot(first.statusFilePath));
+      expect(second.commandFilePath, isNot(first.commandFilePath));
+      expect(second.progressFilePath, isNot(first.progressFilePath));
+      final firstScripts = first.args
+          .where((arg) => arg.startsWith('--script='))
+          .toSet();
+      final secondScripts = second.args
+          .where((arg) => arg.startsWith('--script='))
+          .toSet();
+      expect(firstScripts.intersection(secondScripts), isEmpty);
+      expect(await File(first.commandFilePath!).readAsString(), 'pause');
+    });
+
+    test('Process.start 失败后清理本次已生成的视频脚本工件', () async {
+      final missing = p.join(
+        Directory.systemTemp.path,
+        'missing-mpv-${DateTime.now().microsecondsSinceEpoch}.exe',
+      );
+      final (service, dir) = await makeService(executable: missing);
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+
+      await expectLater(
+        service.launch(
+          entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+          sessionId: 'failed-launch',
+        ),
+        throwsA(isA<Exception>()),
+      );
+
+      final watchLater = Directory(p.join(dir.path, 'wl'));
+      final artifacts = watchLater.existsSync()
+          ? watchLater
+                .listSync()
+                .whereType<File>()
+                .map((file) => p.basename(file.path))
+                .where((name) => name.startsWith('streampath-'))
+                .toList()
+          : const <String>[];
+      expect(artifacts, isEmpty);
+    });
+
+    test('默认目录多集续播启动失败会清理 cache 与 watch_later 的本代工件', () async {
+      final nonce = DateTime.now().microsecondsSinceEpoch;
+      final sessionId = 'default-base-leak-$nonce';
+      final missing = p.join(
+        Directory.systemTemp.path,
+        'missing-mpv-default-base-$nonce.exe',
+      );
+      final (service, dir) = await makeService(
+        executable: missing,
+        useDefaultWatchLaterDirectory: true,
+      );
+      final cache = await AppPaths.cacheDirectory();
+      final watchLater = Directory(p.join(cache.path, 'mpv-watch-later'));
+
+      Iterable<File> ownedArtifacts() sync* {
+        for (final base in [cache, watchLater]) {
+          if (!base.existsSync()) continue;
+          yield* base.listSync().whereType<File>().where(
+            (file) => p.basename(file.path).contains(sessionId),
+          );
+        }
+      }
+
+      addTearDown(() async {
+        for (final file in ownedArtifacts().toList()) {
+          try {
+            await file.delete();
+          } catch (_) {}
+        }
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+
+      await expectLater(
+        service.launch(
+          entries: const [
+            MediaEntry(url: 'http://h/dav/01.mp4'),
+            MediaEntry(url: 'http://h/dav/02.mp4'),
+          ],
+          sessionId: sessionId,
+          resumeSeconds: 30,
+          username: 'guest',
+          password: '',
+        ),
+        throwsA(isA<Exception>()),
+      );
+
+      expect(ownedArtifacts(), isEmpty);
+    });
+
+    test('终止只经过注入的完整进程身份边界，不调用真实 taskkill', () async {
+      var currentPid = 0;
+      var terminateCalls = 0;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) async {
+          currentPid = pid;
+          return PlayerProcessLookupResult.found(
+            PlayerProcessIdentity(
+              pid: pid,
+              executablePath: r'C:\TestMPV\mpv.exe',
+              creationTime: 133700000000000010,
+            ),
+          );
+        },
+        pipeServerPidLoader: (_) async => currentPid,
+        processTreeTerminator: (_) async {
+          terminateCalls++;
+          return true;
+        },
+      );
+      final (service, _) = await makeService(processController: controller);
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'safe-process',
+      );
+      expect(result.processIdentity?.pid, result.process.pid);
+      expect(result.processIdentity?.executablePath, r'C:\TestMPV\mpv.exe');
+      expect(result.processIdentity?.creationTime, 133700000000000010);
+
+      final outcome = await service.terminateSession('safe-process');
+
+      expect(outcome, PlayerTerminationOutcome.terminated);
+      expect(terminateCalls, 1);
+    });
+
+    test('并发终止保持同一 runtime 并只执行一次身份终止', () async {
+      var currentPid = 0;
+      var terminateCalls = 0;
+      final allowTermination = Completer<bool>();
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) async {
+          currentPid = pid;
+          return PlayerProcessLookupResult.found(
+            PlayerProcessIdentity(
+              pid: pid,
+              executablePath: r'C:\TestMPV\mpv.exe',
+              creationTime: 133700000000000012,
+            ),
+          );
+        },
+        pipeServerPidLoader: (_) async => currentPid,
+        processTreeTerminator: (_) async {
+          terminateCalls++;
+          return allowTermination.future;
+        },
+      );
+      final (service, dir) = await makeService(processController: controller);
+      addTearDown(() async {
+        if (!allowTermination.isCompleted) allowTermination.complete(true);
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'coalesced-termination',
+      );
+
+      final first = service.terminateSession('coalesced-termination');
+      final second = service.terminateSession('coalesced-termination');
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(terminateCalls, 1);
+      allowTermination.complete(true);
+
+      expect(await first, PlayerTerminationOutcome.terminated);
+      expect(await second, PlayerTerminationOutcome.terminated);
+      expect(terminateCalls, 1);
+    });
+
+    test('同 session 双启动在旧探活阻塞时由后进入请求保持所有权', () async {
+      const legacyPid = 41001;
+      final probeStarted = Completer<void>();
+      final releaseProbe = Completer<PlayerProcessLookupResult>();
+      final lookups = <int, int>{};
+      var latestPid = legacyPid;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) {
+          final count = lookups.update(
+            pid,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+          if (pid == legacyPid && count == 1) {
+            probeStarted.complete();
+            return releaseProbe.future;
+          }
+          if (pid == legacyPid || count > 1) {
+            return Future.value(const PlayerProcessLookupResult.notFound());
+          }
+          latestPid = pid;
+          return Future.value(
+            PlayerProcessLookupResult.found(
+              PlayerProcessIdentity(
+                pid: pid,
+                executablePath: r'C:\TestMPV\mpv.exe',
+                creationTime: pid + 7000,
+              ),
+            ),
+          );
+        },
+        pipeServerPidLoader: (_) async => latestPid,
+        processTreeTerminator: (_) async => true,
+      );
+      final (service, dir) = await makeService(processController: controller);
+      addTearDown(() async {
+        if (!releaseProbe.isCompleted) {
+          releaseProbe.complete(const PlayerProcessLookupResult.notFound());
+        }
+        await service.terminateSession('launch-race');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      await service.restoreSession(
+        sessionId: 'launch-race',
+        pid: legacyPid,
+        executablePath: r'C:\TestMPV\legacy.exe',
+        creationTime: 70001,
+        ipcPipeName: r'\\.\pipe\legacy-launch-race',
+      );
+
+      final stale = service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/old.mp4')],
+        sessionId: 'launch-race',
+      );
+      await probeStarted.future;
+      final current = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/new.mp4')],
+        sessionId: 'launch-race',
+      );
+      releaseProbe.complete(const PlayerProcessLookupResult.notFound());
+
+      await expectLater(stale, throwsA(isA<Exception>()));
+      expect(current.sessionId, 'launch-race');
+    });
+
+    test('launch 探活阻塞期间 terminate 会取消尚未注册的启动', () async {
+      const legacyPid = 41002;
+      final probeStarted = Completer<void>();
+      final releaseProbe = Completer<PlayerProcessLookupResult>();
+      var legacyLookups = 0;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) {
+          if (pid == legacyPid && legacyLookups++ == 0) {
+            probeStarted.complete();
+            return releaseProbe.future;
+          }
+          return Future.value(const PlayerProcessLookupResult.notFound());
+        },
+        pipeServerPidLoader: (_) async => null,
+        processTreeTerminator: (_) async => true,
+      );
+      final (service, dir) = await makeService(processController: controller);
+      addTearDown(() async {
+        if (!releaseProbe.isCompleted) {
+          releaseProbe.complete(const PlayerProcessLookupResult.notFound());
+        }
+        await service.terminateSession('terminate-during-launch');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      await service.restoreSession(
+        sessionId: 'terminate-during-launch',
+        pid: legacyPid,
+        executablePath: r'C:\TestMPV\legacy.exe',
+        creationTime: 70002,
+        ipcPipeName: r'\\.\pipe\legacy-terminate-launch',
+      );
+
+      final pending = service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/new.mp4')],
+        sessionId: 'terminate-during-launch',
+      );
+      await probeStarted.future;
+      await service.terminateSession('terminate-during-launch');
+      releaseProbe.complete(const PlayerProcessLookupResult.notFound());
+
+      await expectLater(pending, throwsA(isA<Exception>()));
+    });
+
+    test('旧持久会话只有 PID 和 pipe 时拒绝终止', () async {
+      var terminateCalls = 0;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) async => PlayerProcessLookupResult.found(
+          PlayerProcessIdentity(
+            pid: pid,
+            executablePath: r'C:\TestMPV\mpv.exe',
+            creationTime: 133700000000000011,
+          ),
+        ),
+        pipeServerPidLoader: (_) async => 12121,
+        processTreeTerminator: (_) async {
+          terminateCalls++;
+          return true;
+        },
+      );
+      final (service, _) = await makeService(processController: controller);
+      await service.restoreSession(
+        sessionId: 'legacy-process',
+        pid: 12121,
+        ipcPipeName: r'\\.\pipe\legacy-process',
+      );
+
+      expect(await service.isPlayerRunning('legacy-process'), isTrue);
+      final outcome = await service.terminateSession('legacy-process');
+
+      expect(outcome, PlayerTerminationOutcome.refused);
+      expect(terminateCalls, 0);
     });
 
     test('两个显式会话使用完全独立的 IPC、状态文件和播放列表资源', () async {
@@ -456,8 +895,9 @@ void main() {
       );
       // m3u：播放列表标题 + per-file 窗口标题 + 直链 URL（原样保留）。
       final m3u = File(
-        '${dir.path}${Platform.pathSeparator}wl'
-        '${Platform.pathSeparator}streampath-playlist.m3u',
+        result.args
+            .singleWhere((argument) => argument.startsWith('--playlist='))
+            .substring('--playlist='.length),
       );
       expect(m3u.existsSync(), isTrue, reason: '应生成 m3u 播放列表');
       final content = await m3u.readAsString();
@@ -542,29 +982,31 @@ void main() {
       );
       String? titlesScript;
       for (final a in result.args) {
-        if (a.startsWith('--script=') && a.endsWith('titles.lua')) {
-          titlesScript = a.substring('--script='.length);
-          break;
-        }
+        if (!a.startsWith('--script=')) continue;
+        final path = a.substring('--script='.length);
+        if (!p.basename(path).startsWith('streampath-titles-')) continue;
+        titlesScript = path;
+        break;
       }
       expect(titlesScript, isNotNull, reason: '应注入标题兜底脚本');
       final content = await File(titlesScript!).readAsString();
       // 自动切集检测上报脚本也应注入（多集模式）。
       String? currentScript;
       for (final a in result.args) {
-        if (a.startsWith('--script=') && a.endsWith('current.lua')) {
-          currentScript = a.substring('--script='.length);
-          break;
-        }
+        if (!a.startsWith('--script=')) continue;
+        final path = a.substring('--script='.length);
+        if (!p.basename(path).startsWith('streampath-current-')) continue;
+        currentScript = path;
+        break;
       }
       expect(currentScript, isNotNull, reason: '应注入当前播放状态上报脚本');
       final currentContent = await File(currentScript!).readAsString();
       expect(currentContent, contains('playlist-pos'));
       expect(currentContent, contains('file-loaded'));
-      expect(currentContent, contains('mpv-current.txt'));
+      expect(currentContent, contains('mpv-current-'));
       // 下边栏同步：暂停状态上报 + 命令执行 + 退出/空闲复位。
       expect(currentContent, contains('observe_property("pause"'));
-      expect(currentContent, contains('mpv-command.txt'));
+      expect(currentContent, contains('mpv-command-'));
       expect(currentContent, contains('add_periodic_timer'));
       expect(currentContent, contains('set_property_bool("pause", true)'));
       expect(currentContent, contains('set_property_bool("pause", false)'));

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../localization/app_text.dart';
+
 import '../../data/models/web_dav_file.dart';
 import '../theme/glass_tokens.dart';
 import 'glass_surface.dart';
@@ -11,7 +13,7 @@ const double _wideTileHeight = 56;
 const double _leadingColumnWidth = 40;
 const double _leadingGap = 16;
 const double _trailingGap = 16;
-const double _trailingColumnWidth = 20;
+const double _trailingColumnWidth = 36;
 
 /// 为文件条目的 Ink 悬浮反馈提供同层绘制表面。
 class FileListSurface extends StatelessWidget {
@@ -31,7 +33,9 @@ class FileListSurface extends StatelessWidget {
 
 /// 目录列表表头；窄窗口下元数据改在条目副标题显示，因此隐藏表头。
 class FileListHeader extends StatelessWidget {
-  const FileListHeader({super.key});
+  const FileListHeader({super.key, this.metadataColumnLabel = '修改时间'});
+
+  final String metadataColumnLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -56,19 +60,23 @@ class FileListHeader extends StatelessWidget {
                 width: _leadingColumnWidth,
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Text('名称', style: style),
+                  child: AppText('名称', style: style),
                 ),
               ),
               const SizedBox(width: _leadingGap),
               const Spacer(),
               SizedBox(
                 width: _sizeColumnWidth,
-                child: Text('大小', textAlign: TextAlign.right, style: style),
+                child: AppText('大小', textAlign: TextAlign.right, style: style),
               ),
               const SizedBox(width: 24),
               SizedBox(
                 width: _modifiedColumnWidth,
-                child: Text('修改时间', textAlign: TextAlign.right, style: style),
+                child: AppText(
+                  metadataColumnLabel,
+                  textAlign: TextAlign.right,
+                  style: style,
+                ),
               ),
               const SizedBox(width: _trailingGap),
               const SizedBox(width: _trailingColumnWidth),
@@ -85,7 +93,14 @@ class FileListHeader extends StatelessWidget {
 /// 轻量 StatelessWidget：万级条目下 Flutter 仅构建可视区，
 /// 配合 `const` 构造与无动画实现流畅滚动。
 class FileTile extends StatelessWidget {
-  const FileTile({super.key, required this.file, this.onTap, this.trailing});
+  const FileTile({
+    super.key,
+    required this.file,
+    this.onTap,
+    this.trailing,
+    this.subtitle,
+    this.metadataColumnText,
+  });
 
   final WebDavFile file;
 
@@ -93,6 +108,12 @@ class FileTile extends StatelessWidget {
   final VoidCallback? onTap;
 
   final Widget? trailing;
+
+  /// 可选的来源路径等补充信息。
+  final String? subtitle;
+
+  /// 宽窗口右侧元数据列的替代文本；未提供时显示修改时间。
+  final String? metadataColumnText;
 
   @override
   Widget build(BuildContext context) {
@@ -108,13 +129,13 @@ class FileTile extends StatelessWidget {
             onTap: onTap,
             hoverColor: Theme.of(context).hoverColor,
             leading: Icon(Icons.arrow_upward, color: scheme.primary, size: 28),
-            title: Text(
+            title: AppText(
               file.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 15),
             ),
-            subtitle: const Text('返回上级目录'),
+            subtitle: const AppText('返回上级目录'),
             trailing: trailing,
             dense: true,
           );
@@ -127,7 +148,7 @@ class FileTile extends StatelessWidget {
             color: _colorFor(file, scheme),
             size: 28,
           ),
-          title: Text(
+          title: AppText(
             file.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -168,7 +189,7 @@ class FileTile extends StatelessWidget {
               Expanded(child: _buildWideName(context)),
               SizedBox(
                 width: _sizeColumnWidth,
-                child: Text(
+                child: AppText(
                   file.isDirectory ? '-' : file.sizeLabel,
                   maxLines: 1,
                   textAlign: TextAlign.right,
@@ -179,10 +200,11 @@ class FileTile extends StatelessWidget {
               const SizedBox(width: 24),
               SizedBox(
                 width: _modifiedColumnWidth,
-                child: Text(
-                  file.isSelfEntry || file.modified == null
-                      ? ''
-                      : _formatDate(file.modified!),
+                child: AppText(
+                  metadataColumnText ??
+                      (file.isSelfEntry || file.modified == null
+                          ? ''
+                          : _formatDate(file.modified!)),
                   maxLines: 1,
                   textAlign: TextAlign.right,
                   overflow: TextOverflow.ellipsis,
@@ -203,8 +225,8 @@ class FileTile extends StatelessWidget {
   }
 
   Widget _buildWideName(BuildContext context) {
-    if (!file.isSelfEntry) {
-      return Text(
+    if (!file.isSelfEntry && subtitle == null) {
+      return AppText(
         file.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -215,25 +237,31 @@ class FileTile extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
+        AppText(
           file.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
         ),
-        Text('返回上级目录', style: Theme.of(context).textTheme.bodySmall),
+        AppText(
+          file.isSelfEntry ? '返回上级目录' : subtitle!,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
       ],
     );
   }
 
   Widget? _buildCompactMetadata() {
     final parts = <String>[
+      ?subtitle,
       if (!file.isDirectory) file.sizeLabel,
       if (file.modified != null) _formatDate(file.modified!),
     ];
     return parts.isEmpty
         ? null
-        : Text(parts.join(' · '), style: const TextStyle(fontSize: 12));
+        : AppText(parts.join(' · '), style: const TextStyle(fontSize: 12));
   }
 
   static IconData _iconFor(WebDavFile f) {

@@ -5,10 +5,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/local/profile_credential_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
+import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/connection_config.dart';
+import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
+import 'package:streampath/data/models/openlist_index_config.dart';
 import 'package:streampath/data/models/player_config.dart';
+import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 
 void main() {
@@ -35,6 +40,11 @@ void main() {
       expect(def.hiddenExtensionsEnabled, isTrue);
       expect(def.appearance.style, InterfaceStyle.classic);
       expect(def.appearance.material, WindowMaterialPreference.automatic);
+      expect(def.language, AppLanguage.simplifiedChinese);
+      expect(
+        def.mediaLibrary.maxRecentPlaybackPerLane,
+        MediaLibraryConfig.defaultMaxRecentPlaybackPerLane,
+      );
 
       final player = PlayerConfig(
         name: 'PotPlayer',
@@ -62,6 +72,7 @@ void main() {
           username: 'admin',
           password: 'secret',
         ),
+        language: AppLanguage.japanese,
       );
       expect(merged.isConnectionComplete, isTrue);
       expect(merged.serverUrl, 'http://h/dav');
@@ -83,6 +94,30 @@ void main() {
       expect(restored.openListRecovery.enabled, isTrue);
       expect(restored.openListRecovery.baseUrl, 'http://h');
       expect(restored.appearance.style, InterfaceStyle.classic);
+      expect(restored.language, AppLanguage.japanese);
+      expect(
+        restored.mediaLibrary.maxFavoritesPerSource,
+        MediaLibraryConfig.defaultMaxFavoritesPerSource,
+      );
+    });
+
+    test('语言配置接受稳定代码并对未知值回退简体中文', () {
+      expect(
+        StreamPathConfig.fromJson(const {'language': 'zh-TW'}).language,
+        AppLanguage.traditionalChinese,
+      );
+      expect(
+        StreamPathConfig.fromJson(const {'language': 'ja'}).language,
+        AppLanguage.japanese,
+      );
+      expect(
+        StreamPathConfig.fromJson(const {'language': 'en'}).language,
+        AppLanguage.english,
+      );
+      expect(
+        StreamPathConfig.fromJson(const {'language': 'unknown'}).language,
+        AppLanguage.simplifiedChinese,
+      );
     });
 
     test('fromJson 规范化 hiddenExtensions 且缺失字段回退默认', () {
@@ -151,6 +186,56 @@ void main() {
       );
     });
 
+    test('媒体中心容量支持往返、字符串读取和底层硬上限', () {
+      final config = StreamPathConfig.fromJson(const {
+        'mediaLibrary': {
+          'maxFavoritesPerSource': '120',
+          'maxContinuePerLane': 99999,
+          'maxRecentPlaybackPerLane': 0,
+          'maxRecentDirectoriesPerSource': 80,
+        },
+      });
+
+      expect(config.mediaLibrary.maxFavoritesPerSource, 120);
+      expect(
+        config.mediaLibrary.maxContinuePerLane,
+        MediaLibraryConfig.systemMaxContinuePerLane,
+      );
+      expect(
+        config.mediaLibrary.maxRecentPlaybackPerLane,
+        MediaLibraryConfig.minItemLimit,
+      );
+      expect(config.mediaLibrary.maxRecentDirectoriesPerSource, 80);
+      expect(
+        StreamPathConfig.fromJson(
+          config.toJson(),
+        ).mediaLibrary.maxFavoritesPerSource,
+        120,
+      );
+    });
+
+    test('save 会把超出系统上限的媒体中心容量收敛后再写入', () async {
+      final store = storeFor('media_limit_save.json');
+      await store.save(
+        const StreamPathConfig(
+          mediaLibrary: MediaLibraryConfig(
+            maxFavoritesPerSource: 999999,
+            maxContinuePerLane: 999999,
+            maxRecentPlaybackPerLane: 999999,
+            maxRecentDirectoriesPerSource: 999999,
+          ),
+        ),
+      );
+      expect(
+        store.current.mediaLibrary.maxFavoritesPerSource,
+        MediaLibraryConfig.systemMaxFavoritesPerSource,
+      );
+      expect(
+        (await store.load()).mediaLibrary.maxRecentPlaybackPerLane,
+        MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
+      );
+    });
+
     test('WebDAV 密码为空时仍可使用地址与用户名自动连接', () {
       const config = StreamPathConfig(
         serverUrl: 'http://passwordless.example/dav',
@@ -191,6 +276,12 @@ void main() {
           material: WindowMaterialPreference.mica,
           glassOpacity: 0.75,
         ),
+        mediaLibrary: MediaLibraryConfig(
+          maxFavoritesPerSource: 120,
+          maxContinuePerLane: 40,
+          maxRecentPlaybackPerLane: 300,
+          maxRecentDirectoriesPerSource: 60,
+        ),
       );
       await store.save(config);
       final loaded = await store.load();
@@ -214,6 +305,11 @@ void main() {
       expect(loaded.appearance.style, InterfaceStyle.glass);
       expect(loaded.appearance.material, WindowMaterialPreference.mica);
       expect(loaded.appearance.glassOpacity, 0.75);
+      expect(loaded.mediaLibrary.maxFavoritesPerSource, 120);
+      expect(loaded.mediaLibrary.maxContinuePerLane, 40);
+      expect(loaded.mediaLibrary.maxRecentPlaybackPerLane, 300);
+      expect(loaded.mediaLibrary.maxRecentDirectoriesPerSource, 60);
+      expect(json['mediaLibrary']['maxFavoritesPerSource'], 120);
       expect(loaded.isConnectionComplete, isTrue);
     });
 
@@ -404,6 +500,320 @@ void main() {
     });
   });
 
+  group('服务器档案与版本化迁移', () {
+    test('版本三配置迁移后补全简体中文语言字段', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}schema-v3.json';
+      await File(path).writeAsString(
+        jsonEncode({
+          'schemaVersion': 3,
+          'credentialStorageMode': 'portablePlaintext',
+          'profiles': const [],
+          'activeProfileId': '',
+        }),
+      );
+
+      final config = await StreamPathConfigStore.forPath(path).load();
+
+      expect(config.language, AppLanguage.simplifiedChinese);
+      final persisted = jsonDecode(await File(path).readAsString()) as Map;
+      expect(persisted['schemaVersion'], StreamPathConfig.currentSchemaVersion);
+      expect(persisted['language'], 'zh-CN');
+      expect(
+        tempDir.listSync().whereType<File>().any(
+          (file) => file.path.contains('.migration-v3-'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('版本二配置迁移后补全默认关闭的索引更新配置', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}schema-v2.json';
+      await File(path).writeAsString(
+        jsonEncode({
+          'schemaVersion': 2,
+          'credentialStorageMode': 'portablePlaintext',
+          'profiles': [
+            const ServerProfile(
+              profileId: 'profile-v2',
+              name: '旧档案',
+              serverUrl: 'https://example.test/dav',
+              username: 'alice',
+            ).toJson()..remove('openListIndex'),
+          ],
+          'activeProfileId': 'profile-v2',
+        }),
+      );
+
+      final store = StreamPathConfigStore.forPath(path);
+      final config = await store.load();
+
+      expect(config.schemaVersion, StreamPathConfig.currentSchemaVersion);
+      expect(config.activeProfile?.openListIndex.autoUpdateEnabled, isFalse);
+      expect(
+        config.activeProfile?.openListIndex.updateIntervalMinutes,
+        OpenListIndexConfig.defaultUpdateIntervalMinutes,
+      );
+      final persisted = jsonDecode(await File(path).readAsString()) as Map;
+      expect(
+        (persisted['profiles'] as List).single['openListIndex'],
+        isA<Map>(),
+      );
+      expect(
+        tempDir.listSync().whereType<File>().any(
+          (file) => file.path.contains('.migration-v2-'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('旧单账号迁移为默认档案并把敏感值移入凭据管理器', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}legacy-flat.json';
+      await File(path).writeAsString(
+        jsonEncode({
+          'serverUrl': 'https://user:old@example.test/dav?sign=secret',
+          'username': 'alice',
+          'password': 'webdav-secret',
+          'openListRecovery': {
+            'enabled': true,
+            'baseUrl': 'https://example.test',
+            'username': 'admin',
+            'password': 'admin-secret',
+            'token': 'admin-token',
+          },
+        }),
+      );
+      final secrets = <String, ProfileSecrets>{};
+      final store = StreamPathConfigStore.forPath(
+        path,
+        credentialStore: MemoryProfileCredentialStore(secrets),
+      );
+
+      final config = await store.load();
+
+      expect(config.schemaVersion, StreamPathConfig.currentSchemaVersion);
+      expect(config.profiles, hasLength(1));
+      expect(config.activeProfile?.name, '默认服务器');
+      expect(config.password, 'webdav-secret');
+      expect(config.openListRecovery.password, 'admin-secret');
+      expect(config.openListRecovery.token, 'admin-token');
+      expect(secrets[config.profileId]?.webDavPassword, 'webdav-secret');
+      final persisted = await File(path).readAsString();
+      expect(persisted, isNot(contains('webdav-secret')));
+      expect(persisted, isNot(contains('admin-secret')));
+      expect(persisted, isNot(contains('admin-token')));
+      expect(persisted, isNot(contains('user:old')));
+      expect(
+        tempDir.listSync().whereType<File>().any(
+          (file) => file.path.contains('.migration-v0-'),
+        ),
+        isTrue,
+      );
+      expect(File('$path.migrations.jsonl').existsSync(), isTrue);
+    });
+
+    test('安全模式重新加载凭据且便携模式明确保存明文', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}profiles.json';
+      final secrets = <String, ProfileSecrets>{};
+      final credentialStore = MemoryProfileCredentialStore(secrets);
+      const profile = ServerProfile(
+        profileId: 'profile-stable',
+        name: '主服务器',
+        serverUrl: 'https://example.test/dav',
+        username: 'alice',
+        password: 'secret-value',
+        openListIndex: OpenListIndexConfig(userToken: 'least-privilege-token'),
+      );
+      final secureStore = StreamPathConfigStore.forPath(
+        path,
+        credentialStore: credentialStore,
+      );
+      await secureStore.save(
+        StreamPathConfig.defaults().upsertProfile(profile),
+      );
+      expect(await File(path).readAsString(), isNot(contains('secret-value')));
+      expect(
+        await File(path).readAsString(),
+        isNot(contains('least-privilege-token')),
+      );
+      final reloaded = await StreamPathConfigStore.forPath(
+        path,
+        credentialStore: credentialStore,
+      ).load();
+      expect(reloaded.password, 'secret-value');
+      expect(
+        reloaded.activeProfile?.openListIndex.userToken,
+        'least-privilege-token',
+      );
+
+      await secureStore.save(
+        secureStore.current.withCredentialStorageMode(
+          CredentialStorageMode.portablePlaintext,
+        ),
+      );
+      expect(await File(path).readAsString(), contains('secret-value'));
+      expect(
+        await File(path).readAsString(),
+        contains('least-privilege-token'),
+      );
+      expect(secrets, isEmpty);
+    });
+
+    test('切换和编辑档案不会改变稳定 profileId', () {
+      const first = ServerProfile(
+        profileId: 'profile-a',
+        name: 'A',
+        serverUrl: 'https://a.test/dav',
+        username: 'a',
+      );
+      const second = ServerProfile(
+        profileId: 'profile-b',
+        name: 'B',
+        serverUrl: 'https://b.test/dav',
+        username: 'b',
+      );
+      final config = StreamPathConfig.defaults()
+          .upsertProfile(first)
+          .upsertProfile(second, activate: false)
+          .activateProfile('profile-b')
+          .upsertProfile(second.copyWith(serverUrl: 'https://new-b.test/dav'));
+
+      expect(config.profileId, 'profile-b');
+      expect(config.serverUrl, 'https://new-b.test/dav');
+      expect(config.profiles.map((profile) => profile.profileId), [
+        'profile-a',
+        'profile-b',
+      ]);
+    });
+
+    test('未来配置版本拒绝被当前版本降级解析', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}future.json';
+      await File(path).writeAsString(
+        jsonEncode({
+          'schemaVersion': StreamPathConfig.currentSchemaVersion + 1,
+        }),
+      );
+      await expectLater(
+        StreamPathConfigStore.forPath(path).load(),
+        throwsA(isA<AppException>()),
+      );
+    });
+
+    test('启动遇到未来版本时保持主文件并禁止后续保存覆盖', () async {
+      final path =
+          '${tempDir.path}${Platform.pathSeparator}future-startup.json';
+      final original = jsonEncode({
+        'schemaVersion': StreamPathConfig.currentSchemaVersion + 1,
+        'futureOnlyField': 'must-keep',
+      });
+      await File(path).writeAsString(original);
+      final store = StreamPathConfigStore.forPath(path);
+
+      final fallback = await store.loadForStartup();
+
+      expect(fallback.profiles, isEmpty);
+      expect(store.futureSchemaDetected, isTrue);
+      await expectLater(
+        store.save(StreamPathConfig.defaults()),
+        throwsA(isA<AppException>()),
+      );
+      expect(await File(path).readAsString(), original);
+    });
+
+    test('重复 profileId 会被拒绝，避免两个档案共享隔离主键', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}duplicate-id.json';
+      await File(path).writeAsString(
+        jsonEncode({
+          'schemaVersion': StreamPathConfig.currentSchemaVersion,
+          'profiles': [
+            const ServerProfile(profileId: 'duplicate', name: 'A').toJson(),
+            const ServerProfile(profileId: 'duplicate', name: 'B').toJson(),
+          ],
+          'activeProfileId': 'duplicate',
+        }),
+      );
+
+      await expectLater(
+        StreamPathConfigStore.forPath(path).load(),
+        throwsA(isA<AppException>()),
+      );
+    });
+
+    test('默认目录拒绝点路径段，不能越过配置的 WebDAV 根路径', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}bad-directory.json';
+      final store = StreamPathConfigStore.forPath(path);
+      final config = StreamPathConfig.defaults().upsertProfile(
+        const ServerProfile(
+          profileId: 'profile-a',
+          name: 'A',
+          serverUrl: 'https://example.test/dav',
+          username: 'alice',
+          defaultDirectory: '../private',
+        ),
+      );
+
+      await expectLater(store.save(config), throwsA(isA<AppException>()));
+      expect(File(path).existsSync(), isFalse);
+    });
+
+    test('配置提交失败时回滚本次已经改写的凭据', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}rollback.json';
+      final secrets = <String, ProfileSecrets>{};
+      const first = ServerProfile(
+        profileId: 'profile-a',
+        name: 'A',
+        password: 'old-a',
+      );
+      const second = ServerProfile(
+        profileId: 'profile-b',
+        name: 'B',
+        password: 'old-b',
+      );
+      final initialStore = StreamPathConfigStore.forPath(
+        path,
+        credentialStore: MemoryProfileCredentialStore(secrets),
+      );
+      await initialStore.save(
+        StreamPathConfig.defaults()
+            .upsertProfile(first)
+            .upsertProfile(second, activate: false),
+      );
+      final originalFile = await File(path).readAsString();
+      final failingStore = StreamPathConfigStore.forPath(
+        path,
+        credentialStore: _FailingCredentialStore(secrets, failAtWrite: 2),
+      );
+      final loaded = await failingStore.load();
+      final changed = loaded
+          .upsertProfile(first.copyWith(password: 'new-a'), activate: false)
+          .upsertProfile(second.copyWith(password: 'new-b'), activate: false);
+
+      await expectLater(
+        failingStore.save(changed),
+        throwsA(isA<AppException>()),
+      );
+
+      expect(await File(path).readAsString(), originalFile);
+      expect(secrets['profile-a']?.webDavPassword, 'old-a');
+      expect(secrets['profile-b']?.webDavPassword, 'old-b');
+    });
+
+    test('迁移日志单行损坏时仍保留其他有效结果', () async {
+      final path = '${tempDir.path}${Platform.pathSeparator}history.json';
+      final log = File('$path.migrations.jsonl');
+      await log.writeAsString(
+        '${jsonEncode({'timestamp': DateTime.utc(2026, 8, 22).toIso8601String(), 'fromVersion': 1, 'toVersion': 2, 'success': true, 'backupPath': 'valid.bak'})}\n'
+        '{broken\n',
+      );
+
+      final history = await StreamPathConfigStore.forPath(
+        path,
+      ).migrationHistory();
+
+      expect(history, hasLength(1));
+      expect(history.single.backupPath, 'valid.bak');
+    });
+  });
+
   group('旧配置迁移（player_config.json + connection_config.json）', () {
     test('旧配置结构错误时保留原文件且不阻塞迁移', () async {
       final legacy = Directory(
@@ -456,6 +866,13 @@ void main() {
       expect(config.serverUrl, 'http://old/dav');
       expect(config.username, 'old_user');
       expect(config.password, 'old_pass');
+      expect(
+        config.profileId,
+        ServerProfile.legacyId(
+          serverUrl: 'http://old/dav',
+          username: 'old_user',
+        ),
+      );
       expect(config.playerExecutable, 'mpv');
       expect(config.playerArgs, ['{url}', '--sub-file={subfile}']);
       expect(config.hiddenExtensions, ['.ass']);
@@ -473,6 +890,27 @@ void main() {
         ).existsSync(),
         isFalse,
       );
+      final backupDirectories = tempDir
+          .listSync()
+          .whereType<Directory>()
+          .where(
+            (directory) => directory.path.contains('migration-legacy-files'),
+          )
+          .toList();
+      expect(backupDirectories, hasLength(1));
+      expect(
+        File(
+          '${backupDirectories.single.path}${Platform.pathSeparator}'
+          'connection_config.json',
+        ).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(
+          '${tempDir.path}${Platform.pathSeparator}migrated.json.migrations.jsonl',
+        ).existsSync(),
+        isTrue,
+      );
     });
 
     test('无旧文件时迁移无操作（返回默认）', () async {
@@ -485,4 +923,32 @@ void main() {
       expect(config.isConnectionComplete, isFalse);
     });
   });
+}
+
+class _FailingCredentialStore implements ProfileCredentialStore {
+  _FailingCredentialStore(this.values, {required this.failAtWrite});
+
+  final Map<String, ProfileSecrets> values;
+  final int failAtWrite;
+  int _writeCount = 0;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<ProfileSecrets?> read(String profileId) async => values[profileId];
+
+  @override
+  Future<void> write(String profileId, ProfileSecrets secrets) async {
+    _writeCount++;
+    if (_writeCount == failAtWrite) {
+      throw AppException.storage('注入的凭据写入失败');
+    }
+    values[profileId] = secrets;
+  }
+
+  @override
+  Future<void> delete(String profileId) async {
+    values.remove(profileId);
+  }
 }

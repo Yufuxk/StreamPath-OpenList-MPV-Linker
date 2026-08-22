@@ -419,21 +419,6 @@ void main() {
       expect(monitor.startedStatusFile, 'b.txt');
     });
 
-    test('buildCacheArgs 后 lastResultFor 返回策略结果', () async {
-      await store.save(CachePolicyConfig.defaults());
-      final service = CachePolicyService(
-        store: store,
-        mediaProbe: const _FakeProbe(sizeBytes: 7 * 1024 * 1024 * 1024),
-        memoryProvider: const NullMemoryProvider(),
-      );
-      final args = await service.buildCacheArgs(sessionId: 's1', url: url);
-      expect(args, isNotEmpty);
-      final result = service.lastResultFor(url);
-      expect(result, isNotNull);
-      expect(result!.demuxerMaxBytes, 1024 * 1024 * 1024);
-      expect(service.lastResultFor('http://unknown/url'), isNull);
-    });
-
     test('监控启动异常静默（不抛出）', () async {
       final monitor = _ThrowingMonitor();
       final service = CachePolicyService(
@@ -511,7 +496,7 @@ void main() {
       expect(state!.injected, isTrue);
       expect(state.shouldMonitor, isTrue);
       expect(state.tsOnly, isFalse);
-      // 手动缓存参数：跳过注入，且删除旧自动结果。
+      // 手动缓存参数：跳过注入，并更新当前会话状态。
       await service.buildCacheArgs(
         sessionId: 's1',
         url: url,
@@ -520,11 +505,6 @@ void main() {
       state = service.sessionState('s1');
       expect(state!.injected, isFalse, reason: '手动参数优先');
       expect(state.shouldMonitor, isFalse);
-      expect(
-        service.lastResultFor(url),
-        isNull,
-        reason: '旧自动结果必须删除，防旧结果重新触发监控',
-      );
       // TS 直链：有注入但不启动监控。
       final tsArgs = await service.buildCacheArgs(
         sessionId: 's1',
@@ -589,14 +569,14 @@ void main() {
       expect(probe.authHeaders, everyElement('Basic old'));
     });
 
-    test('策略结果 LRU：超上限淘汰最久未用，诊断快照 URL 脱敏', () async {
+    test('会话状态 LRU：超上限淘汰最久未用，诊断快照 URL 脱敏', () async {
       await store.save(CachePolicyConfig.defaults());
       final service = CachePolicyService(
         store: store,
         mediaProbe: const _FakeProbe(sizeBytes: 100),
         memoryProvider: const NullMemoryProvider(),
       );
-      // 写入超过上限的 URL（201 条）→ 最早的被淘汰。
+      // 写入超过上限的会话（201 条）→ 最早的被淘汰。
       const limit = 200;
       for (var i = 0; i <= limit; i++) {
         await service.buildCacheArgs(
@@ -604,21 +584,12 @@ void main() {
           url: 'http://h/dav/movie$i.mkv',
         );
       }
-      expect(
-        service.lastResultFor('http://h/dav/movie0.mkv'),
-        isNull,
-        reason: '最久未用的条目被淘汰',
-      );
-      expect(
-        service.lastResultFor('http://h/dav/movie$limit.mkv'),
-        isNotNull,
-        reason: '最新条目保留',
-      );
       // 诊断快照：字段齐全、URL 脱敏（query 剥离）。
       final snap = service.diagnosticsSnapshot();
       expect(snap['activeSessions'], isA<List<Object?>>());
-      expect(snap['lastResultsCount'], 200);
       final states = snap['sessionStates'] as Map<Object?, Object?>;
+      expect(states.containsKey('s0'), isFalse, reason: '最久未用的会话被淘汰');
+      expect(states.containsKey('s$limit'), isTrue, reason: '最新会话保留');
       final state = states['s$limit'] as Map<Object?, Object?>;
       expect(state['url'], 'http://h/dav/movie$limit.mkv');
       // 脱敏：带 query 的 URL 只保留 scheme://host/path。

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../data/models/appearance_config.dart';
 import 'glass_tokens.dart';
 import 'page_transitions.dart';
+import 'window_appearance_status.dart';
 
 /// StreamPath 的轻量桌面主题。
 abstract final class AppTheme {
@@ -11,17 +12,30 @@ abstract final class AppTheme {
   static ThemeData light({
     bool glass = false,
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
-  }) => _build(Brightness.light, glass: glass, glassOpacity: glassOpacity);
+    WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
+  }) => _build(
+    Brightness.light,
+    glass: glass,
+    glassOpacity: glassOpacity,
+    windowBackdrop: windowBackdrop,
+  );
 
   static ThemeData dark({
     bool glass = false,
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
-  }) => _build(Brightness.dark, glass: glass, glassOpacity: glassOpacity);
+    WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
+  }) => _build(
+    Brightness.dark,
+    glass: glass,
+    glassOpacity: glassOpacity,
+    windowBackdrop: windowBackdrop,
+  );
 
   static ThemeData _build(
     Brightness brightness, {
     required bool glass,
     required double glassOpacity,
+    required WindowBackdropType windowBackdrop,
   }) {
     final isDark = brightness == Brightness.dark;
     final generated = ColorScheme.fromSeed(
@@ -92,6 +106,11 @@ abstract final class AppTheme {
       opaqueScheme,
       enabled: glass,
       opacityProgress: opacityProgress,
+      material:
+          windowBackdrop == WindowBackdropType.mica ||
+              windowBackdrop == WindowBackdropType.tabbed
+          ? GlassMaterial.mica
+          : GlassMaterial.acrylic,
     );
     final scheme = glass
         ? opaqueScheme.copyWith(
@@ -219,13 +238,13 @@ abstract final class AppTheme {
         space: 1,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: glassTokens.floatingSurface,
+        backgroundColor: glassTokens.modalSurface,
         surfaceTintColor: Colors.transparent,
-        shadowColor: glassTokens.shadowColor,
-        elevation: glass ? 8 : 6,
+        shadowColor: glassTokens.modalShadowColor,
+        elevation: glass ? glassTokens.modalElevation : 6,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: glassTokens.borderColor),
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: glassTokens.modalBorderColor),
         ),
       ),
       snackBarTheme: SnackBarThemeData(

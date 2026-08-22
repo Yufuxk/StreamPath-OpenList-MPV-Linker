@@ -139,7 +139,10 @@ class PlaybackHistoryStore {
       createdAt: history.createdAt,
       playlistFileNames: history.playlistFileNames,
       playerPid: history.playerPid,
+      playerExecutablePath: history.playerExecutablePath,
+      playerCreationTime: history.playerCreationTime,
       ipcPipeName: history.ipcPipeName,
+      launchEpoch: history.launchEpoch,
     );
     final records = [..._cached];
     final index = records.indexWhere((e) => e.sessionId == record.sessionId);

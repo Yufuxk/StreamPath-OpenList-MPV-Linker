@@ -80,6 +80,44 @@ void main() {
     expect(authorization, isNotNull);
   });
 
+  test('PROPFIND 遇到跨来源重定向时拒绝且目标服务器零请求', () async {
+    var targetRequests = 0;
+    final target = await serve((request) async {
+      targetRequests++;
+      request.response
+        ..statusCode = HttpStatus.multiStatus
+        ..write('<multistatus/>');
+      await request.response.close();
+    });
+    final source = await serve((request) async {
+      request.response
+        ..statusCode = HttpStatus.found
+        ..headers.set(
+          HttpHeaders.locationHeader,
+          '${origin(target)}/unexpected/',
+        );
+      await request.response.close();
+    });
+    final client = WebDavClient(
+      baseUrl: '${origin(source)}/dav',
+      username: 'user',
+      password: 'secret',
+    );
+
+    await expectLater(
+      client.propfind(''),
+      throwsA(
+        isA<NetworkException>().having(
+          (error) => error.message,
+          'message',
+          contains('跨来源'),
+        ),
+      ),
+    );
+
+    expect(targetRequests, 0);
+  });
+
   test('GET 跨源重定向不会向目标服务器发送认证', () async {
     String? sourceAuthorization;
     String? targetAuthorization;

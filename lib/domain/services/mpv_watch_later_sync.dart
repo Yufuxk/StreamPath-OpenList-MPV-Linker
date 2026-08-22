@@ -7,6 +7,49 @@ import 'package:path/path.dart' as p;
 import '../../core/constants.dart';
 import '../../core/utils/cache_expiration.dart';
 
+typedef MpvWatchLaterFileLister = Iterable<File> Function(Directory directory);
+typedef MpvWatchLaterFileReader = Future<String> Function(File file);
+
+class MpvWatchLaterRecord {
+  const MpvWatchLaterRecord({
+    required this.file,
+    required this.startSeconds,
+    required this.durationSeconds,
+  });
+
+  final File file;
+  final double? startSeconds;
+  final double? durationSeconds;
+}
+
+class MpvWatchLaterIndex {
+  MpvWatchLaterIndex(this._records, this._matchingFiles);
+
+  final Map<String, MpvWatchLaterRecord> _records;
+  final Map<String, List<File>> _matchingFiles;
+
+  MpvWatchLaterRecord? recordFor(String url) => _records[url];
+
+  Future<void> deleteRecord(String url) async {
+    final record = _records[url];
+    if (record == null) return;
+    final files = _matchingFiles[url] ?? [record.file];
+    final deletedPaths = <String>{};
+    for (final file in files) {
+      if (!deletedPaths.add(file.path)) continue;
+      try {
+        if (await file.exists()) await file.delete();
+      } on FileSystemException {
+        continue;
+      }
+    }
+    _records.removeWhere((_, value) => deletedPaths.contains(value.file.path));
+    _matchingFiles.removeWhere(
+      (_, values) => values.any((file) => deletedPaths.contains(file.path)),
+    );
+  }
+}
+
 /// mpv `watch_later` 文件的进度读取（播放进度写回闭环）。
 ///
 /// mpv 在 `--save-position-on-quit` 且退出（quit_watch_later / 关闭窗口）时，
@@ -25,7 +68,10 @@ import '../../core/utils/cache_expiration.dart';
 /// 1. **MD5 文件名直查**（HTTP 流播放时无注释行，这是主通道）；
 /// 2. **目录扫描 + 注释行匹配**（兜底兼容 sanitize 命名与本地文件记录）。
 class MpvWatchLaterSync {
-  const MpvWatchLaterSync();
+  const MpvWatchLaterSync({this.fileLister, this.fileReader});
+
+  final MpvWatchLaterFileLister? fileLister;
+  final MpvWatchLaterFileReader? fileReader;
 
   /// 计算 mpv watch_later 默认文件名：MD5(url) 大写 hex。
   static String md5FileName(String url) =>
@@ -41,19 +87,13 @@ class MpvWatchLaterSync {
     Duration maxAge = AppConstants.playbackCacheRetention,
     DateTime? now,
   }) async {
-    final (:file, :expired) = await _findFile(
+    final index = await buildIndex(
       dir,
-      url,
+      [url],
       maxAge: maxAge,
       now: now ?? DateTime.now(),
     );
-    if (expired) return null;
-    if (file == null) return null;
-    try {
-      return parseStart(await file.readAsString());
-    } on FileSystemException {
-      return null;
-    }
+    return index.recordFor(url)?.startSeconds;
   }
 
   /// 在 watch_later 目录中读取 [url] 的已保存时长（秒）。
@@ -66,19 +106,68 @@ class MpvWatchLaterSync {
     Duration maxAge = AppConstants.playbackCacheRetention,
     DateTime? now,
   }) async {
-    final (:file, :expired) = await _findFile(
+    final index = await buildIndex(
       dir,
-      url,
+      [url],
       maxAge: maxAge,
       now: now ?? DateTime.now(),
     );
-    if (expired) return null;
-    if (file == null) return null;
-    try {
-      return parseDuration(await file.readAsString());
-    } on FileSystemException {
-      return null;
+    return index.recordFor(url)?.durationSeconds;
+  }
+
+  /// 一次枚举并一次解析每个候选文件，供整个播放列表复用。
+  Future<MpvWatchLaterIndex> buildIndex(
+    Directory dir,
+    Iterable<String> urls, {
+    Duration maxAge = AppConstants.playbackCacheRetention,
+    DateTime? now,
+  }) async {
+    final wanted = urls.where((url) => url.isNotEmpty).toSet();
+    if (wanted.isEmpty) return MpvWatchLaterIndex({}, {});
+    final byDirectName = <String, List<String>>{};
+    for (final url in wanted) {
+      byDirectName.putIfAbsent(md5FileName(url), () => []).add(url);
     }
+    final checkedAt = now ?? DateTime.now();
+    final records = <String, MpvWatchLaterRecord>{};
+    final recordPriorities = <String, int>{};
+    final matchingFiles = <String, List<File>>{};
+    final Iterable<File> files;
+    try {
+      files = fileLister?.call(dir) ?? dir.listSync().whereType<File>();
+    } on FileSystemException {
+      return MpvWatchLaterIndex(records, matchingFiles);
+    }
+    for (final file in files) {
+      final directUrls =
+          byDirectName[p.basename(file.path).toUpperCase()] ?? const <String>[];
+      final String content;
+      try {
+        content = await (fileReader?.call(file) ?? file.readAsString());
+      } on FileSystemException {
+        continue;
+      }
+      final matchedUrls = <String>{...directUrls};
+      for (final referenced in _referencedUrls(content)) {
+        if (wanted.contains(referenced)) matchedUrls.add(referenced);
+      }
+      if (matchedUrls.isEmpty) continue;
+      if (await _deleteIfExpired(file, maxAge, checkedAt)) continue;
+      final record = MpvWatchLaterRecord(
+        file: file,
+        startSeconds: parseStart(content),
+        durationSeconds: parseDuration(content),
+      );
+      for (final url in matchedUrls) {
+        final priority = directUrls.contains(url) ? 1 : 0;
+        if (priority > (recordPriorities[url] ?? -1)) {
+          records[url] = record;
+          recordPriorities[url] = priority;
+        }
+        matchingFiles.putIfAbsent(url, () => []).add(file);
+      }
+    }
+    return MpvWatchLaterIndex(records, matchingFiles);
   }
 
   /// 删除 [url] 对应的恢复记录。
@@ -86,33 +175,8 @@ class MpvWatchLaterSync {
   /// 同时兼容默认 MD5 文件名与开启
   /// `--write-filename-in-watch-later-config` 后的注释匹配文件名。
   Future<void> deleteRecord(Directory dir, String url) async {
-    final direct = File(p.join(dir.path, md5FileName(url)));
-    try {
-      if (await direct.exists()) await direct.delete();
-    } on FileSystemException {
-      // 继续扫描注释匹配文件。
-    }
-
-    final Iterable<File> files;
-    try {
-      files = dir.listSync().whereType<File>();
-    } on FileSystemException {
-      return;
-    }
-    for (final file in files) {
-      final String content;
-      try {
-        content = await file.readAsString();
-      } on FileSystemException {
-        continue;
-      }
-      if (!_referencesUrl(content, url)) continue;
-      try {
-        await file.delete();
-      } on FileSystemException {
-        // 单个文件删除失败不影响其他候选。
-      }
-    }
+    final index = await buildIndex(dir, [url]);
+    await index.deleteRecord(url);
   }
 
   /// 删除指定 URL 集合中已经超过续播保留期的记录。
@@ -217,43 +281,6 @@ class MpvWatchLaterSync {
     return removed;
   }
 
-  /// 定位 [url] 对应的 watch_later 文件（MD5 直查 → 目录扫描兜底）。
-  Future<({File? file, bool expired})> _findFile(
-    Directory dir,
-    String url, {
-    required Duration maxAge,
-    required DateTime now,
-  }) async {
-    // ── 1. MD5 文件名直查（主通道） ──────────────────────────
-    final direct = File(p.join(dir.path, md5FileName(url)));
-    if (await direct.exists()) {
-      final expired = await _deleteIfExpired(direct, maxAge, now);
-      return (file: expired ? null : direct, expired: expired);
-    }
-
-    // ── 2. 目录扫描 + 注释行匹配（兜底） ─────────────────────
-    final Iterable<File> files;
-    try {
-      files = dir.listSync().whereType<File>();
-    } on FileSystemException {
-      return (file: null, expired: false); // 目录不存在等：视为无记录。
-    }
-
-    for (final f in files) {
-      final String content;
-      try {
-        content = await f.readAsString();
-      } on FileSystemException {
-        continue; // 单个文件读取失败（被占用/删除）跳过。
-      }
-      if (_referencesUrl(content, url)) {
-        final expired = await _deleteIfExpired(f, maxAge, now);
-        return (file: expired ? null : f, expired: expired);
-      }
-    }
-    return (file: null, expired: false);
-  }
-
   Future<bool> _deleteIfExpired(
     File file,
     Duration maxAge,
@@ -279,11 +306,6 @@ class MpvWatchLaterSync {
     } on FileSystemException {
       return false;
     }
-  }
-
-  /// 内容中的注释行（`# ...`）是否引用了 [url]。
-  static bool _referencesUrl(String content, String url) {
-    return _referencedUrls(content).contains(url);
   }
 
   static Iterable<String> _referencedUrls(String content) sync* {

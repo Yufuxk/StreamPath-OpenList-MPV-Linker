@@ -9,17 +9,17 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
 
   # ── 网络层：WebDAV 请求 ─────────────────────────────────────
   dio: ^5.7.0
 
   # ── 数据层：本地元数据缓存（目录"秒开"） ────────────────────
   hive: ^2.2.3
-  hive_flutter: ^1.1.0
 
   # ── 数据层：播放进度 SQLite（桌面需 ffi；动态库由 sqlite3 包的
   #    native assets hook 构建/下载，无需 sqlite3_flutter_libs） ──
-  sqflite: ^2.4.1
   sqflite_common_ffi: ^2.3.4
 
   # ── XML：PROPFIND multistatus 响应解析 ─────────────────────

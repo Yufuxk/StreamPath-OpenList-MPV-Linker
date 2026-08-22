@@ -1,34 +1,60 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../localization/app_text.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/constants.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../data/models/appearance_config.dart';
-import '../../data/models/connection_config.dart';
-import '../../data/models/openlist_recovery_config.dart';
+import '../../data/models/app_language.dart';
+import '../../data/models/media_library_config.dart';
+import '../../data/models/media_library_item.dart';
+import '../../data/models/openlist_index_config.dart';
 import '../../data/models/player_config.dart';
+import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
 import '../../domain/services/cache_cleanup_service.dart';
+import '../../domain/services/diagnostic_service.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/openlist_index_service.dart';
+import '../../domain/services/openlist_api_client.dart';
 import '../../domain/services/openlist_recovery_service.dart';
 import '../../features/cache_control/models/cache_intelligence_config.dart';
 import '../../features/cache_control/models/cache_policy_config.dart';
 import '../../features/cache_expiration/models/cache_expiration_config.dart';
 import '../state/app_state.dart';
+import '../models/settings_config_draft.dart';
+import '../localization/app_localizations.dart';
 import '../theme/appearance_controller.dart';
 import '../theme/glass_tokens.dart';
 import '../widgets/clipboard_history_menu.dart';
-import '../widgets/directory_wheel_scroll_region.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
+import '../widgets/settings_category_forms.dart';
 
 /// 设置页中的可用分类。
 ///
 /// 新增页面时只需补充枚举值，并在 [_SettingsPageState._buildSections]
 /// 注册页面描述与内容构建器。
-enum SettingsSection { server, playback, cache, appearance, general }
+enum SettingsSection {
+  server,
+  playback,
+  mediaLibrary,
+  cache,
+  diagnostics,
+  appearance,
+  general,
+}
+
+enum _MediaLibraryCleanupTarget {
+  favorites,
+  continuePlayback,
+  recentPlayback,
+  recentDirectories,
+}
 
 /// 设置页当前分类的进程内缓存。
 ///
@@ -66,13 +92,16 @@ class _SettingsSectionDefinition {
   final Widget Function() builder;
 }
 
-/// 分类设置页：服务器、播放、缓存、界面与基础行为。
+/// 分类设置页：服务器、播放、媒体中心、缓存、界面与基础行为。
 ///
 /// 参数模板按行编辑（每行一个参数），支持占位符：
 /// `{url}` 视频地址 · `{subfile}` 字幕地址 · `{start}` 续播秒数；
 /// 无值的占位符所在的整行参数会被自动移除。
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.onSectionBuilt});
+
+  @visibleForTesting
+  final ValueChanged<SettingsSection>? onSectionBuilt;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -86,82 +115,155 @@ class _SettingsPageState extends State<SettingsPage> {
   final Map<SettingsSection, ScrollController> _pageScrollControllers = {
     for (final section in SettingsSection.values) section: ScrollController(),
   };
-  late final TextEditingController _nameController;
-  late final TextEditingController _executableController;
-  late final TextEditingController _argsController;
-  late final TextEditingController _hiddenExtensionsController;
-  late final TextEditingController _serverUrlController;
-  late final TextEditingController _serverUsernameController;
-  late final TextEditingController _serverPasswordController;
-  late final TextEditingController _openListBaseUrlController;
-  late final TextEditingController _openListUsernameController;
-  late final TextEditingController _openListPasswordController;
-  late final TextEditingController _openListTokenController;
-  late final TextEditingController _cacheMemoryRatioController;
-  late final TextEditingController _cacheBaseSecsController;
-  late final TextEditingController _cacheSmallFileController;
-  late final TextEditingController _cacheBandwidthController;
-  late final TextEditingController _intelligenceMinSamplesController;
-  late final TextEditingController _intelligenceMaxAdjustmentController;
-  late final TextEditingController _directoryFreshnessController;
-  late final TextEditingController _directoryRetentionController;
-  late final TextEditingController _directoryScrollRetentionController;
-  late final TextEditingController _playbackRetentionController;
-  late final TextEditingController _mediaMetadataRetentionController;
+  final ValueNotifier<int> _serverSectionRevision = ValueNotifier<int>(0);
+  final ValueNotifier<int> _appearanceSectionRevision = ValueNotifier<int>(0);
+  late final SettingsConfigDraft _draft;
 
-  bool _subtitleInjectionEnabled = true;
-  bool _subtitleAutoSelectEnabled = true;
-  bool _resumeEnabled = true;
-  bool _hiddenExtensionsEnabled = true;
-  FileSortMode _defaultSortMode = FileSortMode.name;
-  FileSortDirection _defaultSortDirection = FileSortDirection.ascending;
-  int _playerStartupTimeoutSeconds =
-      AppConstants.defaultPlayerStartupTimeoutSeconds;
-  bool _openListRecoveryEnabled = false;
-  bool _cacheEnabled = true;
-  CachePolicyMode _cacheMode = CachePolicyMode.auto;
-  bool _overrideUserCacheArgs = false;
-  bool _intelligenceEnabled = true;
-  bool _applyIntelligence = false;
-  bool _bitratePredictionEnabled = true;
-  bool _storageOptimizationEnabled = true;
-  bool _habitLearningEnabled = true;
-  InterfaceStyle _interfaceStyle = InterfaceStyle.classic;
-  WindowMaterialPreference _windowMaterial = WindowMaterialPreference.automatic;
-  double _glassOpacity = AppearanceConfig.defaultGlassOpacity;
+  TextEditingController get _nameController => _draft.nameController;
+  TextEditingController get _executableController =>
+      _draft.executableController;
+  TextEditingController get _argsController => _draft.argsController;
+  TextEditingController get _hiddenExtensionsController =>
+      _draft.hiddenExtensionsController;
+  TextEditingController get _serverUrlController => _draft.serverUrlController;
+  TextEditingController get _serverUsernameController =>
+      _draft.serverUsernameController;
+  TextEditingController get _serverPasswordController =>
+      _draft.serverPasswordController;
+  TextEditingController get _profileNameController =>
+      _draft.profileNameController;
+  TextEditingController get _defaultDirectoryController =>
+      _draft.defaultDirectoryController;
+  TextEditingController get _openListBaseUrlController =>
+      _draft.openListBaseUrlController;
+  TextEditingController get _openListUsernameController =>
+      _draft.openListUsernameController;
+  TextEditingController get _openListPasswordController =>
+      _draft.openListPasswordController;
+  TextEditingController get _openListTokenController =>
+      _draft.openListTokenController;
+  TextEditingController get _openListIndexUserTokenController =>
+      _draft.openListIndexUserTokenController;
+  TextEditingController get _openListIndexIntervalController =>
+      _draft.openListIndexIntervalController;
+  TextEditingController get _cacheMemoryRatioController =>
+      _draft.cacheMemoryRatioController;
+  TextEditingController get _cacheBaseSecsController =>
+      _draft.cacheBaseSecsController;
+  TextEditingController get _cacheSmallFileController =>
+      _draft.cacheSmallFileController;
+  TextEditingController get _cacheBandwidthController =>
+      _draft.cacheBandwidthController;
+  TextEditingController get _intelligenceMinSamplesController =>
+      _draft.intelligenceMinSamplesController;
+  TextEditingController get _intelligenceMaxAdjustmentController =>
+      _draft.intelligenceMaxAdjustmentController;
+  TextEditingController get _directoryFreshnessController =>
+      _draft.directoryFreshnessController;
+  TextEditingController get _directoryRetentionController =>
+      _draft.directoryRetentionController;
+  TextEditingController get _directoryScrollRetentionController =>
+      _draft.directoryScrollRetentionController;
+  TextEditingController get _playbackRetentionController =>
+      _draft.playbackRetentionController;
+  TextEditingController get _mediaMetadataRetentionController =>
+      _draft.mediaMetadataRetentionController;
+  TextEditingController get _mediaLibraryFavoritesController =>
+      _draft.mediaLibraryFavoritesController;
+  TextEditingController get _mediaLibraryContinueController =>
+      _draft.mediaLibraryContinueController;
+  TextEditingController get _mediaLibraryRecentPlaybackController =>
+      _draft.mediaLibraryRecentPlaybackController;
+  TextEditingController get _mediaLibraryRecentDirectoriesController =>
+      _draft.mediaLibraryRecentDirectoriesController;
+
+  bool get _subtitleInjectionEnabled => _draft.subtitleInjectionEnabled;
+  set _subtitleInjectionEnabled(bool value) =>
+      _draft.subtitleInjectionEnabled = value;
+  bool get _subtitleAutoSelectEnabled => _draft.subtitleAutoSelectEnabled;
+  set _subtitleAutoSelectEnabled(bool value) =>
+      _draft.subtitleAutoSelectEnabled = value;
+  bool get _resumeEnabled => _draft.resumeEnabled;
+  set _resumeEnabled(bool value) => _draft.resumeEnabled = value;
+  bool get _hiddenExtensionsEnabled => _draft.hiddenExtensionsEnabled;
+  set _hiddenExtensionsEnabled(bool value) =>
+      _draft.hiddenExtensionsEnabled = value;
+  FileSortMode get _defaultSortMode => _draft.defaultSortMode;
+  set _defaultSortMode(FileSortMode value) => _draft.defaultSortMode = value;
+  FileSortDirection get _defaultSortDirection => _draft.defaultSortDirection;
+  set _defaultSortDirection(FileSortDirection value) =>
+      _draft.defaultSortDirection = value;
+  bool get _openListRecoveryEnabled => _draft.openListRecoveryEnabled;
+  set _openListRecoveryEnabled(bool value) =>
+      _draft.openListRecoveryEnabled = value;
+  bool get _openListIndexAutoUpdateEnabled =>
+      _draft.openListIndexAutoUpdateEnabled;
+  set _openListIndexAutoUpdateEnabled(bool value) =>
+      _draft.openListIndexAutoUpdateEnabled = value;
+  bool get _requiresOpenListAdminConfig =>
+      _openListRecoveryEnabled || _openListIndexAutoUpdateEnabled;
+  List<ServerProfile> get _profiles => _draft.profiles;
+  set _profiles(List<ServerProfile> value) => _draft.profiles = value;
+  String? get _selectedProfileId => _draft.selectedProfileId;
+  set _selectedProfileId(String? value) => _draft.selectedProfileId = value;
+  CredentialStorageMode get _credentialStorageMode =>
+      _draft.credentialStorageMode;
+  set _credentialStorageMode(CredentialStorageMode value) =>
+      _draft.credentialStorageMode = value;
+  bool get _cacheEnabled => _draft.cacheEnabled;
+  set _cacheEnabled(bool value) => _draft.cacheEnabled = value;
+  CachePolicyMode get _cacheMode => _draft.cacheMode;
+  set _cacheMode(CachePolicyMode value) => _draft.cacheMode = value;
+  bool get _overrideUserCacheArgs => _draft.overrideUserCacheArgs;
+  set _overrideUserCacheArgs(bool value) =>
+      _draft.overrideUserCacheArgs = value;
+  bool get _intelligenceEnabled => _draft.intelligenceEnabled;
+  set _intelligenceEnabled(bool value) => _draft.intelligenceEnabled = value;
+  bool get _applyIntelligence => _draft.applyIntelligence;
+  set _applyIntelligence(bool value) => _draft.applyIntelligence = value;
+  bool get _bitratePredictionEnabled => _draft.bitratePredictionEnabled;
+  set _bitratePredictionEnabled(bool value) =>
+      _draft.bitratePredictionEnabled = value;
+  bool get _storageOptimizationEnabled => _draft.storageOptimizationEnabled;
+  set _storageOptimizationEnabled(bool value) =>
+      _draft.storageOptimizationEnabled = value;
+  bool get _habitLearningEnabled => _draft.habitLearningEnabled;
+  set _habitLearningEnabled(bool value) => _draft.habitLearningEnabled = value;
+  InterfaceStyle get _interfaceStyle => _draft.interfaceStyle;
+  set _interfaceStyle(InterfaceStyle value) => _draft.interfaceStyle = value;
+  WindowMaterialPreference get _windowMaterial => _draft.windowMaterial;
+  set _windowMaterial(WindowMaterialPreference value) =>
+      _draft.windowMaterial = value;
+  double get _glassOpacity => _draft.glassOpacity;
+  set _glassOpacity(double value) => _draft.glassOpacity = value;
+  AppLanguage get _language => _draft.language;
+  set _language(AppLanguage value) => _draft.language = value;
   late SettingsSection _selectedSection;
   bool _loaded = false;
   bool _saving = false;
   bool _resettingSettings = false;
   bool _clearingCache = false;
   bool _clearingLearningData = false;
+  bool _clearingMediaLibrary = false;
+  bool _runningDiagnostics = false;
+  bool _exportingDiagnostics = false;
+  bool _repairingDatabases = false;
+  bool _updatingOpenListIndex = false;
+  bool _loadingOpenListIndexProgress = false;
+  bool _openListIndexUpdateUnavailable = false;
+  OpenListCapabilities? _openListCapabilities;
+  OpenListIndexProgress? _openListIndexProgress;
+  String? _openListIndexProgressError;
+  Timer? _openListIndexProgressTimer;
+  DateTime? _openListIndexPollGraceDeadline;
+  int _openListIndexProgressGeneration = 0;
+  DiagnosticSnapshot? _diagnosticSnapshot;
 
   @override
   void initState() {
     super.initState();
     _selectedSection = SettingsPageMemory.selectedSection;
-    _nameController = TextEditingController();
-    _executableController = TextEditingController();
-    _argsController = TextEditingController();
-    _hiddenExtensionsController = TextEditingController();
-    _serverUrlController = TextEditingController();
-    _serverUsernameController = TextEditingController();
-    _serverPasswordController = TextEditingController();
-    _openListBaseUrlController = TextEditingController();
-    _openListUsernameController = TextEditingController();
-    _openListPasswordController = TextEditingController();
-    _openListTokenController = TextEditingController();
-    _cacheMemoryRatioController = TextEditingController();
-    _cacheBaseSecsController = TextEditingController();
-    _cacheSmallFileController = TextEditingController();
-    _cacheBandwidthController = TextEditingController();
-    _intelligenceMinSamplesController = TextEditingController();
-    _intelligenceMaxAdjustmentController = TextEditingController();
-    _directoryFreshnessController = TextEditingController();
-    _directoryRetentionController = TextEditingController();
-    _directoryScrollRetentionController = TextEditingController();
-    _playbackRetentionController = TextEditingController();
-    _mediaMetadataRetentionController = TextEditingController();
+    _draft = SettingsConfigDraft();
     _loadConfig();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
@@ -171,28 +273,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
-    _nameController.dispose();
-    _executableController.dispose();
-    _argsController.dispose();
-    _hiddenExtensionsController.dispose();
-    _serverUrlController.dispose();
-    _serverUsernameController.dispose();
-    _serverPasswordController.dispose();
-    _openListBaseUrlController.dispose();
-    _openListUsernameController.dispose();
-    _openListPasswordController.dispose();
-    _openListTokenController.dispose();
-    _cacheMemoryRatioController.dispose();
-    _cacheBaseSecsController.dispose();
-    _cacheSmallFileController.dispose();
-    _cacheBandwidthController.dispose();
-    _intelligenceMinSamplesController.dispose();
-    _intelligenceMaxAdjustmentController.dispose();
-    _directoryFreshnessController.dispose();
-    _directoryRetentionController.dispose();
-    _directoryScrollRetentionController.dispose();
-    _playbackRetentionController.dispose();
-    _mediaMetadataRetentionController.dispose();
+    _openListIndexProgressTimer?.cancel();
+    _openListIndexProgressGeneration++;
+    _serverSectionRevision.dispose();
+    _appearanceSectionRevision.dispose();
+    _draft.dispose();
     for (final controller in _pageScrollControllers.values) {
       controller.dispose();
     }
@@ -205,8 +290,6 @@ class _SettingsPageState extends State<SettingsPage> {
       final appearanceController = context.read<AppearanceController>();
       final fullConfig = await appState.configStore.load();
       final appearance = appearanceController.config;
-      final config = fullConfig.toPlayerConfig();
-      final connection = fullConfig.toConnectionConfig();
       final cacheConfig =
           await appState.cachePolicyConfigStore?.load() ??
           CachePolicyConfig.defaults();
@@ -218,73 +301,24 @@ class _SettingsPageState extends State<SettingsPage> {
           CacheExpirationConfig.defaults();
       if (!mounted) return false;
       setState(() {
-        _nameController.text = config.name;
-        _executableController.text = config.executable;
-        _argsController.text = config.args.join('\n');
-        _hiddenExtensionsController.text = formatHiddenExtensions(
-          config.hiddenExtensions,
+        _draft.loadFrom(
+          fullConfig: fullConfig,
+          appearance: appearance,
+          cacheConfig: cacheConfig,
+          intelligenceConfig: intelligenceConfig,
+          expirationConfig: expirationConfig,
         );
-        _serverUrlController.text = connection.baseUrl;
-        _serverUsernameController.text = connection.username;
-        _serverPasswordController.text = connection.password;
-        _openListRecoveryEnabled = fullConfig.openListRecovery.enabled;
-        _openListBaseUrlController.text = fullConfig.openListRecovery.baseUrl;
-        _openListUsernameController.text = fullConfig.openListRecovery.username;
-        _openListPasswordController.text = fullConfig.openListRecovery.password;
-        _openListTokenController.text = fullConfig.openListRecovery.token;
-        _subtitleInjectionEnabled = config.subtitleInjectionEnabled;
-        _subtitleAutoSelectEnabled = config.subtitleAutoSelectEnabled;
-        _resumeEnabled = config.resumeEnabled;
-        _hiddenExtensionsEnabled = config.hiddenExtensionsEnabled;
-        _defaultSortMode = config.defaultSortMode;
-        _defaultSortDirection = config.defaultSortDirection;
-        _playerStartupTimeoutSeconds = config.playerStartupTimeoutSeconds;
-        _cacheEnabled = cacheConfig.enabled;
-        _cacheMode = cacheConfig.mode;
-        _cacheMemoryRatioController.text = (cacheConfig.memoryBudgetRatio * 100)
-            .toStringAsFixed(0);
-        _cacheBaseSecsController.text = cacheConfig.baseCacheSecs.toString();
-        _cacheSmallFileController.text = cacheConfig.smallFileThresholdMB
-            .toString();
-        _cacheBandwidthController.text =
-            cacheConfig.assumedBandwidthMbps?.toString() ?? '';
-        _overrideUserCacheArgs = cacheConfig.overrideUserCacheArgs;
-        _intelligenceEnabled = intelligenceConfig.enabled;
-        _applyIntelligence = intelligenceConfig.applyOptimizations;
-        _bitratePredictionEnabled = intelligenceConfig.bitratePredictionEnabled;
-        _storageOptimizationEnabled =
-            intelligenceConfig.storageOptimizationEnabled;
-        _habitLearningEnabled = intelligenceConfig.habitLearningEnabled;
-        _interfaceStyle = appearance.style;
-        _windowMaterial = appearance.material;
-        _glassOpacity = appearance.glassOpacity;
-        _intelligenceMinSamplesController.text = intelligenceConfig.minSamples
-            .toString();
-        _intelligenceMaxAdjustmentController.text =
-            (intelligenceConfig.maxAdjustmentRatio * 100).toStringAsFixed(0);
-        _directoryFreshnessController.text = expirationConfig
-            .directoryFreshnessMinutes
-            .toString();
-        _directoryRetentionController.text = expirationConfig
-            .directoryRetentionDays
-            .toString();
-        _directoryScrollRetentionController.text = expirationConfig
-            .directoryScrollRetentionMinutes
-            .toString();
-        _playbackRetentionController.text = expirationConfig
-            .playbackRetentionDays
-            .toString();
-        _mediaMetadataRetentionController.text = expirationConfig
-            .mediaMetadataRetentionDays
-            .toString();
         _loaded = true;
       });
+      if (_selectedSection == SettingsSection.server) {
+        unawaited(_refreshOpenListIndexProgress());
+      }
       return true;
     } on AppException catch (e) {
       if (!mounted) return false;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(e.message)));
+      ).showSnackBar(SnackBar(content: AppText(e.message)));
       return false;
     }
   }
@@ -296,78 +330,12 @@ class _SettingsPageState extends State<SettingsPage> {
         return;
       }
     }
-    final config = PlayerConfig(
-      name: _nameController.text.trim().isEmpty
-          ? '外部播放器'
-          : _nameController.text.trim(),
-      executable: _executableController.text.trim(),
-      args: _argsController.text
-          .split('\n')
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(),
-      subtitleInjectionEnabled: _subtitleInjectionEnabled,
-      subtitleAutoSelectEnabled:
-          _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
-      resumeEnabled: _resumeEnabled,
-      hiddenExtensionsEnabled: _hiddenExtensionsEnabled,
-      hiddenExtensions: parseHiddenExtensions(_hiddenExtensionsController.text),
-      defaultSortMode: _defaultSortMode,
-      defaultSortDirection: _defaultSortDirection,
-      playerStartupTimeoutSeconds: _playerStartupTimeoutSeconds,
-    );
-    final bandwidthText = _cacheBandwidthController.text.trim();
-    final cacheConfig = CachePolicyConfig(
-      enabled: _cacheEnabled,
-      mode: _cacheMode,
-      memoryBudgetRatio:
-          double.parse(_cacheMemoryRatioController.text.trim()) / 100,
-      baseCacheSecs: int.parse(_cacheBaseSecsController.text.trim()),
-      smallFileThresholdMB: int.parse(_cacheSmallFileController.text.trim()),
-      assumedBandwidthMbps: bandwidthText.isEmpty
-          ? null
-          : double.parse(bandwidthText),
-      overrideUserCacheArgs: _overrideUserCacheArgs,
-    );
-    final intelligenceConfig = CacheIntelligenceConfig(
-      enabled: _intelligenceEnabled,
-      applyOptimizations: _applyIntelligence,
-      bitratePredictionEnabled: _bitratePredictionEnabled,
-      storageOptimizationEnabled: _storageOptimizationEnabled,
-      habitLearningEnabled: _habitLearningEnabled,
-      minSamples: int.parse(_intelligenceMinSamplesController.text.trim()),
-      maxAdjustmentRatio:
-          double.parse(_intelligenceMaxAdjustmentController.text.trim()) / 100,
-    );
-    final expirationConfig = CacheExpirationConfig(
-      directoryFreshnessMinutes: int.parse(
-        _directoryFreshnessController.text.trim(),
-      ),
-      directoryRetentionDays: int.parse(
-        _directoryRetentionController.text.trim(),
-      ),
-      directoryScrollRetentionMinutes: int.parse(
-        _directoryScrollRetentionController.text.trim(),
-      ),
-      playbackRetentionDays: int.parse(
-        _playbackRetentionController.text.trim(),
-      ),
-      mediaMetadataRetentionDays: int.parse(
-        _mediaMetadataRetentionController.text.trim(),
-      ),
-    );
-    final openListRecovery = OpenListRecoveryConfig(
-      enabled: _openListRecoveryEnabled,
-      baseUrl: _openListBaseUrlController.text.trim(),
-      username: _openListUsernameController.text.trim(),
-      password: _openListPasswordController.text,
-      token: _openListTokenController.text.trim(),
-    );
-    final appearance = AppearanceConfig(
-      style: _interfaceStyle,
-      material: _windowMaterial,
-      glassOpacity: _glassOpacity,
-    );
+    final config = _draft.buildPlayerConfig();
+    final cacheConfig = _draft.buildCachePolicyConfig();
+    final intelligenceConfig = _draft.buildIntelligenceConfig();
+    final expirationConfig = _draft.buildExpirationConfig();
+    final appearance = _draft.buildAppearanceConfig();
+    final mediaLibraryConfig = _draft.buildMediaLibraryConfig();
 
     setState(() => _saving = true);
     try {
@@ -378,28 +346,41 @@ class _SettingsPageState extends State<SettingsPage> {
           previousAppearance.style != appearance.style ||
           previousAppearance.material != appearance.material ||
           previousAppearance.glassOpacity != appearance.glassOpacity;
-      final connection = ConnectionConfig(
-        baseUrl: _serverUrlController.text.trim(),
-        username: _serverUsernameController.text.trim(),
-        password: _serverPasswordController.text,
-      );
+      final currentConfig = appState.configStore.current;
+      final profileId = _selectedProfileId ?? ServerProfile.newId();
+      final profile = _draft.buildProfile(profileId: profileId);
+      final shouldActivate =
+          currentConfig.profiles.isEmpty ||
+          currentConfig.profileId == profileId;
+      final nextConfig = currentConfig
+          .upsertProfile(profile, activate: shouldActivate)
+          .withCredentialStorageMode(_credentialStorageMode)
+          .copyWithGlobalSettings(
+            player: config,
+            appearance: appearance,
+            mediaLibrary: mediaLibraryConfig,
+            language: _language,
+          );
       if (appearanceChanged && !await appearanceController.apply(appearance)) {
         throw AppException.config('无法启用所选窗口样式，已保留当前界面');
       }
       try {
-        await appState.configStore.save(
-          StreamPathConfig.fromParts(
-            config,
-            connection,
-            openListRecovery: openListRecovery,
-            appearance: appearance,
-          ),
-        );
+        await appState.configStore.save(nextConfig);
+        appState.applyLanguage(nextConfig.language);
       } on AppException {
         if (appearanceChanged) {
           await appearanceController.apply(previousAppearance);
         }
         rethrow;
+      }
+      appState.refreshOpenListIndexSchedule();
+      final mediaLibraryStore = appState.mediaLibraryStore;
+      if (mediaLibraryStore != null) {
+        try {
+          await mediaLibraryStore.applyConfig(mediaLibraryConfig);
+        } catch (error) {
+          throw AppException.storage('配置已保存，但媒体中心容量应用失败', error);
+        }
       }
       final cacheStore = appState.cachePolicyConfigStore;
       if (cacheStore != null && !await cacheStore.save(cacheConfig)) {
@@ -416,14 +397,18 @@ class _SettingsPageState extends State<SettingsPage> {
         throw AppException.storage('基础配置已保存，但缓存过期配置保存失败');
       }
       if (!mounted) return;
+      setState(() {
+        _profiles = [...nextConfig.profiles];
+        _selectedProfileId = profileId;
+      });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('全部配置已保存')));
+      ).showSnackBar(const SnackBar(content: AppText('全部配置已保存')));
     } on AppException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(e.message)));
+      ).showSnackBar(SnackBar(content: AppText(e.message)));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -452,15 +437,15 @@ class _SettingsPageState extends State<SettingsPage> {
     await showGlassDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('重置全部设置？'),
-        content: const Text(
-          '服务器、播放、缓存策略、界面和基础设置将恢复默认值。目录缓存、续播记录、学习数据和其他缓存文件不会被删除；当前连接与正在播放的会话不会被中断。',
+        title: const AppText('重置全部设置？'),
+        content: const AppText(
+          '服务器、播放、媒体中心容量、缓存策略、界面和基础设置将恢复默认值。媒体中心个人资产、目录缓存、续播记录、学习数据和其他缓存文件不会被删除；当前连接与正在播放的会话不会被中断。',
         ),
         actions: [
           TextButton(
             key: const Key('cancel-reset-settings-button'),
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
+            child: const AppText('取消'),
           ),
           FilledButton(
             key: const Key('confirm-reset-settings-button'),
@@ -472,7 +457,7 @@ class _SettingsPageState extends State<SettingsPage> {
               Navigator.of(dialogContext).pop();
               await _resetAllSettings();
             },
-            child: const Text('确认重置'),
+            child: const AppText('确认重置'),
           ),
         ],
       ),
@@ -499,12 +484,22 @@ class _SettingsPageState extends State<SettingsPage> {
       }
       try {
         await appState.configStore.resetToDefaults();
+        appState.applyLanguage(defaultConfig.language);
+        appState.refreshOpenListIndexSchedule();
         settingsChanged = true;
       } on AppException {
         if (appearanceChanged) {
           await appearanceController.apply(previousAppearance);
         }
         rethrow;
+      }
+      final mediaLibraryStore = appState.mediaLibraryStore;
+      if (mediaLibraryStore != null) {
+        try {
+          await mediaLibraryStore.applyConfig(defaultConfig.mediaLibrary);
+        } catch (error) {
+          throw AppException.storage('主配置已重置，但媒体中心容量恢复失败', error);
+        }
       }
 
       final cacheStore = appState.cachePolicyConfigStore;
@@ -526,19 +521,19 @@ class _SettingsPageState extends State<SettingsPage> {
       if (!await _refreshConfigFields() || !mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('全部设置已恢复默认值')));
+        ..showSnackBar(const SnackBar(content: AppText('全部设置已恢复默认值')));
     } on AppException catch (e) {
       if (settingsChanged && mounted) await _refreshConfigFields();
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(e.message)));
+        ..showSnackBar(SnackBar(content: AppText(e.message)));
     } catch (error) {
       if (settingsChanged && mounted) await _refreshConfigFields();
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('重置设置失败：$error')));
+        ..showSnackBar(SnackBar(content: AppText('重置设置失败：$error')));
     } finally {
       if (mounted) setState(() => _resettingSettings = false);
     }
@@ -548,18 +543,18 @@ class _SettingsPageState extends State<SettingsPage> {
     final confirmed = await showGlassDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('清理缓存？'),
-        content: const Text('将清除目录缓存、播放进度、继续播放记录和 MPV 临时文件。'),
+        title: const AppText('清理缓存？'),
+        content: const AppText('将清除目录缓存、播放进度、继续播放记录和 MPV 临时文件。'),
         actions: [
           TextButton(
             key: const Key('cancel-clear-cache-button'),
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
+            child: const AppText('取消'),
           ),
           FilledButton(
             key: const Key('confirm-clear-cache-button'),
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('确认清理'),
+            child: const AppText('确认清理'),
           ),
         ],
       ),
@@ -572,17 +567,17 @@ class _SettingsPageState extends State<SettingsPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('缓存已清理')));
+        ..showSnackBar(const SnackBar(content: AppText('缓存已清理')));
     } on CacheCleanupException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(error.message)));
+        ..showSnackBar(SnackBar(content: AppText(error.message)));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('清理缓存失败：$error')));
+        ..showSnackBar(SnackBar(content: AppText('清理缓存失败：$error')));
     } finally {
       if (mounted) setState(() => _clearingCache = false);
     }
@@ -592,18 +587,18 @@ class _SettingsPageState extends State<SettingsPage> {
     final confirmed = await showGlassDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('清理学习数据？'),
-        content: const Text('将清除智能缓存积累的学习数据。'),
+        title: const AppText('清理学习数据？'),
+        content: const AppText('将清除智能缓存积累的学习数据。'),
         actions: [
           TextButton(
             key: const Key('cancel-clear-learning-data-button'),
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
+            child: const AppText('取消'),
           ),
           FilledButton(
             key: const Key('confirm-clear-learning-data-button'),
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('确认清理'),
+            child: const AppText('确认清理'),
           ),
         ],
       ),
@@ -616,26 +611,536 @@ class _SettingsPageState extends State<SettingsPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('学习数据已清理')));
+        ..showSnackBar(const SnackBar(content: AppText('学习数据已清理')));
     } on CacheCleanupException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(error.message)));
+        ..showSnackBar(SnackBar(content: AppText(error.message)));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('清理学习数据失败：$error')));
+        ..showSnackBar(SnackBar(content: AppText('清理学习数据失败：$error')));
     } finally {
       if (mounted) setState(() => _clearingLearningData = false);
+    }
+  }
+
+  String? _currentMediaLibrarySourceId(AppState appState) {
+    final active = appState.mediaSourceId;
+    if (active != null) return active;
+    final config = appState.configStore.current;
+    if (!config.isConnectionComplete) return null;
+    return mediaSourceId(baseUrl: config.serverUrl, username: config.username);
+  }
+
+  Future<void> _confirmAndClearMediaLibrary(
+    _MediaLibraryCleanupTarget target,
+  ) async {
+    final appState = context.read<AppState>();
+    final store = appState.mediaLibraryStore;
+    final sourceId = _currentMediaLibrarySourceId(appState);
+    if (store == null || sourceId == null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(content: AppText('请先保存完整服务器信息，再清理媒体中心记录')),
+        );
+      return;
+    }
+
+    final (title, description, successMessage) = switch (target) {
+      _MediaLibraryCleanupTarget.favorites => (
+        '清空收藏列表？',
+        '将清除当前来源的目录、视频、STRM 和音频收藏。',
+        '收藏列表已清空',
+      ),
+      _MediaLibraryCleanupTarget.continuePlayback => (
+        '清空继续播放列表？',
+        '只隐藏当前来源已有的媒体中心继续播放项；不会删除 SQLite、watch_later、正式或临时续播点，也不会清除最近播放。再次播放后对应会话可重新出现。',
+        '继续播放列表已清空',
+      ),
+      _MediaLibraryCleanupTarget.recentPlayback => (
+        '清空最近播放列表？',
+        '将清除当前来源的视频和音频最近播放记录，并同步移除这些记录在媒体中心的继续播放入口；不会删除底层播放进度。',
+        '最近播放列表已清空',
+      ),
+      _MediaLibraryCleanupTarget.recentDirectories => (
+        '清空最近目录列表？',
+        '将清除当前来源的最近访问目录，不删除目录缓存或收藏。',
+        '最近目录列表已清空',
+      ),
+    };
+    final confirmed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: AppText(title),
+        content: AppText(description),
+        actions: [
+          TextButton(
+            key: const Key('cancel-clear-media-library-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const AppText('取消'),
+          ),
+          FilledButton(
+            key: const Key('confirm-clear-media-library-button'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const AppText('确认清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _clearingMediaLibrary = true);
+    try {
+      await switch (target) {
+        _MediaLibraryCleanupTarget.favorites => store.clearFavorites(sourceId),
+        _MediaLibraryCleanupTarget.continuePlayback =>
+          store.clearContinuePlayback(sourceId),
+        _MediaLibraryCleanupTarget.recentPlayback =>
+          store.clearAllPlaybackHistory(sourceId),
+        _MediaLibraryCleanupTarget.recentDirectories =>
+          store.clearRecentDirectories(sourceId),
+      };
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: AppText(successMessage)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: AppText('清理媒体中心记录失败：$error')));
+    } finally {
+      if (mounted) setState(() => _clearingMediaLibrary = false);
     }
   }
 
   void _selectSection(SettingsSection section) {
     SettingsPageMemory.select(section);
     if (_selectedSection != section) {
+      _stopOpenListIndexProgressPolling(clear: false);
       setState(() => _selectedSection = section);
+      if (section == SettingsSection.server) {
+        unawaited(_refreshOpenListIndexProgress());
+      }
+    }
+  }
+
+  void _selectProfileForEditing(String? profileId) {
+    if (profileId == null) return;
+    final profile = _profiles
+        .where((item) => item.profileId == profileId)
+        .firstOrNull;
+    if (profile == null) return;
+    _stopOpenListIndexProgressPolling(clear: true);
+    setState(() {
+      _selectedProfileId = profile.profileId;
+      _openListIndexUpdateUnavailable = false;
+      _profileNameController.text = profile.name;
+      _serverUrlController.text = profile.serverUrl;
+      _serverUsernameController.text = profile.username;
+      _serverPasswordController.text = profile.password;
+      _defaultDirectoryController.text = profile.defaultDirectory;
+      _openListRecoveryEnabled = profile.openListRecovery.enabled;
+      _openListBaseUrlController.text = profile.openListRecovery.baseUrl;
+      _openListUsernameController.text = profile.openListRecovery.username;
+      _openListPasswordController.text = profile.openListRecovery.password;
+      _openListTokenController.text = profile.openListRecovery.token;
+      _openListIndexUserTokenController.text = profile.openListIndex.userToken;
+      _openListIndexAutoUpdateEnabled = profile.openListIndex.autoUpdateEnabled;
+      _openListIndexIntervalController.text = profile
+          .openListIndex
+          .updateIntervalMinutes
+          .toString();
+    });
+    unawaited(_refreshOpenListIndexProgress());
+  }
+
+  void _newProfileForEditing() {
+    _stopOpenListIndexProgressPolling(clear: true);
+    setState(() {
+      _selectedProfileId = null;
+      _openListIndexUpdateUnavailable = false;
+      _profileNameController.text = '新服务器';
+      _serverUrlController.clear();
+      _serverUsernameController.clear();
+      _serverPasswordController.clear();
+      _defaultDirectoryController.clear();
+      _openListRecoveryEnabled = false;
+      _openListBaseUrlController.clear();
+      _openListUsernameController.clear();
+      _openListPasswordController.clear();
+      _openListTokenController.clear();
+      _openListIndexUserTokenController.clear();
+      _openListIndexAutoUpdateEnabled = false;
+      _openListIndexIntervalController.text = OpenListIndexConfig
+          .defaultUpdateIntervalMinutes
+          .toString();
+    });
+  }
+
+  Future<void> _confirmDeleteSelectedProfile() async {
+    final profileId = _selectedProfileId;
+    if (profileId == null) return;
+    final appState = context.read<AppState>();
+    if (appState.mediaSourceId == profileId) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: AppText('当前已连接档案不能删除，请先退出登录')));
+      return;
+    }
+    final confirmed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const AppText('删除服务器档案？'),
+        content: const AppText('只删除该档案及其凭据，不删除缓存、收藏和播放进度。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const AppText('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const AppText('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await appState.configStore.save(
+        appState.configStore.current.removeProfile(profileId),
+      );
+      appState.refreshOpenListIndexSchedule();
+      if (!mounted) return;
+      await _refreshConfigFields();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: AppText('服务器档案已删除')));
+    } on AppException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText(error.message)));
+    }
+  }
+
+  Future<void> _updateOpenListIndexNow() async {
+    final base = OpenListRecoveryService.normalizeBaseUri(
+      _openListBaseUrlController.text,
+    );
+    if (base == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: AppText('请先填写有效的 OpenList/AList 后台地址')),
+      );
+      return;
+    }
+    if (_openListTokenController.text.trim().isEmpty &&
+        (_openListUsernameController.text.trim().isEmpty ||
+            _openListPasswordController.text.isEmpty)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: AppText('请填写管理员 Token 或管理员账号密码')));
+      return;
+    }
+    setState(() => _updatingOpenListIndex = true);
+    try {
+      final profile = _buildOpenListDraftProfile();
+      final result = await context.read<AppState>().updateOpenListIndex(
+        profile: profile,
+      );
+      if (!mounted) return;
+      if (result.message.contains('/api/admin/index/update') ||
+          result.message.contains('/api/admin/index/progress')) {
+        setState(() => _openListIndexUpdateUnavailable = true);
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText(result.message)));
+      if (result.accepted || result.alreadyRunning) {
+        _openListIndexPollGraceDeadline = DateTime.now().add(
+          const Duration(seconds: 5),
+        );
+        _openListIndexProgressTimer?.cancel();
+        _openListIndexProgressTimer = Timer(
+          const Duration(milliseconds: 500),
+          () => _refreshOpenListIndexProgress(showLoading: false),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText('索引更新失败：$error')));
+    } finally {
+      if (mounted) setState(() => _updatingOpenListIndex = false);
+    }
+  }
+
+  ServerProfile _buildOpenListDraftProfile() =>
+      _draft.buildProfile(profileId: _selectedProfileId ?? 'settings-draft');
+
+  bool get _canReadOpenListIndexProgress {
+    if (OpenListRecoveryService.normalizeBaseUri(
+          _openListBaseUrlController.text,
+        ) ==
+        null) {
+      return false;
+    }
+    return _openListTokenController.text.trim().isNotEmpty ||
+        (_openListUsernameController.text.trim().isNotEmpty &&
+            _openListPasswordController.text.isNotEmpty);
+  }
+
+  bool get _openListStorageRecoveryUnavailable =>
+      _openListCapabilities?.storageReload ==
+      OpenListCapabilitySupport.unsupported;
+
+  bool get _openListSearchUnavailable =>
+      _openListCapabilities?.indexSearch ==
+      OpenListCapabilitySupport.unsupported;
+
+  String? get _openListCapabilitySummary {
+    final capabilities = _openListCapabilities;
+    if (capabilities == null) return null;
+    String label(OpenListCapabilitySupport support) => switch (support) {
+      OpenListCapabilitySupport.supported => '可用',
+      OpenListCapabilitySupport.unsupported => '不可用',
+      OpenListCapabilitySupport.unknown => '尚不可证明',
+    };
+    final version = capabilities.version?.trim();
+    final prefix = version == null || version.isEmpty
+        ? '增强能力探测'
+        : '后台 $version 能力';
+    return '$prefix：基础 WebDAV ${label(capabilities.webDavConnection)}；'
+        '索引搜索 ${label(capabilities.indexSearch)}；索引更新 '
+        '${label(capabilities.indexUpdate)}；存储恢复 '
+        '${label(capabilities.storageReload)}。尚不可证明的功能会按端点响应失败关闭。';
+  }
+
+  Future<void> _refreshOpenListIndexProgress({bool showLoading = true}) async {
+    _openListIndexProgressTimer?.cancel();
+    _openListIndexProgressTimer = null;
+    final generation = ++_openListIndexProgressGeneration;
+    if (_selectedSection != SettingsSection.server) {
+      if (mounted) {
+        _mutateServerSection(() {
+          _loadingOpenListIndexProgress = false;
+          _openListIndexProgress = null;
+          _openListIndexProgressError = null;
+        });
+      }
+      return;
+    }
+    // 未配置后台地址时没有可探测的 OpenList 端点，避免无意义的
+    // deadline 请求在页面销毁后留下异步定时器。
+    if (OpenListRecoveryService.normalizeBaseUri(
+          _openListBaseUrlController.text,
+        ) ==
+        null) {
+      if (mounted) {
+        _mutateServerSection(() {
+          _loadingOpenListIndexProgress = false;
+          _openListCapabilities = null;
+          _openListIndexProgress = null;
+          _openListIndexProgressError = null;
+        });
+      }
+      return;
+    }
+    if (mounted && showLoading) {
+      _mutateServerSection(() => _loadingOpenListIndexProgress = true);
+    }
+    try {
+      final profile = _buildOpenListDraftProfile();
+      final capabilities = await context
+          .read<AppState>()
+          .getOpenListCapabilities(profile: profile);
+      if (!mounted || generation != _openListIndexProgressGeneration) return;
+      _mutateServerSection(() {
+        _openListCapabilities = capabilities;
+        if (capabilities.indexProgress ==
+                OpenListCapabilitySupport.unsupported ||
+            capabilities.indexUpdate == OpenListCapabilitySupport.unsupported) {
+          _openListIndexUpdateUnavailable = true;
+        }
+      });
+      if (!_canReadOpenListIndexProgress ||
+          capabilities.indexProgress == OpenListCapabilitySupport.unsupported) {
+        _mutateServerSection(() {
+          _loadingOpenListIndexProgress = false;
+          _openListIndexProgress = null;
+          _openListIndexProgressError =
+              capabilities.indexProgress ==
+                  OpenListCapabilitySupport.unsupported
+              ? capabilities.unavailableMessage(
+                  '索引状态',
+                  '/api/admin/index/progress',
+                )
+              : null;
+        });
+        return;
+      }
+      final progress = await context.read<AppState>().getOpenListIndexProgress(
+        profile: profile,
+      );
+      if (!mounted || generation != _openListIndexProgressGeneration) return;
+      _mutateServerSection(() {
+        _loadingOpenListIndexProgress = false;
+        _openListIndexProgress = progress;
+        _openListIndexProgressError = null;
+        if (capabilities.indexUpdate == OpenListCapabilitySupport.unsupported) {
+          _openListIndexUpdateUnavailable = true;
+        }
+      });
+      final withinGrace =
+          _openListIndexPollGraceDeadline?.isAfter(DateTime.now()) == true;
+      if (!progress.isDone || withinGrace) {
+        _openListIndexProgressTimer = Timer(
+          const Duration(seconds: 2),
+          () => _refreshOpenListIndexProgress(showLoading: false),
+        );
+      } else {
+        _openListIndexPollGraceDeadline = null;
+      }
+    } catch (error) {
+      if (!mounted || generation != _openListIndexProgressGeneration) return;
+      _mutateServerSection(() {
+        _loadingOpenListIndexProgress = false;
+        _openListIndexProgressError = error is FormatException
+            ? error.message.toString()
+            : '读取索引状态失败，请检查后台连接';
+        if (_openListIndexProgressError?.contains(
+              '/api/admin/index/progress',
+            ) ==
+            true) {
+          _openListIndexUpdateUnavailable = true;
+        }
+      });
+      _openListIndexPollGraceDeadline = null;
+    }
+  }
+
+  void _mutateServerSection(VoidCallback mutation) {
+    mutation();
+    _serverSectionRevision.value++;
+  }
+
+  void _mutateAppearanceSection(VoidCallback mutation) {
+    mutation();
+    _appearanceSectionRevision.value++;
+  }
+
+  void _stopOpenListIndexProgressPolling({required bool clear}) {
+    _openListIndexProgressTimer?.cancel();
+    _openListIndexProgressTimer = null;
+    _openListIndexPollGraceDeadline = null;
+    _openListIndexProgressGeneration++;
+    if (clear) {
+      _loadingOpenListIndexProgress = false;
+      _openListIndexProgress = null;
+      _openListIndexProgressError = null;
+      _openListCapabilities = null;
+    }
+  }
+
+  void _handleOpenListAdminConfigChanged(String _) {
+    _stopOpenListIndexProgressPolling(clear: true);
+    _openListIndexUpdateUnavailable = false;
+    setState(() {});
+  }
+
+  Future<void> _runDiagnostics() async {
+    setState(() => _runningDiagnostics = true);
+    try {
+      final snapshot = await context
+          .read<AppState>()
+          .createDiagnosticService()
+          .run();
+      if (!mounted) return;
+      setState(() => _diagnosticSnapshot = snapshot);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: AppText('诊断执行失败：${redactDiagnosticText(error.toString())}'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _runningDiagnostics = false);
+    }
+  }
+
+  Future<void> _exportDiagnostics() async {
+    setState(() => _exportingDiagnostics = true);
+    try {
+      final service = context.read<AppState>().createDiagnosticService();
+      final snapshot = _diagnosticSnapshot ?? await service.run();
+      final file = await service.export(snapshot);
+      if (!mounted) return;
+      setState(() => _diagnosticSnapshot = snapshot);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText('脱敏诊断包已导出：${file.path}')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: AppText('导出诊断包失败：${redactDiagnosticText(error.toString())}'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _exportingDiagnostics = false);
+    }
+  }
+
+  Future<void> _repairDatabases() async {
+    final confirmed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const AppText('执行非破坏性数据库维护？'),
+        content: const AppText(
+          '系统会先为每个 SQLite 数据库创建一致性备份，再重建索引和统计信息；不会删除播放进度。完整性检查已报告损坏时会停止，不尝试强行修复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const AppText('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const AppText('创建备份并维护'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _repairingDatabases = true);
+    try {
+      final results = await context
+          .read<AppState>()
+          .repairDatabasesNonDestructive();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: AppText('数据库维护完成，已创建 ${results.length} 个备份')),
+      );
+      await _runDiagnostics();
+    } on CacheCleanupException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText(error.message)));
+    } on AppException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: AppText(error.message)));
+    } finally {
+      if (mounted) setState(() => _repairingDatabases = false);
     }
   }
 
@@ -652,9 +1157,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final value = integer
         ? int.tryParse(text)?.toDouble()
         : double.tryParse(text);
-    if (value == null) return '请输入有效数字';
+    if (value == null) return context.l10n.text('请输入有效数字');
     if (value < min || value > max) {
-      return '请输入 $min～$max $unit';
+      return context.l10n.text('请输入 $min～$max $unit');
     }
     return null;
   }
@@ -666,43 +1171,173 @@ class _SettingsPageState extends State<SettingsPage> {
         label: '服务器',
         description: 'WebDAV 连接与服务恢复',
         icon: Icons.dns_outlined,
-        builder: _buildServerSettings,
+        builder: () => ValueListenableBuilder<int>(
+          valueListenable: _serverSectionRevision,
+          builder: (context, revision, child) => _observeSectionBuild(
+            SettingsSection.server,
+            _buildServerSettings(),
+          ),
+        ),
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.playback,
         label: '播放',
         description: '播放器、字幕与续播',
         icon: Icons.play_circle_outline,
-        builder: _buildPlaybackSettings,
+        builder: () => _observeSectionBuild(
+          SettingsSection.playback,
+          _buildPlaybackSettings(),
+        ),
+      ),
+      _SettingsSectionDefinition(
+        section: SettingsSection.mediaLibrary,
+        label: '媒体中心',
+        description: '容量限制与个人资产清理',
+        icon: Icons.video_library_outlined,
+        builder: () => _observeSectionBuild(
+          SettingsSection.mediaLibrary,
+          _buildMediaLibrarySettings(),
+        ),
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.cache,
         label: '缓存',
         description: '基础策略与智能优化',
         icon: Icons.memory_outlined,
-        builder: _buildCachePage,
+        builder: () =>
+            _observeSectionBuild(SettingsSection.cache, _buildCachePage()),
+      ),
+      _SettingsSectionDefinition(
+        section: SettingsSection.diagnostics,
+        label: '诊断',
+        description: '连接、存储与数据可靠性',
+        icon: Icons.monitor_heart_outlined,
+        builder: () => _observeSectionBuild(
+          SettingsSection.diagnostics,
+          _buildDiagnosticsSettings(),
+        ),
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.appearance,
         label: '界面',
         description: '界面样式与窗口背景',
         icon: Icons.palette_outlined,
-        builder: _buildAppearanceSettings,
+        builder: () => ValueListenableBuilder<int>(
+          valueListenable: _appearanceSectionRevision,
+          builder: (context, revision, child) => _buildAppearanceSettings(),
+        ),
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.general,
         label: '基础设置',
         description: '文件显示与默认排序',
         icon: Icons.tune_outlined,
-        builder: _buildGeneralSettings,
+        builder: () => _observeSectionBuild(
+          SettingsSection.general,
+          _buildGeneralSettings(),
+        ),
       ),
     ];
+  }
+
+  Widget _observeSectionBuild(SettingsSection section, Widget child) {
+    return _SettingsSectionBuildProbe(
+      section: section,
+      onBuild: widget.onSectionBuilt,
+      child: child,
+    );
   }
 
   Widget _buildServerSettings() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _SettingsGroupCard(
+          icon: Icons.dns_outlined,
+          title: '服务器档案',
+          description: '每个档案使用稳定 profileId 隔离缓存、媒体资产与播放进度。',
+          child: Column(
+            children: [
+              if (_profiles.isNotEmpty)
+                DropdownButtonFormField<String>(
+                  key: const Key('settings-profile-selector'),
+                  initialValue: _selectedProfileId,
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('编辑档案'),
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final profile in _profiles)
+                      DropdownMenuItem(
+                        value: profile.profileId,
+                        child: AppText(profile.name),
+                      ),
+                  ],
+                  onChanged: _selectProfileForEditing,
+                ),
+              if (_profiles.isNotEmpty) const SizedBox(height: 12),
+              TextFormField(
+                key: const Key('profile-name-field'),
+                controller: _profileNameController,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('档案名称'),
+                  prefixIcon: Icon(Icons.label_outline),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => value == null || value.trim().isEmpty
+                    ? context.l10n.text('请输入档案名称')
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<CredentialStorageMode>(
+                key: const Key('credential-storage-mode'),
+                segments: const [
+                  ButtonSegment(
+                    value: CredentialStorageMode.windowsCredential,
+                    label: AppText('Windows 凭据'),
+                    icon: Icon(Icons.security_outlined),
+                  ),
+                  ButtonSegment(
+                    value: CredentialStorageMode.portablePlaintext,
+                    label: AppText('便携明文'),
+                    icon: Icon(Icons.folder_copy_outlined),
+                  ),
+                ],
+                selected: {_credentialStorageMode},
+                onSelectionChanged: (values) =>
+                    setState(() => _credentialStorageMode = values.single),
+              ),
+              const SizedBox(height: 6),
+              AppText(
+                _credentialStorageMode ==
+                        CredentialStorageMode.windowsCredential
+                    ? '密码与 Token 保存在当前 Windows 用户的凭据管理器中，配置 JSON 不含敏感值。'
+                    : '密码与 Token 以明文写入便携配置；复制数据目录即可迁移，但需自行保护文件。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: _newProfileForEditing,
+                    icon: const Icon(Icons.add),
+                    label: const AppText('新建档案'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    onPressed: _selectedProfileId == null
+                        ? null
+                        : _confirmDeleteSelectedProfile,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const AppText('删除档案'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         _SettingsGroupCard(
           icon: Icons.cloud_outlined,
           title: 'WebDAV 服务器',
@@ -714,10 +1349,23 @@ class _SettingsPageState extends State<SettingsPage> {
                 controller: _serverUrlController,
                 keyboardType: TextInputType.url,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '服务器地址',
-                  hintText: 'https://example.com/dav',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('服务器地址'),
+                  hintText: context.l10n.text('https://example.com/dav'),
                   prefixIcon: Icon(Icons.link),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                key: const Key('profile-default-directory-field'),
+                controller: _defaultDirectoryController,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('默认目录'),
+                  hintText: context.l10n.text('媒体/电影'),
+                  helperText: context.l10n.text('相对于 WebDAV 根目录；留空则进入根目录。'),
+                  prefixIcon: Icon(Icons.folder_open_outlined),
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -726,8 +1374,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 key: const Key('server-username-field'),
                 controller: _serverUsernameController,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '用户名',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('用户名'),
                   prefixIcon: Icon(Icons.person_outline),
                   border: OutlineInputBorder(),
                 ),
@@ -738,9 +1386,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 controller: _serverPasswordController,
                 obscureText: true,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '密码',
-                  helperText: '连接信息完整时，下次启动会自动连接；服务器允许时密码可以留空。',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('密码'),
+                  helperText: context.l10n.text(
+                    '连接信息完整时，下次启动会自动连接；服务器允许时密码可以留空。',
+                  ),
                   prefixIcon: Icon(Icons.lock_outline),
                   border: OutlineInputBorder(),
                 ),
@@ -751,38 +1401,46 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         _SettingsGroupCard(
           icon: Icons.health_and_safety_outlined,
-          title: 'OpenList/AList 自动恢复',
-          description: '仅在 MPV 明确报告媒体加载失败时尝试恢复服务。',
+          title: 'OpenList/AList 后台与自动恢复',
+          description: '管理员凭据供播放恢复和索引更新共用。',
           child: Column(
             children: [
               SwitchListTile(
                 key: const Key('openlist-recovery-switch'),
                 contentPadding: EdgeInsets.zero,
-                title: const Text('启用播放失败自动恢复'),
-                subtitle: const Text('默认关闭，不会改变普通 WebDAV 播放行为'),
+                title: const AppText('启用播放失败自动恢复'),
+                subtitle: AppText(
+                  _openListStorageRecoveryUnavailable
+                      ? '当前后台缺少存储恢复端点，自动恢复已禁用'
+                      : '默认关闭，不会改变普通 WebDAV 播放行为',
+                ),
                 value: _openListRecoveryEnabled,
-                onChanged: (value) =>
-                    setState(() => _openListRecoveryEnabled = value),
+                onChanged: _openListStorageRecoveryUnavailable
+                    ? null
+                    : (value) =>
+                          setState(() => _openListRecoveryEnabled = value),
               ),
               const SizedBox(height: 4),
               TextFormField(
                 key: const Key('openlist-recovery-base-url'),
                 controller: _openListBaseUrlController,
-                enabled: _openListRecoveryEnabled,
+                onChanged: _handleOpenListAdminConfigChanged,
                 keyboardType: TextInputType.url,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '后台地址',
-                  hintText: 'http://192.168.2.124:5244',
-                  helperText: '兼容 OpenList v4 与 AList v3，也可填写带反向代理子路径的地址。',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('后台地址'),
+                  hintText: context.l10n.text('http://192.168.2.124:5244'),
+                  helperText: context.l10n.text(
+                    '基础 WebDAV 可独立连接；搜索、索引更新和存储恢复按实际端点能力分别判断。',
+                  ),
                   prefixIcon: Icon(Icons.dns_outlined),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) {
-                  if (!_openListRecoveryEnabled) return null;
+                  if (!_requiresOpenListAdminConfig) return null;
                   if (OpenListRecoveryService.normalizeBaseUri(value ?? '') ==
                       null) {
-                    return '请输入有效的 HTTP/HTTPS 后台地址';
+                    return context.l10n.text('请输入有效的 HTTP/HTTPS 后台地址');
                   }
                   return null;
                 },
@@ -791,12 +1449,14 @@ class _SettingsPageState extends State<SettingsPage> {
               TextFormField(
                 key: const Key('openlist-recovery-token'),
                 controller: _openListTokenController,
-                enabled: _openListRecoveryEnabled,
+                onChanged: _handleOpenListAdminConfigChanged,
                 obscureText: true,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '管理员 Token（推荐）',
-                  helperText: '优先使用 Token；Authorization 不会添加 Bearer。',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('管理员 Token（推荐）'),
+                  helperText: context.l10n.text(
+                    '优先使用 Token；Authorization 不会添加 Bearer。',
+                  ),
                   prefixIcon: Icon(Icons.key_outlined),
                   border: OutlineInputBorder(),
                 ),
@@ -806,50 +1466,159 @@ class _SettingsPageState extends State<SettingsPage> {
                 TextFormField(
                   key: const Key('openlist-recovery-username'),
                   controller: _openListUsernameController,
-                  enabled: _openListRecoveryEnabled,
+                  onChanged: _handleOpenListAdminConfigChanged,
                   contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: const InputDecoration(
-                    labelText: '管理员用户名',
-                    helperText: '填写 Token 时可留空',
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('管理员用户名'),
+                    helperText: context.l10n.text('填写 Token 时可留空'),
                     prefixIcon: Icon(Icons.admin_panel_settings_outlined),
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
-                    if (!_openListRecoveryEnabled ||
+                    if (!_requiresOpenListAdminConfig ||
                         _openListTokenController.text.trim().isNotEmpty) {
                       return null;
                     }
                     return (value ?? '').trim().isEmpty
-                        ? '请输入管理员用户名或填写 Token'
+                        ? context.l10n.text('请输入管理员用户名或填写 Token')
                         : null;
                   },
                 ),
                 TextFormField(
                   key: const Key('openlist-recovery-password'),
                   controller: _openListPasswordController,
-                  enabled: _openListRecoveryEnabled,
+                  onChanged: _handleOpenListAdminConfigChanged,
                   obscureText: true,
                   contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: const InputDecoration(
-                    labelText: '管理员密码',
-                    helperText: '启用 2FA 时请使用 Token',
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('管理员密码'),
+                    helperText: context.l10n.text('启用 2FA 时请使用 Token'),
                     prefixIcon: Icon(Icons.lock_outline),
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
-                    if (!_openListRecoveryEnabled ||
+                    if (!_requiresOpenListAdminConfig ||
                         _openListTokenController.text.trim().isNotEmpty) {
                       return null;
                     }
-                    return (value ?? '').isEmpty ? '请输入管理员密码或填写 Token' : null;
+                    return (value ?? '').isEmpty
+                        ? context.l10n.text('请输入管理员密码或填写 Token')
+                        : null;
                   },
                 ),
               ),
               const SizedBox(height: 12),
+              if (_openListCapabilitySummary != null) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: AppText(
+                    _openListCapabilitySummary!,
+                    key: const Key('openlist-capability-summary'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               Align(
                 alignment: Alignment.centerLeft,
-                child: Text(
-                  '安全限制：每个会话最多自动恢复 2 次，全存储刷新至少间隔 5 分钟。凭据保存在本机配置文件中。',
+                child: AppText(
+                  '安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          icon: Icons.manage_search_outlined,
+          title: 'OpenList/AList 索引',
+          description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
+          child: Column(
+            children: [
+              TextFormField(
+                key: const Key('openlist-index-user-token'),
+                controller: _openListIndexUserTokenController,
+                enabled: !_openListSearchUnavailable,
+                obscureText: true,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('普通用户 Token（推荐用于 2FA）'),
+                  helperText: context.l10n.text(
+                    '只用于索引搜索，请使用最小权限普通用户 Token；不会复用管理员 Token。',
+                  ),
+                  prefixIcon: const Icon(Icons.person_outline),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                key: const Key('openlist-index-auto-update-switch'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('定时更新全部索引'),
+                subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
+                value: _openListIndexAutoUpdateEnabled,
+                onChanged: _openListIndexUpdateUnavailable
+                    ? null
+                    : (value) => setState(
+                        () => _openListIndexAutoUpdateEnabled = value,
+                      ),
+              ),
+              const SizedBox(height: 4),
+              TextFormField(
+                key: const Key('openlist-index-update-interval'),
+                controller: _openListIndexIntervalController,
+                enabled:
+                    _openListIndexAutoUpdateEnabled &&
+                    !_openListIndexUpdateUnavailable,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('更新间隔（分钟）'),
+                  helperText: context.l10n.text(
+                    '最短 5 分钟，最长 7 天；低于最短值的外部配置会自动按 5 分钟执行。',
+                  ),
+                  prefixIcon: Icon(Icons.schedule_outlined),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => !_openListIndexAutoUpdateEnabled
+                    ? null
+                    : _validateNumber(
+                        value,
+                        min: OpenListIndexConfig.minUpdateIntervalMinutes
+                            .toDouble(),
+                        max: OpenListIndexConfig.maxUpdateIntervalMinutes
+                            .toDouble(),
+                        unit: '分钟',
+                        integer: true,
+                      ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  key: const Key('openlist-index-update-now'),
+                  onPressed:
+                      _updatingOpenListIndex || _openListIndexUpdateUnavailable
+                      ? null
+                      : _updateOpenListIndexNow,
+                  icon: _updatingOpenListIndex
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh),
+                  label: AppText(_updatingOpenListIndex ? '正在提交…' : '立即更新索引'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildOpenListIndexProgressPanel(),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppText(
+                  _openListIndexUpdateUnavailable
+                      ? '当前后台缺少索引更新所需端点，手动与定时更新已禁用；不会回退为全量构建。'
+                      : '保护规则：手动与定时请求互斥；若服务端正在构建索引则直接跳过；StreamPath 不会递归扫描 WebDAV。需先在 OpenList/AList 启用数据库索引与自动更新能力。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -858,6 +1627,134 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ],
     );
+  }
+
+  Widget _buildOpenListIndexProgressPanel() {
+    final scheme = Theme.of(context).colorScheme;
+    final progress = _openListIndexProgress;
+    final error = _openListIndexProgressError;
+    final statusText = progress == null
+        ? '尚未读取'
+        : progress.isDone
+        ? '空闲'
+        : '正在更新';
+    final statusColor = progress?.isDone == false
+        ? scheme.primary
+        : scheme.onSurfaceVariant;
+    return Container(
+      key: const Key('openlist-index-progress-panel'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.38),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.query_stats_outlined, size: 20, color: scheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: AppText(
+                  '索引更新进度',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              IconButton(
+                key: const Key('refresh-openlist-index-progress'),
+                tooltip: context.l10n.text('刷新索引状态'),
+                visualDensity: VisualDensity.compact,
+                onPressed:
+                    !_canReadOpenListIndexProgress ||
+                        _loadingOpenListIndexProgress
+                    ? null
+                    : _refreshOpenListIndexProgress,
+                icon: _loadingOpenListIndexProgress
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh, size: 20),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (!_canReadOpenListIndexProgress)
+            AppText(
+              '配置后台地址和管理员凭据后可读取索引状态。',
+              style: Theme.of(context).textTheme.bodySmall,
+            )
+          else if (error != null)
+            AppText(
+              error,
+              key: const Key('openlist-index-progress-error'),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.error),
+            )
+          else if (progress == null)
+            AppText(
+              _loadingOpenListIndexProgress ? '正在读取索引状态…' : '尚未读取索引状态，可点击右侧刷新。',
+              style: Theme.of(context).textTheme.bodySmall,
+            )
+          else ...[
+            LinearProgressIndicator(
+              key: const Key('openlist-index-progress-indicator'),
+              value: progress.isDone ? 1 : null,
+              minHeight: 5,
+              borderRadius: BorderRadius.circular(99),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 18,
+              runSpacing: 6,
+              children: [
+                AppText(
+                  '状态：$statusText',
+                  key: const Key('openlist-index-progress-status'),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: statusColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                AppText(
+                  '已处理条目：${progress.objectCount}',
+                  key: const Key('openlist-index-progress-count'),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                AppText(
+                  '上次更新时间：${_formatOpenListIndexTime(progress.lastDoneTime)}',
+                  key: const Key('openlist-index-last-update-time'),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+            if (progress.error.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              AppText(
+                '上次错误：${progress.error}',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.error),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _formatOpenListIndexTime(DateTime? value) {
+    if (value == null) return '暂无记录';
+    final local = value.toLocal();
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
   }
 
   Widget _buildPlaybackSettings() {
@@ -874,9 +1771,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 key: const Key('player-name-field'),
                 controller: _nameController,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '播放器名称',
-                  hintText: 'mpv / PotPlayer / VLC',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('播放器名称'),
+                  hintText: context.l10n.text('mpv / PotPlayer / VLC'),
                   prefixIcon: Icon(Icons.movie_filter_outlined),
                   border: OutlineInputBorder(),
                 ),
@@ -886,15 +1783,19 @@ class _SettingsPageState extends State<SettingsPage> {
                 key: const Key('player-executable-field'),
                 controller: _executableController,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '可执行文件路径',
-                  hintText: 'mpv 或 C:\\Program Files\\mpv\\mpv.exe',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('可执行文件路径'),
+                  hintText: context.l10n.text(
+                    'mpv 或 C:\\Program Files\\mpv\\mpv.exe',
+                  ),
                   prefixIcon: Icon(Icons.apps_outlined),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) {
                   final executable = value?.trim() ?? '';
-                  if (executable.isEmpty) return '请输入播放器路径';
+                  if (executable.isEmpty) {
+                    return context.l10n.text('请输入播放器路径');
+                  }
                   return ExternalPlayerService(
                     configStore: context.read<AppState>().configStore,
                   ).validateExecutable(
@@ -913,8 +1814,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 minLines: 5,
                 maxLines: 8,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '启动参数（每行一个）',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('启动参数（每行一个）'),
                   helperText:
                       '占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除',
                   alignLabelWithHint: true,
@@ -927,7 +1828,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: TextButton.icon(
                   onPressed: _resetToDefault,
                   icon: const Icon(Icons.restore, size: 18),
-                  label: const Text('恢复默认播放器模板'),
+                  label: const AppText('恢复默认播放器模板'),
                 ),
               ),
             ],
@@ -942,16 +1843,16 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('自动注入匹配的外挂字幕与 LRC'),
-                subtitle: const Text('将同级目录中名称匹配的视频字幕或音频歌词加入播放器轨道'),
+                title: const AppText('自动注入匹配的外挂字幕与 LRC'),
+                subtitle: const AppText('将同级目录中名称匹配的视频字幕或音频歌词加入播放器轨道'),
                 value: _subtitleInjectionEnabled,
                 onChanged: (value) =>
                     setState(() => _subtitleInjectionEnabled = value),
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('自动选择已注入的外挂字幕与 LRC'),
-                subtitle: const Text('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
+                title: const AppText('自动选择已注入的外挂字幕与 LRC'),
+                subtitle: const AppText('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
                 value: _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
                 onChanged: !_subtitleInjectionEnabled
                     ? null
@@ -960,12 +1861,164 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text('自动续播'),
-                subtitle: const Text('视频或音频存在播放进度时从上次位置继续'),
+                title: const AppText('自动续播'),
+                subtitle: const AppText('视频或音频存在播放进度时从上次位置继续'),
                 value: _resumeEnabled,
                 onChanged: (value) => setState(() => _resumeEnabled = value),
               ),
             ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMediaLibraryLimitField({
+    required Key key,
+    required TextEditingController controller,
+    required String label,
+    required String helperText,
+    required int maximum,
+  }) => TextFormField(
+    key: key,
+    controller: controller,
+    keyboardType: TextInputType.number,
+    contextMenuBuilder: buildClipboardHistoryMenu,
+    decoration: InputDecoration(
+      labelText: label,
+      helperText: helperText,
+      suffixText: context.l10n.text('条'),
+      border: const OutlineInputBorder(),
+    ),
+    validator: (value) => _validateNumber(
+      value,
+      min: MediaLibraryConfig.minItemLimit.toDouble(),
+      max: maximum.toDouble(),
+      unit: '条',
+      integer: true,
+    ),
+  );
+
+  Widget _buildMediaLibrarySettings() {
+    final clearDisabled =
+        _clearingMediaLibrary ||
+        !_loaded ||
+        _saving ||
+        _resettingSettings ||
+        _clearingCache ||
+        _clearingLearningData;
+    Widget cleanupButton({
+      required Key key,
+      required IconData icon,
+      required String label,
+      required _MediaLibraryCleanupTarget target,
+    }) => OutlinedButton.icon(
+      key: key,
+      onPressed: clearDisabled
+          ? null
+          : () => _confirmAndClearMediaLibrary(target),
+      icon: Icon(icon),
+      label: AppText(label),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsGroupCard(
+          key: const Key('media-library-capacity-section'),
+          icon: Icons.inventory_2_outlined,
+          title: '容量限制',
+          description: '数量按当前来源隔离；超过限制时优先淘汰最旧记录。',
+          child: Column(
+            children: [
+              _buildFieldPair(
+                _buildMediaLibraryLimitField(
+                  key: const Key('media-library-favorites-limit-field'),
+                  controller: _mediaLibraryFavoritesController,
+                  label: '收藏保存上限',
+                  helperText:
+                      '目录、视频、STRM 和音频合计；系统最高 ${MediaLibraryConfig.systemMaxFavoritesPerSource} 条',
+                  maximum: MediaLibraryConfig.systemMaxFavoritesPerSource,
+                ),
+                _buildMediaLibraryLimitField(
+                  key: const Key('media-library-continue-limit-field'),
+                  controller: _mediaLibraryContinueController,
+                  label: '继续播放显示上限',
+                  helperText:
+                      '视频、音频各自计算；系统最高 ${MediaLibraryConfig.systemMaxContinuePerLane} 条',
+                  maximum: MediaLibraryConfig.systemMaxContinuePerLane,
+                ),
+              ),
+              const SizedBox(height: 12),
+              _buildFieldPair(
+                _buildMediaLibraryLimitField(
+                  key: const Key('media-library-recent-playback-limit-field'),
+                  controller: _mediaLibraryRecentPlaybackController,
+                  label: '最近播放保存上限',
+                  helperText:
+                      '视频、音频各自计算；系统最高 ${MediaLibraryConfig.systemMaxRecentPlaybackPerLane} 条',
+                  maximum: MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
+                ),
+                _buildMediaLibraryLimitField(
+                  key: const Key(
+                    'media-library-recent-directories-limit-field',
+                  ),
+                  controller: _mediaLibraryRecentDirectoriesController,
+                  label: '最近目录保存上限',
+                  helperText:
+                      '当前来源单独计算；系统最高 ${MediaLibraryConfig.systemMaxRecentDirectoriesPerSource} 条',
+                  maximum:
+                      MediaLibraryConfig.systemMaxRecentDirectoriesPerSource,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: AppText(
+                  '降低上限并保存后会立即裁剪超出的旧记录；继续播放仅限制媒体中心显示数量，不改变底层播放进度。',
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          key: const Key('media-library-cleanup-section'),
+          icon: Icons.cleaning_services_outlined,
+          title: '记录清理',
+          description: '只处理当前已连接或已保存服务器来源的媒体中心个人资产。',
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                cleanupButton(
+                  key: const Key('clear-media-library-favorites-button'),
+                  icon: Icons.star_outline,
+                  label: '清空收藏',
+                  target: _MediaLibraryCleanupTarget.favorites,
+                ),
+                cleanupButton(
+                  key: const Key('clear-media-library-continue-button'),
+                  icon: Icons.play_circle_outline,
+                  label: '清空继续播放',
+                  target: _MediaLibraryCleanupTarget.continuePlayback,
+                ),
+                cleanupButton(
+                  key: const Key('clear-media-library-recent-button'),
+                  icon: Icons.history,
+                  label: '清空最近播放',
+                  target: _MediaLibraryCleanupTarget.recentPlayback,
+                ),
+                cleanupButton(
+                  key: const Key('clear-media-library-directories-button'),
+                  icon: Icons.folder_delete_outlined,
+                  label: '清空最近目录',
+                  target: _MediaLibraryCleanupTarget.recentDirectories,
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -989,6 +2042,98 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _buildDiagnosticsSettings() {
+    final snapshot = _diagnosticSnapshot;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SettingsGroupCard(
+          icon: Icons.fact_check_outlined,
+          title: '诊断中心',
+          description: '逐项检查外部连接、播放器、数据目录、SQLite 和缓存。',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  FilledButton.icon(
+                    key: const Key('run-diagnostics-button'),
+                    onPressed:
+                        _runningDiagnostics ||
+                            _exportingDiagnostics ||
+                            _repairingDatabases
+                        ? null
+                        : _runDiagnostics,
+                    icon: _runningDiagnostics
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow_outlined),
+                    label: AppText(_runningDiagnostics ? '检查中…' : '运行全部检查'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const Key('export-diagnostics-button'),
+                    onPressed:
+                        _exportingDiagnostics ||
+                            _runningDiagnostics ||
+                            _repairingDatabases
+                        ? null
+                        : _exportDiagnostics,
+                    icon: const Icon(Icons.file_download_outlined),
+                    label: AppText(_exportingDiagnostics ? '导出中…' : '导出脱敏诊断包'),
+                  ),
+                ],
+              ),
+              if (snapshot == null) ...[
+                const SizedBox(height: 14),
+                const AppText('尚未运行检查。导出时会自动执行一次。'),
+              ] else ...[
+                const SizedBox(height: 16),
+                for (final item in snapshot.items) ...[
+                  _DiagnosticResultRow(item: item),
+                  if (item != snapshot.items.last) const Divider(height: 18),
+                ],
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          icon: Icons.storage_outlined,
+          title: 'SQLite 非破坏性维护',
+          description: '只在完整性检查通过后创建一致性备份并重建索引。',
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('repair-databases-button'),
+              onPressed:
+                  _repairingDatabases ||
+                      _runningDiagnostics ||
+                      _exportingDiagnostics
+                  ? null
+                  : _repairDatabases,
+              icon: const Icon(Icons.build_outlined),
+              label: AppText(_repairingDatabases ? '维护中…' : '创建备份并维护'),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
+          icon: Icons.shield_outlined,
+          title: '脱敏边界',
+          description: '诊断包用于排障，不复制原始配置和运行数据。',
+          child: const AppText(
+            '服务器 URL 仅导出来源和路径 SHA-256；密码、Token、Authorization、URL userinfo、查询参数与签名参数不会写入诊断包。迁移记录只保留版本、结果和备份文件名。',
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCacheSettings() {
     return _SettingsGroupCard(
       key: const Key('cache-settings-section'),
@@ -1000,21 +2145,21 @@ class _SettingsPageState extends State<SettingsPage> {
           SwitchListTile(
             key: const Key('cache-enabled-switch'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('启用自动缓存策略'),
-            subtitle: const Text('关闭后不向播放器注入自动缓存参数'),
+            title: const AppText('启用自动缓存策略'),
+            subtitle: const AppText('关闭后不向播放器注入自动缓存参数'),
             value: _cacheEnabled,
             onChanged: (value) => setState(() => _cacheEnabled = value),
           ),
           DropdownButtonFormField<CachePolicyMode>(
             key: const Key('cache-mode-dropdown'),
             initialValue: _cacheMode,
-            decoration: const InputDecoration(
-              labelText: '策略模式',
+            decoration: InputDecoration(
+              labelText: context.l10n.text('策略模式'),
               border: OutlineInputBorder(),
             ),
             items: [
               for (final mode in CachePolicyMode.values)
-                DropdownMenuItem(value: mode, child: Text(mode.label)),
+                DropdownMenuItem(value: mode, child: AppText(mode.label)),
             ],
             onChanged: !_cacheEnabled
                 ? null
@@ -1031,10 +2176,10 @@ class _SettingsPageState extends State<SettingsPage> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(
-                labelText: '内存预算比例',
-                helperText: '可用内存的 5%～50%',
-                suffixText: '%',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('内存预算比例'),
+                helperText: context.l10n.text('可用内存的 5%～50%'),
+                suffixText: context.l10n.text('%'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) =>
@@ -1045,10 +2190,10 @@ class _SettingsPageState extends State<SettingsPage> {
               controller: _cacheBaseSecsController,
               enabled: _cacheEnabled,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '基准缓存时间',
-                helperText: '策略目标时长',
-                suffixText: '秒',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('基准缓存时间'),
+                helperText: context.l10n.text('策略目标时长'),
+                suffixText: context.l10n.text('秒'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1067,9 +2212,9 @@ class _SettingsPageState extends State<SettingsPage> {
               controller: _cacheSmallFileController,
               enabled: _cacheEnabled,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '小文件全量缓存阈值',
-                suffixText: 'MB',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('小文件全量缓存阈值'),
+                suffixText: context.l10n.text('MB'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1087,9 +2232,9 @@ class _SettingsPageState extends State<SettingsPage> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(
-                labelText: '假定下行带宽（可留空）',
-                suffixText: 'Mbps',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('假定下行带宽（可留空）'),
+                suffixText: context.l10n.text('Mbps'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1104,8 +2249,8 @@ class _SettingsPageState extends State<SettingsPage> {
           SwitchListTile(
             key: const Key('cache-override-user-args-switch'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('覆盖播放器模板中的手工缓存参数'),
-            subtitle: const Text('建议保持关闭；开启后自动策略的优先级高于手工参数'),
+            title: const AppText('覆盖播放器模板中的手工缓存参数'),
+            subtitle: const AppText('建议保持关闭；开启后自动策略的优先级高于手工参数'),
             value: _overrideUserCacheArgs,
             onChanged: !_cacheEnabled
                 ? null
@@ -1129,10 +2274,10 @@ class _SettingsPageState extends State<SettingsPage> {
               key: const Key('directory-freshness-minutes-field'),
               controller: _directoryFreshnessController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '目录刷新间隔',
-                helperText: '超过后先显示旧快照并后台刷新',
-                suffixText: '分钟',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('目录刷新间隔'),
+                helperText: context.l10n.text('超过后先显示旧快照并后台刷新'),
+                suffixText: context.l10n.text('分钟'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1147,10 +2292,10 @@ class _SettingsPageState extends State<SettingsPage> {
               key: const Key('directory-scroll-retention-minutes-field'),
               controller: _directoryScrollRetentionController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '滚动位置保留时间',
-                helperText: '长时间未打开的目录不再恢复位置',
-                suffixText: '分钟',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('滚动位置保留时间'),
+                helperText: context.l10n.text('长时间未打开的目录不再恢复位置'),
+                suffixText: context.l10n.text('分钟'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1168,10 +2313,10 @@ class _SettingsPageState extends State<SettingsPage> {
               key: const Key('directory-retention-days-field'),
               controller: _directoryRetentionController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '目录快照保留时间',
-                helperText: '按最后访问时间清理 Hive 快照',
-                suffixText: '天',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('目录快照保留时间'),
+                helperText: context.l10n.text('按最后访问时间清理 Hive 快照'),
+                suffixText: context.l10n.text('天'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1186,10 +2331,10 @@ class _SettingsPageState extends State<SettingsPage> {
               key: const Key('playback-retention-days-field'),
               controller: _playbackRetentionController,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '续播记录保留时间',
-                helperText: '同时作用于进度、历史和 MPV 恢复文件',
-                suffixText: '天',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('续播记录保留时间'),
+                helperText: context.l10n.text('同时作用于进度、历史和 MPV 恢复文件'),
+                suffixText: context.l10n.text('天'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1206,10 +2351,10 @@ class _SettingsPageState extends State<SettingsPage> {
             key: const Key('media-metadata-retention-days-field'),
             controller: _mediaMetadataRetentionController,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              labelText: '媒体元数据保留时间',
-              helperText: '适用于文件大小、时长、码率和资源验证器缓存',
-              suffixText: '天',
+            decoration: InputDecoration(
+              labelText: context.l10n.text('媒体元数据保留时间'),
+              helperText: context.l10n.text('适用于文件大小、时长、码率和资源验证器缓存'),
+              suffixText: context.l10n.text('天'),
               border: OutlineInputBorder(),
             ),
             validator: (value) => _validateNumber(
@@ -1223,7 +2368,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           const Align(
             alignment: Alignment.centerLeft,
-            child: Text('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'),
+            child: AppText('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'),
           ),
         ],
       ),
@@ -1241,16 +2386,16 @@ class _SettingsPageState extends State<SettingsPage> {
           SwitchListTile(
             key: const Key('cache-intelligence-enabled-switch'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('启用本地智能层'),
-            subtitle: const Text('仅使用本机匿名聚合数据，不上传媒体地址或播放记录'),
+            title: const AppText('启用本地智能层'),
+            subtitle: const AppText('仅使用本机匿名聚合数据，不上传媒体地址或播放记录'),
             value: _intelligenceEnabled,
             onChanged: (value) => setState(() => _intelligenceEnabled = value),
           ),
           SwitchListTile(
             key: const Key('cache-intelligence-apply-switch'),
             contentPadding: EdgeInsets.zero,
-            title: const Text('应用智能优化'),
-            subtitle: Text(
+            title: const AppText('应用智能优化'),
+            subtitle: AppText(
               _applyIntelligence ? '建议会在安全边界内修正缓存目标' : '影子模式：只学习和记录建议，不改变原策略',
             ),
             value: _applyIntelligence,
@@ -1262,12 +2407,12 @@ class _SettingsPageState extends State<SettingsPage> {
             const Card(
               child: Padding(
                 padding: EdgeInsets.all(12),
-                child: Text('智能修正不会突破内存预算；样本不足时仍使用原策略。'),
+                child: AppText('智能修正不会突破内存预算；样本不足时仍使用原策略。'),
               ),
             ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('历史码率预测'),
+            title: const AppText('历史码率预测'),
             value: _bitratePredictionEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -1275,7 +2420,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('不同存储类型优化'),
+            title: const AppText('不同存储类型优化'),
             value: _storageOptimizationEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -1284,7 +2429,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('用户缓存习惯学习'),
+            title: const AppText('用户缓存习惯学习'),
             value: _habitLearningEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -1297,9 +2442,9 @@ class _SettingsPageState extends State<SettingsPage> {
               controller: _intelligenceMinSamplesController,
               enabled: _intelligenceEnabled,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '最小有效样本数',
-                helperText: '达到数量后历史画像才影响策略',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('最小有效样本数'),
+                helperText: context.l10n.text('达到数量后历史画像才影响策略'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1317,10 +2462,10 @@ class _SettingsPageState extends State<SettingsPage> {
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
-              decoration: const InputDecoration(
-                labelText: '最大策略修正比例',
-                helperText: '相对基础缓存时间的调整上限',
-                suffixText: '%',
+              decoration: InputDecoration(
+                labelText: context.l10n.text('最大策略修正比例'),
+                helperText: context.l10n.text('相对基础缓存时间的调整上限'),
+                suffixText: context.l10n.text('%'),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -1354,6 +2499,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   _resettingSettings ||
                   _clearingCache ||
                   _clearingLearningData ||
+                  _clearingMediaLibrary ||
                   !appState.canClearCache
               ? null
               : _confirmAndClearCache,
@@ -1364,7 +2510,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.delete_sweep_outlined),
-          label: Text(_clearingCache ? '正在清理…' : '清理缓存'),
+          label: AppText(_clearingCache ? '正在清理…' : '清理缓存'),
         ),
       ),
     );
@@ -1388,6 +2534,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   _resettingSettings ||
                   _clearingCache ||
                   _clearingLearningData ||
+                  _clearingMediaLibrary ||
                   !appState.canClearLearningData
               ? null
               : _confirmAndClearLearningData,
@@ -1398,16 +2545,27 @@ class _SettingsPageState extends State<SettingsPage> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.psychology_alt_outlined),
-          label: Text(_clearingLearningData ? '正在清理…' : '清理学习数据'),
+          label: AppText(_clearingLearningData ? '正在清理…' : '清理学习数据'),
         ),
       ),
     );
   }
 
   Widget _buildAppearanceSettings() {
+    return Consumer<AppearanceController>(
+      builder: (context, appearanceController, child) => _observeSectionBuild(
+        SettingsSection.appearance,
+        _buildAppearanceSettingsContent(context, appearanceController),
+      ),
+    );
+  }
+
+  Widget _buildAppearanceSettingsContent(
+    BuildContext context,
+    AppearanceController appearanceController,
+  ) {
     final glassSelected = _interfaceStyle == InterfaceStyle.glass;
     final opacityPercent = (_glassOpacity * 100).round();
-    final appearanceController = context.watch<AppearanceController>();
     final capabilities = appearanceController.capabilities;
     final result = appearanceController.lastResult;
     final capabilityError = appearanceController.capabilityError;
@@ -1417,7 +2575,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _SettingsGroupCard(
           icon: Icons.layers_outlined,
           title: '界面样式',
-          description: '默认样式保持原有不透明界面；磨砂玻璃使用 Windows 窗口级材质。',
+          description: '默认样式保持原有不透明界面；Windows 材质使用 Acrylic 或 Mica 系统背景。',
           child: Align(
             alignment: Alignment.centerLeft,
             child: SegmentedButton<InterfaceStyle>(
@@ -1426,12 +2584,12 @@ class _SettingsPageState extends State<SettingsPage> {
                 ButtonSegment(
                   value: InterfaceStyle.classic,
                   icon: Icon(Icons.crop_square_rounded),
-                  label: Text('默认'),
+                  label: AppText('默认'),
                 ),
                 ButtonSegment(
                   value: InterfaceStyle.glass,
                   icon: Icon(Icons.blur_on_outlined),
-                  label: Text('磨砂玻璃'),
+                  label: AppText('Windows 材质'),
                 ),
               ],
               selected: {_interfaceStyle},
@@ -1446,12 +2604,12 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         _SettingsGroupCard(
           icon: Icons.opacity_outlined,
-          title: '磨砂玻璃参数',
+          title: 'Windows 系统材质',
           description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('窗口材质', style: Theme.of(context).textTheme.labelLarge),
+              AppText('材质模式', style: Theme.of(context).textTheme.labelLarge),
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerLeft,
@@ -1461,17 +2619,17 @@ class _SettingsPageState extends State<SettingsPage> {
                     ButtonSegment(
                       value: WindowMaterialPreference.automatic,
                       icon: Icon(Icons.auto_awesome_outlined),
-                      label: Text('自动'),
+                      label: AppText('自动'),
                     ),
                     ButtonSegment(
                       value: WindowMaterialPreference.acrylic,
                       icon: Icon(Icons.blur_on_outlined),
-                      label: Text('Acrylic'),
+                      label: AppText('Acrylic'),
                     ),
                     ButtonSegment(
                       value: WindowMaterialPreference.mica,
                       icon: Icon(Icons.texture_outlined),
-                      label: Text('Mica'),
+                      label: AppText('Mica'),
                     ),
                   ],
                   selected: {_windowMaterial},
@@ -1485,7 +2643,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               const SizedBox(height: 8),
-              Text(
+              AppText(
                 _windowMaterialDescription(capabilities),
                 key: const Key('window-material-description'),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1495,8 +2653,8 @@ class _SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 20),
               Row(
                 children: [
-                  const Expanded(child: Text('背景不透明度')),
-                  Text(
+                  const Expanded(child: AppText('界面背景密度')),
+                  AppText(
                     '$opacityPercent%',
                     key: const Key('glass-opacity-value'),
                     style: Theme.of(context).textTheme.labelLarge,
@@ -1511,13 +2669,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 label: '$opacityPercent%',
                 value: _glassOpacity,
                 onChanged: glassSelected
-                    ? (value) => setState(() => _glassOpacity = value)
+                    ? (value) =>
+                          _mutateAppearanceSection(() => _glassOpacity = value)
                     : null,
               ),
-              Text(
+              AppText(
                 glassSelected
-                    ? '数值越低，窗口材质越明显；最低值已限制以保证文字对比度。'
-                    : '选择“磨砂玻璃”后可调整。',
+                    ? '数值越低，系统材质越明显；最低值已限制以保证文字对比度。'
+                    : '选择“Windows 材质”后可调整。',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
@@ -1555,7 +2714,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 valueKey: const Key('actual-window-backdrop-value'),
               ),
               const SizedBox(height: 12),
-              Text(
+              AppText(
                 capabilityError ??
                     (result?.isDegraded == true
                         ? result!.degradation.message
@@ -1581,7 +2740,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.refresh, size: 18),
-                  label: Text(
+                  label: AppText(
                     appearanceController.checkingCapabilities
                         ? '正在检测…'
                         : '重新检测',
@@ -1600,12 +2759,12 @@ class _SettingsPageState extends State<SettingsPage> {
   ) => switch (_windowMaterial) {
     WindowMaterialPreference.automatic =>
       capabilities.supportsMica
-          ? '当前系统优先使用 Mica；系统不支持时自动使用 Acrylic。'
-          : '当前系统将使用 Acrylic；升级到支持的 Windows 11 后可自动使用 Mica。',
-    WindowMaterialPreference.acrylic => '固定使用 Acrylic，保持更明显的桌面透视与磨砂感。',
+          ? '由 Windows 自动选择，当前系统优先使用低透视的 Mica。'
+          : '由 Windows 自动选择，当前系统将使用带背景模糊的 Acrylic。',
+    WindowMaterialPreference.acrylic => 'Acrylic 是带背景模糊与透视的半透明材质，呈现更明显的磨砂效果。',
     WindowMaterialPreference.mica =>
       capabilities.supportsMica
-          ? '固定请求 Mica，适合作为长时间显示的主窗口背景。'
+          ? 'Mica 从桌面背景取色形成低透视表面，不等同于 Acrylic 磨砂玻璃。'
           : '当前系统不支持 Mica，保存后会自动回退到 Acrylic。',
   };
 
@@ -1615,6 +2774,32 @@ class _SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _SettingsGroupCard(
+          key: const Key('language-settings-section'),
+          icon: Icons.language_outlined,
+          title: '语言',
+          description: '选择软件使用的显示语言；保存全部配置后立即切换。',
+          child: DropdownButtonFormField<AppLanguage>(
+            key: const Key('app-language-field'),
+            initialValue: _language,
+            decoration: InputDecoration(
+              labelText: context.l10n.text('界面语言'),
+              prefixIcon: const Icon(Icons.translate_outlined),
+              border: const OutlineInputBorder(),
+            ),
+            items: [
+              for (final language in AppLanguage.values)
+                DropdownMenuItem(
+                  value: language,
+                  child: AppText(language.nativeLabel),
+                ),
+            ],
+            onChanged: (language) {
+              if (language != null) setState(() => _language = language);
+            },
+          ),
+        ),
+        const SizedBox(height: 16),
+        _SettingsGroupCard(
           icon: Icons.folder_copy_outlined,
           title: '文件浏览',
           description: '这些选项只改变界面显示，不影响稳定播放列表和字幕匹配。',
@@ -1623,8 +2808,8 @@ class _SettingsPageState extends State<SettingsPage> {
               SwitchListTile(
                 key: const Key('hidden-extensions-enabled-switch'),
                 contentPadding: EdgeInsets.zero,
-                title: const Text('启用隐藏文件后缀'),
-                subtitle: const Text('关闭后停止过滤，但保留并允许编辑下方后缀内容'),
+                title: const AppText('启用隐藏文件后缀'),
+                subtitle: const AppText('关闭后停止过滤，但保留并允许编辑下方后缀内容'),
                 value: _hiddenExtensionsEnabled,
                 onChanged: (value) =>
                     setState(() => _hiddenExtensionsEnabled = value),
@@ -1634,9 +2819,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 key: const Key('hidden-extensions-field'),
                 controller: _hiddenExtensionsController,
                 contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: const InputDecoration(
-                  labelText: '隐藏文件后缀（仅界面隐藏）',
-                  helperText: '格式：.ass, .mkv（必须使用英文逗号）；后台引用与字幕加载不受影响。',
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('隐藏文件后缀（仅界面隐藏）'),
+                  helperText: context.l10n.text(
+                    '格式：.ass, .mkv（必须使用英文逗号）；后台引用与字幕加载不受影响。',
+                  ),
                   prefixIcon: Icon(Icons.visibility_off_outlined),
                   border: OutlineInputBorder(),
                 ),
@@ -1645,7 +2832,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     parseHiddenExtensions(value ?? '');
                     return null;
                   } on FormatException catch (error) {
-                    return error.message;
+                    return context.l10n.text(error.message);
                   }
                 },
               ),
@@ -1654,14 +2841,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 DropdownButtonFormField<FileSortMode>(
                   key: const Key('default-sort-mode-field'),
                   initialValue: _defaultSortMode,
-                  decoration: const InputDecoration(
-                    labelText: '默认排序方式',
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('默认排序方式'),
                     prefixIcon: Icon(Icons.sort),
                     border: OutlineInputBorder(),
                   ),
                   items: [
                     for (final mode in FileSortMode.values)
-                      DropdownMenuItem(value: mode, child: Text(mode.label)),
+                      DropdownMenuItem(value: mode, child: AppText(mode.label)),
                   ],
                   onChanged: (mode) {
                     if (mode != null) setState(() => _defaultSortMode = mode);
@@ -1670,8 +2857,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 DropdownButtonFormField<FileSortDirection>(
                   key: const Key('default-sort-direction-field'),
                   initialValue: _defaultSortDirection,
-                  decoration: const InputDecoration(
-                    labelText: '默认排序顺序',
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('默认排序顺序'),
                     prefixIcon: Icon(Icons.swap_vert),
                     border: OutlineInputBorder(),
                   ),
@@ -1679,7 +2866,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     for (final direction in FileSortDirection.values)
                       DropdownMenuItem(
                         value: direction,
-                        child: Text(direction.label),
+                        child: AppText(direction.label),
                       ),
                   ],
                   onChanged: (direction) {
@@ -1707,7 +2894,8 @@ class _SettingsPageState extends State<SettingsPage> {
                       _saving ||
                       _resettingSettings ||
                       _clearingCache ||
-                      _clearingLearningData
+                      _clearingLearningData ||
+                      _clearingMediaLibrary
                   ? null
                   : _confirmAndResetSettings,
               style: OutlinedButton.styleFrom(foregroundColor: errorColor),
@@ -1717,7 +2905,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.settings_backup_restore_outlined),
-              label: Text(_resettingSettings ? '正在重置…' : '重置全部设置'),
+              label: AppText(_resettingSettings ? '正在重置…' : '重置全部设置'),
             ),
           ),
         ),
@@ -1784,42 +2972,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildPageShell(_SettingsSectionDefinition definition) {
     final scrollController = _pageScrollControllers[definition.section]!;
-    return Form(
-      key: _formKeys[definition.section],
-      child: DirectoryWheelScrollRegion(
-        controller: scrollController,
-        child: ScrollConfiguration(
-          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-          child: Scrollbar(
-            key: ValueKey<String>(
-              'settings-scrollbar-${definition.section.name}',
-            ),
-            controller: scrollController,
-            thumbVisibility: true,
-            interactive: true,
-            child: SingleChildScrollView(
-              key: PageStorageKey<String>(
-                'settings-page-${definition.section.name}',
-              ),
-              controller: scrollController,
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 760),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _SettingsPageHeader(definition: definition),
-                      const SizedBox(height: 20),
-                      definition.builder(),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+    final formKey = _formKeys[definition.section]!;
+    final header = _SettingsPageHeader(definition: definition);
+    final content = definition.builder();
+    return SettingsCategoryForm(
+      sectionName: definition.section.name,
+      formKey: formKey,
+      scrollController: scrollController,
+      header: header,
+      content: content,
     );
   }
 
@@ -1837,7 +2998,11 @@ class _SettingsPageState extends State<SettingsPage> {
           children: [
             FilledButton.icon(
               key: const Key('save-settings-button'),
-              onPressed: !_loaded || _saving || _resettingSettings
+              onPressed:
+                  !_loaded ||
+                      _saving ||
+                      _resettingSettings ||
+                      _clearingMediaLibrary
                   ? null
                   : _save,
               icon: _saving
@@ -1847,7 +3012,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.save_outlined),
-              label: Text(_saving ? '保存中…' : '保存全部配置'),
+              label: AppText(_saving ? '保存中…' : '保存全部配置'),
             ),
           ],
         ),
@@ -1863,19 +3028,29 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     return Scaffold(
       appBar: AppBar(
-        title: const Text('设置'),
+        title: const AppText('设置'),
         actions: [
           IconButton(
-            tooltip: '从配置文件重新加载',
-            onPressed: !_loaded || _saving || _resettingSettings
+            tooltip: context.l10n.text('从配置文件重新加载'),
+            onPressed:
+                !_loaded ||
+                    _saving ||
+                    _resettingSettings ||
+                    _clearingMediaLibrary
                 ? null
                 : _reloadConfig,
             icon: const Icon(Icons.refresh),
           ),
           TextButton.icon(
-            onPressed: !_loaded || _saving || _resettingSettings ? null : _save,
+            onPressed:
+                !_loaded ||
+                    _saving ||
+                    _resettingSettings ||
+                    _clearingMediaLibrary
+                ? null
+                : _save,
             icon: const Icon(Icons.save_outlined),
-            label: const Text('保存'),
+            label: const AppText('保存'),
           ),
         ],
       ),
@@ -1897,6 +3072,69 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
       bottomNavigationBar: _loaded ? _buildBottomBar(context) : null,
     );
+  }
+}
+
+class _DiagnosticResultRow extends StatelessWidget {
+  const _DiagnosticResultRow({required this.item});
+
+  final DiagnosticItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (icon, color) = switch (item.status) {
+      DiagnosticStatus.passed => (Icons.check_circle_outline, scheme.primary),
+      DiagnosticStatus.warning => (
+        Icons.warning_amber_outlined,
+        scheme.tertiary,
+      ),
+      DiagnosticStatus.failed => (Icons.error_outline, scheme.error),
+      DiagnosticStatus.skipped => (Icons.remove_circle_outline, scheme.outline),
+    };
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, color: color, size: 20),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AppText(
+                item.label,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              AppText(
+                item.summary,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SettingsSectionBuildProbe extends StatelessWidget {
+  const _SettingsSectionBuildProbe({
+    required this.section,
+    required this.onBuild,
+    required this.child,
+  });
+
+  final SettingsSection section;
+  final ValueChanged<SettingsSection>? onBuild;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    onBuild?.call(section);
+    return child;
   }
 }
 
@@ -1937,7 +3175,7 @@ class _SettingsNavigationButton extends StatelessWidget {
                       : scheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
-                Text(
+                AppText(
                   definition.label,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
                     color: selected
@@ -1980,7 +3218,7 @@ class _SettingsPageHeader extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              AppText(
                 definition.label,
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w700,
@@ -1988,7 +3226,7 @@ class _SettingsPageHeader extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 2),
-              Text(
+              AppText(
                 definition.description,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: scheme.onSurfaceVariant,
@@ -2036,9 +3274,12 @@ class _SettingsGroupCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: Theme.of(context).textTheme.titleMedium),
+                    AppText(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 2),
-                    Text(
+                    AppText(
                       description,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
@@ -2076,7 +3317,7 @@ class _AppearanceStatusRow extends StatelessWidget {
       children: [
         SizedBox(
           width: 88,
-          child: Text(
+          child: AppText(
             label,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -2084,7 +3325,7 @@ class _AppearanceStatusRow extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: Text(
+          child: AppText(
             value,
             key: valueKey,
             style: theme.textTheme.bodyMedium?.copyWith(

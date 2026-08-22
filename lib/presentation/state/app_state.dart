@@ -7,11 +7,17 @@ import '../../data/local/audio_playback_history_store.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/directory_cache.dart';
 import '../../data/local/playback_progress_db.dart';
+import '../../data/local/media_library_store.dart';
 import '../../data/remote/webdav_client.dart';
+import '../../data/models/server_profile.dart';
+import '../../data/models/app_language.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/audio_companion_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/cache_cleanup_service.dart';
+import '../../domain/services/diagnostic_service.dart';
+import '../../domain/services/openlist_index_service.dart';
+import '../../domain/services/openlist_api_client.dart';
 import '../../domain/services/subtitle_matcher.dart';
 import '../../domain/services/webdav_service.dart';
 import '../../features/cache_control/cache_policy_service.dart';
@@ -30,6 +36,7 @@ class AppState extends ChangeNotifier {
     required PlaybackProgressService progressService,
     AudioPlaybackHistoryStore? audioPlaybackHistoryStore,
     PlaybackProgressService? audioProgressService,
+    MediaLibraryStore? mediaLibraryStore,
     DirectoryCache? directoryCache,
     ExternalPlayerService? playerService,
     AudioPlayerService? audioPlayerService,
@@ -40,6 +47,8 @@ class AppState extends ChangeNotifier {
     CacheExpirationConfigStore? cacheExpirationConfigStore,
     CacheCleaner? cacheCleaner,
     CacheCleaner? learningDataCleaner,
+    OpenListIndexService? openListIndexService,
+    OpenListIndexUpdateScheduler? openListIndexScheduler,
   }) : _configStore = configStore,
        // ignore: prefer_initializing_formals
        _cachePolicyConfigStore = cachePolicyConfigStore,
@@ -53,11 +62,14 @@ class AppState extends ChangeNotifier {
        // ignore: prefer_initializing_formals
        _audioPlaybackHistoryStore = audioPlaybackHistoryStore,
        _audioProgressService = audioProgressService,
+       // ignore: prefer_initializing_formals
+       _mediaLibraryStore = mediaLibraryStore,
        _directoryCache = directoryCache ?? DirectoryCache(),
        // ignore: prefer_initializing_formals
        _cacheCleaner = cacheCleaner,
        // ignore: prefer_initializing_formals
        _learningDataCleaner = learningDataCleaner,
+       _language = configStore.current.language,
        _subtitleMatcher = subtitleMatcher ?? const SubtitleMatcher() {
     // 警告流与播放器服务的警告接线放构造器 body（initializer 中
     // 不能引用 this 字段）。
@@ -81,6 +93,11 @@ class AppState extends ChangeNotifier {
                 configStore: configStore,
                 progressService: audioProgressService,
               ));
+    _openListIndexService = openListIndexService ?? OpenListIndexService();
+    _openListIndexScheduler =
+        openListIndexScheduler ??
+        OpenListIndexUpdateScheduler(service: _openListIndexService);
+    refreshOpenListIndexSchedule();
   }
 
   final StreamPathConfigStore _configStore;
@@ -91,14 +108,18 @@ class AppState extends ChangeNotifier {
   final PlaybackProgressService _progressService;
   final AudioPlaybackHistoryStore? _audioPlaybackHistoryStore;
   final PlaybackProgressService? _audioProgressService;
+  final MediaLibraryStore? _mediaLibraryStore;
   final DirectoryCache _directoryCache;
   final CacheCleaner? _cacheCleaner;
   final CacheCleaner? _learningDataCleaner;
+  AppLanguage _language;
   late final ExternalPlayerService _playerService;
   late final AudioPlayerService? _audioPlayerService;
   final SubtitleMatcher _subtitleMatcher;
   final AudioCompanionMatcher _audioCompanionMatcher =
       const AudioCompanionMatcher();
+  late final OpenListIndexService _openListIndexService;
+  late final OpenListIndexUpdateScheduler _openListIndexScheduler;
 
   /// 播放中动态保护的用户警告（网络带宽持续不足等）；UI 订阅后
   /// 以 SnackBar 展示。
@@ -129,6 +150,7 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _openListIndexScheduler.dispose();
     _cacheWarnings.close();
     _playbackRecoveryEvents.close();
     super.dispose();
@@ -145,12 +167,88 @@ class AppState extends ChangeNotifier {
   AudioPlaybackHistoryStore? get audioPlaybackHistoryStore =>
       _audioPlaybackHistoryStore;
   PlaybackProgressService? get audioProgressService => _audioProgressService;
+  MediaLibraryStore? get mediaLibraryStore => _mediaLibraryStore;
+  DirectoryCache get directoryCache => _directoryCache;
+  String? get mediaSourceId => _webDavService?.sourceId;
   ExternalPlayerService get playerService => _playerService;
   AudioPlayerService? get audioPlayerService => _audioPlayerService;
   SubtitleMatcher get subtitleMatcher => _subtitleMatcher;
   AudioCompanionMatcher get audioCompanionMatcher => _audioCompanionMatcher;
   bool get canClearCache => _cacheCleaner != null;
   bool get canClearLearningData => _learningDataCleaner != null;
+  AppLanguage get language => _language;
+
+  /// 配置完成持久化后更新当前界面语言。
+  void applyLanguage(AppLanguage language) {
+    if (_language == language) return;
+    _language = language;
+    notifyListeners();
+  }
+
+  Future<List<OpenListIndexEntry>> searchOpenListIndex(String query) {
+    final profile = _configStore.current.activeProfile;
+    if (profile == null) return Future.value(const []);
+    return _openListIndexService.search(profile: profile, query: query);
+  }
+
+  Future<OpenListIndexUpdateResult> updateOpenListIndex({
+    ServerProfile? profile,
+  }) {
+    final target = profile ?? _configStore.current.activeProfile;
+    if (target == null) {
+      return Future.value(
+        const OpenListIndexUpdateResult(accepted: false, message: '请先保存服务器档案'),
+      );
+    }
+    return _openListIndexService.updateIndex(target);
+  }
+
+  Future<OpenListIndexProgress> getOpenListIndexProgress({
+    ServerProfile? profile,
+  }) {
+    final target = profile ?? _configStore.current.activeProfile;
+    if (target == null) {
+      return Future.error(const FormatException('请先保存服务器档案'));
+    }
+    return _openListIndexService.getIndexProgress(target);
+  }
+
+  Future<OpenListCapabilities> getOpenListCapabilities({
+    ServerProfile? profile,
+  }) {
+    final target = profile ?? _configStore.current.activeProfile;
+    if (target == null) {
+      return Future.value(OpenListCapabilities.unknown());
+    }
+    return _openListIndexService.getCapabilities(target);
+  }
+
+  void refreshOpenListIndexSchedule() {
+    _openListIndexScheduler.configure(_configStore.current.activeProfile);
+  }
+
+  DiagnosticService createDiagnosticService() => DiagnosticService(
+    configStore: _configStore,
+    progressService: _progressService,
+    audioProgressService: _audioProgressService,
+    directoryCache: _directoryCache,
+    playerService: _playerService,
+    webDavService: _webDavService,
+  );
+
+  /// 播放器全部停止时，为视频和音频 SQLite 创建一致性备份并重建索引。
+  Future<List<DatabaseMaintenanceResult>>
+  repairDatabasesNonDestructive() async {
+    if (await _hasRunningPlayback()) {
+      throw const CacheCleanupBlockedException('请先关闭正在运行的播放器，再维护数据库');
+    }
+    final results = <DatabaseMaintenanceResult>[
+      await _progressService.repairNonDestructive(),
+    ];
+    final audio = _audioProgressService;
+    if (audio != null) results.add(await audio.repairNonDestructive());
+    return results;
+  }
 
   /// 清空缓存前确认没有播放器进程仍在使用会话文件。
   Future<CacheCleanupResult> clearCache() async {
@@ -188,6 +286,8 @@ class AppState extends ChangeNotifier {
       await _playerService.restoreSession(
         sessionId: history.sessionId,
         pid: history.playerPid,
+        executablePath: history.playerExecutablePath,
+        creationTime: history.playerCreationTime,
         ipcPipeName: history.ipcPipeName,
       );
       if (await _playerService.isPlayerRunning(history.sessionId)) return true;
@@ -201,6 +301,8 @@ class AppState extends ChangeNotifier {
       await audioService.restoreSession(
         sessionId: history.sessionId,
         pid: history.playerPid,
+        executablePath: history.playerExecutablePath,
+        creationTime: history.playerCreationTime,
         ipcPipeName: history.ipcPipeName,
       );
       if (await audioService.isPlayerRunning(history.sessionId)) return true;
@@ -231,6 +333,7 @@ class AppState extends ChangeNotifier {
     required String baseUrl,
     required String username,
     required String password,
+    String? profileId,
   }) async {
     final client = WebDavClient(
       baseUrl: baseUrl,
@@ -238,7 +341,12 @@ class AppState extends ChangeNotifier {
       password: password,
     );
     // 复用全局缓存实例（main 中已 init），保证连接间缓存延续。
-    final service = WebDAVService(client: client, cache: _directoryCache);
+    final resolvedProfileId = profileId ?? _configStore.current.profileId;
+    final service = WebDAVService(
+      client: client,
+      profileId: resolvedProfileId,
+      cache: _directoryCache,
+    );
 
     // 登录必须真实访问服务器；旧账号的目录缓存不能充当认证结果。
     await service.verifyConnection();
@@ -246,6 +354,9 @@ class AppState extends ChangeNotifier {
     _webDavService = service;
     _username = username;
     _password = password;
+    _progressService.useProfile(resolvedProfileId);
+    _audioProgressService?.useProfile(resolvedProfileId);
+    unawaited(_playerService.captureOpenListProcessIdentity());
     notifyListeners();
   }
 
@@ -254,6 +365,9 @@ class AppState extends ChangeNotifier {
     _webDavService = null;
     _username = null;
     _password = null;
+    final storedProfileId = _configStore.current.profileId;
+    _progressService.useProfile(storedProfileId);
+    _audioProgressService?.useProfile(storedProfileId);
     notifyListeners();
   }
 }

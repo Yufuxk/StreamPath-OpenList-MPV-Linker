@@ -1,0 +1,24 @@
+{
+  "builds": [
+    {
+      "id": "mpv-0.34.0-x86_64",
+      "relativePath": "mpv-0.34.0-x86_64/mpv.exe",
+      "versionPattern": "^mpv 0\\.34\\.0(?:\\s|$)"
+    },
+    {
+      "id": "mpv-lazy-20260510-noVS",
+      "relativePath": "mpv-lazy-20260510-noVS/mpv-lazy/mpv.exe",
+      "versionPattern": "^mpv v0\\.41\\.0-615-g7b057f66f(?:\\s|$)"
+    },
+    {
+      "id": "mpv-v0.41.0-msvc",
+      "relativePath": "mpv-v0.41.0-x86_64-pc-windows-msvc/mpv.exe",
+      "versionPattern": "^mpv v0\\.41\\.0-dev-g41f6a6450(?:\\s|$)"
+    },
+    {
+      "id": "mpv-20260610-git-304426c",
+      "relativePath": "mpv-x86_64-20260610-git-304426c/mpv.exe",
+      "versionPattern": "^mpv v0\\.41\\.0-744-g304426c39(?:\\s|$)"
+    }
+  ]
+}

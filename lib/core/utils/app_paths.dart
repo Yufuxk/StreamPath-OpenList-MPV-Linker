@@ -5,7 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 /// 应用数据路径：**集中存放**配置、缓存、日志、数据库，追求高便携性。
 ///
-/// 数据目录 = 项目根文件夹下的 `stream_path_data/`，内部按用途分两个
+/// 数据目录 = 项目根文件夹下的 `stream_path_data/`，内部按用途分三个
 /// 子目录（英文命名）：
 /// ```
 /// <项目根>/stream_path_data/
@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 ///   │   ├── stream_path_config.json  （连接 + 播放器 + 隐藏后缀）
 ///   │   ├── cache_policy.json        （基础缓存策略，常驻可编辑）
 ///   │   └── cache_intelligence.json  （第三阶段本地智能优化配置）
+///   ├── library/                   ← 收藏、最近目录和长期播放历史
 ///   └── cache/                     ← 运行时缓存数据
 ///       ├── directory_cache/          （目录元数据缓存 Hive）
 ///       ├── mpv-watch-later/          （mpv 续播进度）
@@ -47,6 +48,9 @@ class AppPaths {
   /// 缓存数据子目录名。
   static const String cacheDirName = 'cache';
 
+  /// 个人媒体资产子目录名。
+  static const String libraryDirName = 'library';
+
   /// 数据目录（不存在时自动创建）。
   static Future<Directory> dataDirectory() async {
     final root = projectRoot();
@@ -75,6 +79,16 @@ class AppPaths {
   static Future<Directory> cacheDirectory() async {
     final dataDir = await dataDirectory();
     final dir = Directory(p.join(dataDir.path, cacheDirName));
+    await dir.create(recursive: true);
+    return dir;
+  }
+
+  /// 个人媒体资产目录（`stream_path_data/library/`）。
+  ///
+  /// 该目录不属于可重建缓存，普通缓存清理不会删除其中数据。
+  static Future<Directory> libraryDirectory() async {
+    final dataDir = await dataDirectory();
+    final dir = Directory(p.join(dataDir.path, libraryDirName));
     await dir.create(recursive: true);
     return dir;
   }
