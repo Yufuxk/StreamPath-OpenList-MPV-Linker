@@ -650,6 +650,66 @@ void main() {
     expect(terminateCalls, 0);
   });
 
+  test('音频 MPV 已关闭并重启后，无 PID 的继续播放会话可直接再次启动', () async {
+    // 回归：用户关闭 MPV 后监控收敛会清空历史的 pid/pipe 但保留记录；
+    // 应用重启后该历史被 restoreSession 恢复为无 PID 的幽灵会话。
+    // 点击继续播放必须直接放行，而不是提示「该音频播放会话仍在运行」。
+    var lookups = 0;
+    final controller = PlayerProcessController(
+      snapshotLoader: (pid) async {
+        lookups++;
+        return lookups == 1
+            ? PlayerProcessLookupResult.found(
+                PlayerProcessIdentity(
+                  pid: pid,
+                  executablePath: r'C:\TestMPV\mpv.exe',
+                  creationTime: pid + 9700,
+                ),
+              )
+            : const PlayerProcessLookupResult.notFound();
+      },
+      pipeServerPidLoader: (_) async => null,
+      processTreeTerminator: (_) async => true,
+    );
+    final (service, directory, progress) = await makeEpochService(
+      processController: controller,
+    );
+    addTearDown(() async {
+      await service.terminateSession('audio-resume-after-restart');
+      await progress.close();
+      try {
+        await directory.delete(recursive: true);
+      } catch (_) {}
+    });
+    await service.restoreSession(
+      sessionId: 'audio-resume-after-restart',
+      pid: null,
+      executablePath: null,
+      creationTime: null,
+      ipcPipeName: null,
+      launchEpoch: 'stale-audio-epoch',
+    );
+
+    final result = await service.launch(
+      entries: const [
+        AudioMediaEntry(url: 'http://h/dav/song.flac', title: '续播曲目'),
+      ],
+      sessionId: 'audio-resume-after-restart',
+    );
+
+    expect(result.sessionId, 'audio-resume-after-restart');
+    expect(result.launchEpoch, isNot('stale-audio-epoch'));
+
+    // 幽灵会话已被释放并替换：再次点击继续播放同样直接放行。
+    final second = await service.launch(
+      entries: const [
+        AudioMediaEntry(url: 'http://h/dav/next.flac', title: '下一曲目'),
+      ],
+      sessionId: 'audio-resume-after-restart',
+    );
+    expect(second.launchEpoch, isNot(result.launchEpoch));
+  });
+
   test('应用重启后可从遗留 JSONL 与 watch_later 恢复音频进度', () async {
     sqfliteFfiInit();
     final directory = Directory.systemTemp.createTempSync('audio_resume_');

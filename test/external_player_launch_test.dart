@@ -622,6 +622,59 @@ void main() {
       expect(terminateCalls, 0);
     });
 
+    test('MPV 已关闭并重启后，无 PID 的继续播放会话可直接再次启动', () async {
+      // 回归：用户关闭 MPV 后监控收敛会清空历史的 pid/pipe 但保留记录；
+      // 应用重启后该历史被 restoreSession 恢复为无 PID 的幽灵会话。
+      // 点击继续播放必须直接放行，而不是提示「该播放会话仍在运行」。
+      var lookups = 0;
+      final controller = PlayerProcessController(
+        snapshotLoader: (pid) async {
+          lookups++;
+          return lookups == 1
+              ? PlayerProcessLookupResult.found(
+                  PlayerProcessIdentity(
+                    pid: pid,
+                    executablePath: r'C:\TestMPV\mpv.exe',
+                    creationTime: pid + 9600,
+                  ),
+                )
+              : const PlayerProcessLookupResult.notFound();
+        },
+        pipeServerPidLoader: (_) async => null,
+        processTreeTerminator: (_) async => true,
+      );
+      final (service, dir) = await makeService(processController: controller);
+      addTearDown(() async {
+        await service.terminateSession('resume-after-restart');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      await service.restoreSession(
+        sessionId: 'resume-after-restart',
+        pid: null,
+        executablePath: null,
+        creationTime: null,
+        ipcPipeName: null,
+        launchEpoch: 'stale-epoch',
+      );
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'resume-after-restart',
+      );
+
+      expect(result.sessionId, 'resume-after-restart');
+      expect(result.launchEpoch, isNot('stale-epoch'));
+
+      // 幽灵会话已被释放并替换：再次点击继续播放同样直接放行。
+      final second = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/02.mp4')],
+        sessionId: 'resume-after-restart',
+      );
+      expect(second.launchEpoch, isNot(result.launchEpoch));
+    });
+
     test('两个显式会话使用完全独立的 IPC、状态文件和播放列表资源', () async {
       final (service, _) = await makeService();
       const entries = [

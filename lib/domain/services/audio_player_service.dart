@@ -151,12 +151,18 @@ class AudioPlayerService {
     final existing = _sessions[sessionId];
     try {
       if (existing != null) {
-        final liveness = await _processController.probeOwned(
-          existing.processIdentity,
-        );
-        _ensureLaunchOwnership(sessionId, ownershipGeneration);
-        if (liveness != PlayerProcessLiveness.exited) {
-          throw AppException.process('该音频播放会话仍在运行，请先关闭或删除后再继续');
+        // 仅当存在可校验的进程身份或 PID 时才需要守卫。MPV 被用户直接
+        // 关闭后，监控收敛会清空历史的 pid/pipe 但保留「继续播放」记录；
+        // 重启后这类历史被恢复为 pid 与身份均为 null 的会话，probeOwned
+        // 对其必然返回 unknown，若按 unknown 拒绝将永远无法再次播放。
+        if (existing.processIdentity != null || existing.pid != null) {
+          final liveness = await _processController.probeOwned(
+            existing.processIdentity,
+          );
+          _ensureLaunchOwnership(sessionId, ownershipGeneration);
+          if (liveness != PlayerProcessLiveness.exited) {
+            throw AppException.process('该音频播放会话仍在运行，请先关闭或删除后再继续');
+          }
         }
         if (identical(_sessions[sessionId], existing)) {
           _sessions.remove(sessionId);
