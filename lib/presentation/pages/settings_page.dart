@@ -3297,8 +3297,13 @@ class _SettingsGroupCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final tokens = Theme.of(context).glass;
     return GlassSurface(
-      level: GlassSurfaceLevel.raised,
+      level: tokens.enabled
+          ? GlassSurfaceLevel.content
+          : GlassSurfaceLevel.raised,
+      border: Border.all(color: tokens.borderColor),
+      showShadow: false,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       padding: const EdgeInsets.all(22),

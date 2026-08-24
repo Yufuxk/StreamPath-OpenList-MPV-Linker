@@ -59,6 +59,9 @@ class WindowsProfileCredentialStore implements ProfileCredentialStore {
   static const _targetPrefix = 'StreamPath/server-profile/';
   static const _credentialNotFound = 1168;
 
+  /// 初始化当前线程的 Win32 错误状态，确保后续读取真实错误码。
+  static void _primeLastError() => GetLastError();
+
   @override
   bool get isSupported => Platform.isWindows;
 
@@ -68,6 +71,7 @@ class WindowsProfileCredentialStore implements ProfileCredentialStore {
     final target = '$_targetPrefix$profileId'.toNativeUtf16();
     final result = calloc<Pointer<CREDENTIAL>>();
     try {
+      _primeLastError();
       if (CredRead(target, CRED_TYPE_GENERIC, 0, result) != TRUE) {
         final error = GetLastError();
         if (error == _credentialNotFound) return null;
@@ -110,6 +114,7 @@ class WindowsProfileCredentialStore implements ProfileCredentialStore {
       ..ref.CredentialBlob = blob
       ..ref.CredentialBlobSize = bytes.length;
     try {
+      _primeLastError();
       if (CredWrite(credential, 0) != TRUE) {
         throw WindowsException(HRESULT_FROM_WIN32(GetLastError()));
       }
@@ -128,6 +133,7 @@ class WindowsProfileCredentialStore implements ProfileCredentialStore {
     if (!isSupported) return;
     final target = '$_targetPrefix$profileId'.toNativeUtf16();
     try {
+      _primeLastError();
       if (CredDelete(target, CRED_TYPE_GENERIC, 0) != TRUE) {
         final error = GetLastError();
         if (error != _credentialNotFound) {

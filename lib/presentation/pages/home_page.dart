@@ -192,22 +192,39 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 560),
-              child: _buildConnectionCard(context),
-            ),
-          ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            const padding = EdgeInsets.symmetric(horizontal: 20, vertical: 6);
+            final minContentHeight = constraints.maxHeight > padding.vertical
+                ? constraints.maxHeight - padding.vertical
+                : 0.0;
+            return SingleChildScrollView(
+              padding: padding,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: minContentHeight),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 560),
+                    child: _buildConnectionCard(context),
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
   }
 
   Widget _buildConnectionCard(BuildContext context) {
+    final tokens = Theme.of(context).glass;
     return GlassSurface(
-      level: GlassSurfaceLevel.raised,
+      level: tokens.enabled
+          ? GlassSurfaceLevel.content
+          : GlassSurfaceLevel.raised,
+      border: Border.all(color: tokens.borderColor),
+      showShadow: false,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       padding: const EdgeInsets.all(28),
