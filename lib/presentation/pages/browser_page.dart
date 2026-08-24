@@ -1912,7 +1912,9 @@ class _BrowserPageState extends State<BrowserPage> {
     if (!mounted || item.kind == MediaLibraryKind.directory) return;
     final file = _files.where(item.matches).firstOrNull;
     if (file == null) {
-      _showLibraryError('未在当前服务器目录中找到「${item.name}」');
+      _showLibraryError(
+        context.l10n.format('未在当前服务器目录中找到「{name}」', {'name': item.name}),
+      );
       return;
     }
     _onFileTap(file);
@@ -2005,9 +2007,10 @@ class _BrowserPageState extends State<BrowserPage> {
               ],
             ),
           PopupMenuButton<String>(
-            tooltip: context.l10n.text(
-              '排序：${_sortMode.label} · ${_sortDirection.label}',
-            ),
+            tooltip: context.l10n.format('排序：{mode} · {direction}', {
+              'mode': context.l10n.text(_sortMode.label),
+              'direction': context.l10n.text(_sortDirection.label),
+            }),
             icon: const Icon(Icons.sort),
             onSelected: (value) {
               _changeDirectoryScrollScope(() {
@@ -2166,9 +2169,9 @@ class _BrowserPageState extends State<BrowserPage> {
   Widget _buildAudioPlaybackBar(AudioPlaybackUiSession session) {
     final history = session.history;
     final sessionId = history.sessionId;
-    final dirLabel = history.dirCrumbs.isEmpty
-        ? '音乐 · 根目录'
-        : '音乐 · ${history.dirCrumbs.join(' / ')}';
+    final dirLabel =
+        '${context.l10n.text('音乐')} · '
+        '${history.dirCrumbs.isEmpty ? context.l10n.text('根目录') : history.dirCrumbs.join(' / ')}';
     final paused = session.paused;
 
     final String title;

@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -25,6 +26,7 @@ import 'package:streampath/features/cache_control/store/cache_policy_config_stor
 import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
 import 'package:streampath/features/cache_expiration/store/cache_expiration_config_store.dart';
 import 'package:streampath/presentation/pages/settings_page.dart';
+import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
 import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.dart';
@@ -95,7 +97,10 @@ void main() {
     }
   });
 
-  Widget buildSettings({ValueChanged<SettingsSection>? onSectionBuilt}) {
+  Widget buildSettings({
+    ValueChanged<SettingsSection>? onSectionBuilt,
+    AppLanguage language = AppLanguage.simplifiedChinese,
+  }) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<AppState>.value(value: appState),
@@ -103,7 +108,19 @@ void main() {
           value: appearanceController,
         ),
       ],
-      child: MaterialApp(home: SettingsPage(onSectionBuilt: onSectionBuilt)),
+      child: MaterialApp(
+        locale: language.locale,
+        supportedLocales: AppLanguage.values
+            .map((candidate) => candidate.locale)
+            .toList(),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        home: SettingsPage(onSectionBuilt: onSectionBuilt),
+      ),
     );
   }
 
@@ -227,6 +244,25 @@ void main() {
       find.descendant(
         of: find.byKey(const Key('openlist-capability-summary')),
         matching: find.textContaining('存储恢复 不可用'),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(buildSettings(language: AppLanguage.english));
+    await tester.pumpAndSettle();
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('openlist-capability-summary')),
+        matching: find.textContaining(
+          'Backend v3.6.0 capabilities: Basic WebDAV available',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'The current backend does not provide the storage recovery endpoint, '
+        'so automatic recovery is disabled',
       ),
       findsOneWidget,
     );

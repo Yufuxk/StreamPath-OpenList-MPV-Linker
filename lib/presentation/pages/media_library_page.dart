@@ -677,7 +677,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               emptyMessage: audio ? '没有可继续播放的音频' : '没有可继续播放的视频',
               subtitle: (record) {
                 final value = progress[record.recordKey]!;
-                return '${record.item.parentPath}  ·  已播放 ${_formatDuration(value.positionMs)}';
+                return context.l10n.format('{path}  ·  已播放 {duration}', {
+                  'path': record.item.parentPath,
+                  'duration': _formatDuration(value.positionMs),
+                });
               },
               trailing: (record) => IconButton(
                 tooltip: context.l10n.text('从历史中移除'),
@@ -900,7 +903,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           ),
           subtitle: AppText(
             subtitle?.call(record) ??
-                '${record.item.parentPath.isEmpty ? '根目录' : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}',
+                '${record.item.parentPath.isEmpty ? context.l10n.text('根目录') : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),

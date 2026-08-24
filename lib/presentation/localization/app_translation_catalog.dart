@@ -2,6 +2,20 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  "当前后台缺少存储恢复端点，自动恢复已禁用":
+      "The current backend does not provide the storage recovery endpoint, so automatic recovery is disabled",
+  "无法确认音频播放器身份，已保留会话且未终止进程":
+      "The audio player identity could not be confirmed. The session was kept and the process was not terminated",
+  "无法确认视频播放器身份，已保留会话且未终止进程":
+      "The video player identity could not be confirmed. The session was kept and the process was not terminated",
+  "mpv 或 C:\\Program Files\\mpv\\mpv.exe":
+      "mpv or C:\\Program Files\\mpv\\mpv.exe",
+  "占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除":
+      "Placeholders: {url} video URL · {subfile} subtitle URL · {start} resume time in seconds\nLines containing placeholders without values are removed automatically",
+  "增强能力探测：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "Enhanced capability detection: Basic WebDAV {webDav}; index search {indexSearch}; index update {indexUpdate}; storage recovery {storageRecovery}. Features that cannot be confirmed are disabled when their endpoints fail to respond.",
+  "后台 {version} 能力：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "Backend {version} capabilities: Basic WebDAV {webDav}; index search {indexSearch}; index update {indexUpdate}; storage recovery {storageRecovery}. Features that cannot be confirmed are disabled when their endpoints fail to respond.",
   "安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。":
       "Security restrictions: Each session can be automatically restored up to 3 times; the third time only performs a graceful shutdown and restart of the local process with confirmed identity, and never forces an end. Full storage refreshes occur at least 5 minutes apart.",
   "按最后访问或最后更新时间自动淘汰可重建缓存。":
@@ -171,7 +185,7 @@ const Map<String, String> englishTranslations = <String, String>{
   "可用内存的 5%～50%": "5%~50% of available memory",
   "可执行文件路径": "Executable file path",
   "空目录": "Empty directory",
-  "空闲": "free",
+  "空闲": "Idle",
   "控制外挂字幕与 LRC 注入、轨道选择和续播。":
       "Control external subtitles and LRC injection, track selection and playback.",
   "历史码率预测": "Historical code rate prediction",
@@ -499,6 +513,17 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  "当前后台缺少存储恢复端点，自动恢复已禁用": "現在のバックエンドにはストレージ復元エンドポイントがないため、自動復元は無効です",
+  "无法确认音频播放器身份，已保留会话且未终止进程": "音声プレーヤーを確認できなかったため、セッションを保持し、プロセスを終了しませんでした",
+  "无法确认视频播放器身份，已保留会话且未终止进程": "動画プレーヤーを確認できなかったため、セッションを保持し、プロセスを終了しませんでした",
+  "mpv 或 C:\\Program Files\\mpv\\mpv.exe":
+      "mpv または C:\\Program Files\\mpv\\mpv.exe",
+  "占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除":
+      "プレースホルダー：{url} 動画 URL · {subfile} 字幕 URL · {start} 再開位置（秒）\n値のないプレースホルダーを含む行は自動的に削除されます",
+  "增强能力探测：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "拡張機能の検出：基本 WebDAV {webDav}；インデックス検索 {indexSearch}；インデックス更新 {indexUpdate}；ストレージ復元 {storageRecovery}。確認できない機能は、エンドポイントの応答に失敗した場合に無効化されます。",
+  "后台 {version} 能力：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "バックエンド {version} の機能：基本 WebDAV {webDav}；インデックス検索 {indexSearch}；インデックス更新 {indexUpdate}；ストレージ復元 {storageRecovery}。確認できない機能は、エンドポイントの応答に失敗した場合に無効化されます。",
   "安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。":
       "セキュリティ制限: 各セッションは最大 3 回まで自動的に復元できます。 3 回目は正常なシャットダウンと確認された ID でのローカル プロセスの再起動のみが実行され、強制終了は行われません。ストレージ全体の更新は少なくとも 5 分間隔で行われます。",
   "按最后访问或最后更新时间自动淘汰可重建缓存。": "最終アクセス時間または最終更新時間によって、再構築可能なキャッシュを自動的に削除します。",
@@ -647,7 +672,7 @@ const Map<String, String> japaneseTranslations = <String, String>{
   "可用内存的 5%～50%": "使用可能なメモリの 5% ～ 50%",
   "可执行文件路径": "実行可能ファイルのパス",
   "空目录": "空のディレクトリ",
-  "空闲": "無料",
+  "空闲": "待機中",
   "控制外挂字幕与 LRC 注入、轨道选择和续播。": "外部字幕と LRC インジェクション、トラックの選択と再生を制御します。",
   "历史码率预测": "過去のコードレート予測",
   "立即更新索引": "今すぐインデックスを更新する",
@@ -933,6 +958,17 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  "当前后台缺少存储恢复端点，自动恢复已禁用": "目前後端缺少儲存復原端點，已停用自動復原",
+  "无法确认音频播放器身份，已保留会话且未终止进程": "無法確認音訊播放器身分，已保留工作階段且未終止處理程序",
+  "无法确认视频播放器身份，已保留会话且未终止进程": "無法確認影片播放器身分，已保留工作階段且未終止處理程序",
+  "mpv 或 C:\\Program Files\\mpv\\mpv.exe":
+      "mpv 或 C:\\Program Files\\mpv\\mpv.exe",
+  "占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除":
+      "預留位置：{url} 影片網址 · {subfile} 字幕網址 · {start} 續播秒數\n沒有值的預留位置所在行會自動移除",
+  "增强能力探测：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "增強能力探測：基礎 WebDAV {webDav}；索引搜尋 {indexSearch}；索引更新 {indexUpdate}；儲存復原 {storageRecovery}。無法確認的功能會在端點回應失敗時停用。",
+  "后台 {version} 能力：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。":
+      "後端 {version} 能力：基礎 WebDAV {webDav}；索引搜尋 {indexSearch}；索引更新 {indexUpdate}；儲存復原 {storageRecovery}。無法確認的功能會在端點回應失敗時停用。",
   "安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。":
       "安全限制：每個會話最多自動恢復 3 次；第三次僅對身份已確認的本機進程執行優雅關閉和重啟，絕不強制結束。全儲存刷新至少間隔 5 分鐘。",
   "按最后访问或最后更新时间自动淘汰可重建缓存。": "按最後存取或最後更新時間自動淘汰可重建快取。",
@@ -982,7 +1018,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "断开连接": "斷開連接",
   "返回上级目录": "返回上級目錄",
   "非 Windows 平台": "非 Windows 平台",
-  "分钟": "分分鐘",
+  "分钟": "分鐘",
   "服务器": "伺服器",
   "服务器 URL 仅导出来源和路径 SHA-256；密码、Token、Authorization、URL userinfo、查询参数与签名参数不会写入诊断包。迁移记录只保留版本、结果和备份文件名。":
       "伺服器 URL 僅匯出來源與路徑 SHA-256；密碼、Token、Authorization、URL userinfo、查詢參數與簽章參數不會寫入診斷包。遷移記錄只保留版本、結果和備份檔案名稱。",
@@ -1070,7 +1106,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "可用内存的 5%～50%": "可用記憶體的 5%～50%",
   "可执行文件路径": "可執行檔路徑",
   "空目录": "空目錄",
-  "空闲": "空閒",
+  "空闲": "閒置",
   "控制外挂字幕与 LRC 注入、轨道选择和续播。": "控制外掛字幕與 LRC 注入、軌道選擇和續播。",
   "历史码率预测": "歷史碼率預測",
   "立即更新索引": "立即更新索引",

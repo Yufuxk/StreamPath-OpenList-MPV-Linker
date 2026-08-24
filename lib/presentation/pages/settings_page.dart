@@ -913,13 +913,17 @@ class _SettingsPageState extends State<SettingsPage> {
       OpenListCapabilitySupport.unknown => '尚不可证明',
     };
     final version = capabilities.version?.trim();
-    final prefix = version == null || version.isEmpty
-        ? '增强能力探测'
-        : '后台 $version 能力';
-    return '$prefix：基础 WebDAV ${label(capabilities.webDavConnection)}；'
-        '索引搜索 ${label(capabilities.indexSearch)}；索引更新 '
-        '${label(capabilities.indexUpdate)}；存储恢复 '
-        '${label(capabilities.storageReload)}。尚不可证明的功能会按端点响应失败关闭。';
+    final template = version == null || version.isEmpty
+        ? '增强能力探测：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。'
+        : '后台 {version} 能力：基础 WebDAV {webDav}；索引搜索 {indexSearch}；索引更新 {indexUpdate}；存储恢复 {storageRecovery}。尚不可证明的功能会按端点响应失败关闭。';
+    final l10n = context.l10n;
+    return l10n.format(template, <String, Object?>{
+      'version': version,
+      'webDav': l10n.text(label(capabilities.webDavConnection)),
+      'indexSearch': l10n.text(label(capabilities.indexSearch)),
+      'indexUpdate': l10n.text(label(capabilities.indexUpdate)),
+      'storageRecovery': l10n.text(label(capabilities.storageReload)),
+    });
   }
 
   Future<void> _refreshOpenListIndexProgress({bool showLoading = true}) async {
@@ -1159,7 +1163,11 @@ class _SettingsPageState extends State<SettingsPage> {
         : double.tryParse(text);
     if (value == null) return context.l10n.text('请输入有效数字');
     if (value < min || value > max) {
-      return context.l10n.text('请输入 $min～$max $unit');
+      return context.l10n.format('请输入 {min}～{max} {unit}', {
+        'min': min,
+        'max': max,
+        'unit': context.l10n.text(unit),
+      });
     }
     return null;
   }
@@ -1715,7 +1723,9 @@ class _SettingsPageState extends State<SettingsPage> {
               runSpacing: 6,
               children: [
                 AppText(
-                  '状态：$statusText',
+                  context.l10n.format('状态：{status}', {
+                    'status': context.l10n.text(statusText),
+                  }),
                   key: const Key('openlist-index-progress-status'),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: statusColor,
@@ -1723,12 +1733,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 AppText(
-                  '已处理条目：${progress.objectCount}',
+                  context.l10n.format('已处理条目：{count}', {
+                    'count': progress.objectCount,
+                  }),
                   key: const Key('openlist-index-progress-count'),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 AppText(
-                  '上次更新时间：${_formatOpenListIndexTime(progress.lastDoneTime)}',
+                  context.l10n.format('上次更新时间：{time}', {
+                    'time': _formatOpenListIndexTime(progress.lastDoneTime),
+                  }),
                   key: const Key('openlist-index-last-update-time'),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
@@ -1737,7 +1751,9 @@ class _SettingsPageState extends State<SettingsPage> {
             if (progress.error.isNotEmpty) ...[
               const SizedBox(height: 8),
               AppText(
-                '上次错误：${progress.error}',
+                context.l10n.format('上次错误：{error}', {
+                  'error': context.l10n.text(progress.error),
+                }),
                 style: Theme.of(
                   context,
                 ).textTheme.bodySmall?.copyWith(color: scheme.error),
@@ -1816,8 +1832,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 contextMenuBuilder: buildClipboardHistoryMenu,
                 decoration: InputDecoration(
                   labelText: context.l10n.text('启动参数（每行一个）'),
-                  helperText:
-                      '占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除',
+                  helperText: context.l10n.text(
+                    '占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除',
+                  ),
                   alignLabelWithHint: true,
                   border: OutlineInputBorder(),
                 ),
@@ -1936,16 +1953,19 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-favorites-limit-field'),
                   controller: _mediaLibraryFavoritesController,
                   label: '收藏保存上限',
-                  helperText:
-                      '目录、视频、STRM 和音频合计；系统最高 ${MediaLibraryConfig.systemMaxFavoritesPerSource} 条',
+                  helperText: context.l10n.format(
+                    '目录、视频、STRM 和音频合计；系统最高 {max} 条',
+                    {'max': MediaLibraryConfig.systemMaxFavoritesPerSource},
+                  ),
                   maximum: MediaLibraryConfig.systemMaxFavoritesPerSource,
                 ),
                 _buildMediaLibraryLimitField(
                   key: const Key('media-library-continue-limit-field'),
                   controller: _mediaLibraryContinueController,
                   label: '继续播放显示上限',
-                  helperText:
-                      '视频、音频各自计算；系统最高 ${MediaLibraryConfig.systemMaxContinuePerLane} 条',
+                  helperText: context.l10n.format('视频、音频各自计算；系统最高 {max} 条', {
+                    'max': MediaLibraryConfig.systemMaxContinuePerLane,
+                  }),
                   maximum: MediaLibraryConfig.systemMaxContinuePerLane,
                 ),
               ),
@@ -1955,8 +1975,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-recent-playback-limit-field'),
                   controller: _mediaLibraryRecentPlaybackController,
                   label: '最近播放保存上限',
-                  helperText:
-                      '视频、音频各自计算；系统最高 ${MediaLibraryConfig.systemMaxRecentPlaybackPerLane} 条',
+                  helperText: context.l10n.format('视频、音频各自计算；系统最高 {max} 条', {
+                    'max': MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
+                  }),
                   maximum: MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
                 ),
                 _buildMediaLibraryLimitField(
@@ -1965,8 +1986,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   controller: _mediaLibraryRecentDirectoriesController,
                   label: '最近目录保存上限',
-                  helperText:
-                      '当前来源单独计算；系统最高 ${MediaLibraryConfig.systemMaxRecentDirectoriesPerSource} 条',
+                  helperText: context.l10n.format('当前来源单独计算；系统最高 {max} 条', {
+                    'max':
+                        MediaLibraryConfig.systemMaxRecentDirectoriesPerSource,
+                  }),
                   maximum:
                       MediaLibraryConfig.systemMaxRecentDirectoriesPerSource,
                 ),
@@ -2695,12 +2718,29 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               _AppearanceStatusRow(
                 label: '系统版本',
-                value: capabilities.windowsVersionLabel,
+                value: capabilities.isDetected && capabilities.platformSupported
+                    ? context.l10n
+                          .format('Windows {major}.{minor}（内部版本 {build}）', {
+                            'major': capabilities.versionMajor,
+                            'minor': capabilities.versionMinor,
+                            'build': capabilities.buildNumber,
+                          })
+                    : capabilities.windowsVersionLabel,
               ),
               const SizedBox(height: 10),
               _AppearanceStatusRow(
                 label: '辅助显示',
-                value: capabilities.transparencyStatusLabel,
+                value: capabilities.isDetected && capabilities.platformSupported
+                    ? context.l10n
+                          .format('透明效果：{transparency} · 高对比度：{contrast}', {
+                            'transparency': context.l10n.text(
+                              capabilities.transparencyEnabled ? '已开启' : '已关闭',
+                            ),
+                            'contrast': context.l10n.text(
+                              capabilities.highContrast ? '已开启' : '未开启',
+                            ),
+                          })
+                    : capabilities.transparencyStatusLabel,
               ),
               const SizedBox(height: 10),
               _AppearanceStatusRow(
