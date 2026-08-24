@@ -2099,10 +2099,18 @@ class _BrowserPageState extends State<BrowserPage> {
             icon: const Icon(Icons.settings_outlined),
             tooltip: context.l10n.text('设置'),
             onPressed: () async {
+              final appState = context.read<AppState>();
+              final previousSourceId = appState.mediaSourceId;
               await Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
               );
-              if (!mounted) return;
+              if (!context.mounted) return;
+              if (appState.mediaSourceId != previousSourceId) {
+                Navigator.of(context).pushReplacement(
+                  MaterialPageRoute<void>(builder: (_) => const BrowserPage()),
+                );
+                return;
+              }
               // 返回后同步可能被设置页清空的历史，并重算显示列表。
               await Future.wait([
                 _loadPlaybackSessions(),

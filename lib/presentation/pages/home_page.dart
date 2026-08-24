@@ -43,6 +43,8 @@ class _HomePageState extends State<HomePage> {
   late final TextEditingController _profileNameController;
   late List<ServerProfile> _profiles;
   String? _selectedProfileId;
+  AppState? _appState;
+  String _displayedActiveProfileId = '';
   bool _connecting = false;
   bool _obscurePassword = true;
 
@@ -51,7 +53,8 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     StreamPathConfig config;
     try {
-      config = context.read<AppState>().configStore.current;
+      _appState = context.read<AppState>();
+      config = _appState!.configStore.current;
     } catch (_) {
       config = StreamPathConfig.defaults();
     }
@@ -64,6 +67,8 @@ class _HomePageState extends State<HomePage> {
     _profileNameController = TextEditingController(
       text: config.activeProfile?.name ?? '默认服务器',
     );
+    _displayedActiveProfileId = config.profileId;
+    _appState?.addListener(_syncActiveProfile);
     final error = widget.initialError;
     if (error != null) {
       // 等首帧完成后再提示（ScaffoldMessenger 就绪）。
@@ -75,11 +80,28 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _appState?.removeListener(_syncActiveProfile);
     _baseUrlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
     _profileNameController.dispose();
     super.dispose();
+  }
+
+  void _syncActiveProfile() {
+    final config = _appState?.configStore.current;
+    if (config == null || config.profileId == _displayedActiveProfileId) return;
+    _displayedActiveProfileId = config.profileId;
+    final profile = config.activeProfile;
+    if (!mounted) return;
+    setState(() {
+      _profiles = [...config.profiles];
+      _selectedProfileId = profile?.profileId;
+      _profileNameController.text = profile?.name ?? '默认服务器';
+      _baseUrlController.text = profile?.serverUrl ?? '';
+      _usernameController.text = profile?.username ?? '';
+      _passwordController.text = profile?.password ?? '';
+    });
   }
 
   Future<void> _connect() async {
@@ -147,6 +169,7 @@ class _HomePageState extends State<HomePage> {
         .where((item) => item.profileId == profileId)
         .firstOrNull;
     if (profile == null) return;
+    SettingsPageMemory.selectProfile(profile.profileId);
     setState(() {
       _selectedProfileId = profile.profileId;
       _profileNameController.text = profile.name;
@@ -157,6 +180,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _newProfile() {
+    SettingsPageMemory.selectProfile(null);
     setState(() {
       _selectedProfileId = null;
       _profileNameController.text = '新服务器';
@@ -231,6 +255,7 @@ class _HomePageState extends State<HomePage> {
       child: Form(
         key: _formKey,
         child: Column(
+          key: ValueKey(_displayedActiveProfileId),
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

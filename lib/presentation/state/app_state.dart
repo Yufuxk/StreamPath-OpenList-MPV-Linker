@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../core/errors/app_exception.dart';
 import '../../data/local/playback_history_store.dart';
 import '../../data/local/audio_playback_history_store.dart';
 import '../../data/local/stream_path_config_store.dart';
@@ -11,6 +12,7 @@ import '../../data/local/media_library_store.dart';
 import '../../data/remote/webdav_client.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/app_language.dart';
+import '../../data/models/stream_path_config.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/audio_companion_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
@@ -335,27 +337,89 @@ class AppState extends ChangeNotifier {
     required String password,
     String? profileId,
   }) async {
+    final resolvedProfileId = profileId ?? _configStore.current.profileId;
+    final service = await _verifyConnection(
+      baseUrl: baseUrl,
+      username: username,
+      password: password,
+      profileId: resolvedProfileId,
+    );
+    _commitConnection(
+      service: service,
+      username: username,
+      password: password,
+      profileId: resolvedProfileId,
+    );
+  }
+
+  /// 验证候选档案后同时提交活动配置与内存连接。
+  Future<StreamPathConfig> connectAndActivateProfile({
+    required ServerProfile profile,
+    required StreamPathConfig config,
+  }) async {
+    if (!config.profiles.any(
+      (candidate) => candidate.profileId == profile.profileId,
+    )) {
+      throw ArgumentError.value(profile.profileId, 'profile', '服务器档案不存在');
+    }
+    late final WebDAVService service;
+    try {
+      service = await _verifyConnection(
+        baseUrl: profile.serverUrl,
+        username: profile.username,
+        password: profile.password,
+        profileId: profile.profileId,
+      );
+    } on AppException catch (error) {
+      throw AppException.network('重新连接失败：${error.message}', error);
+    } catch (error) {
+      throw AppException.network('重新连接失败：$error', error);
+    }
+
+    final activated = config.activateProfile(profile.profileId);
+    await _configStore.save(activated);
+    _commitConnection(
+      service: service,
+      username: profile.username,
+      password: profile.password,
+      profileId: profile.profileId,
+    );
+    return activated;
+  }
+
+  Future<WebDAVService> _verifyConnection({
+    required String baseUrl,
+    required String username,
+    required String password,
+    required String profileId,
+  }) async {
     final client = WebDavClient(
       baseUrl: baseUrl,
       username: username,
       password: password,
     );
-    // 复用全局缓存实例（main 中已 init），保证连接间缓存延续。
-    final resolvedProfileId = profileId ?? _configStore.current.profileId;
     final service = WebDAVService(
       client: client,
-      profileId: resolvedProfileId,
+      profileId: profileId,
       cache: _directoryCache,
     );
 
     // 登录必须真实访问服务器；旧账号的目录缓存不能充当认证结果。
     await service.verifyConnection();
+    return service;
+  }
 
+  void _commitConnection({
+    required WebDAVService service,
+    required String username,
+    required String password,
+    required String profileId,
+  }) {
     _webDavService = service;
     _username = username;
     _password = password;
-    _progressService.useProfile(resolvedProfileId);
-    _audioProgressService?.useProfile(resolvedProfileId);
+    _progressService.useProfile(profileId);
+    _audioProgressService?.useProfile(profileId);
     unawaited(_playerService.captureOpenListProcessIdentity());
     notifyListeners();
   }

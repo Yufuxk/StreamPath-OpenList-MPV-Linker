@@ -56,23 +56,30 @@ enum _MediaLibraryCleanupTarget {
   recentDirectories,
 }
 
-/// 设置页当前分类的进程内缓存。
+/// 设置页当前分类与最近编辑档案的进程内缓存。
 ///
 /// 不写入配置文件，因此软件重启后会恢复到默认的服务器页面。
 class SettingsPageMemory {
   SettingsPageMemory._();
 
   static SettingsSection _selectedSection = SettingsSection.server;
+  static String? _selectedProfileId;
 
   static SettingsSection get selectedSection => _selectedSection;
+  static String? get selectedProfileId => _selectedProfileId;
 
   static void select(SettingsSection section) {
     _selectedSection = section;
   }
 
+  static void selectProfile(String? profileId) {
+    _selectedProfileId = profileId;
+  }
+
   @visibleForTesting
   static void reset() {
     _selectedSection = SettingsSection.server;
+    _selectedProfileId = null;
   }
 }
 
@@ -299,6 +306,12 @@ class _SettingsPageState extends State<SettingsPage> {
       final expirationConfig =
           await appState.cacheExpirationConfigStore?.load() ??
           CacheExpirationConfig.defaults();
+      final rememberedProfile = fullConfig.profiles
+          .where(
+            (profile) =>
+                profile.profileId == SettingsPageMemory.selectedProfileId,
+          )
+          .firstOrNull;
       if (!mounted) return false;
       setState(() {
         _draft.loadFrom(
@@ -308,6 +321,9 @@ class _SettingsPageState extends State<SettingsPage> {
           intelligenceConfig: intelligenceConfig,
           expirationConfig: expirationConfig,
         );
+        if (rememberedProfile != null) {
+          _loadProfileFields(rememberedProfile);
+        }
         _loaded = true;
       });
       if (_selectedSection == SettingsSection.server) {
@@ -361,12 +377,32 @@ class _SettingsPageState extends State<SettingsPage> {
             mediaLibrary: mediaLibraryConfig,
             language: _language,
           );
+      final hasCompleteConnection =
+          profile.serverUrl.trim().isNotEmpty &&
+          profile.username.trim().isNotEmpty;
+      final switchingProfile =
+          currentConfig.profileId != profileId && hasCompleteConnection;
+      var savedConfig = nextConfig;
       if (appearanceChanged && !await appearanceController.apply(appearance)) {
         throw AppException.config('无法启用所选窗口样式，已保留当前界面');
       }
       try {
-        await appState.configStore.save(nextConfig);
-        appState.applyLanguage(nextConfig.language);
+        if (switchingProfile) {
+          savedConfig = await appState.connectAndActivateProfile(
+            profile: profile,
+            config: nextConfig,
+          );
+        } else {
+          await appState.configStore.save(nextConfig);
+        }
+        SettingsPageMemory.selectProfile(profileId);
+        appState.applyLanguage(savedConfig.language);
+      } on NetworkException {
+        if (appearanceChanged) {
+          await appearanceController.apply(previousAppearance);
+        }
+        _restoreProfileFields(currentConfig);
+        rethrow;
       } on AppException {
         if (appearanceChanged) {
           await appearanceController.apply(previousAppearance);
@@ -398,7 +434,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
       if (!mounted) return;
       setState(() {
-        _profiles = [...nextConfig.profiles];
+        _profiles = [...savedConfig.profiles];
         _selectedProfileId = profileId;
       });
       ScaffoldMessenger.of(
@@ -737,48 +773,75 @@ class _SettingsPageState extends State<SettingsPage> {
     if (profile == null) return;
     _stopOpenListIndexProgressPolling(clear: true);
     setState(() {
-      _selectedProfileId = profile.profileId;
       _openListIndexUpdateUnavailable = false;
-      _profileNameController.text = profile.name;
-      _serverUrlController.text = profile.serverUrl;
-      _serverUsernameController.text = profile.username;
-      _serverPasswordController.text = profile.password;
-      _defaultDirectoryController.text = profile.defaultDirectory;
-      _openListRecoveryEnabled = profile.openListRecovery.enabled;
-      _openListBaseUrlController.text = profile.openListRecovery.baseUrl;
-      _openListUsernameController.text = profile.openListRecovery.username;
-      _openListPasswordController.text = profile.openListRecovery.password;
-      _openListTokenController.text = profile.openListRecovery.token;
-      _openListIndexUserTokenController.text = profile.openListIndex.userToken;
-      _openListIndexAutoUpdateEnabled = profile.openListIndex.autoUpdateEnabled;
-      _openListIndexIntervalController.text = profile
-          .openListIndex
-          .updateIntervalMinutes
-          .toString();
+      _loadProfileFields(profile);
     });
     unawaited(_refreshOpenListIndexProgress());
+  }
+
+  void _loadProfileFields(ServerProfile profile) {
+    _selectedProfileId = profile.profileId;
+    _profileNameController.text = profile.name;
+    _serverUrlController.text = profile.serverUrl;
+    _serverUsernameController.text = profile.username;
+    _serverPasswordController.text = profile.password;
+    _defaultDirectoryController.text = profile.defaultDirectory;
+    _openListRecoveryEnabled = profile.openListRecovery.enabled;
+    _openListBaseUrlController.text = profile.openListRecovery.baseUrl;
+    _openListUsernameController.text = profile.openListRecovery.username;
+    _openListPasswordController.text = profile.openListRecovery.password;
+    _openListTokenController.text = profile.openListRecovery.token;
+    _openListIndexUserTokenController.text = profile.openListIndex.userToken;
+    _openListIndexAutoUpdateEnabled = profile.openListIndex.autoUpdateEnabled;
+    _openListIndexIntervalController.text = profile
+        .openListIndex
+        .updateIntervalMinutes
+        .toString();
+  }
+
+  void _restoreProfileFields(StreamPathConfig config) {
+    final activeProfile = config.activeProfile;
+    SettingsPageMemory.selectProfile(activeProfile?.profileId);
+    if (!mounted) return;
+    setState(() {
+      _profiles = [...config.profiles];
+      _openListIndexUpdateUnavailable = false;
+      if (activeProfile == null) {
+        _clearProfileFields(name: '默认服务器');
+      } else {
+        _loadProfileFields(activeProfile);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _formKeys[SettingsSection.server]?.currentState?.reset();
+    });
+  }
+
+  void _clearProfileFields({required String name}) {
+    _selectedProfileId = null;
+    _profileNameController.text = name;
+    _serverUrlController.clear();
+    _serverUsernameController.clear();
+    _serverPasswordController.clear();
+    _defaultDirectoryController.clear();
+    _openListRecoveryEnabled = false;
+    _openListBaseUrlController.clear();
+    _openListUsernameController.clear();
+    _openListPasswordController.clear();
+    _openListTokenController.clear();
+    _openListIndexUserTokenController.clear();
+    _openListIndexAutoUpdateEnabled = false;
+    _openListIndexIntervalController.text = OpenListIndexConfig
+        .defaultUpdateIntervalMinutes
+        .toString();
   }
 
   void _newProfileForEditing() {
     _stopOpenListIndexProgressPolling(clear: true);
     setState(() {
-      _selectedProfileId = null;
       _openListIndexUpdateUnavailable = false;
-      _profileNameController.text = '新服务器';
-      _serverUrlController.clear();
-      _serverUsernameController.clear();
-      _serverPasswordController.clear();
-      _defaultDirectoryController.clear();
-      _openListRecoveryEnabled = false;
-      _openListBaseUrlController.clear();
-      _openListUsernameController.clear();
-      _openListPasswordController.clear();
-      _openListTokenController.clear();
-      _openListIndexUserTokenController.clear();
-      _openListIndexAutoUpdateEnabled = false;
-      _openListIndexIntervalController.text = OpenListIndexConfig
-          .defaultUpdateIntervalMinutes
-          .toString();
+      _clearProfileFields(name: '新服务器');
     });
   }
 
@@ -814,6 +877,9 @@ class _SettingsPageState extends State<SettingsPage> {
       await appState.configStore.save(
         appState.configStore.current.removeProfile(profileId),
       );
+      if (SettingsPageMemory.selectedProfileId == profileId) {
+        SettingsPageMemory.selectProfile(null);
+      }
       appState.refreshOpenListIndexSchedule();
       if (!mounted) return;
       await _refreshConfigFields();
