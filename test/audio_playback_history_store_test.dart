@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:streampath/core/constants.dart';
 import 'package:streampath/data/local/audio_playback_history_store.dart';
 import 'package:streampath/data/models/audio_playback_history.dart';
 import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
@@ -47,6 +48,31 @@ void main() {
 
     await store.remove('audio-1');
     expect(await store.loadAll(), isEmpty);
+  });
+
+  test('不同媒体来源分别保留音频播放位置', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}source-audio.json';
+    final store = AudioPlaybackHistoryStore.forPath(path);
+    for (final sourceId in ['webdav-profile', 'local:root-test']) {
+      for (var index = 0; index < AppConstants.maxPlaybackSessions; index++) {
+        expect(
+          await store.upsert(
+            AudioPlaybackHistory(
+              sessionId: '$sourceId-$index',
+              dirCrumbs: const [],
+              fileName: '$index.flac',
+              trackIndex: index,
+              updatedAt: DateTime(2026),
+              sourceId: sourceId,
+            ),
+          ),
+          isTrue,
+        );
+      }
+    }
+
+    final restored = await AudioPlaybackHistoryStore.forPath(path).loadAll();
+    expect(restored, hasLength(AppConstants.maxPlaybackSessions * 2));
   });
 
   test('旧音频历史缺少完整进程身份时保持为空且不会伪造', () {

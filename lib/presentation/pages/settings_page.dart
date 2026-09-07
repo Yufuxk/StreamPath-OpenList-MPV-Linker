@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -11,6 +12,7 @@ import '../../core/utils/file_sort.dart';
 import '../../data/models/appearance_config.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/media_library_config.dart';
+import '../../data/models/local_root_config.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/player_config.dart';
@@ -34,6 +36,7 @@ import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 import '../widgets/settings_category_forms.dart';
+import '../widgets/local_root_dialog.dart';
 
 /// 设置页中的可用分类。
 ///
@@ -41,6 +44,7 @@ import '../widgets/settings_category_forms.dart';
 /// 注册页面描述与内容构建器。
 enum SettingsSection {
   server,
+  localStorage,
   playback,
   mediaLibrary,
   cache,
@@ -125,6 +129,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final ValueNotifier<int> _serverSectionRevision = ValueNotifier<int>(0);
   final ValueNotifier<int> _appearanceSectionRevision = ValueNotifier<int>(0);
   late final SettingsConfigDraft _draft;
+  List<LocalRootConfig> _localRoots = const [];
 
   TextEditingController get _nameController => _draft.nameController;
   TextEditingController get _executableController =>
@@ -321,6 +326,7 @@ class _SettingsPageState extends State<SettingsPage> {
           intelligenceConfig: intelligenceConfig,
           expirationConfig: expirationConfig,
         );
+        _localRoots = [...fullConfig.localRoots];
         if (rememberedProfile != null) {
           _loadProfileFields(rememberedProfile);
         }
@@ -376,7 +382,8 @@ class _SettingsPageState extends State<SettingsPage> {
             appearance: appearance,
             mediaLibrary: mediaLibraryConfig,
             language: _language,
-          );
+          )
+          .withLocalRoots(_localRoots);
       final hasCompleteConnection =
           profile.serverUrl.trim().isNotEmpty &&
           profile.username.trim().isNotEmpty;
@@ -689,7 +696,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final (title, description, successMessage) = switch (target) {
       _MediaLibraryCleanupTarget.favorites => (
         '清空收藏列表？',
-        '将清除当前来源的目录、视频、STRM 和音频收藏。',
+        '将清除当前来源的目录、视频、STRM、音频和 ISO 收藏。',
         '收藏列表已清空',
       ),
       _MediaLibraryCleanupTarget.continuePlayback => (
@@ -699,7 +706,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       _MediaLibraryCleanupTarget.recentPlayback => (
         '清空最近播放列表？',
-        '将清除当前来源的视频和音频最近播放记录，并同步移除这些记录在媒体中心的继续播放入口；不会删除底层播放进度。',
+        '将清除当前来源的视频、音频和 ISO 最近播放记录，并同步移除这些记录在媒体中心的继续播放入口；不会删除底层播放进度。',
         '最近播放列表已清空',
       ),
       _MediaLibraryCleanupTarget.recentDirectories => (
@@ -1254,6 +1261,16 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
       _SettingsSectionDefinition(
+        section: SettingsSection.localStorage,
+        label: '本地存储',
+        description: '本地文件夹挂载与管理',
+        icon: Icons.folder_copy_outlined,
+        builder: () => _observeSectionBuild(
+          SettingsSection.localStorage,
+          _buildLocalStorageSettings(),
+        ),
+      ),
+      _SettingsSectionDefinition(
         section: SettingsSection.playback,
         label: '播放',
         description: '播放器、字幕与续播',
@@ -1321,6 +1338,128 @@ class _SettingsPageState extends State<SettingsPage> {
       child: child,
     );
   }
+
+  Future<void> _editLocalRoot([LocalRootConfig? initial]) async {
+    final draft = await showLocalRootDialog(context, initial: initial);
+    if (!mounted || draft == null) return;
+    try {
+      final candidate = await LocalRootConfig.fromDirectory(
+        path: draft.path,
+        displayName: draft.displayName,
+        rootId: initial?.rootId,
+        enabled: draft.enabled,
+      );
+      if (!mounted) return;
+      setState(() {
+        final next = [..._localRoots];
+        final duplicateIndex = next.indexWhere(
+          (root) =>
+              root.rootId != initial?.rootId &&
+              root.path.toLowerCase() == candidate.path.toLowerCase(),
+        );
+        final index = initial == null
+            ? duplicateIndex
+            : next.indexWhere((root) => root.rootId == initial.rootId);
+        final resolved = duplicateIndex >= 0 && initial == null
+            ? LocalRootConfig(
+                rootId: next[duplicateIndex].rootId,
+                displayName: candidate.displayName,
+                path: candidate.path,
+                enabled: candidate.enabled,
+              )
+            : candidate;
+        if (index < 0) {
+          next.add(resolved);
+        } else {
+          next[index] = resolved;
+        }
+        _localRoots = next;
+      });
+    } on FileSystemException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: AppText('本地根目录不存在或不可访问')));
+    }
+  }
+
+  Widget _buildLocalStorageSettings() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _SettingsGroupCard(
+        key: const Key('local-storage-settings-section'),
+        icon: Icons.folder_copy_outlined,
+        title: '本地文件夹',
+        description: '可直接输入绝对路径，或使用 Windows 原生目录选择器。删除挂载不会删除磁盘文件。',
+        child: Column(
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                key: const Key('settings-add-local-root-button'),
+                onPressed: _saving ? null : _editLocalRoot,
+                icon: const Icon(Icons.add),
+                label: const AppText('添加本地文件夹'),
+              ),
+            ),
+            if (_localRoots.isEmpty) ...[
+              const SizedBox(height: 20),
+              const AppText('尚未添加本地文件夹'),
+            ] else ...[
+              const SizedBox(height: 12),
+              for (final root in _localRoots)
+                ListTile(
+                  key: ValueKey('settings-local-root-${root.rootId}'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.folder_outlined),
+                  title: AppText(root.displayName),
+                  subtitle: AppText(
+                    root.path,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Switch(
+                        value: root.enabled,
+                        onChanged: _saving
+                            ? null
+                            : (enabled) => setState(() {
+                                _localRoots = _localRoots
+                                    .map(
+                                      (item) => item.rootId == root.rootId
+                                          ? item.copyWith(enabled: enabled)
+                                          : item,
+                                    )
+                                    .toList();
+                              }),
+                      ),
+                      IconButton(
+                        tooltip: context.l10n.text('编辑'),
+                        icon: const Icon(Icons.edit_outlined),
+                        onPressed: _saving ? null : () => _editLocalRoot(root),
+                      ),
+                      IconButton(
+                        tooltip: context.l10n.text('删除'),
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: _saving
+                            ? null
+                            : () => setState(() {
+                                _localRoots = _localRoots
+                                    .where((item) => item.rootId != root.rootId)
+                                    .toList();
+                              }),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    ],
+  );
 
   Widget _buildServerSettings() {
     return Column(
@@ -1921,13 +2060,13 @@ class _SettingsPageState extends State<SettingsPage> {
         _SettingsGroupCard(
           icon: Icons.subtitles_outlined,
           title: '播放行为',
-          description: '控制外挂字幕与 LRC 注入、轨道选择和续播。',
+          description: '控制外挂字幕、外挂字体与 LRC 注入、轨道选择和续播。',
           child: Column(
             children: [
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const AppText('自动注入匹配的外挂字幕与 LRC'),
-                subtitle: const AppText('将同级目录中名称匹配的视频字幕或音频歌词加入播放器轨道'),
+                title: const AppText('自动注入匹配的外挂字幕、外挂字体与 LRC'),
+                subtitle: const AppText('匹配同级字幕和歌词，并加载同级已识别字体目录中的直属字体'),
                 value: _subtitleInjectionEnabled,
                 onChanged: (value) =>
                     setState(() => _subtitleInjectionEnabled = value),
@@ -1949,6 +2088,23 @@ class _SettingsPageState extends State<SettingsPage> {
                 value: _resumeEnabled,
                 onChanged: (value) => setState(() => _resumeEnabled = value),
               ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<bool>(
+                key: const Key('menu-progress-sharing'),
+                isExpanded: true,
+                initialValue: _draft.menuProgressSharingEnabled,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('WebDAV 蓝光菜单进度'),
+                ),
+                items: const [
+                  DropdownMenuItem(value: false, child: AppText('独立（不记录进度）')),
+                  DropdownMenuItem(value: true, child: AppText('共享（供标题模式续播）')),
+                ],
+                onChanged: (value) => setState(() =>
+                    _draft.menuProgressSharingEnabled = value!),
+              ),
+              const SizedBox(height: 8),
+              const AppText('菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。'),
             ],
           ),
         ),
@@ -2014,13 +2170,44 @@ class _SettingsPageState extends State<SettingsPage> {
           description: '数量按当前来源隔离；超过限制时优先淘汰最旧记录。',
           child: Column(
             children: [
+              DropdownButtonFormField<MediaLibrarySharingMode>(
+                key: ValueKey(
+                  'media-library-sharing-${_draft.mediaLibrarySharingMode.name}',
+                ),
+                initialValue: _draft.mediaLibrarySharingMode,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('数据展示模式'),
+                ),
+                items: [
+                  for (final mode in MediaLibrarySharingMode.values)
+                    DropdownMenuItem(
+                      value: mode,
+                      child: AppText(switch (mode) {
+                        MediaLibrarySharingMode.independent => '各来源独立',
+                        MediaLibrarySharingMode.localShared => '本地挂载文件夹共享',
+                        MediaLibrarySharingMode.allShared => '本地与网络存储共享',
+                      }),
+                    ),
+                ],
+                onChanged: _saving
+                    ? null
+                    : (value) {
+                        if (value != null) {
+                          setState(
+                            () => _draft.mediaLibrarySharingMode = value,
+                          );
+                        }
+                      },
+              ),
+              const SizedBox(height: 16),
               _buildFieldPair(
                 _buildMediaLibraryLimitField(
                   key: const Key('media-library-favorites-limit-field'),
                   controller: _mediaLibraryFavoritesController,
                   label: '收藏保存上限',
                   helperText: context.l10n.format(
-                    '目录、视频、STRM 和音频合计；系统最高 {max} 条',
+                    '目录、视频、STRM、音频和 ISO 合计；系统最高 {max} 条',
                     {'max': MediaLibraryConfig.systemMaxFavoritesPerSource},
                   ),
                   maximum: MediaLibraryConfig.systemMaxFavoritesPerSource,
@@ -2029,9 +2216,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-continue-limit-field'),
                   controller: _mediaLibraryContinueController,
                   label: '继续播放显示上限',
-                  helperText: context.l10n.format('视频、音频各自计算；系统最高 {max} 条', {
-                    'max': MediaLibraryConfig.systemMaxContinuePerLane,
-                  }),
+                  helperText: context.l10n.format(
+                    '视频、音频、ISO 各自计算；系统最高 {max} 条',
+                    {'max': MediaLibraryConfig.systemMaxContinuePerLane},
+                  ),
                   maximum: MediaLibraryConfig.systemMaxContinuePerLane,
                 ),
               ),
@@ -2041,9 +2229,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-recent-playback-limit-field'),
                   controller: _mediaLibraryRecentPlaybackController,
                   label: '最近播放保存上限',
-                  helperText: context.l10n.format('视频、音频各自计算；系统最高 {max} 条', {
-                    'max': MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
-                  }),
+                  helperText: context.l10n.format(
+                    '视频、音频、ISO 各自计算；系统最高 {max} 条',
+                    {'max': MediaLibraryConfig.systemMaxRecentPlaybackPerLane},
+                  ),
                   maximum: MediaLibraryConfig.systemMaxRecentPlaybackPerLane,
                 ),
                 _buildMediaLibraryLimitField(

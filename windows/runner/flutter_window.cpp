@@ -3,9 +3,12 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <optional>
+#include <shobjidl.h>
 #include <winternl.h>
+#include <wrl/client.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "utils.h"
 
 namespace {
 
@@ -95,6 +98,72 @@ flutter::EncodableValue ReadWindowCapabilities(HWND window) {
   return flutter::EncodableValue(capabilities);
 }
 
+std::wstring Utf16FromUtf8(const std::string& value) {
+  if (value.empty()) {
+    return {};
+  }
+  const int length = ::MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+      static_cast<int>(value.size()), nullptr, 0);
+  if (length <= 0) {
+    return {};
+  }
+  std::wstring converted(length, L'\0');
+  if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                            static_cast<int>(value.size()), converted.data(),
+                            length) <= 0) {
+    return {};
+  }
+  return converted;
+}
+
+HRESULT PickDirectory(HWND owner, const std::wstring& title,
+                      std::string* selected_path) {
+  Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+  HRESULT result = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&dialog));
+  if (FAILED(result)) {
+    return result;
+  }
+
+  FILEOPENDIALOGOPTIONS options = 0;
+  result = dialog->GetOptions(&options);
+  if (FAILED(result)) {
+    return result;
+  }
+  result = dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
+                              FOS_PATHMUSTEXIST);
+  if (FAILED(result)) {
+    return result;
+  }
+  if (!title.empty()) {
+    result = dialog->SetTitle(title.c_str());
+    if (FAILED(result)) {
+      return result;
+    }
+  }
+
+  result = dialog->Show(owner);
+  if (FAILED(result)) {
+    return result;
+  }
+
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  result = dialog->GetResult(&item);
+  if (FAILED(result)) {
+    return result;
+  }
+  PWSTR display_name = nullptr;
+  result = item->GetDisplayName(SIGDN_FILESYSPATH, &display_name);
+  if (FAILED(result)) {
+    return result;
+  }
+  *selected_path = Utf8FromUtf16(display_name);
+  ::CoTaskMemFree(display_name);
+  return S_OK;
+}
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -133,6 +202,45 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "streampath/appearance",
           &flutter::StandardMethodCodec::GetInstance());
+  folder_picker_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(),
+          "streampath/folder_picker",
+          &flutter::StandardMethodCodec::GetInstance());
+  folder_picker_channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        if (call.method_name() != "pickDirectory") {
+          result->NotImplemented();
+          return;
+        }
+        std::string title;
+        const auto* arguments =
+            std::get_if<flutter::EncodableMap>(call.arguments());
+        if (arguments != nullptr) {
+          const auto entry =
+              arguments->find(flutter::EncodableValue("title"));
+          if (entry != arguments->end()) {
+            if (const auto* value = std::get_if<std::string>(&entry->second)) {
+              title = *value;
+            }
+          }
+        }
+        std::string selected_path;
+        const HRESULT picker_result =
+            PickDirectory(GetHandle(), Utf16FromUtf8(title), &selected_path);
+        if (picker_result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+          result->Success();
+          return;
+        }
+        if (FAILED(picker_result)) {
+          result->Error("folder_picker_failed",
+                        "Windows folder picker failed",
+                        flutter::EncodableValue(
+                            static_cast<int64_t>(picker_result)));
+          return;
+        }
+        result->Success(flutter::EncodableValue(selected_path));
+      });
   appearance_channel_->SetMethodCallHandler(
       [this](const auto& call, auto result) {
         const std::string method = call.method_name();
@@ -261,6 +369,7 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   RemoveClipboardFormatListener(GetHandle());
+  folder_picker_channel_.reset();
   appearance_channel_.reset();
   clipboard_channel_.reset();
   if (flutter_controller_) {

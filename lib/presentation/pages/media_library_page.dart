@@ -12,14 +12,16 @@ import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_library_config.dart';
 import '../../data/models/playback_progress.dart';
+import '../../data/models/media_source.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../domain/services/media_library_search.dart';
+import '../../domain/services/iso_playback_service.dart';
 import '../theme/glass_tokens.dart';
 import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 
-enum _MediaLane { video, audio }
+enum _MediaLane { video, audio, iso }
 
 enum _DirectoryLane { favorites, recent }
 
@@ -33,26 +35,49 @@ class MediaLibraryPage extends StatefulWidget {
     required this.directoryCache,
     required this.videoProgressService,
     required this.audioProgressService,
+    this.isoProgressService,
     required this.resolveUrl,
+    this.resolveDirectTarget,
+    this.sourceIds,
+    this.sourceNames = const {},
+    this.localIsoProgressService,
   });
 
   final String sourceId;
+  final Set<String>? sourceIds;
+  final Map<String, String> sourceNames;
+  final IsoLibraryProgressReader? localIsoProgressService;
   final MediaLibraryStore store;
   final MediaLibraryConfig config;
   final DirectoryCache directoryCache;
   final PlaybackProgressReader videoProgressService;
   final PlaybackProgressReader? audioProgressService;
+  final IsoLibraryProgressReader? isoProgressService;
   final String Function(String href) resolveUrl;
+  final String? Function(MediaLibraryItem item)? resolveDirectTarget;
 
   @override
   State<MediaLibraryPage> createState() => _MediaLibraryPageState();
 }
 
 class _MediaLibraryPageState extends State<MediaLibraryPage> {
+  Set<String> get _sourceIds => widget.sourceIds ?? {widget.sourceId};
+
+  Future<List<MediaLibraryRecord>> _collectRecords(
+    Future<List<MediaLibraryRecord>> Function(String) read,
+  ) async {
+    final records = (await Future.wait(
+      _sourceIds.map(read),
+    )).expand((items) => items).toList();
+    records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return records;
+  }
+
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
   Timer? _libraryRefreshDebounce;
   Timer? _progressRefreshDebounce;
+  Timer? _isoProgressRefreshDebounce;
   Future<void> _progressOperationTail = Future<void>.value();
   final Set<String> _pendingVideoProgressUrls = {};
   final Set<String> _pendingAudioProgressUrls = {};
@@ -72,10 +97,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   List<MediaLibraryRecord> _recentDirectories = const [];
   List<MediaLibraryRecord> _videoHistory = const [];
   List<MediaLibraryRecord> _audioHistory = const [];
+  List<MediaLibraryRecord> _isoHistory = const [];
   List<VisitedDirectorySnapshot> _snapshots = const [];
   List<MediaLibrarySearchResult> _searchResults = const [];
   Map<String, PlaybackProgress> _videoContinue = const {};
   Map<String, PlaybackProgress> _audioContinue = const {};
+  Map<String, IsoLibraryProgress> _isoContinue = const {};
 
   @override
   void initState() {
@@ -83,6 +110,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     widget.store.addListener(_onLibraryChanged);
     widget.videoProgressService.addListener(_onVideoProgressChanged);
     widget.audioProgressService?.addListener(_onAudioProgressChanged);
+    widget.isoProgressService?.addLibraryProgressListener(
+      _onIsoProgressChanged,
+    );
+    widget.localIsoProgressService?.addLibraryProgressListener(
+      _onIsoProgressChanged,
+    );
     _loadAll();
   }
 
@@ -91,9 +124,16 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     _searchDebounce?.cancel();
     _libraryRefreshDebounce?.cancel();
     _progressRefreshDebounce?.cancel();
+    _isoProgressRefreshDebounce?.cancel();
     widget.store.removeListener(_onLibraryChanged);
     widget.videoProgressService.removeListener(_onVideoProgressChanged);
     widget.audioProgressService?.removeListener(_onAudioProgressChanged);
+    widget.isoProgressService?.removeLibraryProgressListener(
+      _onIsoProgressChanged,
+    );
+    widget.localIsoProgressService?.removeLibraryProgressListener(
+      _onIsoProgressChanged,
+    );
     _searchController.dispose();
     super.dispose();
   }
@@ -109,10 +149,13 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
     try {
       final records = await Future.wait<List<MediaLibraryRecord>>([
-        widget.store.favorites(widget.sourceId),
-        widget.store.recentDirectories(widget.sourceId),
-        widget.store.playbackHistory(widget.sourceId, audio: false),
-        widget.store.playbackHistory(widget.sourceId, audio: true),
+        _collectRecords(widget.store.favorites),
+        _collectRecords(widget.store.recentDirectories),
+        _collectRecords((id) => widget.store.playbackHistory(id, audio: false)),
+        _collectRecords((id) => widget.store.playbackHistory(id, audio: true)),
+        _collectRecords(
+          (id) => widget.store.playbackHistory(id, audio: false, iso: true),
+        ),
       ]);
       if (!mounted || libraryGeneration != _libraryGeneration) return;
       setState(() {
@@ -120,6 +163,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         _recentDirectories = records[1];
         _videoHistory = records[2];
         _audioHistory = records[3];
+        _isoHistory = records[4];
         _snapshots = widget.directoryCache.visitedDirectories(widget.sourceId);
         _loading = false;
         _error = null;
@@ -156,11 +200,27 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   void _onAudioProgressChanged(PlaybackProgressChange change) =>
       _scheduleProgressRefresh(change, audio: true);
 
+  void _onIsoProgressChanged() {
+    if (!mounted) return;
+    _isoProgressRefreshDebounce?.cancel();
+    _isoProgressRefreshDebounce = Timer(const Duration(milliseconds: 120), () {
+      unawaited(
+        _enqueueProgressOperation(() async {
+          final generation = ++_progressGeneration;
+          await _loadContinueProgress(generation, showLoading: false);
+        }),
+      );
+    });
+  }
+
   void _scheduleProgressRefresh(
     PlaybackProgressChange change, {
     required bool audio,
   }) {
     if (!mounted) return;
+    if (change.profileId.isNotEmpty && !_sourceIds.contains(change.profileId)) {
+      return;
+    }
     final urls = audio ? _pendingAudioProgressUrls : _pendingVideoProgressUrls;
     if (change.affectsAll) {
       if (audio) {
@@ -289,11 +349,15 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     });
   }
 
-  Future<void> _loadContinueProgress(int generation) async {
+  Future<void> _loadContinueProgress(
+    int generation, {
+    bool showLoading = true,
+  }) async {
     if (!mounted || generation != _progressGeneration) return;
-    setState(() => _loadingContinue = true);
+    if (showLoading) setState(() => _loadingContinue = true);
     final video = <String, PlaybackProgress>{};
     final audio = <String, PlaybackProgress>{};
+    final iso = <String, IsoLibraryProgress>{};
     await _loadProgressLane(
       records: _continueCandidates(_videoHistory),
       service: widget.videoProgressService,
@@ -311,12 +375,69 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         generation: generation,
       );
     }
+    final isoService =
+        widget.isoProgressService ?? widget.localIsoProgressService;
+    if (isoService != null) {
+      await _loadIsoProgressLane(
+        records: _continueCandidates(_isoHistory),
+        service: isoService,
+        output: iso,
+        generation: generation,
+      );
+    }
     if (!mounted || generation != _progressGeneration) return;
     setState(() {
       _videoContinue = video;
       _audioContinue = audio;
+      _isoContinue = iso;
       _loadingContinue = false;
     });
+  }
+
+  Future<void> _loadIsoProgressLane({
+    required List<MediaLibraryRecord> records,
+    required IsoLibraryProgressReader service,
+    required Map<String, IsoLibraryProgress> output,
+    required int generation,
+  }) async {
+    const batchSize = 8;
+    final limit = widget.config.normalized.maxContinuePerLane;
+    for (var start = 0; start < records.length; start += batchSize) {
+      if (!mounted || generation != _progressGeneration) return;
+      if (output.length >= limit) return;
+      final end = (start + batchSize).clamp(0, records.length).toInt();
+      final batch = records.sublist(start, end);
+      final results = await Future.wait(
+        batch.map((record) => _readIsoProgress(record, service)),
+      );
+      for (var index = 0; index < batch.length; index++) {
+        if (output.length >= limit) return;
+        final progress = results[index];
+        if (progress != null) output[batch[index].recordKey] = progress;
+      }
+    }
+  }
+
+  Future<IsoLibraryProgress?> _readIsoProgress(
+    MediaLibraryRecord record,
+    IsoLibraryProgressReader service,
+  ) async {
+    if (record.item.playbackMode == PlaybackMode.webdavHdmvMenu) return null;
+    final url = _progressUrlFor(record);
+    if (url == null) return null;
+    try {
+      final reader = record.item.sourceId.startsWith('local:')
+          ? widget.localIsoProgressService ?? service
+          : service;
+      return await reader.getLibraryProgress(
+        profileId: record.item.sourceId,
+        resolvedUrl: url,
+        playbackMode: record.item.playbackMode,
+      );
+    } catch (_) {
+      // 单个 ISO 续播状态读取失败只隐藏该条目。
+      return null;
+    }
   }
 
   Future<void> _loadProgressLane({
@@ -390,7 +511,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       }
       final url = _progressUrlFor(record);
       if (url == null || !urls.contains(url)) continue;
-      recordsByUrl.putIfAbsent(url, () => []).add(record);
+      recordsByUrl
+          .putIfAbsent('${record.item.sourceId}\u0000$url', () => [])
+          .add(record);
     }
     for (final entry in recordsByUrl.entries) {
       if (!mounted || generation != _progressGeneration) {
@@ -424,8 +547,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     if (url == null) return null;
     try {
       final progress = useTemporaryCheckpoint
-          ? await service.getResumeProgress(url, profileId: widget.sourceId)
-          : await service.getProgress(url, profileId: widget.sourceId);
+          ? await service.getResumeProgress(
+              url,
+              profileId: record.item.sourceId,
+            )
+          : await service.getProgress(url, profileId: record.item.sourceId);
       if (progress == null ||
           progress.positionMs <= 0 ||
           progress.isFinishedNearEnd()) {
@@ -439,9 +565,13 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   }
 
   String? _progressUrlFor(MediaLibraryRecord record) {
+    if (record.item.kind == MediaLibraryKind.strm) return null;
+    final direct = widget.resolveDirectTarget?.call(record.item);
+    if (direct != null) return direct;
+    if (record.item.sourceId != widget.sourceId) return null;
     final file = _cachedFileFor(record.item);
     // STRM 的真实媒体地址需要联网解析，媒体中心不在后台读取指针文件。
-    if (file == null || record.item.kind == MediaLibraryKind.strm) return null;
+    if (file == null) return null;
     return stripUserInfo(widget.resolveUrl(file.href));
   }
 
@@ -471,11 +601,14 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   void _runSearch(String query) {
     if (!mounted) return;
-    final results = searchVisitedMedia(
-      sourceId: widget.sourceId,
-      query: query,
-      snapshots: _snapshots,
-    );
+    final results = [
+      for (final source in _sourceIds)
+        ...searchVisitedMedia(
+          sourceId: source,
+          query: query,
+          snapshots: widget.directoryCache.visitedDirectories(source),
+        ),
+    ].take(200).toList();
     setState(() => _searchResults = results);
   }
 
@@ -506,12 +639,23 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
   }
 
-  Future<void> _clearPlayback(bool audio) async {
-    if (!await _confirmClear(audio ? '清空音频最近播放？' : '清空视频最近播放？')) {
+  Future<void> _clearPlayback(_MediaLane lane) async {
+    final title = switch (lane) {
+      _MediaLane.video => '清空视频最近播放？',
+      _MediaLane.audio => '清空音频最近播放？',
+      _MediaLane.iso => '清空 ISO 最近播放？',
+    };
+    if (!await _confirmClear(title)) {
       return;
     }
     try {
-      await widget.store.clearPlaybackHistory(widget.sourceId, audio: audio);
+      for (final source in _sourceIds) {
+        await widget.store.clearPlaybackHistory(
+          source,
+          audio: lane == _MediaLane.audio,
+          iso: lane == _MediaLane.iso,
+        );
+      }
       await _loadAll();
     } catch (error) {
       _showError('清空最近播放失败：$error');
@@ -521,7 +665,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   Future<void> _clearRecentDirectories() async {
     if (!await _confirmClear('清空最近目录？')) return;
     try {
-      await widget.store.clearRecentDirectories(widget.sourceId);
+      for (final source in _sourceIds) {
+        await widget.store.clearRecentDirectories(source);
+      }
       await _loadAll();
     } catch (error) {
       _showError('清空最近目录失败：$error');
@@ -634,9 +780,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   Widget _buildFavorites() {
     final records = _favorites.where((record) {
-      return _favoriteLane == _MediaLane.audio
-          ? record.item.kind == MediaLibraryKind.audio
-          : record.item.kind.isVideoLane;
+      return switch (_favoriteLane) {
+        _MediaLane.video => record.item.kind.isVideoLane,
+        _MediaLane.audio => record.item.kind == MediaLibraryKind.audio,
+        _MediaLane.iso => record.item.kind == MediaLibraryKind.iso,
+      };
     }).toList();
     return _buildLanePage(
       selector: _mediaLaneSelector(
@@ -646,7 +794,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       ),
       child: _recordList(
         records,
-        emptyMessage: _favoriteLane == _MediaLane.audio ? '还没有收藏音频' : '还没有收藏视频',
+        emptyMessage: switch (_favoriteLane) {
+          _MediaLane.video => '还没有收藏视频',
+          _MediaLane.audio => '还没有收藏音频',
+          _MediaLane.iso => '还没有收藏 ISO',
+        },
         trailing: (record) => IconButton(
           tooltip: context.l10n.text('取消收藏'),
           onPressed: () => _toggleFavorite(record.item),
@@ -657,11 +809,21 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   }
 
   Widget _buildContinue() {
-    final audio = _continueLane == _MediaLane.audio;
-    final source = audio ? _audioHistory : _videoHistory;
-    final progress = audio ? _audioContinue : _videoContinue;
+    final source = switch (_continueLane) {
+      _MediaLane.video => _videoHistory,
+      _MediaLane.audio => _audioHistory,
+      _MediaLane.iso => _isoHistory,
+    };
+    final progressKeys = (switch (_continueLane) {
+      _MediaLane.video => _videoContinue.keys,
+      _MediaLane.audio => _audioContinue.keys,
+      _MediaLane.iso => _isoContinue.keys,
+    }).toSet();
     final records = _continueCandidates(source)
-        .where((record) => progress.containsKey(record.recordKey))
+        .where((record) =>
+            progressKeys.contains(record.recordKey) ||
+            (_continueLane == _MediaLane.iso &&
+                record.item.playbackMode == PlaybackMode.webdavHdmvMenu))
         .take(widget.config.normalized.maxContinuePerLane)
         .toList();
     return _buildLanePage(
@@ -674,9 +836,32 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           ? const Center(child: CircularProgressIndicator())
           : _recordList(
               records,
-              emptyMessage: audio ? '没有可继续播放的音频' : '没有可继续播放的视频',
+              emptyMessage: switch (_continueLane) {
+                _MediaLane.video => '没有可继续播放的视频',
+                _MediaLane.audio => '没有可继续播放的音频',
+                _MediaLane.iso => '没有可继续播放的 ISO',
+              },
               subtitle: (record) {
-                final value = progress[record.recordKey]!;
+                if (_continueLane == _MediaLane.iso) {
+                  if (record.item.playbackMode == PlaybackMode.webdavHdmvMenu) {
+                    return record.item.parentPath;
+                  }
+                  final value = _isoContinue[record.recordKey]!;
+                  return context.l10n.format(
+                    '{path}  ·  第 {episode}/{total} 集  ·  已播放 {duration}',
+                    {
+                      'path': record.item.parentPath,
+                      'episode': '${value.episodeNumber}',
+                      'total': '${value.episodeCount}',
+                      'duration': _formatDuration(
+                        value.position.inMilliseconds,
+                      ),
+                    },
+                  );
+                }
+                final value = _continueLane == _MediaLane.audio
+                    ? _audioContinue[record.recordKey]!
+                    : _videoContinue[record.recordKey]!;
                 return context.l10n.format('{path}  ·  已播放 {duration}', {
                   'path': record.item.parentPath,
                   'duration': _formatDuration(value.positionMs),
@@ -692,8 +877,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   }
 
   Widget _buildRecentPlayback() {
-    final audio = _recentLane == _MediaLane.audio;
-    final records = audio ? _audioHistory : _videoHistory;
+    final records = switch (_recentLane) {
+      _MediaLane.video => _videoHistory,
+      _MediaLane.audio => _audioHistory,
+      _MediaLane.iso => _isoHistory,
+    };
     return _buildLanePage(
       selector: Row(
         children: [
@@ -707,14 +895,20 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           const SizedBox(width: 12),
           IconButton(
             tooltip: context.l10n.text('清空当前分栏'),
-            onPressed: records.isEmpty ? null : () => _clearPlayback(audio),
+            onPressed: records.isEmpty
+                ? null
+                : () => _clearPlayback(_recentLane),
             icon: const Icon(Icons.delete_sweep_outlined),
           ),
         ],
       ),
       child: _recordList(
         records,
-        emptyMessage: audio ? '还没有音频播放记录' : '还没有视频播放记录',
+        emptyMessage: switch (_recentLane) {
+          _MediaLane.video => '还没有视频播放记录',
+          _MediaLane.audio => '还没有音频播放记录',
+          _MediaLane.iso => '还没有 ISO 播放记录',
+        },
         trailing: (record) => IconButton(
           tooltip: context.l10n.text('从历史中移除'),
           onPressed: () => _removePlayback(record),
@@ -795,6 +989,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final audio = _searchResults
         .where((result) => result.item.kind == MediaLibraryKind.audio)
         .toList();
+    final iso = _searchResults
+        .where((result) => result.item.kind == MediaLibraryKind.iso)
+        .toList();
     if (_searchResults.isEmpty) {
       return const _EmptyState(icon: Icons.search_off, message: '已访问目录中没有匹配项');
     }
@@ -816,6 +1013,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           if (audio.isNotEmpty) ...[
             const _SectionHeader(label: '音频'),
             ...audio.map(_searchTile),
+          ],
+          if (iso.isNotEmpty) ...[
+            const _SectionHeader(label: 'ISO'),
+            ...iso.map(_searchTile),
           ],
         ],
       ),
@@ -875,6 +1076,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         icon: Icon(Icons.audiotrack_outlined),
         label: AppText('音频'),
       ),
+      ButtonSegment(
+        value: _MediaLane.iso,
+        icon: Icon(Icons.album_outlined),
+        label: AppText('ISO'),
+      ),
     ],
     selected: {selected},
     onSelectionChanged: (value) => onChanged(value.single),
@@ -902,8 +1108,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             overflow: TextOverflow.ellipsis,
           ),
           subtitle: AppText(
-            subtitle?.call(record) ??
-                '${record.item.parentPath.isEmpty ? context.l10n.text('根目录') : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}',
+            '${_sourceIds.length > 1 ? '${widget.sourceNames[record.item.sourceId] ?? record.item.sourceId} · ' : ''}'
+            '${subtitle?.call(record) ?? '${record.item.parentPath.isEmpty ? context.l10n.text('根目录') : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}'}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -918,6 +1124,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     MediaLibraryKind.directory => Icons.folder_outlined,
     MediaLibraryKind.audio => Icons.audiotrack_outlined,
     MediaLibraryKind.video || MediaLibraryKind.strm => Icons.movie_outlined,
+    MediaLibraryKind.iso => Icons.album_outlined,
   };
 
   static String _formatDate(DateTime date) {

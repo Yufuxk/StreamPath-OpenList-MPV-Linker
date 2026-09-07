@@ -98,22 +98,21 @@ class PlaybackHistoryStore {
   }) async {
     final now = _now();
     final retention = _policyProvider().playbackRetention;
-    final retained = records
-        .where((record) {
-          if (record.playerPid != null || record.ipcPipeName != null) {
-            return true;
-          }
-          final lastUsedAt = record.updatedAt.millisecondsSinceEpoch > 0
-              ? record.updatedAt
-              : legacyFallback ?? now;
-          return !CacheExpiration.isExpired(
-            lastUsedAt: lastUsedAt,
-            retention: retention,
-            now: now,
-          );
-        })
-        .take(AppConstants.maxPlaybackSessions)
-        .toList();
+    final retained = _limitPerSource(
+      records.where((record) {
+        if (record.playerPid != null || record.ipcPipeName != null) {
+          return true;
+        }
+        final lastUsedAt = record.updatedAt.millisecondsSinceEpoch > 0
+            ? record.updatedAt
+            : legacyFallback ?? now;
+        return !CacheExpiration.isExpired(
+          lastUsedAt: lastUsedAt,
+          retention: retention,
+          now: now,
+        );
+      }).toList(),
+    );
     if (retained.length == records.length) return;
     _cached = retained;
     try {
@@ -143,10 +142,17 @@ class PlaybackHistoryStore {
       playerCreationTime: history.playerCreationTime,
       ipcPipeName: history.ipcPipeName,
       launchEpoch: history.launchEpoch,
+      kind: history.kind,
+      isoKey: history.isoKey,
+      isoSessionDirectoryPath: history.isoSessionDirectoryPath,
+      sourceId: history.sourceId,
     );
     final records = [..._cached];
     final index = records.indexWhere((e) => e.sessionId == record.sessionId);
-    if (index < 0 && records.length >= AppConstants.maxPlaybackSessions) {
+    final sameSourceCount = records
+        .where((item) => item.sourceId == record.sourceId)
+        .length;
+    if (index < 0 && sameSourceCount >= AppConstants.maxPlaybackSessions) {
       return false;
     }
     if (index < 0) {
@@ -208,4 +214,14 @@ class PlaybackHistoryStore {
 
   static CacheRetentionPolicy _defaultPolicyProvider() =>
       const DefaultCacheRetentionPolicy();
+
+  static List<PlaybackHistory> _limitPerSource(List<PlaybackHistory> records) {
+    final counts = <String?, int>{};
+    return records.where((record) {
+      final count = counts[record.sourceId] ?? 0;
+      if (count >= AppConstants.maxPlaybackSessions) return false;
+      counts[record.sourceId] = count + 1;
+      return true;
+    }).toList();
+  }
 }

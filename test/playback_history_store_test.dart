@@ -248,6 +248,89 @@ void main() {
     expect(await store.loadAll(), hasLength(AppConstants.maxPlaybackSessions));
   });
 
+  test('不同媒体来源分别保留播放位置并持久化 sourceId', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}source-limit.json';
+    final store = PlaybackHistoryStore.forPath(path);
+    for (final sourceId in ['webdav-profile', 'local:root-test']) {
+      for (var index = 0; index < AppConstants.maxPlaybackSessions; index++) {
+        expect(
+          await store.upsert(
+            PlaybackHistory(
+              sessionId: '$sourceId-$index',
+              dirCrumbs: const [],
+              fileName: '$index.mkv',
+              videoIndex: 0,
+              updatedAt: DateTime(2026),
+              sourceId: sourceId,
+            ),
+          ),
+          isTrue,
+        );
+      }
+    }
+
+    final restored = await PlaybackHistoryStore.forPath(path).loadAll();
+    expect(restored, hasLength(AppConstants.maxPlaybackSessions * 2));
+    expect(
+      restored.where((history) => history.sourceId == 'local:root-test'),
+      hasLength(AppConstants.maxPlaybackSessions),
+    );
+  });
+
+  test('ISO 与普通视频共用两个下边栏位置并保留类型字段', () async {
+    final path =
+        '${tempDir.path}${Platform.pathSeparator}iso-shared-limit.json';
+    final store = PlaybackHistoryStore.forPath(path);
+    expect(
+      await store.upsert(
+        PlaybackHistory(
+          sessionId: 'video',
+          dirCrumbs: const ['视频'],
+          fileName: 'movie.mkv',
+          videoIndex: 0,
+          updatedAt: DateTime(2026),
+          createdAt: DateTime(2026),
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      await store.upsert(
+        PlaybackHistory(
+          sessionId: 'iso',
+          dirCrumbs: const ['光盘'],
+          fileName: 'DISC.iso',
+          videoIndex: 0,
+          updatedAt: DateTime(2026, 1, 2),
+          createdAt: DateTime(2026, 1, 2),
+          kind: PlaybackHistoryKind.iso,
+          isoKey: 'iso-key',
+          isoSessionDirectoryPath: r'C:\Temp\iso-session',
+        ),
+      ),
+      isTrue,
+    );
+    expect(
+      await store.upsert(
+        PlaybackHistory(
+          sessionId: 'overflow',
+          dirCrumbs: const [],
+          fileName: 'other.mkv',
+          videoIndex: 0,
+          updatedAt: DateTime(2026, 1, 3),
+        ),
+      ),
+      isFalse,
+    );
+
+    final restored = await PlaybackHistoryStore.forPath(path).loadAll();
+    expect(restored, hasLength(AppConstants.maxPlaybackSessions));
+    final iso = restored.singleWhere((item) => item.sessionId == 'iso');
+    expect(iso.kind, PlaybackHistoryKind.iso);
+    expect(iso.isoKey, 'iso-key');
+    expect(iso.isoSessionDirectoryPath, r'C:\Temp\iso-session');
+  });
+
   test('两个会话并发更新时不会互相覆盖', () async {
     final path = '${tempDir.path}${Platform.pathSeparator}concurrent.json';
     final store = PlaybackHistoryStore.forPath(path);

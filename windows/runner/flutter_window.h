@@ -43,6 +43,10 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       appearance_channel_;
 
+  // Opens the native Windows folder picker on the runner STA thread.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      folder_picker_channel_;
+
   // Last maximize state pushed to Dart, used to filter duplicate WM_SIZE
   // notifications.
   bool last_maximize_state_ = false;

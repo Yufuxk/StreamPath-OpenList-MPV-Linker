@@ -10,8 +10,10 @@ import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/media_library_item.dart';
+import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/playback_progress.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/presentation/pages/media_library_page.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 
@@ -67,6 +69,9 @@ void main() {
     List<VisitedDirectorySnapshot>? snapshots,
     PlaybackProgressReader? videoProgressReader,
     PlaybackProgressReader? audioProgressReader,
+    IsoLibraryProgressReader? isoProgressReader,
+    Set<String>? sourceIds,
+    String? Function(MediaLibraryItem)? resolveDirectTarget,
   }) => MaterialApp(
     theme: AppTheme.light(
       glass: appearance.isGlass,
@@ -74,11 +79,14 @@ void main() {
     ),
     home: MediaLibraryPage(
       sourceId: sourceId,
+      sourceIds: sourceIds,
+      resolveDirectTarget: resolveDirectTarget,
       store: store,
       config: config,
       directoryCache: _FakeDirectoryCache(snapshots ?? const []),
       videoProgressService: videoProgressReader ?? videoProgress,
       audioProgressService: audioProgressReader ?? audioProgress,
+      isoProgressService: isoProgressReader,
       resolveUrl: (href) => 'https://example.test$href',
     ),
   );
@@ -140,6 +148,71 @@ void main() {
     expect(tabs, hasLength(4));
     expect(tabs.map((tab) => tab.height), everyElement(40));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享列表按原始来源读取和实时刷新同地址进度，切回独立仍保留记录', (tester) async {
+    const otherSource = 'local:other-root';
+    const sharedUrl = 'C:/Media/shared.mp4';
+    final first = item('网络记录.mp4', MediaLibraryKind.video);
+    const second = MediaLibraryItem(
+      sourceId: otherSource,
+      parentPath: '',
+      name: '本地记录.mp4',
+      kind: MediaLibraryKind.video,
+    );
+    await tester.runAsync(() async {
+      await store.recordPlayback(first);
+      await store.recordPlayback(second);
+      await videoProgress.saveProgress(
+        url: sharedUrl,
+        positionMs: 60000,
+        durationMs: 600000,
+        profileId: sourceId,
+      );
+      await videoProgress.saveProgress(
+        url: sharedUrl,
+        positionMs: 120000,
+        durationMs: 600000,
+        profileId: otherSource,
+      );
+    });
+    await tester.pumpWidget(
+      buildPage(
+        sourceIds: {sourceId, otherSource},
+        resolveDirectTarget: (_) => sharedUrl,
+      ),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(first.name), findsOneWidget);
+    expect(find.text(second.name), findsOneWidget);
+    await tester.runAsync(
+      () => videoProgress.deleteProgress(sharedUrl, profileId: otherSource),
+    );
+    for (
+      var attempt = 0;
+      attempt < 60 && find.text(second.name).evaluate().isNotEmpty;
+      attempt++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    expect(find.text(first.name), findsOneWidget);
+    expect(find.text(second.name), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(buildPage(resolveDirectTarget: (_) => sharedUrl));
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('最近播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(first.name), findsOneWidget);
+    expect(find.text(second.name), findsNothing);
+    final preserved = await tester.runAsync(
+      () => store.playbackHistory(otherSource, audio: false),
+    );
+    expect(preserved, hasLength(1));
   });
 
   testWidgets('全局搜索支持剪贴板历史输入菜单并按媒体类型分栏', (tester) async {
@@ -241,6 +314,65 @@ void main() {
     expect(find.text('继续歌曲.flac'), findsOneWidget);
   });
 
+  for (final mode in [PlaybackMode.legacyTitle, PlaybackMode.webdavHdmvMenu]) {
+  testWidgets('ISO ${mode.name} 在收藏、继续播放和最近播放中独立显示多集进度', (tester) async {
+    final iso = MediaLibraryItem(
+      sourceId: sourceId, parentPath: '媒体', name: '演唱会.iso',
+      kind: MediaLibraryKind.iso, playbackMode: mode,
+    );
+    final isoFile = file(iso.name);
+    final isoUrl = 'https://example.test${isoFile.href}';
+    final isoProgress = _FakeIsoProgressReader(expectedMode: mode);
+    if (mode == PlaybackMode.legacyTitle) {
+      isoProgress.values[isoUrl] = const IsoLibraryProgress(
+        episodeNumber: 2,
+        episodeCount: 4,
+        position: Duration(minutes: 2, seconds: 3),
+        duration: Duration(minutes: 24),
+      );
+    }
+    await tester.runAsync(() async {
+      await store.toggleFavorite(iso);
+      await store.recordPlayback(iso, playbackSessionId: 'iso-session');
+    });
+
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [isoFile],
+            lastAccessedAt: DateTime.utc(2026, 8, 27),
+          ),
+        ],
+        isoProgressReader: isoProgress,
+      ),
+    );
+    await settleLibraryPage(tester);
+
+    await tester.tap(find.text('ISO'));
+    await tester.pumpAndSettle();
+    expect(find.text(iso.name), findsOneWidget);
+
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ISO'));
+    await tester.pumpAndSettle();
+    expect(find.text(iso.name), findsOneWidget);
+    expect(find.textContaining('第 2/4 集'),
+        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget);
+    expect(find.textContaining('已播放 02:03'),
+        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget);
+
+    await tester.tap(find.text('最近播放').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ISO'));
+    await tester.pumpAndSettle();
+    expect(find.text(iso.name), findsOneWidget);
+  });
+
+  }
+
   testWidgets('页面保持打开时实时更新历史、播放时间和完成状态', (tester) async {
     final video = item('实时影片.mkv', MediaLibraryKind.video);
     final nextVideo = item('新播放影片.mkv', MediaLibraryKind.video);
@@ -333,6 +465,36 @@ void main() {
     expect(videoReader.progressReads, isEmpty);
     expect(audioReader.resumeReads, isEmpty);
     expect(audioReader.progressReads, isEmpty);
+  });
+
+  testWidgets('其他来源的进度通知不会刷新当前媒体中心', (tester) async {
+    final video = item('来源隔离影片.mkv', MediaLibraryKind.video);
+    final videoFile = file(video.name);
+    final videoUrl = 'https://example.test${videoFile.href}';
+    final videoReader = _CountingProgressReader()
+      ..values[videoUrl] = _progress(videoUrl, 26000);
+    await tester.runAsync(
+      () => store.recordPlayback(video, playbackSessionId: 'source-filter'),
+    );
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [videoFile],
+            lastAccessedAt: DateTime.utc(2026, 8, 23),
+          ),
+        ],
+        videoProgressReader: videoReader,
+      ),
+    );
+    await settleLibraryPage(tester);
+    videoReader.clearReads();
+
+    videoReader.notifyUrl(videoUrl, profileId: 'local:other-root');
+    await tester.pump(const Duration(milliseconds: 150));
+
+    expect(videoReader.resumeReads, isEmpty);
   });
 
   testWidgets('同一 URL 的多个播放会话在单次通知中只读取一次进度', (tester) async {
@@ -573,6 +735,56 @@ void main() {
     expect(find.text(older.name), findsOneWidget);
     expect(find.text(newer.name), findsNothing);
   });
+
+  testWidgets('ISO 后台进度刷新期间保留已有继续播放列表', (tester) async {
+    final iso = item('后台刷新.iso', MediaLibraryKind.iso);
+    final isoFile = file(iso.name);
+    final isoUrl = 'https://example.test${isoFile.href}';
+    final isoProgress = _FakeIsoProgressReader()
+      ..values[isoUrl] = const IsoLibraryProgress(
+        episodeNumber: 1,
+        episodeCount: 2,
+        position: Duration(seconds: 26),
+        duration: Duration(minutes: 10),
+      );
+    await tester.runAsync(
+      () => store.recordPlayback(iso, playbackSessionId: 'iso-refresh'),
+    );
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [isoFile],
+            lastAccessedAt: DateTime.utc(2026, 8, 23),
+          ),
+        ],
+        isoProgressReader: isoProgress,
+      ),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ISO'));
+    await tester.pumpAndSettle();
+    expect(find.text(iso.name), findsOneWidget);
+
+    final blocked = isoProgress.blockNextRead(isoUrl);
+    isoProgress.notify();
+    await tester.pump(const Duration(milliseconds: 130));
+    await tester.pump();
+
+    expect(find.text(iso.name), findsOneWidget);
+    blocked.complete(
+      const IsoLibraryProgress(
+        episodeNumber: 1,
+        episodeCount: 2,
+        position: Duration(minutes: 2),
+        duration: Duration(minutes: 10),
+      ),
+    );
+    await waitForLibraryState(tester, find.textContaining('已播放 02:00'));
+  });
 }
 
 class _FakeDirectoryCache extends DirectoryCache {
@@ -632,8 +844,8 @@ class _CountingProgressReader implements PlaybackProgressReader {
     return completer;
   }
 
-  void notifyUrl(String url) {
-    final change = PlaybackProgressChange.url(url, profileId: 'source-a');
+  void notifyUrl(String url, {String profileId = 'source-a'}) {
+    final change = PlaybackProgressChange.url(url, profileId: profileId);
     for (final listener in List.of(_listeners)) {
       listener(change);
     }
@@ -642,5 +854,47 @@ class _CountingProgressReader implements PlaybackProgressReader {
   void clearReads() {
     progressReads.clear();
     resumeReads.clear();
+  }
+}
+
+class _FakeIsoProgressReader implements IsoLibraryProgressReader {
+  _FakeIsoProgressReader({this.expectedMode = PlaybackMode.legacyTitle});
+  final PlaybackMode expectedMode;
+  final Map<String, IsoLibraryProgress?> values = {};
+  final Map<String, Completer<IsoLibraryProgress?>> _blocks = {};
+  final Set<IsoLibraryProgressListener> _listeners = {};
+
+  @override
+  void addLibraryProgressListener(IsoLibraryProgressListener listener) {
+    _listeners.add(listener);
+  }
+
+  @override
+  void removeLibraryProgressListener(IsoLibraryProgressListener listener) {
+    _listeners.remove(listener);
+  }
+
+  @override
+  Future<IsoLibraryProgress?> getLibraryProgress({
+    required String profileId,
+    required String resolvedUrl,
+    PlaybackMode playbackMode = PlaybackMode.legacyTitle,
+  }) async {
+    if (playbackMode != expectedMode) return null;
+    final block = _blocks.remove(resolvedUrl);
+    if (block != null) return block.future;
+    return values[resolvedUrl];
+  }
+
+  Completer<IsoLibraryProgress?> blockNextRead(String url) {
+    final completer = Completer<IsoLibraryProgress?>();
+    _blocks[url] = completer;
+    return completer;
+  }
+
+  void notify() {
+    for (final listener in List.of(_listeners)) {
+      listener();
+    }
   }
 }

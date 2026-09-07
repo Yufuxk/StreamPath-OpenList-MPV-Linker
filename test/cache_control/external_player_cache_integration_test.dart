@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -91,6 +92,7 @@ void main() {
     bool keepAlive = false,
     List<String>? cacheLogs,
     MpvCacheIpcUpdater? cacheIpcUpdater,
+    bool resumeEnabled = false,
   }) async {
     final dir = Directory.systemTemp.createTempSync('sp_cache_launch_');
     final resolvedPolicy =
@@ -119,7 +121,7 @@ void main() {
           args: effectivePlayerArgs,
           subtitleInjectionEnabled: false,
           subtitleAutoSelectEnabled: false,
-          resumeEnabled: false,
+          resumeEnabled: resumeEnabled,
         ),
         const ConnectionConfig(),
       ),
@@ -140,6 +142,18 @@ void main() {
   bool hasCacheArgs(List<String> args) =>
       args.any((a) => a.startsWith('--cache') || a.startsWith('--demuxer-max'));
 
+  String statusText({
+    required String url,
+    int playlistPos = 0,
+    double timePos = 5,
+    double duration = 1800,
+    bool seeking = false,
+    int restartSerial = 0,
+  }) =>
+      '$playlistPos\n$url\n0\n$timePos\n$duration\n0\n512000\n0\n'
+      'diag\n0\n0\n0\n1920x1080\n${seeking ? 1 : 0}\n'
+      '$restartSerial\n30.0\n';
+
   group('缓存参数注入集成', () {
     test('未接入缓存系统时参数与原来完全一致（零影响）', () async {
       final (service, _) = await makeService();
@@ -148,6 +162,23 @@ void main() {
       );
       expect(hasCacheArgs(result.args), isFalse);
       expect(result.args, contains('http://127.0.0.1:1/dav/01.mp4'));
+    });
+
+    test('本地视频入口不调用网络缓存策略', () async {
+      final provider = _RecordingProvider();
+      final (service, _) = await makeService(cachePolicy: provider);
+      final localPath = Platform.isWindows
+          ? r'C:\Media\movie.mkv'
+          : '/media/movie.mkv';
+
+      final result = await service.launchLocal(
+        entries: [MediaEntry(url: localPath, title: 'movie.mkv')],
+        sourceId: 'local:root-1',
+      );
+
+      expect(provider.buildCalls, 0);
+      expect(hasCacheArgs(result.args), isFalse);
+      expect(result.args, contains(localPath));
     });
 
     test(
@@ -162,6 +193,8 @@ void main() {
         expect(hasCacheArgs(result.args), isTrue);
         expect(result.args, contains('--cache=yes'));
         expect(result.args, contains('--cache-secs=120'));
+        expect(result.args, contains('--cache-pause-initial=yes'));
+        expect(result.args, contains('--cache-pause-wait=10'));
         // 探测假域名失败降级 + 内存未知：码率未知 → 上限 = 兜底预算 1GiB。
         expect(
           result.args,
@@ -541,9 +574,106 @@ void main() {
       );
       expect(result.args, contains('--cache=no'));
       expect(result.args, contains('--demuxer-seekable-cache=no'));
+      expect(result.args, contains('--cache-pause-initial=yes'));
+      expect(result.args, contains('--cache-pause-wait=5'));
       expect(result.args, contains('--rebase-start-time=yes'));
       expect(result.args, isNot(contains('--start=0')));
       expect(monitor.startedStatusFile, isNull, reason: 'TS 走直链，不监控');
+    });
+
+    test('TS 仅出现 time-pos 不判稳，拖动立即启用缓存并等待 restart 后监控', () async {
+      final monitor = _RecordingMonitor();
+      final updates = <Map<String, Object?>>[];
+      final (service, _) = await makeService(
+        cacheConfig: CachePolicyConfig.defaults(),
+        monitorFactory: () => monitor,
+        keepAlive: true,
+        cacheIpcUpdater:
+            (
+              pipeName, {
+              required demuxerMaxBytes,
+              required cacheSecs,
+              cacheEnabled,
+              seekableCacheEnabled,
+            }) async {
+              updates.add({
+                'cacheEnabled': cacheEnabled,
+                'seekableCacheEnabled': seekableCacheEnabled,
+              });
+              return true;
+            },
+      );
+      const url = 'http://127.0.0.1:1/dav/seek.m2ts';
+      try {
+        final result = await service.launch(
+          entries: const [MediaEntry(url: url)],
+          sessionId: 'session_ts_seek',
+        );
+        final status = File(result.statusFilePath!);
+        await status.writeAsString(statusText(url: url, timePos: 20));
+        await Future<void>.delayed(const Duration(milliseconds: 1300));
+        expect(monitor.startedStatusFile, isNull, reason: 'time-pos 不能证明定位完成');
+        expect(updates.where((item) => item['cacheEnabled'] == true), isEmpty);
+
+        await status.writeAsString(
+          statusText(url: url, timePos: 20, seeking: true),
+        );
+        await waitUntil(
+          () => updates.any((item) => item['cacheEnabled'] == true),
+          reason: '观察到 seeking=true 后应立即启用 TS 小窗口缓存',
+        );
+        expect(monitor.startedStatusFile, isNull, reason: '拖动未完成前不得开始学习采样');
+        expect(
+          updates.last['seekableCacheEnabled'],
+          isFalse,
+          reason: 'TS 运行态仍禁用 seekable cache',
+        );
+
+        await status.writeAsString(
+          statusText(url: url, timePos: 120, restartSerial: 1),
+        );
+        await waitUntil(
+          () => monitor.startedStatusFile != null,
+          reason: '目标位置 restart 且 seeking=false 后应进入稳定态',
+        );
+      } finally {
+        await service.terminateSession('session_ts_seek');
+      }
+    });
+
+    test('TS 非零续播从启动阶段启用小窗口，目标 restart 后才开始监控', () async {
+      final monitor = _RecordingMonitor();
+      final (service, _) = await makeService(
+        cacheConfig: CachePolicyConfig.defaults(),
+        monitorFactory: () => monitor,
+        keepAlive: true,
+        resumeEnabled: true,
+      );
+      const url = 'http://127.0.0.1:1/dav/resume.ts';
+      try {
+        final result = await service.launch(
+          entries: const [MediaEntry(url: url)],
+          sessionId: 'session_ts_resume',
+          resumeSeconds: 120,
+        );
+        expect(result.args, contains('--cache=yes'));
+        expect(result.args, contains('--cache-secs=30'));
+        expect(result.args, contains('--demuxer-seekable-cache=no'));
+        expect(result.args, contains('--cache-pause-initial=yes'));
+        expect(result.args, contains('--cache-pause-wait=5'));
+        expect(result.args, isNot(contains('--cache=no')));
+        expect(monitor.startedStatusFile, isNull);
+
+        await File(
+          result.statusFilePath!,
+        ).writeAsString(statusText(url: url, timePos: 120, restartSerial: 1));
+        await waitUntil(
+          () => monitor.startedStatusFile != null,
+          reason: '非零续播完成后应启动动态监控',
+        );
+      } finally {
+        await service.terminateSession('session_ts_resume');
+      }
     });
 
     test('警告消息带会话标识（同 URL 双会话 UI 可区分来源）', () async {
@@ -684,6 +814,64 @@ void main() {
       }
     });
 
+    test('快速连续切集时过期策略不能控制最新文件', () async {
+      final provider = _DelayedTrackProvider();
+      final cacheLogs = <String>[];
+      final (service, _) = await makeService(
+        cachePolicy: provider,
+        keepAlive: true,
+        cacheLogs: cacheLogs,
+        cacheIpcUpdater:
+            (
+              pipeName, {
+              required demuxerMaxBytes,
+              required cacheSecs,
+              cacheEnabled,
+              seekableCacheEnabled,
+            }) async {
+              return true;
+            },
+      );
+      const first = 'http://127.0.0.1:1/dav/ep01.mkv';
+      const delayed = 'http://127.0.0.1:1/dav/ep02.mkv';
+      const latest = 'http://127.0.0.1:1/dav/ep03.mkv';
+      try {
+        final result = await service.launch(
+          entries: const [
+            MediaEntry(url: first),
+            MediaEntry(url: delayed),
+            MediaEntry(url: latest),
+          ],
+          sessionId: 'session_rapid_switch',
+        );
+        final status = File(result.statusFilePath!);
+        await status.writeAsString(
+          statusText(url: delayed, playlistPos: 1, restartSerial: 1),
+        );
+        await provider.delayedBuildStarted.future.timeout(
+          const Duration(seconds: 3),
+        );
+        await status.writeAsString(
+          statusText(url: latest, playlistPos: 2, restartSerial: 1),
+        );
+        provider.releaseDelayedBuild();
+
+        await waitUntil(
+          () => cacheLogs.any(
+            (line) => line.contains('demuxer-max-bytes=3000000'),
+          ),
+          reason: '最新文件策略应最终生效',
+        );
+        expect(
+          cacheLogs.join('\n'),
+          isNot(contains('demuxer-max-bytes=2000000')),
+          reason: '过期文件策略不得写入 MPV',
+        );
+      } finally {
+        await service.terminateSession('session_rapid_switch');
+      }
+    });
+
     test('播放列表切集：重新计算缓存参数、更新监控基准并关联新集时长', () async {
       final durations = <double>[];
       final urls = <String>[];
@@ -786,6 +974,88 @@ class _ThrowingProvider implements CachePolicyProvider {
 
   @override
   Map<String, Object?> diagnosticsSnapshot() => const <String, Object?>{};
+}
+
+class _DelayedTrackProvider implements CachePolicyProvider {
+  final Completer<void> delayedBuildStarted = Completer<void>();
+  final Completer<void> _releaseDelayed = Completer<void>();
+  final Map<String, CachePolicySessionState> _states = {};
+
+  void releaseDelayedBuild() {
+    if (!_releaseDelayed.isCompleted) _releaseDelayed.complete();
+  }
+
+  @override
+  Future<List<String>> buildCacheArgs({
+    required String sessionId,
+    required String url,
+    String? authHeader,
+    List<String> userArgs = const [],
+    bool runtimeTs = false,
+  }) async {
+    if (url.contains('ep02')) {
+      if (!delayedBuildStarted.isCompleted) delayedBuildStarted.complete();
+      await _releaseDelayed.future;
+    }
+    final bytes = url.contains('ep03')
+        ? 3000000
+        : url.contains('ep02')
+        ? 2000000
+        : 1000000;
+    final result = CachePolicyResult(
+      skipped: false,
+      cacheSecs: 120,
+      demuxerMaxBytes: bytes,
+      memoryBudgetBytes: bytes,
+    );
+    _states[sessionId] = CachePolicySessionState(
+      sessionId: sessionId,
+      url: url,
+      injected: true,
+      result: result,
+    );
+    return result.args;
+  }
+
+  @override
+  void Function(String sessionId, String url, CachePolicyResult result)?
+  onPolicyReady;
+
+  @override
+  void recordDuration(
+    String sessionId,
+    String url,
+    double durationSec, {
+    String? resolution,
+  }) {}
+
+  @override
+  void startMonitor({
+    required String sessionId,
+    required String url,
+    required String statusFilePath,
+    required int initialDemuxerMaxBytes,
+    required int initialCacheSecs,
+    int? fileSizeBytes,
+    double? bitrateMbps,
+    int? memoryBudgetBytes,
+    int? minCacheSecs,
+    int? maxCacheSecs,
+    bool fullCache = false,
+    void Function(CacheAdjustment adjustment)? onAdjustment,
+    void Function(String message)? onWarning,
+  }) {}
+
+  @override
+  void stopMonitor(String sessionId, {bool clearSession = false}) {
+    if (clearSession) _states.remove(sessionId);
+  }
+
+  @override
+  CachePolicySessionState? sessionState(String sessionId) => _states[sessionId];
+
+  @override
+  Map<String, Object?> diagnosticsSnapshot() => const {};
 }
 
 /// 记录回调接线与调用次数的提供者（验证 ExternalPlayerService 接线）。

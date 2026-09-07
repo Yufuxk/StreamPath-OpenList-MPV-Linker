@@ -23,6 +23,10 @@ import 'package:path_provider/path_provider.dart';
 ///       ├── audio_playback_history.json（音频播放记录）
 ///       ├── media_metadata.json       （缓存系统媒体元数据）
 ///       ├── cache_intelligence_learning.json（匿名聚合学习数据）
+///       ├── iso_catalog.json          （ISO Title 顺序与匿名续播索引）
+///       ├── iso_structure/            （可重建 ISO Title/章节/Clip 结构缓存）
+///       ├── iso_watch_later/          （ISO 独立续播进度）
+///       ├── iso_temp/                 （ISO Bridge 播放清单、脚本与进度日志）
 ///       ├── mpv-current-*.txt         （mpv 状态上报）
 ///       ├── mpv-command-*.txt         （mpv 命令通道）
 ///       ├── mpv.log / *.lua / *.m3u   （日志与脚本产物）

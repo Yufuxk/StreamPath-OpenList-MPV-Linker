@@ -139,6 +139,40 @@ class AudioPlayerService {
     String? username,
     String? password,
     AudioLyricsBytesLoader? lyricsLoader,
+  }) => _launch(
+    entries: entries,
+    sessionId: sessionId,
+    playlistStart: playlistStart,
+    resumeSeconds: resumeSeconds,
+    username: username,
+    password: password,
+    lyricsLoader: lyricsLoader,
+  );
+
+  /// 播放本地音频；同目录 LRC/封面直接使用本地路径，不发起网络请求。
+  Future<AudioPlayerLaunchResult> launchLocal({
+    required List<AudioMediaEntry> entries,
+    required String sessionId,
+    required String sourceId,
+    int playlistStart = 0,
+    int? resumeSeconds,
+  }) => _launch(
+    entries: entries,
+    sessionId: sessionId,
+    playlistStart: playlistStart,
+    resumeSeconds: resumeSeconds,
+    sourceIdOverride: sourceId,
+  );
+
+  Future<AudioPlayerLaunchResult> _launch({
+    required List<AudioMediaEntry> entries,
+    required String sessionId,
+    int playlistStart = 0,
+    int? resumeSeconds,
+    String? username,
+    String? password,
+    AudioLyricsBytesLoader? lyricsLoader,
+    String? sourceIdOverride,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('音频播放列表为空，无法启动播放器');
@@ -386,7 +420,7 @@ class AudioPlayerService {
         artifactSessionId: artifactSessionId,
         progressGeneration: progressGeneration,
         ownershipGeneration: ownershipGeneration,
-        profileId: fullConfig.profileId,
+        profileId: sourceIdOverride ?? fullConfig.profileId,
       );
       _sessions[sessionId] = runtime;
       runtime.exitSyncFuture = _watchExitAndSync(runtime);
@@ -518,6 +552,7 @@ class AudioPlayerService {
 
   Future<void> restoreSession({
     required String sessionId,
+    String? profileId,
     required int? pid,
     String? executablePath,
     int? creationTime,
@@ -561,7 +596,7 @@ class AudioPlayerService {
           : '${sessionId}__e$launchEpoch',
       progressGeneration: _progressSyncCoordinator.claim(sessionId),
       ownershipGeneration: ++_ownershipSequence,
-      profileId: _configStore.current.profileId,
+      profileId: profileId ?? _configStore.current.profileId,
     );
     _sessions[sessionId] = runtime;
     _launchOwnership[sessionId] = runtime.ownershipGeneration;

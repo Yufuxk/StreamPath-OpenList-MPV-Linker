@@ -5,10 +5,11 @@ import 'package:flutter/foundation.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/file_sort.dart';
 import '../../data/local/stream_path_config_store.dart';
-import '../../data/models/web_dav_file.dart';
+import '../../data/models/media_directory_entry.dart';
+import '../../data/models/media_source.dart';
 import '../../domain/services/media_library_search.dart';
 import '../../domain/services/openlist_index_service.dart';
-import '../../domain/repositories/directory_repository.dart';
+import '../../domain/repositories/media_directory_source.dart';
 
 enum DirectorySearchScope { currentDirectory, openListIndex }
 
@@ -28,14 +29,14 @@ class DirectoryBrowserController extends ChangeNotifier {
     this.openListIndexSearch,
   });
 
-  final DirectoryRepository service;
+  final MediaDirectorySource service;
   final StreamPathConfigStore configStore;
   final Future<void> Function(String path)? onDirectoryLoaded;
   final Future<void> Function()? onForcedRefresh;
   final OpenListIndexSearch? openListIndexSearch;
 
   final List<String> _crumbs = [];
-  List<WebDavFile> _files = const [];
+  List<MediaDirectoryEntry> _files = const [];
   String? _error;
   bool _refreshing = false;
   FileSortMode _sortMode = FileSortMode.name;
@@ -51,8 +52,8 @@ class DirectoryBrowserController extends ChangeNotifier {
   int _loadId = 0;
   bool _disposed = false;
 
-  List<WebDavFile>? _visibleFilesCache;
-  List<WebDavFile>? _visibleFilesSource;
+  List<MediaDirectoryEntry>? _visibleFilesCache;
+  List<MediaDirectoryEntry>? _visibleFilesSource;
   List<String>? _visibleFilesHiddenExtensions;
   bool? _visibleFilesHiddenExtensionsEnabled;
   FileSortMode? _visibleFilesSortMode;
@@ -61,7 +62,7 @@ class DirectoryBrowserController extends ChangeNotifier {
   bool _cachedCanSortBySize = false;
 
   List<String> get crumbs => List.unmodifiable(_crumbs);
-  List<WebDavFile> get files => _files;
+  List<MediaDirectoryEntry> get files => _files;
   String? get error => _error;
   bool get refreshing => _refreshing;
   FileSortMode get sortMode => _sortMode;
@@ -74,7 +75,7 @@ class DirectoryBrowserController extends ChangeNotifier {
   bool get indexSearching => _indexSearching;
   String get currentPath => _crumbs.join('/');
 
-  List<WebDavFile> get visibleFiles {
+  List<MediaDirectoryEntry> get visibleFiles {
     _ensureVisibleFilesCache();
     return _visibleFilesCache!;
   }
@@ -96,7 +97,9 @@ class DirectoryBrowserController extends ChangeNotifier {
     final config = configStore.current;
     final defaultDirectory = config.activeProfile?.defaultDirectory;
     var changed = false;
-    if (_crumbs.isEmpty && defaultDirectory?.trim().isNotEmpty == true) {
+    if (service.descriptor.kind == MediaSourceKind.webdav &&
+        _crumbs.isEmpty &&
+        defaultDirectory?.trim().isNotEmpty == true) {
       _crumbs.addAll(_splitPath(defaultDirectory!));
       changed = true;
     }
@@ -168,7 +171,7 @@ class DirectoryBrowserController extends ChangeNotifier {
     }
   }
 
-  void enterDirectory(WebDavFile directory) {
+  void enterDirectory(MediaDirectoryEntry directory) {
     _resetSearch();
     _crumbs.add(directory.name);
     _files = const [];
@@ -215,7 +218,8 @@ class DirectoryBrowserController extends ChangeNotifier {
     _searchQuery = query;
     _invalidateVisibleFiles();
     notifyListeners();
-    if (_searchScope == DirectorySearchScope.openListIndex) {
+    if (_searchScope == DirectorySearchScope.openListIndex &&
+        service.supportsRemoteSearch) {
       _scheduleIndexSearch();
     }
   }
@@ -327,7 +331,7 @@ class DirectoryBrowserController extends ChangeNotifier {
       return;
     }
 
-    final visible = filterCurrentDirectoryFiles(
+    final visible = filterCurrentDirectoryEntries(
       files: _files,
       hiddenExtensions: hiddenExtensions,
       hiddenExtensionsEnabled: hiddenExtensionsEnabled,
@@ -335,7 +339,7 @@ class DirectoryBrowserController extends ChangeNotifier {
       sortMode: _sortMode,
       sortDirection: _sortDirection,
     );
-    _cachedCanSortBySize = canSortWebDavFilesBySize(visible);
+    _cachedCanSortBySize = canSortMediaEntriesBySize(visible);
     _visibleFilesCache = visible;
     _visibleFilesSource = _files;
     _visibleFilesHiddenExtensions = hiddenExtensions;
@@ -349,7 +353,10 @@ class DirectoryBrowserController extends ChangeNotifier {
     _visibleFilesCache = null;
   }
 
-  bool _sameDirectoryEntries(List<WebDavFile> left, List<WebDavFile> right) {
+  bool _sameDirectoryEntries(
+    List<MediaDirectoryEntry> left,
+    List<MediaDirectoryEntry> right,
+  ) {
     if (identical(left, right)) return true;
     if (left.length != right.length) return false;
     for (var index = 0; index < left.length; index++) {
@@ -357,7 +364,7 @@ class DirectoryBrowserController extends ChangeNotifier {
       final b = right[index];
       if (identical(a, b)) continue;
       if (a.name != b.name ||
-          a.href != b.href ||
+          a.entryKey != b.entryKey ||
           a.isDirectory != b.isDirectory ||
           a.isSelfEntry != b.isSelfEntry ||
           a.size != b.size ||

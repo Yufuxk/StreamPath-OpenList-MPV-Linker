@@ -13,13 +13,13 @@ import '../../data/models/stream_path_config.dart';
 import '../state/app_state.dart';
 import '../theme/glass_tokens.dart';
 import '../widgets/glass_surface.dart';
-import 'browser_page.dart';
 import 'settings_page.dart';
+import 'storage_root_page.dart';
 import '../widgets/clipboard_history_menu.dart';
 
 /// 连接配置页：服务器地址 / 账号 / 密码。
 ///
-/// 连接成功 → 进入文件浏览页；失败 → SnackBar 展示统一异常提示。
+/// 连接成功 → 进入存储根目录；失败 → SnackBar 展示统一异常提示。
 /// 已保存的连接信息自动填入表单；信息完整时启动即自动连接
 /// （无需再点登录）。
 class HomePage extends StatefulWidget {
@@ -140,9 +140,9 @@ class _HomePageState extends State<HomePage> {
       );
       appState.refreshOpenListIndexSchedule();
       if (!mounted) return;
-      // 连接成功：进入浏览页（替换本页，避免返回后残留表单）。
+      // 连接成功：进入存储根目录（替换本页，避免返回后残留表单）。
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const BrowserPage()),
+        MaterialPageRoute<void>(builder: (_) => const StorageRootPage()),
       );
     } on AppException catch (e) {
       if (connected) appState.disconnect();

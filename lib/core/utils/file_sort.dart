@@ -1,3 +1,4 @@
+import '../../data/models/media_directory_entry.dart';
 import '../../data/models/web_dav_file.dart';
 
 /// 文件浏览页支持的排序方式。
@@ -53,8 +54,11 @@ FileSortDirection fileSortDirectionFromJson(Object? value) {
 
 /// 当前可见条目中是否存在可按体积排序的普通文件。
 bool canSortWebDavFilesBySize(Iterable<WebDavFile> files) {
-  return files.any((file) => !file.isDirectory && !file.isSelfEntry);
+  return canSortMediaEntriesBySize(files);
 }
+
+bool canSortMediaEntriesBySize(Iterable<MediaDirectoryEntry> files) =>
+    files.any((file) => !file.isDirectory && !file.isSelfEntry);
 
 /// 返回一个排序后的新列表，不修改 WebDAV 缓存或播放列表持有的原列表。
 List<WebDavFile> sortedWebDavFiles(
@@ -69,10 +73,29 @@ List<WebDavFile> sortedWebDavFiles(
   return result;
 }
 
+List<T> sortedMediaEntries<T extends MediaDirectoryEntry>(
+  Iterable<T> files, {
+  FileSortMode mode = FileSortMode.name,
+  FileSortDirection direction = FileSortDirection.ascending,
+}) {
+  final result = files.toList();
+  result.sort(
+    (a, b) => compareMediaEntries(a, b, mode: mode, direction: direction),
+  );
+  return result;
+}
+
 /// 固定分组为“返回上级 -> 目录 -> 文件”，仅改变组内排序方式。
 int compareWebDavFiles(
   WebDavFile a,
   WebDavFile b, {
+  FileSortMode mode = FileSortMode.name,
+  FileSortDirection direction = FileSortDirection.ascending,
+}) => compareMediaEntries(a, b, mode: mode, direction: direction);
+
+int compareMediaEntries(
+  MediaDirectoryEntry a,
+  MediaDirectoryEntry b, {
   FileSortMode mode = FileSortMode.name,
   FileSortDirection direction = FileSortDirection.ascending,
 }) {
@@ -83,7 +106,7 @@ int compareWebDavFiles(
   if (mode == FileSortMode.size && a.isDirectory) {
     final byDirectoryName = naturalCompare(a.name, b.name);
     if (byDirectoryName != 0) return byDirectoryName;
-    return a.href.compareTo(b.href);
+    return a.entryKey.compareTo(b.entryKey);
   }
 
   if (mode == FileSortMode.modified &&
@@ -101,7 +124,7 @@ int compareWebDavFiles(
 
   final byName = _withDirection(naturalCompare(a.name, b.name), direction);
   if (byName != 0) return byName;
-  return _withDirection(a.href.compareTo(b.href), direction);
+  return _withDirection(a.entryKey.compareTo(b.entryKey), direction);
 }
 
 int _withDirection(int value, FileSortDirection direction) {

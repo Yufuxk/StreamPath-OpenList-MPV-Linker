@@ -34,6 +34,7 @@ class PlayerConfig {
     bool subtitleAutoSelectEnabled = true,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
+    this.menuProgressSharingEnabled = false,
     this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
@@ -70,6 +71,9 @@ class PlayerConfig {
 
   /// 是否为视频或音频应用续播位置。
   final bool resumeEnabled;
+
+  /// 菜单播放记录正片进度，供 WebDAV Title/MPLS 模式使用。
+  final bool menuProgressSharingEnabled;
 
   /// 是否在文件浏览页应用 [hiddenExtensions]。
   final bool hiddenExtensionsEnabled;
@@ -112,6 +116,7 @@ class PlayerConfig {
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'resumeEnabled': resumeEnabled,
+    'menuProgressSharingEnabled': menuProgressSharingEnabled,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
@@ -133,6 +138,7 @@ class PlayerConfig {
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
+      menuProgressSharingEnabled: (json['menuProgressSharingEnabled'] as bool?) ?? false,
       hiddenExtensionsEnabled:
           (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:

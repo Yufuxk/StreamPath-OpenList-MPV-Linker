@@ -4,6 +4,7 @@ import '../../core/constants.dart';
 import 'app_language.dart';
 import 'appearance_config.dart';
 import 'connection_config.dart';
+import 'local_root_config.dart';
 import 'media_library_config.dart';
 import 'openlist_recovery_config.dart';
 import 'player_config.dart';
@@ -45,11 +46,12 @@ import 'server_profile.dart';
 /// 由 [StreamPathConfigStore] 读写；兼容旧的 player_config.json 与
 /// connection_config.json（首次启动自动迁移合并）。
 class StreamPathConfig {
-  static const int currentSchemaVersion = 4;
+  static const int currentSchemaVersion = 5;
 
   const StreamPathConfig({
     this.schemaVersion = currentSchemaVersion,
     this.profiles = const [],
+    this.localRoots = const [],
     this.activeProfileId = '',
     this.credentialStorageMode = CredentialStorageMode.windowsCredential,
     this.language = AppLanguage.simplifiedChinese,
@@ -67,6 +69,7 @@ class StreamPathConfig {
     bool subtitleAutoSelectEnabled = true,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
+    this.menuProgressSharingEnabled = false,
     this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
@@ -84,6 +87,7 @@ class StreamPathConfig {
   // ── 连接信息 ─────────────────────────────────────────────────
   final int schemaVersion;
   final List<ServerProfile> profiles;
+  final List<LocalRootConfig> localRoots;
   final String activeProfileId;
   final CredentialStorageMode credentialStorageMode;
   final AppLanguage language;
@@ -107,6 +111,9 @@ class StreamPathConfig {
   bool get subtitleEnabled =>
       subtitleInjectionEnabled && subtitleAutoSelectEnabled;
   final bool resumeEnabled;
+
+  /// 菜单播放记录正片进度，供 WebDAV Title/MPLS 模式使用。
+  final bool menuProgressSharingEnabled;
 
   // ── 文件浏览 ─────────────────────────────────────────────────
   final bool hiddenExtensionsEnabled;
@@ -159,6 +166,7 @@ class StreamPathConfig {
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
     resumeEnabled: resumeEnabled,
+    menuProgressSharingEnabled: menuProgressSharingEnabled,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: hiddenExtensions,
     defaultSortMode: defaultSortMode,
@@ -174,6 +182,7 @@ class StreamPathConfig {
     AppearanceConfig appearance = const AppearanceConfig(),
     MediaLibraryConfig mediaLibrary = const MediaLibraryConfig(),
     List<ServerProfile> profiles = const [],
+    List<LocalRootConfig> localRoots = const [],
     String activeProfileId = '',
     CredentialStorageMode credentialStorageMode =
         CredentialStorageMode.windowsCredential,
@@ -189,6 +198,7 @@ class StreamPathConfig {
       subtitleInjectionEnabled: player.subtitleInjectionEnabled,
       subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
       resumeEnabled: player.resumeEnabled,
+      menuProgressSharingEnabled: player.menuProgressSharingEnabled,
       hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
       hiddenExtensions: player.hiddenExtensions,
       defaultSortMode: player.defaultSortMode,
@@ -198,6 +208,7 @@ class StreamPathConfig {
       openListRecovery: openListRecovery,
       appearance: appearance,
       profiles: profiles,
+      localRoots: localRoots,
       activeProfileId: activeProfileId,
       credentialStorageMode: credentialStorageMode,
       language: language,
@@ -233,6 +244,7 @@ class StreamPathConfig {
       appearance: appearance,
       mediaLibrary: mediaLibrary,
       profiles: nextProfiles,
+      localRoots: localRoots,
       activeProfileId: activeProfileId,
       credentialStorageMode: credentialStorageMode,
       language: language,
@@ -294,6 +306,7 @@ class StreamPathConfig {
   }) => StreamPathConfig(
     schemaVersion: currentSchemaVersion,
     profiles: profiles,
+    localRoots: localRoots,
     activeProfileId: activeProfileId,
     credentialStorageMode: credentialStorageMode,
     language: language ?? this.language,
@@ -306,6 +319,7 @@ class StreamPathConfig {
     subtitleInjectionEnabled: player.subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
     resumeEnabled: player.resumeEnabled,
+    menuProgressSharingEnabled: player.menuProgressSharingEnabled,
     hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
     hiddenExtensions: player.hiddenExtensions,
     defaultSortMode: player.defaultSortMode,
@@ -324,6 +338,7 @@ class StreamPathConfig {
   }) => StreamPathConfig(
     schemaVersion: currentSchemaVersion,
     profiles: List.unmodifiable(nextProfiles),
+    localRoots: localRoots,
     activeProfileId: nextActiveId,
     credentialStorageMode: credentialStorageMode ?? this.credentialStorageMode,
     language: language,
@@ -336,6 +351,7 @@ class StreamPathConfig {
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
     resumeEnabled: resumeEnabled,
+    menuProgressSharingEnabled: menuProgressSharingEnabled,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: hiddenExtensions,
     defaultSortMode: defaultSortMode,
@@ -353,6 +369,7 @@ class StreamPathConfig {
   Map<String, dynamic> toJson() => <String, dynamic>{
     'schemaVersion': currentSchemaVersion,
     'profiles': profiles.map((profile) => profile.toJson()).toList(),
+    'localRoots': localRoots.map((root) => root.toJson()).toList(),
     'activeProfileId': activeProfileId,
     'credentialStorageMode': credentialStorageMode.jsonValue,
     'language': language.configValue,
@@ -365,6 +382,7 @@ class StreamPathConfig {
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'resumeEnabled': resumeEnabled,
+    'menuProgressSharingEnabled': menuProgressSharingEnabled,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
@@ -393,6 +411,7 @@ class StreamPathConfig {
             )
             .toList(growable: false) ??
         const <ServerProfile>[];
+    final localRoots = _parseLocalRoots(json['localRoots']);
     final profileIds = profiles.map((profile) => profile.profileId).toSet();
     if (profileIds.length != profiles.length) {
       throw const FormatException('服务器档案 profileId 必须唯一');
@@ -413,6 +432,7 @@ class StreamPathConfig {
     return StreamPathConfig(
       schemaVersion: schemaVersion == 0 ? currentSchemaVersion : schemaVersion,
       profiles: profiles,
+      localRoots: localRoots,
       activeProfileId: selectedProfile?.profileId ?? '',
       credentialStorageMode: CredentialStorageModeJson.fromJson(
         json['credentialStorageMode'],
@@ -432,6 +452,7 @@ class StreamPathConfig {
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
+      menuProgressSharingEnabled: (json['menuProgressSharingEnabled'] as bool?) ?? false,
       hiddenExtensionsEnabled:
           (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:
@@ -466,5 +487,69 @@ class StreamPathConfig {
                 : null,
           ),
     );
+  }
+
+  StreamPathConfig withLocalRoots(List<LocalRootConfig> roots) =>
+      StreamPathConfig(
+        schemaVersion: currentSchemaVersion,
+        profiles: profiles,
+        localRoots: List.unmodifiable(roots),
+        activeProfileId: activeProfileId,
+        credentialStorageMode: credentialStorageMode,
+        language: language,
+        serverUrl: serverUrl,
+        username: username,
+        password: password,
+        playerName: playerName,
+        playerExecutable: playerExecutable,
+        playerArgs: playerArgs,
+        subtitleInjectionEnabled: subtitleInjectionEnabled,
+        subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
+        resumeEnabled: resumeEnabled,
+        menuProgressSharingEnabled: menuProgressSharingEnabled,
+        hiddenExtensionsEnabled: hiddenExtensionsEnabled,
+        hiddenExtensions: hiddenExtensions,
+        defaultSortMode: defaultSortMode,
+        defaultSortDirection: defaultSortDirection,
+        appearance: appearance,
+        playerStartupTimeoutSeconds: playerStartupTimeoutSeconds,
+        mediaLibrary: mediaLibrary,
+        openListRecovery: openListRecovery,
+      );
+
+  StreamPathConfig upsertLocalRoot(LocalRootConfig root) {
+    final next = [...localRoots];
+    final index = next.indexWhere((item) => item.rootId == root.rootId);
+    if (index < 0) {
+      next.add(root);
+    } else {
+      next[index] = root;
+    }
+    return withLocalRoots(next);
+  }
+
+  StreamPathConfig removeLocalRoot(String rootId) => withLocalRoots(
+    localRoots.where((root) => root.rootId != rootId).toList(growable: false),
+  );
+
+  static List<LocalRootConfig> _parseLocalRoots(Object? value) {
+    if (value is! List) return const [];
+    final roots = <LocalRootConfig>[];
+    final ids = <String>{};
+    final paths = <String>{};
+    for (final item in value.whereType<Map>()) {
+      try {
+        final root = LocalRootConfig.fromJson(Map<String, dynamic>.from(item));
+        if (!ids.add(root.rootId) || !paths.add(root.path.toLowerCase())) {
+          continue;
+        }
+        roots.add(root);
+      } on FormatException {
+        // 单个本地根损坏不阻断 WebDAV 配置读取。
+      } on TypeError {
+        // 单个本地根损坏不阻断 WebDAV 配置读取。
+      }
+    }
+    return List.unmodifiable(roots);
   }
 }

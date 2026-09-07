@@ -10,6 +10,7 @@ import '../../data/local/directory_cache.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/local/media_library_store.dart';
 import '../../data/remote/webdav_client.dart';
+import '../../data/models/local_root_config.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/stream_path_config.dart';
@@ -18,10 +19,14 @@ import '../../domain/services/audio_companion_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/cache_cleanup_service.dart';
 import '../../domain/services/diagnostic_service.dart';
+import '../../domain/services/iso_playback_service.dart';
+import '../../domain/services/local_disc_playback_service.dart';
+import '../../domain/services/local_media_source.dart';
 import '../../domain/services/openlist_index_service.dart';
 import '../../domain/services/openlist_api_client.dart';
 import '../../domain/services/subtitle_matcher.dart';
 import '../../domain/services/webdav_service.dart';
+import '../../domain/services/webdav_font_matcher.dart';
 import '../../features/cache_control/cache_policy_service.dart';
 import '../../features/cache_control/store/cache_intelligence_config_store.dart';
 import '../../features/cache_control/store/cache_policy_config_store.dart';
@@ -43,12 +48,15 @@ class AppState extends ChangeNotifier {
     ExternalPlayerService? playerService,
     AudioPlayerService? audioPlayerService,
     SubtitleMatcher? subtitleMatcher,
+    WebDavFontMatcher? webDavFontMatcher,
     CachePolicyProvider? cachePolicy,
     CachePolicyConfigStore? cachePolicyConfigStore,
     CacheIntelligenceConfigStore? cacheIntelligenceConfigStore,
     CacheExpirationConfigStore? cacheExpirationConfigStore,
     CacheCleaner? cacheCleaner,
     CacheCleaner? learningDataCleaner,
+    IsoPlaybackService? isoPlaybackService,
+    LocalDiscPlaybackService? localDiscPlaybackService,
     OpenListIndexService? openListIndexService,
     OpenListIndexUpdateScheduler? openListIndexScheduler,
   }) : _configStore = configStore,
@@ -71,8 +79,11 @@ class AppState extends ChangeNotifier {
        _cacheCleaner = cacheCleaner,
        // ignore: prefer_initializing_formals
        _learningDataCleaner = learningDataCleaner,
+       // ignore: prefer_initializing_formals
+       _isoPlaybackService = isoPlaybackService,
        _language = configStore.current.language,
-       _subtitleMatcher = subtitleMatcher ?? const SubtitleMatcher() {
+       _subtitleMatcher = subtitleMatcher ?? const SubtitleMatcher(),
+       _webDavFontMatcher = webDavFontMatcher ?? const WebDavFontMatcher() {
     // 警告流与播放器服务的警告接线放构造器 body（initializer 中
     // 不能引用 this 字段）。
     _cacheWarnings = StreamController<String>.broadcast();
@@ -95,6 +106,13 @@ class AppState extends ChangeNotifier {
                 configStore: configStore,
                 progressService: audioProgressService,
               ));
+    _localDiscPlaybackService =
+        localDiscPlaybackService ??
+        LocalDiscPlaybackService(
+          configStore: configStore,
+          progressService: progressService,
+          mediaLibraryStore: mediaLibraryStore,
+        );
     _openListIndexService = openListIndexService ?? OpenListIndexService();
     _openListIndexScheduler =
         openListIndexScheduler ??
@@ -114,10 +132,13 @@ class AppState extends ChangeNotifier {
   final DirectoryCache _directoryCache;
   final CacheCleaner? _cacheCleaner;
   final CacheCleaner? _learningDataCleaner;
+  final IsoPlaybackService? _isoPlaybackService;
+  late final LocalDiscPlaybackService _localDiscPlaybackService;
   AppLanguage _language;
   late final ExternalPlayerService _playerService;
   late final AudioPlayerService? _audioPlayerService;
   final SubtitleMatcher _subtitleMatcher;
+  final WebDavFontMatcher _webDavFontMatcher;
   final AudioCompanionMatcher _audioCompanionMatcher =
       const AudioCompanionMatcher();
   late final OpenListIndexService _openListIndexService;
@@ -152,6 +173,8 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isoPlaybackService?.dispose();
+    _localDiscPlaybackService.dispose();
     _openListIndexScheduler.dispose();
     _cacheWarnings.close();
     _playbackRecoveryEvents.close();
@@ -174,11 +197,71 @@ class AppState extends ChangeNotifier {
   String? get mediaSourceId => _webDavService?.sourceId;
   ExternalPlayerService get playerService => _playerService;
   AudioPlayerService? get audioPlayerService => _audioPlayerService;
+  IsoPlaybackService? get isoPlaybackService => _isoPlaybackService;
+  LocalDiscPlaybackService get localDiscPlaybackService =>
+      _localDiscPlaybackService;
   SubtitleMatcher get subtitleMatcher => _subtitleMatcher;
+  WebDavFontMatcher get webDavFontMatcher => _webDavFontMatcher;
   AudioCompanionMatcher get audioCompanionMatcher => _audioCompanionMatcher;
   bool get canClearCache => _cacheCleaner != null;
   bool get canClearLearningData => _learningDataCleaner != null;
   AppLanguage get language => _language;
+  List<LocalRootConfig> get localRoots => _configStore.current.localRoots;
+
+  LocalMediaSource localMediaSource(LocalRootConfig root) =>
+      LocalMediaSource(root);
+
+  /// 添加或编辑本地根目录；相同最终路径会复用既有 rootId。
+  Future<LocalRootConfig> saveLocalRoot({
+    required String path,
+    String? displayName,
+    String? rootId,
+    bool enabled = true,
+  }) async {
+    final candidate = await LocalRootConfig.fromDirectory(
+      path: path,
+      displayName: displayName,
+      rootId: rootId,
+      enabled: enabled,
+    );
+    final current = await _configStore.load();
+    final duplicate = current.localRoots
+        .where(
+          (root) =>
+              root.rootId != rootId &&
+              root.path.toLowerCase() == candidate.path.toLowerCase(),
+        )
+        .firstOrNull;
+    final resolved = duplicate == null
+        ? candidate
+        : LocalRootConfig(
+            rootId: duplicate.rootId,
+            displayName: candidate.displayName,
+            path: candidate.path,
+            enabled: enabled,
+          );
+    await _configStore.save(current.upsertLocalRoot(resolved));
+    notifyListeners();
+    return resolved;
+  }
+
+  Future<void> removeLocalRoot(String rootId) async {
+    final current = await _configStore.load();
+    await _configStore.save(current.removeLocalRoot(rootId));
+    notifyListeners();
+  }
+
+  Future<void> setLocalRootEnabled(String rootId, bool enabled) async {
+    final current = await _configStore.load();
+    final root = current.localRoots
+        .where((item) => item.rootId == rootId)
+        .firstOrNull;
+    if (root == null || root.enabled == enabled) return;
+    await _configStore.save(
+      current.upsertLocalRoot(root.copyWith(enabled: enabled)),
+    );
+    notifyListeners();
+  }
 
   /// 配置完成持久化后更新当前界面语言。
   void applyLanguage(AppLanguage language) {
@@ -261,6 +344,9 @@ class AppState extends ChangeNotifier {
     if (await _hasRunningPlayback()) {
       throw const CacheCleanupBlockedException('请先关闭正在运行的播放器，再清理缓存');
     }
+    if (await _isoPlaybackService?.hasActivePlayback() ?? false) {
+      throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
+    }
     await _releaseStoppedPlaybackSessions();
     final result = await cleaner.clear();
     notifyListeners();
@@ -287,6 +373,7 @@ class AppState extends ChangeNotifier {
     for (final history in videoHistories) {
       await _playerService.restoreSession(
         sessionId: history.sessionId,
+        profileId: history.sourceId,
         pid: history.playerPid,
         executablePath: history.playerExecutablePath,
         creationTime: history.playerCreationTime,
@@ -302,6 +389,7 @@ class AppState extends ChangeNotifier {
     for (final history in audioHistories) {
       await audioService.restoreSession(
         sessionId: history.sessionId,
+        profileId: history.sourceId,
         pid: history.playerPid,
         executablePath: history.playerExecutablePath,
         creationTime: history.playerCreationTime,

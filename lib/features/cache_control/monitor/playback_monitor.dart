@@ -38,6 +38,9 @@ class PlaybackSample {
     this.pausedForCache,
     this.bofCached,
     this.eofCached,
+    this.forwardCacheDurationSec,
+    this.forwardCacheBytes,
+    this.totalCacheBytes,
     this.availableMemoryBytes,
   });
 
@@ -57,13 +60,8 @@ class PlaybackSample {
   /// 实时下载速度（bytes/s）；未知为 null。
   final double? networkSpeedBps;
 
-  /// mpv `cache-idle`（0.41+ 属性名为 `demuxer-cache-idle`，lua 侧已
-  /// 兼容读取）：true = 缓存空闲/无数据可读（缓存满或文件已下载完 EOF，
-  /// 正常）；false = 正在读取数据（等数据/缓冲中）；未知为 null。
-  ///
-  /// 用于区分 `cache-buffering-state=100` 的两种含义：
-  /// 缓存满（下载追上播放，正常）vs 等待数据（真卡顿）。
-  /// 也是「文件已全部下载完、缓存速度归 0」时的防误报主信号。
+  /// mpv `cache-idle`（0.41+ 为 `demuxer-cache-idle`）：仅表示读取线程
+  /// 当前没有读取，不能单独证明缓存已满或前向缓存充足。
   final bool? cacheIdle;
 
   /// mpv `paused-for-cache`：这是播放器是否因缓存不足而暂停的真值。
@@ -72,6 +70,15 @@ class PlaybackSample {
   /// 当前可寻址缓存是否覆盖文件开头/结尾。
   final bool? bofCached;
   final bool? eofCached;
+
+  /// 当前解码位置之后的可播放缓存时长。
+  final double? forwardCacheDurationSec;
+
+  /// 当前解码位置之后的包缓存字节数。
+  final int? forwardCacheBytes;
+
+  /// 包队列总字节数，包含可 seek 的历史范围。
+  final int? totalCacheBytes;
 
   /// 系统可用内存（字节）；未知为 null。
   final int? availableMemoryBytes;
@@ -103,8 +110,8 @@ class PlaybackSample {
 /// 播放中动态监控与保护（设计文档第 9 节：9.1 内存压力保护 /
 /// 9.2 网络异常保护 / 卡顿记录）。
 ///
-/// 周期性（默认 5 秒）读取 mpv 状态文件（十三行，含
-/// paused-for-cache / bof-cached / eof-cached）与系统可用内存，按纯算法输出：
+/// 周期性（默认 5 秒）读取 mpv 状态文件（含 paused-for-cache、前向缓存
+/// 时长/字节和缓存范围状态）与系统可用内存，按纯算法输出：
 /// - **内存压力**：可用内存 < 当前上限 × [memoryPressureFactor] 时
 ///   认为缓存占用威胁系统稳定，动态降低 `demuxer-max-bytes`
 ///   （连续压力持续减半，下限 [minDemuxerMaxBytes]）；
@@ -240,6 +247,7 @@ class PlaybackMonitor {
   // 连续计数（网络不足 / 严重不足 / 内存压力）。
   int _poorStreak = 0;
   int _criticalStreak = 0;
+  int _lowForwardIdleStreak = 0;
   int _memoryPressureStreak = 0;
   int _memoryHealthyStreak = 0;
   int _healthyNetworkStreak = 0;
@@ -299,6 +307,7 @@ class PlaybackMonitor {
     _onWarning = onWarning;
     _poorStreak = 0;
     _criticalStreak = 0;
+    _lowForwardIdleStreak = 0;
     _memoryPressureStreak = 0;
     _bufferingStreak = 0;
     _lastBufferAdjustmentStreak = 0;
@@ -460,6 +469,9 @@ class PlaybackMonitor {
         pausedForCache: sample.pausedForCache,
         bofCached: sample.bofCached,
         eofCached: sample.eofCached,
+        forwardCacheDurationSec: sample.forwardCacheDurationSec,
+        forwardCacheBytes: sample.forwardCacheBytes,
+        totalCacheBytes: sample.totalCacheBytes,
         availableMemoryBytes: memory,
       );
       _evaluate(sample);
@@ -489,6 +501,9 @@ class PlaybackMonitor {
       final bofCachedRaw = lines.length > 10 ? lines[10].trim() : '';
       final eofCachedRaw = lines.length > 11 ? lines[11].trim() : '';
       final pausedRaw = lines.length > 2 ? lines[2].trim() : '';
+      final forwardCacheDuration = parse(15);
+      final forwardCacheBytes = parse(16);
+      final totalCacheBytes = parse(17);
       // 速度不可用时关闭速度判定，仅保留卡顿驱动；第九行记录
       // speed_src|speed|idle_src|idle_raw，便于定位属性版本差异。
       if ((speed == null || speed < 0) && !_speedUnavailableLogged) {
@@ -516,6 +531,16 @@ class PlaybackMonitor {
         eofCached: eofCachedRaw == '1'
             ? true
             : (eofCachedRaw == '0' ? false : null),
+        forwardCacheDurationSec:
+            forwardCacheDuration != null && forwardCacheDuration >= 0
+            ? forwardCacheDuration
+            : null,
+        forwardCacheBytes: forwardCacheBytes != null && forwardCacheBytes >= 0
+            ? forwardCacheBytes.round()
+            : null,
+        totalCacheBytes: totalCacheBytes != null && totalCacheBytes >= 0
+            ? totalCacheBytes.round()
+            : null,
       );
     } catch (_) {
       return const PlaybackSample();
@@ -532,19 +557,36 @@ class PlaybackMonitor {
 
   void _evaluate(PlaybackSample sample) {
     _trackOutcome(sample);
-    // ── 前置：网络空闲状态判定（暂停/播完/全缓存/缓存满） ──
+    // ── 前置：网络空闲状态判定（暂停/播完/全缓存/前向缓存充足） ──
     // 顺序在卡顿统计**之前**：暂停瞬间残留的 buffering 状态不得触发
     // 「持续缓冲」误报，速度为 0 属正常也不判网络不足。
-    // 只有可寻址范围同时覆盖文件头尾才视为全缓存。cacheIdle 仍作为 EOF/
-    // cache-idle 还用于排除 EOF 或缓存已满后的零速样本。
+    // cache-idle 仅表示读取线程当前没有读取，不能单独证明前向缓存充足。
     final fullyCached = sample.bofCached == true && sample.eofCached == true;
+    final forwardSafetySecs = math.min(_cacheSecs, 30).toDouble();
+    final forwardCacheKnown = sample.forwardCacheDurationSec != null;
+    final forwardCacheSafe =
+        sample.eofCached == true ||
+        (forwardCacheKnown &&
+            sample.forwardCacheDurationSec! >= forwardSafetySecs);
+    final stalling = sample.paused != true && sample.isStalling;
+    // 旧版 MPV 没有前向水位时保留原降级行为；新协议必须同时满足
+    // EOF 或最小前向水位，idle 才能暂停网络判断。
+    final cacheIdleSafe =
+        sample.cacheIdle == true && (!forwardCacheKnown || forwardCacheSafe);
+    final lowForwardIdle =
+        sample.cacheIdle == true &&
+        forwardCacheKnown &&
+        !forwardCacheSafe &&
+        sample.eofCached != true &&
+        sample.paused != true &&
+        !sample.atEndOfPlayback &&
+        !stalling;
     final networkIdle =
-        sample.paused == true ||
-        sample.atEndOfPlayback ||
-        fullyCached ||
-        // cache-idle=true：缓存满/无数据可读（下载已追上播放），
-        // 当前速度为 0 或偏低不代表网络不足，跳过判定。
-        sample.cacheIdle == true;
+        !stalling &&
+        (sample.paused == true ||
+            sample.atEndOfPlayback ||
+            fullyCached ||
+            cacheIdleSafe);
     if (networkIdle &&
         (_poorStreak > 0 || _criticalStreak > 0 || _bufferingStreak > 0)) {
       _poorStreak = 0;
@@ -556,18 +598,19 @@ class PlaybackMonitor {
         if (sample.paused == true) 'paused',
         if (sample.atEndOfPlayback) 'playback-end',
         if (fullyCached) 'fully-cached',
-        if (sample.cacheIdle == true) 'cache-idle',
+        if (cacheIdleSafe) 'cache-idle-safe',
       ];
       _logger(
         'Monitor: network check paused: reason=${idleReasons.join('+')} '
         '(paused=${sample.paused} end=${sample.atEndOfPlayback} '
-        'fullyCached=$fullyCached cacheIdle=${sample.cacheIdle})',
+        'fullyCached=$fullyCached cacheIdle=${sample.cacheIdle} '
+        'forward=${sample.forwardCacheDurationSec?.toStringAsFixed(1) ?? 'unknown'}s '
+        'required=${forwardSafetySecs.toStringAsFixed(0)}s)',
       );
     }
 
     // paused-for-cache 是卡顿真值；旧版属性缺失时才回退 0<buffering<100。
     // 连续卡顿直接驱动增档与警告，不依赖可能失真的缓存读取速度。
-    final stalling = !networkIdle && sample.isStalling;
     if (stalling) {
       if (!_wasStalling) _stallCount++;
       _wasStalling = true;
@@ -669,9 +712,33 @@ class PlaybackMonitor {
       }
     }
 
+    if (lowForwardIdle) {
+      _lowForwardIdleStreak++;
+      if (_lowForwardIdleStreak == 1) {
+        _logger(
+          'Monitor: cache reader idle with low forward buffer '
+          '(forward=${sample.forwardCacheDurationSec!.toStringAsFixed(1)}s/'
+          '${forwardSafetySecs.toStringAsFixed(0)}s, '
+          'fw=${sample.forwardCacheBytes != null ? _fmt(sample.forwardCacheBytes!) : 'unknown'}, '
+          'total=${sample.totalCacheBytes != null ? _fmt(sample.totalCacheBytes!) : 'unknown'})',
+        );
+      }
+      if (_lowForwardIdleStreak >= requiredStreak &&
+          _cacheSecs < _dynamicMaxCacheSecs &&
+          !_fullCache) {
+        _lowForwardIdleStreak = 0;
+        _setCacheSecs(
+          (_cacheSecs + 60).clamp(_baselineCacheSecs, _dynamicMaxCacheSecs),
+          'Low forward buffer: cache reader remained idle',
+        );
+      }
+    } else {
+      _lowForwardIdleStreak = 0;
+    }
+
     // 暂停、播完、全缓存、缓存空闲或正在真实卡顿时，不使用瞬时速度
     // 推断网络质量；真实卡顿已由上面的 paused-for-cache 分支处理。
-    if (networkIdle || stalling) return;
+    if (networkIdle || stalling || lowForwardIdle) return;
 
     // ── 9.2 网络异常保护（网络空闲时已在前置清零并跳过） ──
     final bitrate = _bitrateMbps;

@@ -13,6 +13,7 @@ import 'package:streampath/data/models/subtitle_item.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
+import 'package:streampath/domain/services/webdav_font_matcher.dart';
 
 class _SharedProbeController extends PlayerProcessController {
   final probeStarted = Completer<void>();
@@ -181,6 +182,110 @@ void main() {
   }
 
   group('launch 单集：外挂字幕注入与自动选择', () {
+    test('WebDAV 字体落入隔离目录并由会话脚本注入', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        await service.terminateSession('webdav-fonts');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loadCount = 0;
+      const fonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Series/Fonts',
+        entryKey: 'http://h/dav/Series/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'subtitle.ttf',
+            url: 'http://h/dav/Series/Fonts/subtitle.ttf',
+            size: 4,
+          ),
+        ],
+      );
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
+        sessionId: 'webdav-fonts',
+        webDavFonts: fonts,
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loadCount++;
+          return [0, 1, 2, 3];
+        },
+      );
+
+      final fontScriptPath = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) => p.basename(path).startsWith('streampath-font-directory-'),
+          );
+      final script = await File(fontScriptPath).readAsString();
+      final fontDirectoryPath = result.artifactPaths.firstWhere(
+        (path) => p.basename(path).startsWith('streampath-fonts-'),
+      );
+
+      expect(loadCount, 1);
+      expect(script, contains('mp.add_hook("on_load", 5'));
+      expect(
+        script,
+        contains('mp.set_property("file-local-options/" .. OPTION, FONT_DIR)'),
+      );
+      expect(script, contains(fontDirectoryPath.replaceAll('\\', '\\\\')));
+      expect(
+        result.args.any((arg) => arg.startsWith('--sub-fonts-dir=')),
+        isFalse,
+        reason: '旧版 MPV 不得因未知命令行选项启动失败',
+      );
+      expect(
+        Directory(
+          fontDirectoryPath,
+        ).listSync().whereType<File>().single.readAsBytesSync(),
+        [0, 1, 2, 3],
+      );
+      await service.terminateSession('webdav-fonts');
+      expect(await Directory(fontDirectoryPath).exists(), isFalse);
+    });
+
+    test('自动注入关闭时不读取或注入 WebDAV 字体', () async {
+      final (service, dir) = await makeService(subtitleInjectionEnabled: false);
+      addTearDown(() async {
+        await service.terminateSession('webdav-fonts-disabled');
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loadCount = 0;
+      const fonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Fonts',
+        entryKey: 'http://h/dav/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'subtitle.ttf',
+            url: 'http://h/dav/Fonts/subtitle.ttf',
+            size: 1,
+          ),
+        ],
+      );
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'webdav-fonts-disabled',
+        webDavFonts: fonts,
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loadCount++;
+          return [1];
+        },
+      );
+
+      expect(loadCount, 0);
+      expect(
+        result.args.any((arg) => arg.contains('streampath-font-directory-')),
+        isFalse,
+      );
+    });
+
     test('MPV 仅向同源 URL 内嵌空密码凭据且不使用全局认证头', () async {
       final (service, _) = await makeService();
       final result = await service.launch(

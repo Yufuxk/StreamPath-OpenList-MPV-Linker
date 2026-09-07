@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -23,6 +24,8 @@ void main() {
       'package.ps1',
       'cleanup.ps1',
       'run.ps1',
+      'benchmark_iso_phase1.ps1',
+      'benchmark_iso_phase4.ps1',
     ]) {
       File(
         p.join(sourceTools.path, name),
@@ -168,6 +171,557 @@ void main() {
 
     expect(result.exitCode, 0, reason: result.output);
     expect(cwdFile.readAsStringSync().trim(), projectDir.path);
+  });
+
+  test('ISO Phase 1 Benchmark 排除预热并输出固定统计口径', () async {
+    final archiveRoot = Directory(p.join(tempDir.path, 'iso_benchmarks'))
+      ..createSync();
+    for (var run = 1; run <= 6; run++) {
+      final archive = Directory(
+        p.join(archiveRoot.path, 'iso_${run.toString().padLeft(2, '0')}'),
+      )..createSync();
+      File(p.join(archive.path, 'iso-performance.json')).writeAsStringSync(
+        jsonEncode({
+          'version': 1,
+          'status': 'complete',
+          'timings': {
+            'openToProbeMs': run,
+            'probeToTitlesMs': run,
+            'selectionToLoopbackReadyMs': run,
+            'selectionToStablePlaybackMs': run,
+            'mpvLaunchToStablePlaybackMs': run,
+          },
+          'seekRecoveryMs': [run * 10],
+          'titleSwitchGapMs': [run * 20],
+        }),
+      );
+      File(p.join(archive.path, 'iso-bridge-metrics.json')).writeAsStringSync(
+        jsonEncode({
+          'version': 2,
+          'network': {
+            'requestCount': run,
+            'redirectCount': 0,
+            'redirectResolveCount': 0,
+            'resolvedUrlReuseCount': run,
+            'responseHeaderLatencyUsTotal': run,
+            'responseBodyActiveUsTotal': run,
+            'remoteBodyBytes': run,
+            'probeBodyBytes': 1,
+            'activeRequestPeak': 1,
+          },
+          'cache': {
+            'foregroundFetchBytes': run,
+            'prefetchFetchBytes': run,
+            'consumerBytesDelivered': run,
+            'cacheHitCount': run,
+            'cacheMissCount': run,
+            'prefetchHitCount': run,
+            'prefetchUnusedBytes': run,
+            'cancelledForegroundBytes': 0,
+            'cancelledPrefetchBytes': 0,
+            'evictionCount': run,
+            'refetchCount': run,
+          },
+          'bluray': {
+            'contextCreateCount': run,
+            'contextCreateUsTotal': run,
+            'titleEnumerationUs': run,
+            'mediaGetCount': run,
+          },
+          'bridge': {'final': true},
+        }),
+      );
+    }
+    final output = p.join(tempDir.path, 'benchmark-report.json');
+    List<String> benchmarkArguments(String mode) => <String>[
+      '-ArchiveRoot',
+      archiveRoot.path,
+      '-Mode',
+      mode,
+      '-MachineProfile',
+      'machine-a',
+      '-SampleId',
+      'sample-a',
+      '-MpvProfile',
+      'mpv-a',
+      '-NetworkProfile',
+      'lan-webdav',
+      '-NetworkShaping',
+      'none',
+      '-OutputPath',
+      output,
+    ];
+
+    final result = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: <String>[
+        '-ArchiveRoot',
+        archiveRoot.path,
+        '-Mode',
+        'Cold',
+        '-MachineProfile',
+        'machine-a',
+        '-SampleId',
+        'sample-a',
+        '-MpvProfile',
+        'mpv-a',
+        '-NetworkProfile',
+        'lan-webdav',
+        '-NetworkShaping',
+        'none',
+        '-OutputPath',
+        output,
+      ],
+    );
+
+    expect(result.exitCode, 0, reason: result.output);
+    final reportText = File(output).readAsStringSync();
+    final report = jsonDecode(reportText) as Map<String, dynamic>;
+    final statistics = report['statistics'] as Map<String, dynamic>;
+    final openToProbe = statistics['openToProbeMs'] as Map<String, dynamic>;
+    expect(report['runCount'], 5);
+    expect(report['warmupExcluded'], 1);
+    expect(report['measuredRunCount'], 4);
+    expect(openToProbe['median'], 4.5);
+    expect(openToProbe['p95'], 6);
+    expect(
+      statistics.containsKey('blurayPersistentContextReuseCount'),
+      isFalse,
+    );
+    expect(reportText, isNot(contains(archiveRoot.path)));
+
+    for (var run = 1; run <= 6; run++) {
+      final metricsFile = File(
+        p.join(
+          archiveRoot.path,
+          'iso_${run.toString().padLeft(2, '0')}',
+          'iso-bridge-metrics.json',
+        ),
+      );
+      final metrics =
+          jsonDecode(metricsFile.readAsStringSync()) as Map<String, dynamic>;
+      (metrics['bluray']
+              as Map<String, dynamic>)['persistentContextReuseCount'] =
+          run;
+      metrics['metadataNetwork'] = {
+        'requestCount': run,
+        'responseHeaderLatencyUsTotal': run,
+        'remoteBodyBytes': run,
+      };
+      metrics['playbackNetwork'] = {
+        'requestCount': run,
+        'responseHeaderLatencyUsTotal': run,
+        'remoteBodyBytes': run,
+      };
+      metrics['metadataCache'] = {
+        'requestCount': run,
+        'foregroundFetchBytes': run,
+        'consumerBytesDelivered': run,
+        'cacheHitCount': run,
+        'cacheMissCount': run,
+        'evictionCount': run,
+        'refetchCount': run,
+        'capacityBytes': 64 * 1024 * 1024,
+        'blockBytes': 256 * 1024,
+        'retainedBytes': 16 * 1024 * 1024,
+      };
+      metrics['playbackCache'] = {
+        'requestCount': run,
+        'foregroundFetchBytes': run,
+        'consumerBytesDelivered': run,
+        'cacheHitCount': run,
+        'cacheMissCount': run,
+        'evictionCount': run,
+        'refetchCount': run,
+        'capacityBytes': 64 * 1024 * 1024,
+        'blockBytes': 256 * 1024,
+      };
+      metricsFile.writeAsStringSync(jsonEncode(metrics));
+    }
+    final currentMetrics = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: <String>[
+        '-ArchiveRoot',
+        archiveRoot.path,
+        '-Mode',
+        'Cold',
+        '-MachineProfile',
+        'machine-a',
+        '-SampleId',
+        'sample-a',
+        '-MpvProfile',
+        'mpv-a',
+        '-NetworkProfile',
+        'lan-webdav',
+        '-NetworkShaping',
+        'none',
+        '-OutputPath',
+        output,
+      ],
+    );
+    expect(currentMetrics.exitCode, 0, reason: currentMetrics.output);
+    final currentReport =
+        jsonDecode(File(output).readAsStringSync()) as Map<String, dynamic>;
+    final currentStatistics =
+        currentReport['statistics'] as Map<String, dynamic>;
+    final persistentReuse =
+        currentStatistics['blurayPersistentContextReuseCount']
+            as Map<String, dynamic>;
+    expect(persistentReuse['median'], 4.5);
+    expect(persistentReuse['p95'], 6);
+    final metadataRequests =
+        currentStatistics['metadataCacheRequestCount'] as Map<String, dynamic>;
+    expect(metadataRequests['median'], 4.5);
+    expect(metadataRequests['p95'], 6);
+    final playbackRequests =
+        currentStatistics['playbackCacheRequestCount'] as Map<String, dynamic>;
+    expect(playbackRequests['median'], 4.5);
+    expect(playbackRequests['p95'], 6);
+
+    for (var run = 1; run <= 6; run++) {
+      final metricsFile = File(
+        p.join(
+          archiveRoot.path,
+          'iso_${run.toString().padLeft(2, '0')}',
+          'iso-bridge-metrics.json',
+        ),
+      );
+      final metrics =
+          jsonDecode(metricsFile.readAsStringSync()) as Map<String, dynamic>;
+      (metrics['bluray'] as Map<String, dynamic>)['structureCacheHit'] =
+          run >= 3;
+      metricsFile.writeAsStringSync(jsonEncode(metrics));
+    }
+    final warmMetrics = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: <String>[
+        '-ArchiveRoot',
+        archiveRoot.path,
+        '-Mode',
+        'Warm',
+        '-MachineProfile',
+        'machine-a',
+        '-SampleId',
+        'sample-a',
+        '-MpvProfile',
+        'mpv-a',
+        '-NetworkProfile',
+        'lan-webdav',
+        '-NetworkShaping',
+        'none',
+        '-OutputPath',
+        output,
+      ],
+    );
+    expect(warmMetrics.exitCode, 0, reason: warmMetrics.output);
+    final warmReport =
+        jsonDecode(File(output).readAsStringSync()) as Map<String, dynamic>;
+    final structureCache = warmReport['structureCache'] as Map<String, dynamic>;
+    expect(structureCache['hits'], 4);
+    expect(structureCache['misses'], 0);
+    expect(structureCache['hitRate'], 1);
+    final structureLatestMetrics = File(
+      p.join(archiveRoot.path, 'iso_06', 'iso-bridge-metrics.json'),
+    );
+    final structureLatest =
+        jsonDecode(structureLatestMetrics.readAsStringSync())
+            as Map<String, dynamic>;
+    (structureLatest['bluray'] as Map<String, dynamic>).remove(
+      'structureCacheHit',
+    );
+    structureLatestMetrics.writeAsStringSync(jsonEncode(structureLatest));
+    final mixedStructureCache = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: benchmarkArguments('Warm'),
+    );
+    expect(mixedStructureCache.exitCode, isNot(0));
+    expect(
+      mixedStructureCache.output,
+      contains(
+        'structureCacheHit must be present in every selected run or absent',
+      ),
+    );
+    (structureLatest['bluray'] as Map<String, dynamic>)['structureCacheHit'] =
+        false;
+    structureLatestMetrics.writeAsStringSync(jsonEncode(structureLatest));
+    final warmMiss = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: benchmarkArguments('Warm'),
+    );
+    expect(warmMiss.exitCode, isNot(0));
+    expect(
+      warmMiss.output,
+      contains('Every measured Warm run must report structureCacheHit=true'),
+    );
+    for (var run = 1; run <= 6; run++) {
+      final metricsFile = File(
+        p.join(
+          archiveRoot.path,
+          'iso_${run.toString().padLeft(2, '0')}',
+          'iso-bridge-metrics.json',
+        ),
+      );
+      final metrics =
+          jsonDecode(metricsFile.readAsStringSync()) as Map<String, dynamic>;
+      (metrics['bluray'] as Map<String, dynamic>).remove('structureCacheHit');
+      metricsFile.writeAsStringSync(jsonEncode(metrics));
+    }
+
+    final latestMetrics = File(
+      p.join(archiveRoot.path, 'iso_06', 'iso-bridge-metrics.json'),
+    );
+    final mixedMetrics =
+        jsonDecode(latestMetrics.readAsStringSync()) as Map<String, dynamic>;
+    (mixedMetrics['bluray'] as Map<String, dynamic>).remove(
+      'persistentContextReuseCount',
+    );
+    latestMetrics.writeAsStringSync(jsonEncode(mixedMetrics));
+    final mixed = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: <String>[
+        '-ArchiveRoot',
+        archiveRoot.path,
+        '-Mode',
+        'Cold',
+        '-MachineProfile',
+        'machine-a',
+        '-SampleId',
+        'sample-a',
+        '-MpvProfile',
+        'mpv-a',
+        '-NetworkProfile',
+        'lan-webdav',
+        '-NetworkShaping',
+        'none',
+        '-OutputPath',
+        output,
+      ],
+    );
+    expect(mixed.exitCode, isNot(0));
+    expect(
+      mixed.output,
+      contains('must be present in every selected run or absent'),
+    );
+
+    (mixedMetrics['bluray']
+            as Map<String, dynamic>)['persistentContextReuseCount'] =
+        6;
+    latestMetrics.writeAsStringSync(jsonEncode(mixedMetrics));
+    final incompleteMetrics =
+        jsonDecode(latestMetrics.readAsStringSync()) as Map<String, dynamic>;
+    (incompleteMetrics['bridge'] as Map<String, dynamic>)['final'] = false;
+    latestMetrics.writeAsStringSync(jsonEncode(incompleteMetrics));
+    final incomplete = await runScript(
+      'benchmark_iso_phase1.ps1',
+      arguments: <String>[
+        '-ArchiveRoot',
+        archiveRoot.path,
+        '-Mode',
+        'Cold',
+        '-MachineProfile',
+        'machine-a',
+        '-SampleId',
+        'sample-a',
+        '-MpvProfile',
+        'mpv-a',
+        '-NetworkProfile',
+        'lan-webdav',
+        '-NetworkShaping',
+        'none',
+        '-OutputPath',
+        output,
+      ],
+    );
+    expect(incomplete.exitCode, isNot(0));
+    expect(incomplete.output, contains('Final native metrics are required'));
+  });
+
+  test('ISO Phase 4 配对汇总执行 Seek 双门禁并拒绝错位或混合 schema', () async {
+    final baselineRoot = Directory(p.join(tempDir.path, 'phase4-baseline'))
+      ..createSync();
+    final candidateRoot = Directory(p.join(tempDir.path, 'phase4-candidate'))
+      ..createSync();
+
+    void writeRun(Directory root, int run, {required bool candidate}) {
+      final archive = Directory(
+        p.join(root.path, 'iso_${run.toString().padLeft(2, '0')}'),
+      )..createSync();
+      final recovery = candidate ? 8000 : 9000;
+      File(p.join(archive.path, 'iso-performance.json')).writeAsStringSync(
+        jsonEncode({
+          'version': 1,
+          'status': 'complete',
+          'seekRecoveryMs': [recovery],
+          'seekSamples': [
+            {
+              'playlist': '00001',
+              'startPositionMs': 700000,
+              'endPositionMs': candidate ? 700100 : 700200,
+              'recoveryMs': recovery,
+            },
+          ],
+          'titleSwitchGapMs': const <int>[],
+          'pausedForCacheCount': candidate ? 0 : 1,
+          'pausedForCacheDurationMs': candidate ? 0 : 100,
+          'cachePlan': {
+            'bridgeBytes': 32 * 1024 * 1024,
+            'titles': [
+              {
+                'playlist': '00001',
+                'bitrateMbps': 100.0,
+                'mpvMaxBytes': 128 * 1024 * 1024,
+                'totalBudgetBytes': 160 * 1024 * 1024,
+              },
+            ],
+          },
+        }),
+      );
+      File(p.join(archive.path, 'iso-bridge-metrics.json')).writeAsStringSync(
+        jsonEncode({
+          'version': 2,
+          'network': {
+            'requestCount': 100,
+            'remoteBodyBytes': 100000000,
+            'activeRequestPeak': candidate ? 3 : 2,
+            'remoteTransferWallClockUs': candidate ? 800000 : 1000000,
+            'concurrentTransferWallClockUs': candidate ? 300000 : 0,
+            'requestContextCreatedCount': 100,
+            'requestContextClosedCount': 100,
+            'requestContextLive': 0,
+          },
+          'cache': {
+            'prefetchFetchBytes': 80000000,
+            'prefetchUnusedBytes': 1000,
+            'cancelledPrefetchBytes': 1000,
+            'prefetchActivePeak': candidate ? 2 : 1,
+            'prefetchOverlapCount': candidate ? 3 : 0,
+            'prefetchPendingGapUsTotal': candidate ? 40 : 100,
+            'prefetchPendingGapUsMax': candidate ? 20 : 50,
+            'prefetchInFlightBytesPeak': candidate
+                ? 32 * 1024 * 1024
+                : 16 * 1024 * 1024,
+            'prefetchHitBytes': 60000000,
+            'prefetchConcurrentWallClockUs': candidate ? 250000 : 0,
+          },
+          'bluray': {'persistentContextReuseCount': 10},
+          'bridge': {'final': true},
+          'cacheCapacityBytes': 64 * 1024 * 1024,
+        }),
+      );
+    }
+
+    for (var run = 1; run <= 6; run++) {
+      writeRun(baselineRoot, run, candidate: false);
+      writeRun(candidateRoot, run, candidate: true);
+    }
+    final output = p.join(tempDir.path, 'phase4-report.json');
+    final arguments = <String>[
+      '-BaselineArchiveRoot',
+      baselineRoot.path,
+      '-CandidateArchiveRoot',
+      candidateRoot.path,
+      '-NetworkKind',
+      'Controlled',
+      '-OrderPattern',
+      'AlternatingBaselineFirst',
+      '-MachineProfile',
+      'machine-a',
+      '-SampleId',
+      'sample-a',
+      '-MpvProfile',
+      'mpv-a',
+      '-NetworkProfile',
+      'high-ttfb',
+      '-NetworkShaping',
+      '100ms',
+      '-OutputPath',
+      output,
+    ];
+
+    final passed = await runScript(
+      'benchmark_iso_phase4.ps1',
+      arguments: arguments,
+    );
+    expect(passed.exitCode, 0, reason: passed.output);
+    final reportText = File(output).readAsStringSync();
+    final report = jsonDecode(reportText) as Map<String, dynamic>;
+    expect(report['adoptable'], isTrue);
+    expect(
+      (report['gates']
+          as Map<String, dynamic>)['baselineEntryConditionSatisfied'],
+      isTrue,
+    );
+    expect(report['measuredRunCount'], 5);
+    expect(reportText, isNot(contains(baselineRoot.path)));
+    expect(reportText, isNot(contains(candidateRoot.path)));
+
+    final latestSummary = File(
+      p.join(candidateRoot.path, 'iso_06', 'iso-performance.json'),
+    );
+    final mismatched =
+        jsonDecode(latestSummary.readAsStringSync()) as Map<String, dynamic>;
+    ((mismatched['seekSamples'] as List).first
+            as Map<String, dynamic>)['startPositionMs'] =
+        700001;
+    latestSummary.writeAsStringSync(jsonEncode(mismatched));
+    final mismatch = await runScript(
+      'benchmark_iso_phase4.ps1',
+      arguments: arguments,
+    );
+    expect(mismatch.exitCode, isNot(0));
+    expect(mismatch.output, contains('targets a different position'));
+
+    ((mismatched['seekSamples'] as List).first
+            as Map<String, dynamic>)['startPositionMs'] =
+        700000;
+    latestSummary.writeAsStringSync(jsonEncode(mismatched));
+    final latestMetrics = File(
+      p.join(candidateRoot.path, 'iso_06', 'iso-bridge-metrics.json'),
+    );
+    final mixed =
+        jsonDecode(latestMetrics.readAsStringSync()) as Map<String, dynamic>;
+    (mixed['cache'] as Map<String, dynamic>).remove('prefetchHitBytes');
+    latestMetrics.writeAsStringSync(jsonEncode(mixed));
+    final mixedSchema = await runScript(
+      'benchmark_iso_phase4.ps1',
+      arguments: arguments,
+    );
+    expect(mixedSchema.exitCode, isNot(0));
+    expect(mixedSchema.output, contains('mixes schemas'));
+
+    latestMetrics.writeAsStringSync(
+      jsonEncode({
+        ...mixed,
+        'cache': {
+          ...(mixed['cache'] as Map<String, dynamic>),
+          'prefetchHitBytes': 60000000,
+        },
+      }),
+    );
+    for (final root in [baselineRoot, candidateRoot]) {
+      for (var run = 1; run <= 6; run++) {
+        final summaryFile = File(
+          p.join(
+            root.path,
+            'iso_${run.toString().padLeft(2, '0')}',
+            'iso-performance.json',
+          ),
+        );
+        final summary =
+            jsonDecode(summaryFile.readAsStringSync()) as Map<String, dynamic>;
+        ((((summary['cachePlan'] as Map<String, dynamic>)['titles'] as List)
+                    .first)
+                as Map<String, dynamic>)['bitrateMbps'] =
+            1000.0;
+        summaryFile.writeAsStringSync(jsonEncode(summary));
+      }
+    }
+    final noEntrySignal = await runScript(
+      'benchmark_iso_phase4.ps1',
+      arguments: arguments,
+    );
+    expect(noEntrySignal.exitCode, isNot(0));
+    expect(noEntrySignal.output, contains('failed one or more adoption gates'));
   });
 
   test('cleanup 默认只清理项目数据并保留学习数据', () async {

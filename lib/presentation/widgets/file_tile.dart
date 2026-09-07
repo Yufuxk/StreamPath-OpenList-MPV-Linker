@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../localization/app_text.dart';
 
-import '../../data/models/web_dav_file.dart';
+import '../../data/models/media_directory_entry.dart';
 import '../theme/glass_tokens.dart';
 import 'glass_surface.dart';
 
@@ -102,7 +102,7 @@ class FileTile extends StatelessWidget {
     this.metadataColumnText,
   });
 
-  final WebDavFile file;
+  final MediaDirectoryEntry file;
 
   /// 单击回调（目录进入 / 视频或音频播放 / 「返回上级」）。
   final VoidCallback? onTap;
@@ -171,7 +171,7 @@ class FileTile extends StatelessWidget {
         ? Icon(Icons.arrow_upward, color: scheme.primary, size: 28)
         : Icon(_iconFor(file), color: _colorFor(file, scheme), size: 28);
     return SizedBox(
-      key: ValueKey<String>('wide-file-tile-${file.href}'),
+      key: ValueKey<String>('wide-file-tile-${file.entryKey}'),
       height: _wideTileHeight,
       child: InkWell(
         onTap: onTap,
@@ -264,8 +264,9 @@ class FileTile extends StatelessWidget {
         : AppText(parts.join(' · '), style: const TextStyle(fontSize: 12));
   }
 
-  static IconData _iconFor(WebDavFile f) {
+  static IconData _iconFor(MediaDirectoryEntry f) {
     if (f.isDirectory) return Icons.folder_outlined;
+    if (f.isIso) return Icons.album_outlined;
     if (f.isAudio) return Icons.audiotrack_outlined;
     if (f.isPlayable) return Icons.movie_outlined;
     if (f.isLyrics) return Icons.lyrics_outlined;
@@ -273,8 +274,9 @@ class FileTile extends StatelessWidget {
     return Icons.insert_drive_file_outlined;
   }
 
-  static Color _colorFor(WebDavFile f, ColorScheme scheme) {
+  static Color _colorFor(MediaDirectoryEntry f, ColorScheme scheme) {
     if (f.isDirectory) return scheme.primary;
+    if (f.isIso) return scheme.tertiary;
     if (f.isAudio || f.isLyrics) return scheme.secondary;
     if (f.isPlayable) return scheme.tertiary;
     if (f.isSubtitle) return scheme.primary;

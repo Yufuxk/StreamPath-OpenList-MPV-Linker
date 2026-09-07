@@ -143,6 +143,47 @@ void main() {
     expect(controller.terminateCalls, 1);
   });
 
+  test('本地音频入口直接使用本地播放列表、LRC 与封面路径', () async {
+    final (service, directory, progress) = await makeEpochService();
+    const sessionId = 'local-audio';
+    addTearDown(() async {
+      await service.terminateSession(sessionId);
+      await progress.close();
+      if (directory.existsSync()) directory.deleteSync(recursive: true);
+    });
+    final audio = File('${directory.path}${Platform.pathSeparator}song.flac')
+      ..writeAsBytesSync([1]);
+    final lyrics = File('${directory.path}${Platform.pathSeparator}song.lrc')
+      ..writeAsStringSync('[00:00.00]Song');
+    final cover = File('${directory.path}${Platform.pathSeparator}song.jpg')
+      ..writeAsBytesSync([1]);
+
+    final result = await service.launchLocal(
+      sessionId: sessionId,
+      sourceId: 'local:root-1',
+      entries: [
+        AudioMediaEntry(
+          url: audio.path,
+          title: 'Song',
+          lyrics: AudioCompanionFile(name: 'song.lrc', url: lyrics.path),
+          coverArt: AudioCompanionFile(name: 'song.jpg', url: cover.path),
+        ),
+      ],
+    );
+
+    final playlist = await File(result.playlistFilePath).readAsString();
+    expect(playlist, contains(audio.path));
+    final companionPath = result.args
+        .where((arg) => arg.contains('audio-companions'))
+        .single
+        .substring('--script='.length);
+    final companion = await File(companionPath).readAsString();
+    expect(companion, contains(lyrics.path.replaceAll('\\', r'\\')));
+    expect(companion, contains(cover.path.replaceAll('\\', r'\\')));
+    expect(companion, isNot(contains('http://')));
+    expect(companion, isNot(contains('https://')));
+  });
+
   test('缓存参数过滤覆盖应用缓存控制使用的 MPV 参数族', () {
     final filtered = AudioPlayerService.filterCacheArgs(const [
       '--profile=gpu --cache=yes --cache-secs=300',

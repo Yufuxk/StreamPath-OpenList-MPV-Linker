@@ -77,7 +77,7 @@ void main() {
     );
   }
 
-  /// 写入十三字段状态文件，并允许覆盖播放与缓存状态。
+  /// 写入当前状态协议，并允许覆盖播放与缓存状态。
   void writeStatusFull({
     double timePos = 10.5,
     String paused = '0',
@@ -88,11 +88,15 @@ void main() {
     String pausedForCache = '0',
     String bofCached = '0',
     String eofCached = '0',
+    double forwardCacheDuration = 60,
+    int forwardCacheBytes = 64 * 1024 * 1024,
+    int totalCacheBytes = 96 * 1024 * 1024,
   }) {
     statusFile.writeAsStringSync(
       '0\nhttp://h/dav/01.mkv\n$paused\n$timePos\n$duration\n'
       '$buffering\n${(speedKbps! * 1024).round()}\n$cacheIdle\n'
-      'diag\n$pausedForCache\n$bofCached\n$eofCached\n1920x1080\n',
+      'diag\n$pausedForCache\n$bofCached\n$eofCached\n1920x1080\n'
+      '0\n1\n$forwardCacheDuration\n$forwardCacheBytes\n$totalCacheBytes\n',
     );
   }
 
@@ -582,10 +586,10 @@ void main() {
       monitor.stop();
     });
 
-    test('0.41 场景：cache-idle=yes + 速度 0 → 不误报', () async {
+    test('0.41 场景：cache-idle=yes 且前向水位充足 + 速度 0 → 不误报', () async {
       // 用户复现场景：mpv 0.41 下 cache-idle 属性已改名 demuxer-cache-idle，
       // 旧脚本读不到（null）会让 idle 分支失效。
-      // cacheIdle=true 时零速属于缓存空闲，不应判定为网络不足。
+      // cacheIdle=true 且前向水位充足时零速属于缓存空闲，不应判定为网络不足。
       final adjustments = <CacheAdjustment>[];
       final warnings = <String>[];
       final monitor = makeMonitor(
@@ -642,10 +646,49 @@ void main() {
       await monitor.sampleOnce();
 
       final output = logs.join('\n');
-      expect(output, contains('network check paused: reason=cache-idle'));
+      expect(output, contains('network check paused: reason=cache-idle-safe'));
       expect(output, contains('paused=false'));
       expect(output, contains('fullyCached=false'));
       expect(output, contains('cacheIdle=true'));
+      monitor.stop();
+    });
+
+    test('cache-idle=true 但前向缓存不足时继续检测并增档', () async {
+      final adjustments = <CacheAdjustment>[];
+      final logs = <String>[];
+      final monitor = makeMonitor(
+        bitrateMbps: 40,
+        onAdjustment: adjustments.add,
+        logs: logs,
+      );
+      writeStatusFull(speedKbps: 0, cacheIdle: '1', forwardCacheDuration: 5);
+      await monitor.sampleOnce();
+      await monitor.sampleOnce();
+
+      expect(adjustments, isNotEmpty);
+      expect(
+        adjustments.last.reason,
+        contains('Low forward buffer: cache reader remained idle'),
+      );
+      expect(
+        logs.join('\n'),
+        contains('cache reader idle with low forward buffer'),
+      );
+      monitor.stop();
+    });
+
+    test('cache-idle=true 不能掩盖真实 paused-for-cache', () async {
+      final monitor = makeMonitor(bitrateMbps: 40);
+      writeStatusFull(
+        buffering: 100,
+        speedKbps: 0,
+        cacheIdle: '1',
+        pausedForCache: '1',
+        forwardCacheDuration: 0,
+      );
+      await monitor.sampleOnce();
+
+      expect(monitor.stallCount, 1);
       monitor.stop();
     });
 

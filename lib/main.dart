@@ -18,8 +18,10 @@ import 'data/local/playback_progress_db.dart';
 import 'data/local/media_library_store.dart';
 import 'data/models/app_language.dart';
 import 'domain/services/cache_cleanup_service.dart';
+import 'domain/services/iso_playback_service.dart';
 import 'domain/services/mpv_watch_later_sync.dart';
 import 'features/cache_control/cache_policy_service.dart';
+import 'features/cache_control/iso_cache_coordinator.dart';
 import 'features/cache_control/intelligence/cache_intelligence_service.dart';
 import 'features/cache_control/store/cache_intelligence_config_store.dart';
 import 'features/cache_control/store/cache_intelligence_learning_store.dart';
@@ -27,7 +29,7 @@ import 'features/cache_control/store/cache_policy_config_store.dart';
 import 'features/cache_control/store/media_metadata_store.dart';
 import 'features/cache_expiration/store/cache_expiration_config_store.dart';
 import 'presentation/pages/auto_connect_gate.dart';
-import 'presentation/pages/home_page.dart';
+import 'presentation/pages/storage_root_page.dart';
 import 'presentation/localization/app_localizations.dart';
 import 'presentation/state/app_state.dart';
 import 'presentation/theme/app_theme.dart';
@@ -175,6 +177,22 @@ Future<void> main() async {
     ],
   );
 
+  IsoPlaybackService? isoPlaybackService;
+  final isoService = IsoPlaybackService(
+    configStore: configStore,
+    cacheCoordinator: IsoCacheCoordinator(
+      policyService: cachePolicy,
+      intelligence: cacheIntelligence,
+    ),
+  );
+  try {
+    await isoService.initialize();
+    isoPlaybackService = isoService;
+  } on FileSystemException {
+    // ISO 远程播放模块初始化失败不影响既有浏览、视频和音频功能。
+    isoService.dispose();
+  }
+
   // 组装 WebDAV、播放器、缓存与界面状态。
   final appState = AppState(
     configStore: configStore,
@@ -190,6 +208,7 @@ Future<void> main() async {
     cacheExpirationConfigStore: cacheExpirationStore,
     cacheCleaner: cacheCleaner,
     learningDataCleaner: learningDataCleaner,
+    isoPlaybackService: isoPlaybackService,
   );
 
   // 地址与用户名完整时直接尝试自动连接，密码允许为空。
@@ -267,7 +286,7 @@ class StreamPathApp extends StatelessWidget {
             home: child,
           );
         },
-        child: autoConnect ? const AutoConnectGate() : const HomePage(),
+        child: autoConnect ? const AutoConnectGate() : const StorageRootPage(),
       ),
     );
   }

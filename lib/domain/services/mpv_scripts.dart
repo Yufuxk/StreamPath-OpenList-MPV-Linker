@@ -9,12 +9,43 @@ import '../../data/models/subtitle_item.dart';
 ///
 /// 生成并写入 mpv 播放所需的 Lua 脚本与 m3u 播放列表：
 ///  - 字幕：外挂字幕优先、播放列表逐集字幕注入；
+///  - 字体：为本次播放绑定会话专属字体目录；
 ///  - 标题：m3u 的 EXTINF/EXTVLCOPT 与老版本标题兜底脚本；
 ///  - 状态：当前播放状态上报与命令执行脚本。
 ///
 /// 所有文件写入 [base] 目录，返回文件路径供播放器启动参数引用。
 class MpvScripts {
   MpvScripts._();
+
+  // ── 外挂字体目录注入 ───────────────────────────────────────
+
+  /// 在每个播放项加载前绑定本次会话的字体目录。
+  ///
+  /// `file-local-options` 保证播放列表切集时继续使用同一目录；旧版 MPV
+  /// 不支持 `sub-fonts-dir` 时只跳过设置，不影响媒体和字幕加载。
+  static Future<String> ensureFontDirectory(
+    String fontDirectory,
+    Directory base, {
+    required String sessionId,
+  }) async {
+    final script =
+        '''
+-- StreamPath: bind the isolated external-font directory for this session.
+local FONT_DIR = ${_luaQuote(fontDirectory)}
+local OPTION = "sub-fonts-dir"
+local _, option_error = mp.get_property(OPTION)
+if option_error then return end
+
+mp.add_hook("on_load", 5, function()
+    mp.set_property("file-local-options/" .. OPTION, FONT_DIR)
+end)
+''';
+    return _write(
+      base,
+      _sessionFileName('streampath-font-directory', 'lua', sessionId),
+      script,
+    );
+  }
 
   // ── 单集外挂字幕注入 ───────────────────────────────────────
 
@@ -182,7 +213,8 @@ end)
 
   /// 写入当前播放状态上报脚本：
   ///  - `file-loaded` 与 `pause` 变化时，把 `playlist-pos`、当前文件
-  ///    URL、暂停状态、当前位置和总时长（十三行，含缓冲/速度）
+  ///    URL、暂停状态、当前位置和总时长（二十一行，含缓冲、前向水位
+  ///    与蓝光菜单/edition 状态）
   ///    写入 [outFile]；
   ///  - 播放中每秒以及 MPV 退出前刷新状态，供直接关窗时判断完成度；
   ///  - 在 [progressFile] 追加逐媒体 JSONL 结果，明确区分完成、0 秒和
@@ -197,20 +229,25 @@ end)
     String? sessionId,
     String? progressFile,
     String? launchEpoch,
+    String? reportedPath,
   }) async {
     final resolvedProgressFile = progressFile ?? '$outFile.progress.jsonl';
     final script =
         '''
 -- StreamPath: 当前播放状态上报 + 命令执行。
--- OUT 十三行：playlist-pos / path / paused(1|0) / time-pos / duration
+-- OUT 二十一行：playlist-pos / path / paused(1|0) / time-pos / duration
 --           / buffering(0-100) / net-speed(B/s)
 --           / cache-idle(1|0|-1) / 诊断行（speed_src|speed|idle_src|idle_raw）
 --           / paused-for-cache / bof-cached / eof-cached / resolution
+--           / seeking / playback-restart 序号 / demuxer-cache-duration
+--           / fw-bytes / total-bytes / disc-menu-active / current-edition
+--           / editions
 local utils = require "mp.utils"
 local OUT = ${_luaQuote(outFile)}
 local CMD = ${_luaQuote(cmdFile)}
 local PROGRESS = ${_luaQuote(resolvedProgressFile)}
 local EPOCH = ${_luaQuote(launchEpoch ?? '')}
+local REPORTED_PATH = ${_luaQuote(reportedPath ?? '')}
 
 local has_loaded = false
 local last_playlist_pos = -1
@@ -224,6 +261,7 @@ local temporary_checkpoint_active = false
 local temporary_clear_written = false
 local healthy_since = nil
 local was_stalling = false
+local restart_serial = 0
 
 local function append_progress(outcome, reason, file_error)
     -- 初次打开即失败时 path 在部分 mpv 版本中可能为空，但 playlist-pos
@@ -301,7 +339,7 @@ end
 
 local function write_status(use_cached_progress, skip_diagnostics)
     local pos = mp.get_property_number("playlist-pos", -1)
-    local path = mp.get_property("path", "")
+    local path = REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")
     local paused = mp.get_property_bool("pause", false)
     local time_pos = mp.get_property_number("time-pos", -1)
     local duration = mp.get_property_number("duration", -1)
@@ -344,6 +382,19 @@ local function write_status(use_cached_progress, skip_diagnostics)
     local bof_cached = -1
     local eof_cached = -1
     local resolution = ""
+    local seeking = -1
+    local cache_duration = -1
+    local forward_cache_bytes = -1
+    local total_cache_bytes = -1
+    local disc_menu_active = -1
+    local disc_menu_raw = mp.get_property("disc-menu-active", nil)
+    if disc_menu_raw == "yes" then
+        disc_menu_active = 1
+    elseif disc_menu_raw == "no" then
+        disc_menu_active = 0
+    end
+    local current_edition = mp.get_property_number("current-edition", -1)
+    local editions = mp.get_property_number("editions", -1)
     if not skip_diagnostics then
         buffering = mp.get_property_number("cache-buffering-state", -1)
         local paused_for_cache_raw = mp.get_property("paused-for-cache", nil)
@@ -391,12 +442,16 @@ local function write_status(use_cached_progress, skip_diagnostics)
             if cstate["eof-cached"] ~= nil then
                 eof_cached = cstate["eof-cached"] and 1 or 0
             end
+            forward_cache_bytes = cstate["fw-bytes"] or -1
+            total_cache_bytes = cstate["total-bytes"] or -1
         end
         local width = mp.get_property_number("width", -1)
         local height = mp.get_property_number("height", -1)
         if width > 0 and height > 0 then
             resolution = tostring(math.floor(width)) .. "x" .. tostring(math.floor(height))
         end
+        seeking = mp.get_property_bool("seeking", false) and 1 or 0
+        cache_duration = mp.get_property_number("demuxer-cache-duration", -1)
     end
     local f = io.open(OUT, "w")
     if f then
@@ -408,7 +463,14 @@ local function write_status(use_cached_progress, skip_diagnostics)
             "\\n" .. tostring(cache_idle) .. "\\n" .. speed_src .. "|" .. tostring(net_speed) ..
             "|" .. idle_src .. "|" .. tostring(idle_raw) ..
             "\\n" .. tostring(paused_for_cache) .. "\\n" .. tostring(bof_cached) ..
-            "\\n" .. tostring(eof_cached) .. "\\n" .. resolution)
+            "\\n" .. tostring(eof_cached) .. "\\n" .. resolution ..
+            "\\n" .. tostring(seeking) .. "\\n" .. tostring(restart_serial) ..
+            "\\n" .. tostring(cache_duration) ..
+            "\\n" .. tostring(forward_cache_bytes) ..
+            "\\n" .. tostring(total_cache_bytes) ..
+            "\\n" .. tostring(disc_menu_active) ..
+            "\\n" .. tostring(current_edition) ..
+            "\\n" .. tostring(editions))
         f:close()
     end
 end
@@ -427,8 +489,9 @@ mp.register_event("start-file", function()
     temporary_clear_written = false
     healthy_since = nil
     was_stalling = false
+    restart_serial = 0
     local pos = mp.get_property_number("playlist-pos", -1)
-    local path = mp.get_property("path", "")
+    local path = REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")
     if pos >= 0 then last_playlist_pos = pos end
     if path ~= "" then last_path = path end
 end)
@@ -448,9 +511,15 @@ mp.observe_property("paused-for-cache", "bool", function()
         update_temporary_checkpoint()
     end
 end)
+mp.observe_property("seeking", "bool", function()
+    if has_loaded then
+        write_status(false, false)
+    end
+end)
 -- 初次起播与 seek 完成后立即采样；尤其要及时保留用户主动跳回 0 秒。
 mp.register_event("playback-restart", function()
     if has_loaded and not mp.get_property_bool("idle-active", false) then
+        restart_serial = restart_serial + 1
         write_status(false, false)
     end
 end)
@@ -565,6 +634,7 @@ end)
     return [
       'streampath-single-subtitle-$id.lua',
       'streampath-playlist-subtitles-$id.lua',
+      'streampath-font-directory-$id.lua',
       'streampath-playlist-$id.m3u',
       'streampath-titles-$id.lua',
       'streampath-current-$id.lua',

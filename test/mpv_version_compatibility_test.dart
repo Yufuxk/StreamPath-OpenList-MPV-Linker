@@ -19,6 +19,7 @@ import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/audio_lyrics_localizer.dart';
 import 'package:streampath/domain/services/audio_mpv_scripts.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
+import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/mpv_session_controller.dart';
 import 'package:streampath/domain/services/mpv_scripts.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
@@ -140,8 +141,8 @@ void main() {
           final lines = (await File(status).readAsString()).split('\n');
           expect(
             lines.length,
-            greaterThanOrEqualTo(13),
-            reason: '${executable.path} 未写出十三行状态',
+            greaterThanOrEqualTo(18),
+            reason: '${executable.path} 未写出十八行状态',
           );
           final records = await File(progress).readAsLines();
           expect(records, isNotEmpty);
@@ -264,6 +265,155 @@ void main() {
           await origin.close(force: true);
           await destination.close(force: true);
         }
+      }
+    },
+    skip: testRoot == null || testRoot.trim().isEmpty
+        ? '设置 STREAMPATH_MPV_TEST_ROOT 后运行真实版本兼容测试'
+        : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'ISO 参数保持自然退出且所有 MPV 版本阻断加载失败后的播放列表连跳',
+    () async {
+      final executables = _fiveExecutables(testRoot!);
+      expect(executables, hasLength(5));
+      final workspace = Directory.systemTemp.createTempSync('sp_iso_mpv_exit_');
+      try {
+        final media = File(p.join(workspace.path, 'silence.wav'));
+        await media.writeAsBytes(_silentWave(seconds: 1), flush: true);
+        final playlist = File(p.join(workspace.path, 'iso-playlist.m3u8'));
+        await playlist.writeAsString(
+          '#EXTM3U\n${media.path}\n${media.path}\n',
+          flush: true,
+        );
+        final failurePlaylist = File(
+          p.join(workspace.path, 'iso-failure-playlist.m3u8'),
+        );
+        await failurePlaylist.writeAsString(
+          '#EXTM3U\n${p.join(workspace.path, 'missing-1.m2ts')}\n'
+          '${p.join(workspace.path, 'missing-2.m2ts')}\n'
+          '${p.join(workspace.path, 'missing-3.m2ts')}\n',
+          flush: true,
+        );
+        final failureEvents = File(
+          p.join(workspace.path, 'iso-failure-events.jsonl'),
+        );
+        final script = File(p.join(workspace.path, 'iso-progress.lua'));
+        await script.writeAsString('''
+local utils = require "mp.utils"
+local LOG = ${jsonEncode(failureEvents.path)}
+mp.register_event("end-file", function(event)
+    local reason = event and event["reason"] or "unknown"
+    if reason ~= "error" then return end
+    mp.commandv("stop")
+    local ok, line = pcall(utils.format_json, {reason = reason})
+    if not ok or line == nil then return end
+    local file = io.open(LOG, "a")
+    if not file then return end
+    file:write(line .. "\\n")
+    file:flush()
+    file:close()
+end)
+''', flush: true);
+        final configDirectory = Directory(p.join(workspace.path, 'mpv-home'))
+          ..createSync();
+        await File(
+          p.join(configDirectory.path, 'mpv.conf'),
+        ).writeAsString('idle=yes\nkeep-open=yes\n', flush: true);
+
+        for (final executable in executables) {
+          final args = IsoPlaybackService.buildMpvArgs(
+            config: PlayerConfig(
+              name: 'MPV',
+              executable: executable.path,
+              args: const [
+                '--terminal=no',
+                '--vo=null',
+                '--ao=null',
+                '--idle=yes',
+                '--keep-open=yes',
+              ],
+            ),
+            title: 'ISO exit compatibility',
+            playlistPath: playlist.path,
+            playlistStart: 0,
+            progressScriptPath: script.path,
+          );
+          final process = await Process.start(
+            executable.path,
+            args,
+            environment: {'MPV_HOME': configDirectory.path},
+          );
+          process.stdout.drain<void>();
+          final stderrFuture = process.stderr.transform(utf8.decoder).join();
+          final exitCodeFuture = _trackOwnedMpv(process);
+          int exitCode;
+          try {
+            exitCode = await exitCodeFuture.timeout(
+              const Duration(seconds: 20),
+              onTimeout: () {
+                process.kill();
+                return -1;
+              },
+            );
+          } finally {
+            await _cleanupOwnedProcess(process, exitCodeFuture);
+          }
+          expect(
+            exitCode,
+            0,
+            reason: '${executable.path}：${await stderrFuture}',
+          );
+
+          if (await failureEvents.exists()) await failureEvents.delete();
+          final failureArgs = IsoPlaybackService.buildMpvArgs(
+            config: PlayerConfig(
+              name: 'MPV',
+              executable: executable.path,
+              args: const ['--terminal=no', '--vo=null', '--ao=null'],
+            ),
+            title: 'ISO failure cascade compatibility',
+            playlistPath: failurePlaylist.path,
+            playlistStart: 0,
+            progressScriptPath: script.path,
+          );
+          final failureProcess = await Process.start(
+            executable.path,
+            failureArgs,
+            environment: {'MPV_HOME': configDirectory.path},
+          );
+          failureProcess.stdout.drain<void>();
+          final failureStderr = failureProcess.stderr
+              .transform(utf8.decoder)
+              .join();
+          final failureExitFuture = _trackOwnedMpv(failureProcess);
+          int failureExitCode;
+          try {
+            failureExitCode = await failureExitFuture.timeout(
+              const Duration(seconds: 20),
+              onTimeout: () {
+                failureProcess.kill();
+                return -1;
+              },
+            );
+          } finally {
+            await _cleanupOwnedProcess(failureProcess, failureExitFuture);
+          }
+          final records = await failureEvents.readAsLines();
+          expect(
+            failureExitCode,
+            greaterThanOrEqualTo(0),
+            reason: '${executable.path}：${await failureStderr}',
+          );
+          expect(
+            records,
+            hasLength(1),
+            reason: '${executable.path} 仍在一次加载失败后继续跳过播放列表',
+          );
+        }
+      } finally {
+        await workspace.delete(recursive: true);
       }
     },
     skip: testRoot == null || testRoot.trim().isEmpty
@@ -935,7 +1085,7 @@ Future<void> _verifyFileError({
     '--terminal=no',
     '--vo=null',
     '--ao=null',
-    '--idle=no',
+    '--idle=yes',
     '--keep-open=no',
     '--input-ipc-server=$pipe',
     '--script=$script',
@@ -944,25 +1094,53 @@ Future<void> _verifyFileError({
   process.stdout.drain<void>();
   final stderrFuture = process.stderr.transform(utf8.decoder).join();
   final exitFuture = _trackOwnedMpv(process);
+  final controller = MpvSessionController(pipeName: pipe);
+  final progressFile = File(progress);
+  late final Map<String, dynamic> failure;
   try {
-    await _awaitOwnedExit(process, exitFuture, '${build.id} file_error');
+    expect(
+      await controller.connect(timeout: const Duration(seconds: 10)),
+      isTrue,
+      reason: '${build.id} file_error named pipe 未建立',
+    );
+    await _waitUntil(() {
+      if (!progressFile.existsSync()) return false;
+      try {
+        return progressFile.readAsStringSync().endsWith('\n');
+      } on FileSystemException {
+        return false;
+      }
+    });
+    final records = (await progressFile.readAsLines())
+        .map((line) => jsonDecode(line) as Map<String, dynamic>)
+        .where((record) => record['reason'] == 'error')
+        .toList();
+    expect(
+      records,
+      isNotEmpty,
+      reason: '${build.id} 未记录 end-file reason=error',
+    );
+    failure = records.last;
+    expect(failure['epoch'], epoch);
+    expect(failure['file_error'], isA<String>());
+    expect((failure['file_error'] as String).trim(), isNotEmpty);
+
+    // 错误上报与加载失败后的自然退出是两个独立兼容性契约。
+    await controller.command(['quit']);
+    final exitCode = await _awaitOwnedExit(
+      process,
+      exitFuture,
+      '${build.id} file_error',
+    );
+    expect(
+      exitCode,
+      0,
+      reason: '${build.id} file_error 显式退出失败：${await stderrFuture}',
+    );
   } finally {
+    await controller.dispose();
     await _cleanupOwnedProcess(process, exitFuture);
   }
-  await _waitUntil(() => File(progress).existsSync());
-  final records = (await File(progress).readAsLines())
-      .map((line) => jsonDecode(line) as Map<String, dynamic>)
-      .where((record) => record['reason'] == 'error')
-      .toList();
-  expect(
-    records,
-    isNotEmpty,
-    reason: '${build.id} 未记录 end-file reason=error：${await stderrFuture}',
-  );
-  final failure = records.last;
-  expect(failure['epoch'], epoch);
-  expect(failure['file_error'], isA<String>());
-  expect((failure['file_error'] as String).trim(), isNotEmpty);
   // ignore: avoid_print
   print(
     'MPV_MATRIX file_error id=${build.id} reason=${failure['reason']} '

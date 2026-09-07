@@ -1,4 +1,5 @@
 import '../../data/local/directory_cache.dart';
+import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../core/utils/extension_filter.dart';
@@ -7,6 +8,22 @@ import '../../core/utils/file_sort.dart';
 /// 从完整目录派生当前页面的显示列表，不改变播放、字幕或歌词使用的数据源。
 List<WebDavFile> filterCurrentDirectoryFiles({
   required List<WebDavFile> files,
+  required List<String> hiddenExtensions,
+  required bool hiddenExtensionsEnabled,
+  required String query,
+  required FileSortMode sortMode,
+  required FileSortDirection sortDirection,
+}) => filterCurrentDirectoryEntries(
+  files: files,
+  hiddenExtensions: hiddenExtensions,
+  hiddenExtensionsEnabled: hiddenExtensionsEnabled,
+  query: query,
+  sortMode: sortMode,
+  sortDirection: sortDirection,
+);
+
+List<T> filterCurrentDirectoryEntries<T extends MediaDirectoryEntry>({
+  required List<T> files,
   required List<String> hiddenExtensions,
   required bool hiddenExtensionsEnabled,
   required String query,
@@ -23,10 +40,10 @@ List<WebDavFile> filterCurrentDirectoryFiles({
     return normalizedQuery.isEmpty ||
         file.name.toLowerCase().contains(normalizedQuery);
   }).toList();
-  if (sortMode == FileSortMode.size && !canSortWebDavFilesBySize(visible)) {
+  if (sortMode == FileSortMode.size && !canSortMediaEntriesBySize(visible)) {
     return visible;
   }
-  return sortedWebDavFiles(visible, mode: sortMode, direction: sortDirection);
+  return sortedMediaEntries(visible, mode: sortMode, direction: sortDirection);
 }
 
 /// 访问型全局搜索结果。

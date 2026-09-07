@@ -29,6 +29,9 @@ void main() {
     final databaseFile = File(p.join(cacheDir.path, 'streampath.db'));
     final runtimeFile = File(p.join(cacheDir.path, 'mpv-current-test.txt'));
     final runtimeDir = Directory(p.join(cacheDir.path, 'mpv-watch-later'));
+    final isoCatalog = File(p.join(cacheDir.path, 'iso_catalog.json'));
+    final isoWatchLater = Directory(p.join(cacheDir.path, 'iso_watch_later'));
+    final isoStructure = Directory(p.join(cacheDir.path, 'iso_structure'));
     final learningFile = File(
       p.join(cacheDir.path, 'cache_intelligence_learning.json'),
     );
@@ -40,6 +43,13 @@ void main() {
     await runtimeFile.writeAsString('runtime');
     await runtimeDir.create();
     await File(p.join(runtimeDir.path, 'record')).writeAsString('watch');
+    await isoCatalog.writeAsString('catalog');
+    await isoWatchLater.create();
+    await File(p.join(isoWatchLater.path, 'record')).writeAsString('resume');
+    await isoStructure.create();
+    await File(
+      p.join(isoStructure.path, '${List<String>.filled(64, 'a').join()}.cache'),
+    ).writeAsString('structure');
     await learningFile.writeAsString('learning');
     await legacyFile.writeAsString('legacy');
     await unrelatedRootFile.writeAsString('keep');
@@ -71,6 +81,9 @@ void main() {
     expect(await databaseFile.length(), 0);
     expect(await runtimeFile.exists(), isFalse);
     expect(await runtimeDir.exists(), isFalse);
+    expect(await isoCatalog.exists(), isFalse);
+    expect(await isoWatchLater.exists(), isFalse);
+    expect(await isoStructure.exists(), isFalse);
     expect(await learningFile.readAsString(), 'learning');
     expect(await legacyFile.exists(), isFalse);
     expect(await unrelatedRootFile.readAsString(), 'keep');

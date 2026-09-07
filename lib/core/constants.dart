@@ -78,6 +78,9 @@ abstract final class AppConstants {
     '.smi',
   ];
 
+  /// 可注入 MPV/libass 的字体文件扩展名（小写）。
+  static const List<String> fontExtensions = ['.ttf', '.otf', '.ttc', '.otc'];
+
   /// 常见视频扩展名（小写）——用于识别"可播放"文件。
   static const List<String> videoExtensions = [
     '.mp4',
@@ -158,6 +161,11 @@ abstract final class AppConstants {
   /// strm 流指针文件扩展名（小写）——内容为一行媒体 URL，
   /// 播放时解析出真实地址交给播放器。
   static const List<String> strmExtensions = ['.strm'];
+
+  /// Blu-ray ISO 光盘镜像扩展名。
+  ///
+  /// ISO 使用独立的远程 Bridge 播放链路，不属于普通视频或 STRM。
+  static const List<String> isoExtensions = ['.iso'];
 
   /// 中文字幕语言标签（小写，`movie.zh.srt` / `movie.chs.ass` 等）。
   static const Set<String> chineseLangTags = {

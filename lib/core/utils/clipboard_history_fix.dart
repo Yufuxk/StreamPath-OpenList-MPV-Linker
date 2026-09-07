@@ -117,7 +117,7 @@ class ClipboardHistoryFix {
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
           _lastResumedAt = DateTime.now();
-          _log('窗口激活（resumed）');
+          _log('Window resumed');
         }
       },
     );
@@ -133,7 +133,10 @@ class ClipboardHistoryFix {
       if (call.method == 'clipboardChanged') {
         final text = await ClipboardService.instance.readPlainText();
         if (text != null && text.isNotEmpty) {
-          _log('原生剪贴板通知（${text.length} 字符）→ 记入历史');
+          _log(
+            'Native clipboard notification (${text.length} characters) '
+            '-> added to history',
+          );
           ClipboardHistoryStore.instance.add(text);
           final now = DateTime.now();
           final lastResumed = _lastResumedAt;
@@ -144,14 +147,17 @@ class ClipboardHistoryFix {
               lastSequence != null &&
               now.difference(lastSequence) < autoPasteWindow;
           if (isHistoryPick) {
-            _log('剪贴板历史点击证据齐全（激活 + 注入序列）→ 兜底注入');
+            _log(
+              'Clipboard history selection confirmed '
+              '(window resume + injected sequence) -> scheduling fallback paste',
+            );
             unawaited(_scheduleFallbackPaste(text));
           }
         }
       }
       return null;
     });
-    _log('剪贴板通道已注册');
+    _log('Clipboard channel registered');
 
     // 按键修复：框架在 runApp 之后才注册 onKeyData，因此后台轮询
     // 等待注册完成后包装，不阻塞 main()。
@@ -205,12 +211,18 @@ class ClipboardHistoryFix {
           }
           return handled;
         };
-        _log('按键修复回调已安装（onKeyData 已注册，等待 ${i * 100}ms）');
+        _log(
+          'Key fix callback installed '
+          '(onKeyData registered after ${i * 100}ms)',
+        );
         return;
       }
       await Future.delayed(const Duration(milliseconds: 100));
     }
-    _log('等待 onKeyData 注册超时（10s），按键修复未安装');
+    _log(
+      'Timed out waiting for onKeyData registration (10s); '
+      'key fix not installed',
+    );
   }
 
   /// 把 [text] 注入当前聚焦的文本输入框（等价于在光标处粘贴）。
@@ -220,7 +232,7 @@ class ClipboardHistoryFix {
   static void injectPaste(String text) {
     final editable = _focusedEditableState();
     if (editable == null) {
-      _log('注入失败：无聚焦的文本输入框');
+      _log('Paste injection failed: no focused text field');
       return;
     }
     final value = editable.textEditingValue;
@@ -248,21 +260,21 @@ class ClipboardHistoryFix {
   static Future<void> _scheduleFallbackPaste(String text) async {
     final editable = _focusedEditableState();
     if (editable == null) {
-      _log('兜底注入跳过：无聚焦的文本输入框');
+      _log('Fallback paste skipped: no focused text field');
       return;
     }
     final before = editable.textEditingValue.text;
     await Future.delayed(const Duration(milliseconds: 300));
     final current = _focusedEditableState();
     if (current == null || !identical(current, editable)) {
-      _log('兜底注入跳过：焦点已切换');
+      _log('Fallback paste skipped: focus changed');
       return;
     }
     if (current.textEditingValue.text != before) {
-      _log('系统粘贴已生效，跳过兜底注入');
+      _log('System paste succeeded; fallback paste skipped');
       return;
     }
-    _log('兜底注入文本（${text.length} 字符）');
+    _log('Injecting fallback paste (${text.length} characters)');
     injectPaste(text);
   }
 
@@ -272,14 +284,20 @@ class ClipboardHistoryFix {
     try {
       text = await ClipboardService.instance.readPlainText();
     } catch (e) {
-      _log('注入兜底：读取剪贴板失败（$e）');
+      _log(
+        'Fallback paste failed to read the clipboard '
+        '(error-type=${e.runtimeType})',
+      );
       return;
     }
     if (text == null || text.isEmpty) {
-      _log('注入兜底：剪贴板无文本，跳过');
+      _log('Fallback paste skipped: clipboard contains no text');
       return;
     }
-    _log('注入兜底：剪贴板读取成功（${text.length} 字符），延迟防重注入');
+    _log(
+      'Fallback paste read ${text.length} clipboard characters; '
+      'scheduling duplicate-safe injection',
+    );
     await _scheduleFallbackPaste(text);
   }
 
@@ -290,15 +308,15 @@ class ClipboardHistoryFix {
     final editable = _focusedEditableState();
     final before = editable?.textEditingValue.text;
     _log(
-      '粘贴诊断：焦点=${focus?.debugLabel ?? 'null'} '
-      'EditableText=${editable != null} 文本长度=${before?.length ?? -1}',
+      'Paste diagnostic: focus=${focus?.debugLabel ?? 'null'} '
+      'editable=${editable != null} text-length=${before?.length ?? -1}',
     );
     await Future.delayed(const Duration(milliseconds: 500));
     final editableNow = _focusedEditableState();
     final after = editableNow?.textEditingValue.text;
     _log(
-      '粘贴诊断：500ms 后 EditableText=${editableNow != null} '
-      '文本长度=${after?.length ?? -1} 变化=${before != after}',
+      'Paste diagnostic after 500ms: editable=${editableNow != null} '
+      'text-length=${after?.length ?? -1} changed=${before != after}',
     );
   }
 
@@ -349,7 +367,10 @@ class ClipboardHistoryFix {
           _discardTailTimer?.cancel();
           _discardTailTimer = null;
         }
-        _logEvent(data, '丢弃已确认 Win+V 序列的尾部 Ctrl 事件');
+        _logEvent(
+          data,
+          'dropping trailing Ctrl event from confirmed Win+V sequence',
+        );
         return out;
       }
       // 非 Ctrl 标记事件说明这是新的注入序列，不误吞。
@@ -369,7 +390,10 @@ class ClipboardHistoryFix {
       _injectedBufferTimer = Timer(
         const Duration(milliseconds: injectedFlushDelayMs),
         () {
-          _log('注入缓冲超时未确认，原样冲刷（${_injectedBuffer.length} 事件）');
+          _log(
+            'Injected sequence timed out unconfirmed; forwarding '
+            '${_injectedBuffer.length} original events',
+          );
           _deferred.addAll(_injectedBuffer);
           _injectedBuffer.clear();
         },
@@ -399,7 +423,10 @@ class ClipboardHistoryFix {
           _discardInjectedTail = false;
           _discardTailSawCtrlDown = false;
         });
-        _log('识别完整剪贴板历史注入序列（$count 事件）→ 整组替换为一次 Ctrl+V');
+        _log(
+          'Complete clipboard history sequence detected ($count events); '
+          'replacing it with one Ctrl+V',
+        );
         out.addAll(_ctrlVSequence(data));
         // 不依赖框架快捷键链路（焦点/TextInput 连接在剪贴板历史窗口
         // 切换后可能未恢复，合成 Ctrl+V 未触发粘贴）：
@@ -408,7 +435,10 @@ class ClipboardHistoryFix {
         unawaited(_logPasteResultDiagnostics());
         return out;
       }
-      _logEvent(data, '注入序列缓冲（${_injectedBuffer.length} 事件）');
+      _logEvent(
+        data,
+        'buffering injected sequence (${_injectedBuffer.length} events)',
+      );
       return out;
     }
 
@@ -417,7 +447,10 @@ class ClipboardHistoryFix {
       _injectedBufferTimer?.cancel();
       _injectedBufferTimer = null;
       out.addAll(_injectedBuffer);
-      _log('注入缓冲被普通事件打断，原样冲刷（${_injectedBuffer.length} 事件）');
+      _log(
+        'Injected buffer interrupted by an ordinary event; forwarding '
+        '${_injectedBuffer.length} original events',
+      );
       _injectedBuffer.clear();
     }
 
@@ -429,7 +462,7 @@ class ClipboardHistoryFix {
         _pendingUp = null;
       }
       _pendingDown = data;
-      _logEvent(data, '缓存 Ctrl down');
+      _logEvent(data, 'buffering Ctrl down');
       return out;
     }
 
@@ -445,7 +478,8 @@ class ClipboardHistoryFix {
           _lastInjectedSequenceAt = DateTime.now();
           _logEvent(
             data,
-            '注入确认（syn up, gap=${gap.inMilliseconds}ms）→ 合成 Ctrl+V',
+            'injection confirmed (synthesized up, '
+            'gap=${gap.inMilliseconds}ms) -> emitting Ctrl+V',
           );
           return out;
         }
@@ -454,14 +488,17 @@ class ClipboardHistoryFix {
           _deferred.addAll([_pendingDown!, _pendingUp!]);
           _pendingDown = null;
           _pendingUp = null;
-          _log('Ctrl 单击确认（超时），原样冲刷');
+          _log('Ctrl click confirmed by timeout; forwarding original events');
         });
-        _logEvent(data, '缓存 Ctrl up（等待注入特征/超时）');
+        _logEvent(
+          data,
+          'buffering Ctrl up (waiting for injection evidence or timeout)',
+        );
         return out;
       }
       // 孤立 Ctrl 抬起（注入序列开头等）：原样转发（无害）。
       out.add(data);
-      _logEvent(data, '孤立 Ctrl up，转发');
+      _logEvent(data, 'forwarding isolated Ctrl up');
       return out;
     }
 
@@ -474,10 +511,13 @@ class ClipboardHistoryFix {
         _pendingUp = null;
         out.addAll(_ctrlVSequence(data));
         _lastInjectedSequenceAt = DateTime.now();
-        _logEvent(data, '注入确认（空键事件）→ 合成 Ctrl+V');
+        _logEvent(
+          data,
+          'injection confirmed (empty key event) -> emitting Ctrl+V',
+        );
         return out;
       }
-      _logEvent(data, '丢弃空键事件（无待确认 Ctrl 序列）');
+      _logEvent(data, 'dropping empty key event (no pending Ctrl sequence)');
       return out;
     }
 
@@ -491,7 +531,7 @@ class ClipboardHistoryFix {
       out.add(_pendingDown!);
       _pendingDown = null;
     }
-    _logEvent(data, '转发');
+    _logEvent(data, 'forwarding');
     out.add(data);
     return out;
   }

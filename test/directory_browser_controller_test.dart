@@ -4,9 +4,11 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/models/media_directory_entry.dart';
+import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
-import 'package:streampath/domain/repositories/directory_repository.dart';
+import 'package:streampath/domain/repositories/media_directory_source.dart';
 import 'package:streampath/domain/services/openlist_index_service.dart';
 import 'package:streampath/presentation/controllers/directory_browser_controller.dart';
 
@@ -189,13 +191,20 @@ void main() {
   });
 }
 
-class _FakeDirectoryRepository implements DirectoryRepository {
+class _FakeDirectoryRepository implements MediaDirectorySource {
   _FakeDirectoryRepository(this.directories);
 
   final Map<String, List<WebDavFile>> directories;
 
   @override
-  String get baseUrl => 'https://example.test/dav';
+  MediaSourceDescriptor get descriptor => const MediaSourceDescriptor(
+    sourceId: 'webdav:test',
+    kind: MediaSourceKind.webdav,
+    displayName: 'test',
+  );
+
+  @override
+  bool get supportsRemoteSearch => true;
 
   @override
   List<WebDavFile>? cachedDirectory(String path) => directories[path];
@@ -207,14 +216,22 @@ class _FakeDirectoryRepository implements DirectoryRepository {
   }) async => directories[path] ?? const [];
 
   @override
-  String resolveUrl(String href) => href;
+  Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async =>
+      WebDavMediaOpenTarget(entry.entryKey);
 }
 
-class _DeferredDirectoryRepository implements DirectoryRepository {
+class _DeferredDirectoryRepository implements MediaDirectorySource {
   final Map<String, Completer<List<WebDavFile>>> _pending = {};
 
   @override
-  String get baseUrl => 'https://example.test/dav';
+  MediaSourceDescriptor get descriptor => const MediaSourceDescriptor(
+    sourceId: 'webdav:test',
+    kind: MediaSourceKind.webdav,
+    displayName: 'test',
+  );
+
+  @override
+  bool get supportsRemoteSearch => true;
 
   @override
   List<WebDavFile>? cachedDirectory(String path) => null;
@@ -230,5 +247,6 @@ class _DeferredDirectoryRepository implements DirectoryRepository {
   }
 
   @override
-  String resolveUrl(String href) => href;
+  Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async =>
+      WebDavMediaOpenTarget(entry.entryKey);
 }

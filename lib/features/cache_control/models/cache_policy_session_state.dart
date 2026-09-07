@@ -12,6 +12,7 @@ class CachePolicySessionState {
     required this.injected,
     this.result,
     this.tsOnly = false,
+    this.tsRuntime = false,
   });
 
   /// 会话标识（与播放器会话一一对应）。
@@ -29,6 +30,9 @@ class CachePolicySessionState {
   /// 仅注入 TS 防护参数（--demuxer-seekable-cache=no）的直链分支：
   /// 有注入，但不启动普通缓存监控。
   final bool tsOnly;
+
+  /// TS 已进入小窗口缓存阶段；用于时长回填后继续保持 TS 上限。
+  final bool tsRuntime;
 
   /// 是否应启动播放中动态监控（正常注入且非 TS 直链）。
   bool get shouldMonitor => injected && !tsOnly && result != null;

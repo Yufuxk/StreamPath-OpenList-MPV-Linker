@@ -256,6 +256,9 @@ void main() {
         '--cache=yes',
         '--cache-secs=120',
         '--demuxer-max-bytes=${1024 * 1024 * 1024}',
+        '--cache-pause=yes',
+        '--cache-pause-initial=yes',
+        '--cache-pause-wait=${CachePolicyEngine.initialBufferWaitSecs}',
       ]);
       expect(result.healthScore, greaterThan(0));
       expect(result.layers.length, greaterThanOrEqualTo(4));

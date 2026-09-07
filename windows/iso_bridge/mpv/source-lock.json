@@ -1,0 +1,26 @@
+{
+  "revision": "f5bcfb195412e0ca733eac2e850879cd3b1ded18",
+  "archiveSha256": "d28151a56e06cf9bdfa0f018e0e790dde2424a4406a092fea7028a22b6cfd8d2",
+  "files": [
+    {
+      "path": "options/options.h",
+      "originalSha256": "ab4b148ed972d248140bf6c2b660c44a8896f0a619beb1260a74fcb486f0a758",
+      "patchedSha256": "22c6dc711b1baa3cb2f09d6dcef2b00baf9e2ea83f0d3d68ad4f1342b180ee24"
+    },
+    {
+      "path": "stream/stream_bluray.c",
+      "originalSha256": "2a1d27c6c62fd393b956f5fea4cab777b4feffbdec3a0453798ce3f40ea22392",
+      "patchedSha256": "39bba996f0ffc084fd7e0eba36f1ddaeac20f2e4afc510de5eeb82319f9bce66"
+    },
+    {
+      "path": "meson.build",
+      "originalSha256": "7b7e1059fbea9e6a46de8e5d8f7486af41850b4c1fcb77e9cd6b84525bccbbb3",
+      "patchedSha256": "860e64fb14e7a0f40f3168ad14a00197d0282d899b87b035521998a2f3419781"
+    },
+    {
+      "path": "player/video.c",
+      "originalSha256": "3ccce2b694041ac12aab56fee803b06fba695ffb3f848f915e1acc7d2f5e632b",
+      "patchedSha256": "58bea800a8eb3532e7a53870acafe69842b1e688b10f4dc8ff78752b2810233b"
+    }
+  ]
+}

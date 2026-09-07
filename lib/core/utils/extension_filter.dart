@@ -1,7 +1,7 @@
 /// 文件后缀解析/格式化工具（文件浏览页「隐藏后缀」过滤器）。
 library;
 
-import '../../data/models/web_dav_file.dart';
+import '../../data/models/media_directory_entry.dart';
 
 /// 规范化单个后缀：小写、确保以 `.` 开头。
 ///
@@ -55,7 +55,7 @@ List<String> parseHiddenExtensions(String raw) {
 /// （如 `1.EpisodeData`、`Star.Wars.2005`），不能按扩展名规则隐藏；
 /// 仅普通文件按 [WebDavFile.extension] 匹配。
 bool shouldHideFile(
-  WebDavFile file,
+  MediaDirectoryEntry file,
   Set<String> hiddenExtensions, {
   bool enabled = true,
 }) {

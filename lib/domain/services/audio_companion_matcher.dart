@@ -1,32 +1,35 @@
 import 'package:path/path.dart' as p;
 
 import '../../data/models/audio_media_entry.dart';
-import '../../data/models/web_dav_file.dart';
+import '../../data/models/media_directory_entry.dart';
 
 /// 按同目录规则匹配音频的 LRC 歌词和外挂封面。
 class AudioCompanionMatcher {
   const AudioCompanionMatcher();
 
   AudioCompanionFile? findLyricsFor(
-    WebDavFile audio,
-    List<WebDavFile> siblings,
+    MediaDirectoryEntry audio,
+    List<MediaDirectoryEntry> siblings,
   ) {
     final stem = _stem(audio.name);
     for (final file in siblings) {
-      if (!file.isLyrics || !_isSameDirectory(audio.href, file.href)) continue;
+      if (!file.isLyrics || !_isSameDirectory(audio.entryKey, file.entryKey)) {
+        continue;
+      }
       if (_stem(file.name) == stem) return _item(file);
     }
     return null;
   }
 
   AudioCompanionFile? findCoverFor(
-    WebDavFile audio,
-    List<WebDavFile> siblings,
+    MediaDirectoryEntry audio,
+    List<MediaDirectoryEntry> siblings,
   ) {
     final stem = _stem(audio.name);
     AudioCompanionFile? standardCover;
     for (final file in siblings) {
-      if (!file.isCoverArt || !_isSameDirectory(audio.href, file.href)) {
+      if (!file.isCoverArt ||
+          !_isSameDirectory(audio.entryKey, file.entryKey)) {
         continue;
       }
       final candidateStem = _stem(file.name);
@@ -49,8 +52,8 @@ class AudioCompanionMatcher {
     'thumb',
   };
 
-  static AudioCompanionFile _item(WebDavFile file) =>
-      AudioCompanionFile(name: file.name, url: file.href);
+  static AudioCompanionFile _item(MediaDirectoryEntry file) =>
+      AudioCompanionFile(name: file.name, url: file.entryKey);
 
   static String _stem(String value) =>
       p.basenameWithoutExtension(value).trim().toLowerCase();

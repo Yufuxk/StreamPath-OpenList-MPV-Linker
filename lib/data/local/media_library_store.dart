@@ -21,7 +21,7 @@ class MediaLibraryStore {
   MediaLibraryStore._(this._file, this._now);
 
   static const String fileName = 'media_library.json';
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 2;
   static const int maxRecentDirectories =
       MediaLibraryConfig.defaultMaxRecentDirectoriesPerSource;
   static const int maxPlaybackHistoryPerLane =
@@ -39,6 +39,7 @@ class MediaLibraryStore {
   List<MediaLibraryRecord> _recentDirectories = const [];
   List<MediaLibraryRecord> _videoHistory = const [];
   List<MediaLibraryRecord> _audioHistory = const [];
+  List<MediaLibraryRecord> _isoHistory = const [];
   MediaLibraryConfig _config = const MediaLibraryConfig();
   final Set<void Function()> _listeners = {};
 
@@ -83,22 +84,29 @@ class MediaLibraryStore {
       _audioHistory,
       normalized.maxRecentPlaybackPerLane,
     );
+    final isoHistory = _boundAllSources(
+      _isoHistory,
+      normalized.maxRecentPlaybackPerLane,
+    );
     final changed =
         favorites.length != _favorites.length ||
         recentDirectories.length != _recentDirectories.length ||
         videoHistory.length != _videoHistory.length ||
-        audioHistory.length != _audioHistory.length;
+        audioHistory.length != _audioHistory.length ||
+        isoHistory.length != _isoHistory.length;
     if (!changed) return;
     await _write(
       favorites: favorites,
       recentDirectories: recentDirectories,
       videoHistory: videoHistory,
       audioHistory: audioHistory,
+      isoHistory: isoHistory,
     );
     _favorites = favorites;
     _recentDirectories = recentDirectories;
     _videoHistory = videoHistory;
     _audioHistory = audioHistory;
+    _isoHistory = isoHistory;
     _notifyChanged();
   });
 
@@ -128,11 +136,14 @@ class MediaLibraryStore {
       final decoded = Map<String, dynamic>.from(rawDecoded);
       final version = decoded['version'];
       final unsupportedVersion = version is int && version > schemaVersion;
-      _loadHadCorruption = version != schemaVersion;
+      _loadHadCorruption = version != 1 && version != schemaVersion;
       _favorites = _readRecords(decoded['favorites']);
       _recentDirectories = _readRecords(decoded['recentDirectories']);
       _videoHistory = _readRecords(decoded['videoHistory']);
       _audioHistory = _readRecords(decoded['audioHistory']);
+      _isoHistory = version == schemaVersion
+          ? _readRecords(decoded['isoHistory'])
+          : const [];
       if (unsupportedVersion) {
         _unsupportedVersion = version;
         _loadState = _MediaLibraryLoadState.unsupportedVersion;
@@ -156,6 +167,7 @@ class MediaLibraryStore {
     _recentDirectories = const [];
     _videoHistory = const [];
     _audioHistory = const [];
+    _isoHistory = const [];
   }
 
   Future<List<MediaLibraryRecord>> favorites(String sourceId) =>
@@ -173,9 +185,14 @@ class MediaLibraryStore {
   Future<List<MediaLibraryRecord>> playbackHistory(
     String sourceId, {
     required bool audio,
+    bool iso = false,
   }) => _enqueue(() async {
+    assert(!audio || !iso);
     await _load();
-    return _forSource(audio ? _audioHistory : _videoHistory, sourceId);
+    return _forSource(
+      iso ? _isoHistory : (audio ? _audioHistory : _videoHistory),
+      sourceId,
+    );
   });
 
   Future<bool> toggleFavorite(MediaLibraryItem item) => _enqueue(() async {
@@ -217,20 +234,30 @@ class MediaLibraryStore {
   Future<void> recordPlayback(
     MediaLibraryItem item, {
     String? playbackSessionId,
+    LocalDiscSessionSnapshot? localDiscSession,
   }) => _enqueue(() async {
     if (!item.kind.isMedia) return;
     await _load();
     final audio = item.kind == MediaLibraryKind.audio;
-    final source = audio ? _audioHistory : _videoHistory;
+    final iso = item.kind == MediaLibraryKind.iso;
+    final source = iso ? _isoHistory : (audio ? _audioHistory : _videoHistory);
     final records = playbackSessionId == null || playbackSessionId.isEmpty
         ? _upsert(source, item)
-        : _upsertPlaybackSession(source, item, playbackSessionId);
+        : _upsertPlaybackSession(
+            source,
+            item,
+            playbackSessionId,
+            localDiscSession: localDiscSession,
+          );
     final bounded = _boundPerSource(
       records,
       item.sourceId,
       _config.maxRecentPlaybackPerLane,
     );
-    if (audio) {
+    if (iso) {
+      await _write(isoHistory: bounded);
+      _isoHistory = bounded;
+    } else if (audio) {
       await _write(audioHistory: bounded);
       _audioHistory = bounded;
     } else {
@@ -243,11 +270,15 @@ class MediaLibraryStore {
   Future<void> removePlayback(MediaLibraryItem item) => _enqueue(() async {
     await _load();
     final audio = item.kind == MediaLibraryKind.audio;
-    final source = audio ? _audioHistory : _videoHistory;
+    final iso = item.kind == MediaLibraryKind.iso;
+    final source = iso ? _isoHistory : (audio ? _audioHistory : _videoHistory);
     final records = source
         .where((record) => !_sameItem(record.item, item))
         .toList();
-    if (audio) {
+    if (iso) {
+      await _write(isoHistory: records);
+      _isoHistory = records;
+    } else if (audio) {
       await _write(audioHistory: records);
       _audioHistory = records;
     } else {
@@ -262,11 +293,17 @@ class MediaLibraryStore {
       _enqueue(() async {
         await _load();
         final audio = target.item.kind == MediaLibraryKind.audio;
-        final source = audio ? _audioHistory : _videoHistory;
+        final iso = target.item.kind == MediaLibraryKind.iso;
+        final source = iso
+            ? _isoHistory
+            : (audio ? _audioHistory : _videoHistory);
         final records = source
             .where((record) => !_sameRecord(record, target))
             .toList();
-        if (audio) {
+        if (iso) {
+          await _write(isoHistory: records);
+          _isoHistory = records;
+        } else if (audio) {
           await _write(audioHistory: records);
           _audioHistory = records;
         } else {
@@ -276,24 +313,75 @@ class MediaLibraryStore {
         _notifyChanged();
       });
 
-  Future<void> clearPlaybackHistory(String sourceId, {required bool audio}) =>
+  /// 只隐藏本地蓝光底栏，保留媒体中心历史、快照及续播入口。
+  Future<void> dismissLocalDiscPlaybackBar(MediaLibraryRecord record) =>
       _enqueue(() async {
         await _load();
-        final source = audio ? _audioHistory : _videoHistory;
-        final records = source
-            .where((record) => record.item.sourceId != sourceId)
-            .toList();
-        if (audio) {
-          await _write(audioHistory: records);
-          _audioHistory = records;
-        } else {
-          await _write(videoHistory: records);
-          _videoHistory = records;
-        }
+        final records = [
+          for (final candidate in _isoHistory)
+            _sameRecord(candidate, record)
+                ? candidate.copyWith(playbackBarDismissed: true)
+                : candidate,
+        ];
+        await _write(isoHistory: records);
+        _isoHistory = records;
         _notifyChanged();
       });
 
-  /// 清空当前来源的视频与音频最近播放记录，不删除实际播放进度。
+  /// 保存本地蓝光会话当前可续播的 MPV edition。
+  Future<bool> updateLocalDiscTitleContext({
+    required String sourceId,
+    required String playbackSessionId,
+    required int currentEdition,
+    required int editionCount,
+  }) => _enqueue(() async {
+    await _load();
+    final index = _isoHistory.indexWhere(
+      (record) =>
+          record.item.sourceId == sourceId &&
+          record.playbackSessionId == playbackSessionId &&
+          record.localDiscSession != null,
+    );
+    if (index < 0) return false;
+    final records = [..._isoHistory];
+    final record = records[index];
+    records[index] = record.copyWith(
+      localDiscSession: record.localDiscSession!.copyWith(
+        currentEdition: currentEdition,
+        editionCount: editionCount,
+      ),
+    );
+    await _write(isoHistory: records);
+    _isoHistory = records;
+    _notifyChanged();
+    return true;
+  });
+
+  Future<void> clearPlaybackHistory(
+    String sourceId, {
+    required bool audio,
+    bool iso = false,
+  }) => _enqueue(() async {
+    assert(!audio || !iso);
+    await _load();
+    final source = iso ? _isoHistory : (audio ? _audioHistory : _videoHistory);
+    final records = source
+        .where((record) => record.item.sourceId != sourceId)
+        .toList();
+    if (iso) {
+      await _write(isoHistory: records);
+      _isoHistory = records;
+    } else if (audio) {
+      await _write(audioHistory: records);
+      _audioHistory = records;
+    } else {
+      await _write(videoHistory: records);
+      _videoHistory = records;
+    }
+    _notifyChanged();
+  });
+
+  /// 清空当前来源的视频、音频与 ISO 最近播放记录，不删除实际播放进度。
   Future<void> clearAllPlaybackHistory(String sourceId) => _enqueue(() async {
     await _load();
     final video = _videoHistory
@@ -302,9 +390,13 @@ class MediaLibraryStore {
     final audio = _audioHistory
         .where((record) => record.item.sourceId != sourceId)
         .toList();
-    await _write(videoHistory: video, audioHistory: audio);
+    final iso = _isoHistory
+        .where((record) => record.item.sourceId != sourceId)
+        .toList();
+    await _write(videoHistory: video, audioHistory: audio, isoHistory: iso);
     _videoHistory = video;
     _audioHistory = audio;
+    _isoHistory = iso;
     _notifyChanged();
   });
 
@@ -321,9 +413,11 @@ class MediaLibraryStore {
 
     final video = dismiss(_videoHistory);
     final audio = dismiss(_audioHistory);
-    await _write(videoHistory: video, audioHistory: audio);
+    final iso = dismiss(_isoHistory);
+    await _write(videoHistory: video, audioHistory: audio, isoHistory: iso);
     _videoHistory = video;
     _audioHistory = audio;
+    _isoHistory = iso;
     _notifyChanged();
   });
 
@@ -403,8 +497,9 @@ class MediaLibraryStore {
   List<MediaLibraryRecord> _upsertPlaybackSession(
     List<MediaLibraryRecord> source,
     MediaLibraryItem item,
-    String playbackSessionId,
-  ) {
+    String playbackSessionId, {
+    LocalDiscSessionSnapshot? localDiscSession,
+  }) {
     final records = [...source]
       ..removeWhere(
         (record) =>
@@ -417,6 +512,7 @@ class MediaLibraryStore {
         item: item,
         updatedAt: _now(),
         playbackSessionId: playbackSessionId,
+        localDiscSession: localDiscSession,
       ),
     );
     return records;
@@ -458,7 +554,7 @@ class MediaLibraryStore {
     final sessionId = right.playbackSessionId;
     if (sessionId != null) {
       return left.item.sourceId == right.item.sourceId &&
-          left.item.kind.isVideoLane == right.item.kind.isVideoLane &&
+          left.item.kind == right.item.kind &&
           left.playbackSessionId == sessionId;
     }
     return left.playbackSessionId == null && _sameItem(left.item, right.item);
@@ -479,6 +575,7 @@ class MediaLibraryStore {
     List<MediaLibraryRecord>? recentDirectories,
     List<MediaLibraryRecord>? videoHistory,
     List<MediaLibraryRecord>? audioHistory,
+    List<MediaLibraryRecord>? isoHistory,
   }) async {
     await _prepareForWrite();
     await _file.parent.create(recursive: true);
@@ -494,6 +591,9 @@ class MediaLibraryStore {
           .map((record) => record.toJson())
           .toList(),
       'audioHistory': (audioHistory ?? _audioHistory)
+          .map((record) => record.toJson())
+          .toList(),
+      'isoHistory': (isoHistory ?? _isoHistory)
           .map((record) => record.toJson())
           .toList(),
     });

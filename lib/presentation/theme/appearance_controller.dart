@@ -198,7 +198,10 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
       });
     } catch (error) {
       _capabilityError = 'Windows 外观能力检测失败：$error';
-      debugPrint(_capabilityError);
+      debugPrint(
+        'Windows appearance capability detection failed '
+        '(error-type=${error.runtimeType})',
+      );
     } finally {
       _checkingCapabilities = false;
       notifyListeners();
@@ -249,7 +252,10 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
           _lastResult = result;
           _capabilityError = null;
         } catch (error) {
-          debugPrint('应用窗口外观失败：$error');
+          debugPrint(
+            'Failed to apply window appearance '
+            '(error-type=${error.runtimeType})',
+          );
           if (disablingGlass) {
             _config = previous;
             _lastResult = previousResult;
@@ -296,7 +302,10 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
       _lastResult = result;
       notifyListeners();
     } catch (error) {
-      debugPrint('更新窗口明暗色调失败：$error');
+      debugPrint(
+        'Failed to update window brightness mode '
+        '(error-type=${error.runtimeType})',
+      );
     }
   });
 

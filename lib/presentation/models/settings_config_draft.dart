@@ -54,6 +54,9 @@ class SettingsConfigDraft {
   bool subtitleInjectionEnabled = true;
   bool subtitleAutoSelectEnabled = true;
   bool resumeEnabled = true;
+  bool menuProgressSharingEnabled = false;
+  MediaLibrarySharingMode mediaLibrarySharingMode =
+      MediaLibrarySharingMode.independent;
   bool hiddenExtensionsEnabled = true;
   FileSortMode defaultSortMode = FileSortMode.name;
   FileSortDirection defaultSortDirection = FileSortDirection.ascending;
@@ -86,6 +89,7 @@ class SettingsConfigDraft {
     required CacheExpirationConfig expirationConfig,
   }) {
     final player = fullConfig.toPlayerConfig();
+    mediaLibrarySharingMode = fullConfig.mediaLibrary.sharingMode;
     final connection = fullConfig.toConnectionConfig();
     nameController.text = player.name;
     executableController.text = player.executable;
@@ -118,6 +122,7 @@ class SettingsConfigDraft {
     subtitleInjectionEnabled = player.subtitleInjectionEnabled;
     subtitleAutoSelectEnabled = player.subtitleAutoSelectEnabled;
     resumeEnabled = player.resumeEnabled;
+    menuProgressSharingEnabled = player.menuProgressSharingEnabled;
     hiddenExtensionsEnabled = player.hiddenExtensionsEnabled;
     defaultSortMode = player.defaultSortMode;
     defaultSortDirection = player.defaultSortDirection;
@@ -189,6 +194,7 @@ class SettingsConfigDraft {
     subtitleAutoSelectEnabled:
         subtitleInjectionEnabled && subtitleAutoSelectEnabled,
     resumeEnabled: resumeEnabled,
+    menuProgressSharingEnabled: menuProgressSharingEnabled,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: parseHiddenExtensions(hiddenExtensionsController.text),
     defaultSortMode: defaultSortMode,
@@ -259,6 +265,7 @@ class SettingsConfigDraft {
   );
 
   MediaLibraryConfig buildMediaLibraryConfig() => MediaLibraryConfig(
+    sharingMode: mediaLibrarySharingMode,
     maxFavoritesPerSource: int.parse(
       mediaLibraryFavoritesController.text.trim(),
     ),

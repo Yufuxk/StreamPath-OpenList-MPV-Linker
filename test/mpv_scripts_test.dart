@@ -60,6 +60,19 @@ void main() {
     expect(script, contains('get_property_number("width", -1)'));
     expect(script, contains('get_property_number("height", -1)'));
     expect(script, contains('get_property_number("playlist-pos", -1)'));
+    expect(script, contains('get_property_bool("seeking", false)'));
+    expect(script, contains('restart_serial = restart_serial + 1'));
+    expect(
+      script,
+      contains('get_property_number("demuxer-cache-duration", -1)'),
+    );
+    expect(script, contains('cstate["fw-bytes"]'));
+    expect(script, contains('cstate["total-bytes"]'));
+    expect(script, contains('get_property("disc-menu-active", nil)'));
+    expect(script, contains('get_property_number("current-edition", -1)'));
+    expect(script, contains('get_property_number("editions", -1)'));
+    expect(script, contains('tostring(forward_cache_bytes)'));
+    expect(script, contains('tostring(total_cache_bytes)'));
     expect(script, contains('last_time_pos = -1'));
     expect(script, contains('last_duration = -1'));
   });
@@ -146,5 +159,25 @@ void main() {
     expect(script, contains('if not was_stalling and last_time_pos > 0 then'));
     expect(script, contains('now - healthy_since >= 5'));
     expect(script, contains('last_time_pos / last_duration >= 0.99'));
+  });
+
+  test('状态脚本可用稳定设备路径替代 bd 菜单入口作为进度键', () async {
+    final scriptPath = await MpvScripts.ensureCurrent(
+      '${dir.path}${Platform.pathSeparator}status.txt',
+      '${dir.path}${Platform.pathSeparator}command.txt',
+      dir,
+      sessionId: 'local-disc',
+      reportedPath: r'C:\Media\disc.iso',
+    );
+    final script = await File(scriptPath).readAsString();
+
+    expect(script, contains(r'C:\\Media\\disc.iso'));
+    expect(
+      script,
+      contains(
+        'REPORTED_PATH ~= "" and REPORTED_PATH or '
+        'mp.get_property("path", "")',
+      ),
+    );
   });
 }

@@ -29,6 +29,8 @@ import 'openlist_process_restart_service.dart';
 import 'openlist_recovery_service.dart';
 import 'player_process_controller.dart';
 import 'session_progress_sync_coordinator.dart';
+import 'webdav_font_localizer.dart';
+import 'webdav_font_matcher.dart';
 
 /// 测试或平台适配可注入的 mpv 缓存属性更新器。
 typedef MpvCacheIpcUpdater =
@@ -76,6 +78,7 @@ class _PlaybackLaunchContext {
     required this.profileId,
     required this.username,
     required this.password,
+    required this.isLocal,
   });
 
   factory _PlaybackLaunchContext.capture({
@@ -94,6 +97,7 @@ class _PlaybackLaunchContext {
         subtitleInjectionEnabled: player.subtitleInjectionEnabled,
         subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
         resumeEnabled: player.resumeEnabled,
+        menuProgressSharingEnabled: player.menuProgressSharingEnabled,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
         hiddenExtensions: List<String>.unmodifiable(player.hiddenExtensions),
         defaultSortMode: player.defaultSortMode,
@@ -111,8 +115,31 @@ class _PlaybackLaunchContext {
       profileId: profileId,
       username: username,
       password: password,
+      isLocal: false,
     );
   }
+
+  factory _PlaybackLaunchContext.local({
+    required PlayerConfig player,
+    required String sourceId,
+  }) => _PlaybackLaunchContext.capture(
+    player: player,
+    serverUrl: '',
+    recovery: const OpenListRecoveryConfig(),
+    profileId: sourceId,
+    username: null,
+    password: null,
+  )._asLocal();
+
+  _PlaybackLaunchContext _asLocal() => _PlaybackLaunchContext(
+    player: player,
+    serverUrl: serverUrl,
+    recovery: recovery,
+    profileId: profileId,
+    username: username,
+    password: password,
+    isLocal: true,
+  );
 
   final PlayerConfig player;
   final String serverUrl;
@@ -120,6 +147,7 @@ class _PlaybackLaunchContext {
   final String profileId;
   final String? username;
   final String? password;
+  final bool isLocal;
 }
 
 enum PlaybackRecoveryStage { preparing, relaunched, failed }
@@ -163,6 +191,8 @@ class _PlayerSessionRuntime {
     this.password,
     this.profileId = '',
     this.launchContext,
+    this.webDavFonts,
+    this.webDavFontLoader,
     this.artifactPaths = const [],
   });
 
@@ -192,6 +222,8 @@ class _PlayerSessionRuntime {
   final String? password;
   final String profileId;
   final _PlaybackLaunchContext? launchContext;
+  final WebDavFontDirectory? webDavFonts;
+  final WebDavFontBytesLoader? webDavFontLoader;
   final List<String> artifactPaths;
   int trackGeneration = 0;
   int failureJournalByteOffset = 0;
@@ -243,12 +275,14 @@ class ExternalPlayerService {
     PlaybackLinkRecoveryProvider? linkRecoveryProvider,
     PlaybackServerRestarter? serverRestarter,
     PlayerProcessController? processController,
+    WebDavFontLocalizer? fontLocalizer,
   }) : _configStore = configStore, // ignore: prefer_initializing_formals
        _cacheLogger = cacheLogger ?? _defaultCacheLogger,
        _linkRecoveryProvider =
            linkRecoveryProvider ?? OpenListRecoveryService(),
        _serverRestarter = serverRestarter ?? OpenListProcessRestartService(),
-       _processController = processController ?? PlayerProcessController();
+       _processController = processController ?? PlayerProcessController(),
+       _fontLocalizer = fontLocalizer ?? const WebDavFontLocalizer();
 
   final StreamPathConfigStore _configStore;
 
@@ -268,6 +302,7 @@ class ExternalPlayerService {
   final PlaybackLinkRecoveryProvider _linkRecoveryProvider;
   final PlaybackServerRestarter _serverRestarter;
   final PlayerProcessController _processController;
+  final WebDavFontLocalizer _fontLocalizer;
 
   /// 缓存系统集成层诊断日志；默认输出到 flutter run 控制台。
   final void Function(String message) _cacheLogger;
@@ -343,6 +378,46 @@ class ExternalPlayerService {
     String? username,
     String? password,
     bool automaticRecovery = false,
+    WebDavFontDirectory? webDavFonts,
+    WebDavFontBytesLoader? webDavFontLoader,
+  }) => _launch(
+    entries: entries,
+    sessionId: sessionId,
+    playlistStart: playlistStart,
+    resumeSeconds: resumeSeconds,
+    username: username,
+    password: password,
+    automaticRecovery: automaticRecovery,
+    webDavFonts: webDavFonts,
+    webDavFontLoader: webDavFontLoader,
+  );
+
+  /// 播放本地视频；不接入 WebDAV 认证、OpenList 恢复或网络缓存。
+  Future<PlayerLaunchResult> launchLocal({
+    required List<MediaEntry> entries,
+    required String sourceId,
+    String? sessionId,
+    int playlistStart = 0,
+    int? resumeSeconds,
+  }) => _launch(
+    entries: entries,
+    sessionId: sessionId,
+    playlistStart: playlistStart,
+    resumeSeconds: resumeSeconds,
+    localSourceId: sourceId,
+  );
+
+  Future<PlayerLaunchResult> _launch({
+    required List<MediaEntry> entries,
+    String? sessionId,
+    int playlistStart = 0,
+    int? resumeSeconds,
+    String? username,
+    String? password,
+    bool automaticRecovery = false,
+    String? localSourceId,
+    WebDavFontDirectory? webDavFonts,
+    WebDavFontBytesLoader? webDavFontLoader,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -377,14 +452,19 @@ class ExternalPlayerService {
       }
       final fullConfig = await _configStore.load();
       _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
-      final launchContext = _PlaybackLaunchContext.capture(
-        player: fullConfig.toPlayerConfig(),
-        serverUrl: fullConfig.serverUrl,
-        recovery: fullConfig.openListRecovery,
-        profileId: fullConfig.profileId,
-        username: username,
-        password: password,
-      );
+      final launchContext = localSourceId == null
+          ? _PlaybackLaunchContext.capture(
+              player: fullConfig.toPlayerConfig(),
+              serverUrl: fullConfig.serverUrl,
+              recovery: fullConfig.openListRecovery,
+              profileId: fullConfig.profileId,
+              username: username,
+              password: password,
+            )
+          : _PlaybackLaunchContext.local(
+              player: fullConfig.toPlayerConfig(),
+              sourceId: localSourceId,
+            );
       return await _launchWithContext(
         entries: entries,
         sessionId: resolvedSessionId,
@@ -393,6 +473,8 @@ class ExternalPlayerService {
         automaticRecovery: automaticRecovery,
         launchContext: launchContext,
         ownershipGeneration: ownershipGeneration,
+        webDavFonts: webDavFonts,
+        webDavFontLoader: webDavFontLoader,
       );
     } catch (_) {
       if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
@@ -415,6 +497,8 @@ class ExternalPlayerService {
     int? resumeSeconds,
     bool automaticRecovery = false,
     required int ownershipGeneration,
+    WebDavFontDirectory? webDavFonts,
+    WebDavFontBytesLoader? webDavFontLoader,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -455,7 +539,7 @@ class ExternalPlayerService {
 
     // ── 2. 认证注入 ───────────────────────────────────────────
     final isMpv = _isMpvExecutable(config.executable);
-    if (isMpv && launchContext.recovery.enabled) {
+    if (!launchContext.isLocal && isMpv && launchContext.recovery.enabled) {
       unawaited(_serverRestarter.capture(launchContext.recovery.baseUrl));
     }
     final username = launchContext.username;
@@ -518,6 +602,36 @@ class ExternalPlayerService {
     // MPV 使用 URL userinfo 完成源站 Basic 认证。四个实测版本均会在
     // 跨来源重定向时移除该凭据，而全局 http-header-fields 会继续转发。
     if (isMpv) {
+      // WebDAV 字体只从浏览页已经锁定的同级字体目录取直属文件，并
+      // 下载到本次 launch 独占目录。MPV/libass 只接收这个目录，既不
+      // 递归扫描，也不复用其他播放会话的字体。
+      if (subtitleInjectionEnabled &&
+          webDavFonts?.files.isNotEmpty == true &&
+          webDavFontLoader != null) {
+        try {
+          final localized = await _fontLocalizer.localize(
+            source: webDavFonts!,
+            base: scriptBase!,
+            sessionId: artifactSessionId,
+            loader: webDavFontLoader,
+          );
+          if (localized != null) {
+            artifactPaths.addAll(localized.files.map((file) => file.path));
+            artifactPaths.add(localized.directory.path);
+            await ensureOwned();
+            final fontScript = await MpvScripts.ensureFontDirectory(
+              localized.directory.path,
+              scriptBase,
+              sessionId: artifactSessionId,
+            );
+            await ensureOwned();
+            artifactPaths.add(fontScript);
+            args.add('--script=$fontScript');
+          }
+        } catch (_) {
+          // 字体目录是播放增强项，单次网络或本地写入失败不阻断播放。
+        }
+      }
       // 自动字幕由 StreamPath 严格按同目录候选注入；关闭 mpv 自身的
       // 模糊搜索，避免 mpv.conf/sub-file-paths 从字幕备份目录载入字幕。
       if (subtitleInjectionEnabled) {
@@ -672,13 +786,17 @@ class ExternalPlayerService {
       // 再兜底一次：任何异常只跳过注入，绝不阻断播放。
       // 同时登记「URL → 会话」映射并订阅码率就绪回调，供后台
       // 码率上报后通过 mpv IPC 动态更新本次播放缓存参数。
-      if (_cachePolicy != null) {
+      if (!launchContext.isLocal && _cachePolicy != null) {
         try {
           final cacheArgs = await _cachePolicy.buildCacheArgs(
             sessionId: resolvedSessionId,
             url: entries[playlistStart].url,
             authHeader: authHeader,
             userArgs: config.args,
+            runtimeTs:
+                isTsContainerUrl(entries[playlistStart].url) &&
+                startSec != null &&
+                startSec > 0,
           );
           await ensureOwned();
           args.addAll(cacheArgs);
@@ -808,6 +926,8 @@ class ExternalPlayerService {
       password: password,
       profileId: launchContext.profileId,
       launchContext: launchContext,
+      webDavFonts: webDavFonts,
+      webDavFontLoader: webDavFontLoader,
       artifactPaths: List<String>.unmodifiable(artifactPaths),
     );
     _sessions[resolvedSessionId] = runtime;
@@ -852,7 +972,7 @@ class ExternalPlayerService {
     }
     // 曲目检测始终启动：首集为 TS 时仍需发现后续非 TS；TS 稳定起播
     // 后也由此进入轻量顺序预读阶段。runtime 已注册，无需一秒竞态等待。
-    if (isMpv && _cachePolicy != null) {
+    if (!launchContext.isLocal && isMpv && _cachePolicy != null) {
       unawaited(
         _monitorDurationForCache(
           runtime,
@@ -931,7 +1051,7 @@ class ExternalPlayerService {
     // 每集时长上报一次（去重，切集后新集重新上报）。
     final reportedDurationGenerations = <int>{};
     final tsRuntimeEnabledGenerations = <int>{};
-    final tsFirstStableSampleAt = <int, DateTime>{};
+    final tsMonitorStartedGenerations = <int>{};
     // 持续轮询直到播放器退出：每轮**先读状态文件**（播放器退出前的
     // 最后数据仍处理），再检查进程存活——避免进程快速退出时漏掉
     // 已写入的状态（同时使测试不依赖进程存活时长）。
@@ -983,26 +1103,23 @@ class ExternalPlayerService {
         }
         final currentState = policy.sessionState(sessionId);
         final timePos = lines.length > 3 ? double.tryParse(lines[3]) : null;
-        // TS 启动阶段保持 cache=no；确认已经直接起播后才启用小型顺序
-        // 预读，因此不会把容器打开从 5 秒拖到十几秒。这里使用首次
-        // 有效状态后的墙钟时间，不用绝对 time-pos：续播 TS 一加载就
-        // 可能是数百秒，若按 time-pos>=3 会在恢复 seek 尚未稳定时过早
-        // 开缓存，重新拖慢起播。
+        final seeking = lines.length > 13
+            ? switch (lines[13].trim()) {
+                '1' => true,
+                '0' => false,
+                _ => null,
+              }
+            : null;
+        final restartSerial = lines.length > 14
+            ? int.tryParse(lines[14].trim())
+            : null;
+        // TS 起播只依据当前曲目的 seek/restart 事件转换状态。非零续播
+        // 已从启动阶段启用小窗口；零点起播仍在首次 restart 前保持直链。
         final currentGeneration = runtime.trackGeneration;
         if (isTsContainerUrl(lastTrackUrl) &&
             currentState?.tsOnly == true &&
-            timePos != null &&
-            timePos >= 0 &&
+            (seeking == true || (restartSerial != null && restartSerial > 0)) &&
             !tsRuntimeEnabledGenerations.contains(currentGeneration)) {
-          final firstStableAt = tsFirstStableSampleAt.putIfAbsent(
-            currentGeneration,
-            DateTime.now,
-          );
-          if (DateTime.now().difference(firstStableAt) <
-              const Duration(seconds: 2)) {
-            if (!await _shouldContinueRuntimeWork(runtime)) return;
-            continue;
-          }
           final enabled = await _enableTsRuntimeCache(
             runtime,
             lastTrackUrl,
@@ -1010,16 +1127,38 @@ class ExternalPlayerService {
             file.path,
             userArgs: userArgs,
             generation: currentGeneration,
+            startMonitor: seeking != true,
           );
           if (enabled) {
             tsRuntimeEnabledGenerations.add(currentGeneration);
+            if (seeking != true) {
+              tsMonitorStartedGenerations.add(currentGeneration);
+            }
           }
+        }
+        final refreshedState = policy.sessionState(sessionId);
+        if (isTsContainerUrl(lastTrackUrl) &&
+            refreshedState?.tsRuntime == true &&
+            restartSerial != null &&
+            restartSerial > 0 &&
+            seeking == false &&
+            timePos != null &&
+            timePos >= 0 &&
+            tsMonitorStartedGenerations.add(currentGeneration)) {
+          _applyPolicyState(
+            runtime,
+            lastTrackUrl,
+            policy,
+            file.path,
+            generation: currentGeneration,
+            seekableCacheEnabled: false,
+          );
+          tsRuntimeEnabledGenerations.add(currentGeneration);
         }
         // ── 当前集时长上报（mpv 打开 mkv/mp4 即写入） ──
         final duration = lines.length > 4 ? double.tryParse(lines[4]) : null;
         if (duration != null &&
             duration > 0 &&
-            !isTsContainerUrl(lastTrackUrl) &&
             policy.sessionState(sessionId)?.shouldMonitor == true &&
             file.lastModifiedSync().isAfter(launchCutoff) &&
             reportedDurationGenerations.add(runtime.trackGeneration)) {
@@ -1071,6 +1210,16 @@ class ExternalPlayerService {
         // 沿用用户手动缓存参数（与首集一致：尊重手动配置）。
         userArgs: userArgs,
       );
+      if (!await _statusStillMatchesTrack(
+        statusFilePath,
+        track,
+        runtime.currentPlaylistPos,
+      )) {
+        if (_isRuntimeCurrent(runtime, generation)) {
+          ++runtime.trackGeneration;
+        }
+        return;
+      }
       // 过期检查：期间又发生了更新的切集 → 本结果丢弃（窄竞态防护）。
       if (!_isRuntimeCurrent(runtime, generation)) return;
       // 更新播放中动态监控的基准（新集码率/大小/缓存初值）。
@@ -1090,6 +1239,27 @@ class ExternalPlayerService {
     }
   }
 
+  Future<bool> _statusStillMatchesTrack(
+    String statusFilePath,
+    String expectedTrack,
+    int? expectedPlaylistPos,
+  ) async {
+    try {
+      final lines = await File(statusFilePath).readAsLines();
+      if (lines.length < 2) return true;
+      final currentTrack = stripUserInfo(lines[1].trim());
+      final currentPlaylistPos = int.tryParse(lines.first.trim());
+      if (currentTrack.isEmpty) return true;
+      return _sameTrack(currentTrack, expectedTrack) &&
+          (expectedPlaylistPos == null ||
+              currentPlaylistPos == null ||
+              currentPlaylistPos == expectedPlaylistPos);
+    } on FileSystemException {
+      // Lua 原子替换状态文件的短暂空窗不判定为切集。
+      return true;
+    }
+  }
+
   Future<bool> _enableTsRuntimeCache(
     _PlayerSessionRuntime runtime,
     String track,
@@ -1097,6 +1267,7 @@ class ExternalPlayerService {
     String statusFilePath, {
     required List<String> userArgs,
     required int generation,
+    bool startMonitor = true,
   }) async {
     try {
       await policy.buildCacheArgs(
@@ -1114,6 +1285,7 @@ class ExternalPlayerService {
         statusFilePath,
         generation: generation,
         seekableCacheEnabled: false,
+        startMonitor: startMonitor,
       );
       return policy.sessionState(runtime.sessionId)?.shouldMonitor == true;
     } catch (_) {
@@ -1128,6 +1300,7 @@ class ExternalPlayerService {
     String statusFilePath, {
     required int generation,
     required bool seekableCacheEnabled,
+    bool startMonitor = true,
   }) {
     if (!_isRuntimeCurrent(runtime, generation)) return;
     final state = policy.sessionState(runtime.sessionId);
@@ -1156,6 +1329,7 @@ class ExternalPlayerService {
       demuxerMaxBytes: result.demuxerMaxBytes,
       cacheSecs: result.cacheSecs,
     );
+    if (!startMonitor) return;
     policy.startMonitor(
       sessionId: runtime.sessionId,
       url: track,
@@ -1596,7 +1770,10 @@ class ExternalPlayerService {
         await _syncProgress(runtime, entries);
       } catch (e) {
         // ignore: avoid_print
-        print('同步播放进度失败: $e');
+        print(
+          'Playback progress synchronization failed '
+          '(error-type=${e.runtimeType})',
+        );
       }
     }
   }
@@ -1783,6 +1960,8 @@ class ExternalPlayerService {
           resumeSeconds: resumeSeconds,
           automaticRecovery: true,
           ownershipGeneration: runtime.ownershipGeneration,
+          webDavFonts: runtime.webDavFonts,
+          webDavFontLoader: runtime.webDavFontLoader,
         );
         if (!_isRecoveryCurrent(runtime, state)) {
           await terminateLaunch(result);
@@ -2025,6 +2204,7 @@ class ExternalPlayerService {
   /// 恢复持久化会话的 PID/pipe 身份；应用重启后可继续独立探活和控制。
   Future<void> restoreSession({
     required String sessionId,
+    String? profileId,
     required int? pid,
     String? executablePath,
     int? creationTime,
@@ -2067,7 +2247,7 @@ class ExternalPlayerService {
           : '${sessionId}__e$launchEpoch',
       progressGeneration: _progressSyncCoordinator.claim(sessionId),
       ownershipGeneration: ++_ownershipSequence,
-      profileId: _configStore.current.profileId,
+      profileId: profileId ?? _configStore.current.profileId,
     );
     _sessions[sessionId] = runtime;
     _launchOwnership[sessionId] = runtime.ownershipGeneration;
@@ -2275,13 +2455,26 @@ class ExternalPlayerService {
     try {
       final exactPaths = artifactPaths.toSet();
       if (exactPaths.isNotEmpty) {
+        final directories = <Directory>[];
         for (final path in exactPaths) {
           final file = File(path);
           if (await file.exists()) {
             try {
               await file.delete();
             } catch (_) {}
+            continue;
           }
+          final directory = Directory(path);
+          if (await directory.exists()) {
+            directories.add(directory);
+          }
+        }
+        // 目录只做非递归删除：必须已经由上方精确文件列表清空，避免
+        // 任意异常路径扩大清理范围。
+        for (final directory in directories.reversed) {
+          try {
+            await directory.delete();
+          } catch (_) {}
         }
         return;
       }

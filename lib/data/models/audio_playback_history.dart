@@ -13,6 +13,7 @@ class AudioPlaybackHistory {
     this.playerCreationTime,
     this.ipcPipeName,
     this.launchEpoch,
+    this.sourceId,
   }) : createdAt = createdAt ?? updatedAt;
 
   final String sessionId;
@@ -27,6 +28,9 @@ class AudioPlaybackHistory {
   final int? playerCreationTime;
   final String? ipcPipeName;
   final String? launchEpoch;
+
+  /// 播放来源身份；旧记录为空时沿用当前 WebDAV 来源语义。
+  final String? sourceId;
 
   AudioPlaybackHistory copyWith({
     String? sessionId,
@@ -46,6 +50,7 @@ class AudioPlaybackHistory {
     bool clearIpcPipeName = false,
     String? launchEpoch,
     bool clearLaunchEpoch = false,
+    String? sourceId,
   }) => AudioPlaybackHistory(
     sessionId: sessionId ?? this.sessionId,
     dirCrumbs: dirCrumbs ?? this.dirCrumbs,
@@ -63,6 +68,7 @@ class AudioPlaybackHistory {
         : (playerCreationTime ?? this.playerCreationTime),
     ipcPipeName: clearIpcPipeName ? null : (ipcPipeName ?? this.ipcPipeName),
     launchEpoch: clearLaunchEpoch ? null : (launchEpoch ?? this.launchEpoch),
+    sourceId: sourceId ?? this.sourceId,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -78,6 +84,7 @@ class AudioPlaybackHistory {
     'playerCreationTime': playerCreationTime,
     'ipcPipeName': ipcPipeName,
     'launchEpoch': launchEpoch,
+    if (sourceId != null) 'sourceId': sourceId,
   };
 
   factory AudioPlaybackHistory.fromJson(
@@ -102,5 +109,6 @@ class AudioPlaybackHistory {
     playerCreationTime: (json['playerCreationTime'] as num?)?.toInt(),
     ipcPipeName: json['ipcPipeName'] as String?,
     launchEpoch: json['launchEpoch'] as String?,
+    sourceId: json['sourceId'] as String?,
   );
 }

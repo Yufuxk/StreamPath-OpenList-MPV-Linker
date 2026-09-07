@@ -1,0 +1,189 @@
+--- a/options/options.h
++++ b/options/options.h
+@@ -160,6 +160,8 @@
+ };
+ 
+ struct mp_bluray_opts {
++    bool streampath_remote_disc;
++    char *streampath_remote_metrics;
+     char *bluray_device;
+     int angle;
+ };
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -47,6 +47,7 @@
+ #include "options/path.h"
+ #include "osdep/threads.h"
+ #include "stream.h"
++#include "streampath_disc.h"
+ #include "osdep/io.h"
+ #include "sub/osd.h"
+ #include "sub/img_convert.h"
+@@ -86,6 +87,8 @@
+ const struct m_sub_options stream_bluray_conf = {
+     .opts = (const struct m_option[]) {
+         {"device", OPT_STRING(bluray_device), .flags = M_OPT_FILE},
++        {"remote-disc", OPT_BOOL(streampath_remote_disc)},
++        {"remote-metrics", OPT_STRING(streampath_remote_metrics), .flags = M_OPT_FILE},
+         {"angle", OPT_INT(angle), M_RANGE(1, 999)},
+         {0},
+     },
+@@ -117,6 +120,7 @@
+ };
+ 
+ struct bluray_priv_s {
++    struct sp_disc *remote_disc;
+     BLURAY *bd;
+     struct mp_log *bluray_log;
+     bool probing;               // open is an .iso auto-detection probe
+@@ -203,6 +207,7 @@
+ {
+     if (!p->work)
+         return;
++    if (p == &priv->ig) sp_disc_overlay(priv->remote_disc);
+     size_t n = (size_t)p->w * p->h;
+     memcpy(p->publish, p->work, n * 4);
+     bool any = false;
+@@ -477,6 +482,8 @@
+     if (bluray_log == priv->bluray_log)
+         bluray_log = NULL;
+     mp_mutex_unlock(&bluray_log_lock);
++    sp_disc_close(priv->remote_disc);
++    priv->remote_disc = NULL;
+     mp_mutex_destroy(&priv->overlay_lock);
+ }
+ 
+@@ -522,7 +529,12 @@
+         // Once a jump was detected, stop consuming data (it belongs to the
+         // new position and the slave demuxer must be reopened first); a
+         // zero-length read only polls the remaining events.
++        if (b->remote_disc) InterlockedExchange(&b->remote_disc->media, 1);
+         int n = bd_read_ext(b->bd, buf, hopped ? 0 : len, &ev);
++        if (b->remote_disc) {
++            InterlockedExchange(&b->remote_disc->media, 0);
++            if (sp_disc_failed(b->remote_disc)) return -1;
++        }
+         if (n < 0) {
+             MP_VERBOSE(s, "bd_read_ext() failed.\n");
+             return -1;
+@@ -531,6 +543,14 @@
+         if (ev.event != BD_EVENT_NONE)
+             MP_DBG(s, "event %s(%u) param %u\n", bd_event_str(ev.event), ev.event, ev.param);
+ 
++        switch (ev.event) {
++        case BD_EVENT_PLAYLIST: case BD_EVENT_TITLE: case BD_EVENT_ANGLE:
++        case BD_EVENT_AUDIO_STREAM: case BD_EVENT_PG_TEXTST_STREAM:
++        case BD_EVENT_PG_TEXTST: case BD_EVENT_DISCONTINUITY:
++            sp_disc_state_changed(b->remote_disc);
++            break;
++        default: break;
++        }
+         bool stalled = false;  // EOF unless the VM continues
+         bool bdj_idle = false; // BD-J title alive with no playlist playing
+ 
+@@ -781,6 +801,7 @@
+         return rc;
+     }
+     case STREAM_CTRL_SET_CURRENT_TITLE: {
++        sp_disc_advance(b->remote_disc);
+         const uint32_t title = *((unsigned int*)arg);
+         // demux_disc appends a synthetic "Disc Menu" edition at index num_titles.
+         if (title == b->num_titles) {
+@@ -818,6 +839,7 @@
+         return STREAM_OK;
+     }
+     case STREAM_CTRL_SEEK_TO_TIME: {
++        sp_disc_advance(b->remote_disc);
+         double pts = *((double *) arg);
+         bd_seek_time(b->bd, BD_TIME_FROM_S(pts));
+         stream_drop_buffers(s);
+@@ -918,6 +940,7 @@
+         return STREAM_OK;
+     }
+     case STREAM_CTRL_NAV_CMD: {
++        sp_disc_advance(b->remote_disc);
+         if (!b->hdmv_mode)
+             return STREAM_UNSUPPORTED;
+         struct stream_nav_cmd *nav = arg;
+@@ -1214,9 +1237,26 @@
+     mp_mutex_unlock(&bluray_log_lock);
+ 
+     /* open device */
+-    char *device_tmp = mp_get_user_path(NULL, s->global, device);
+-    BLURAY *bd = bd_open(device_tmp, NULL);
+-    talloc_free(device_tmp);
++    BLURAY *bd = NULL;
++    if (b->opts->streampath_remote_disc) {
++        if (b->cfg_title != BLURAY_MENU_TITLE) {
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++        b->remote_disc = sp_disc_open(device, mp_cancel_get_event(s->cancel),
++                                    b->opts->streampath_remote_metrics);
++        if (b->remote_disc) {
++            bd = bd_init();
++            if (bd && !bd_open_stream(bd, b->remote_disc, sp_disc_read)) {
++                bd_close(bd);
++                bd = NULL;
++            }
++        }
++    } else {
++        char *device_tmp = mp_get_user_path(NULL, s->global, device);
++        bd = bd_open(device_tmp, NULL);
++        talloc_free(device_tmp);
++    }
+     if (!bd) {
+         if (!b->probing)
+             MP_ERR(s, "Couldn't open Blu-ray device: %s\n", device);
+@@ -1224,6 +1264,17 @@
+         goto err;
+     }
+     b->bd = bd;
++    if (b->remote_disc) {
++        const BLURAY_DISC_INFO *remote_info = bd_get_disc_info(bd);
++        if (!remote_info || remote_info->bdj_detected ||
++            remote_info->num_bdj_titles || remote_info->aacs_detected ||
++            remote_info->bdplus_detected || !remote_info->first_play_supported ||
++            !remote_info->top_menu_supported) {
++            MP_ERR(s, "Remote disc requires unencrypted HDMV navigation.\n");
++            ret = STREAM_UNSUPPORTED;
++            goto err;
++        }
++    }
+ 
+     if (!check_disc_info(s)) {
+         ret = STREAM_UNSUPPORTED;
+--- a/meson.build
++++ b/meson.build
+@@ -1811,6 +1811,7 @@
+ 
+ # build targets
+ if win32
++    dependencies += cc.find_library('winhttp', required: true)
+     windows = import('windows')
+     res_flags = ['--codepage=65001']
+ 
+--- a/player/video.c
++++ b/player/video.c
+@@ -45,6 +45,10 @@
+ #include "core.h"
+ #include "command.h"
+ #include "screenshot.h"
++
++#if HAVE_LIBBLURAY
++void sp_remote_video_frame(void);
++#endif
+ 
+ enum {
+     // update_video() - code also uses: <0 error, 0 eof, >0 progress
+@@ -1311,6 +1315,10 @@
+         // After a seek, make sure to wait until the first frame is visible.
+         if (!opts->video_latency_hacks) {
+             vo_wait_frame(vo);
++#if HAVE_LIBBLURAY
++            if (opts->stream_bluray_opts->streampath_remote_disc)
++                sp_remote_video_frame();
++#endif
+             MP_VERBOSE(mpctx, "first video frame after restart shown\n");
+         }
+     }

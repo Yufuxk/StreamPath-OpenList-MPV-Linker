@@ -63,7 +63,7 @@ abstract class CachePolicyProvider {
   ///
   /// 由集成方在播放器启动并注册会话后调用；[sessionId] 标识会话，
   /// 多会话各自独立监控（互不干扰；同会话重复启动自动替换）。
-  /// [statusFilePath] 为 mpv 十三行状态文件路径，包含播放位置、缓冲、
+  /// [statusFilePath] 为 mpv 十八行状态文件路径，包含播放位置、缓冲、
   /// 缓存边界、网络速度与分辨率；旧版缺失字段按未知值降级。
   /// [initialDemuxerMaxBytes]/[initialCacheSecs] 为本次注入的策略初值，
   /// [bitrateMbps] 为决策码率；未知时使用保守的绝对速度阈值。
@@ -303,6 +303,7 @@ class CachePolicyService implements CachePolicyProvider {
             url: url,
             injected: true,
             result: result,
+            tsRuntime: true,
           );
           _sessionStates[sessionId] = state;
           _recordSessionState(state);
@@ -314,9 +315,15 @@ class CachePolicyService implements CachePolicyProvider {
         // TS 容器：完全不注入缓存参数（等同直链环境，起播最快）。
         // 注入缓存目标（--cache-secs）会让 mpv 全力预取整个文件，
         // 与打开读取竞争服务器连接，实测起播被拖慢 7s（直链 5s →
-        // 注入后 12s）；仅保留 --demuxer-seekable-cache=no 防御
-        // lavf 为探测 duration 读取大量数据。
-        const tsArgs = ['--cache=no', '--demuxer-seekable-cache=no'];
+        // 注入后 12s）；仅保留 seekable cache 禁用和运行态恢复水位。
+        // cache=no 时 pause 参数不生效，不会破坏零点快速起播。
+        const tsArgs = [
+          '--cache=no',
+          '--demuxer-seekable-cache=no',
+          '--cache-pause=yes',
+          '--cache-pause-initial=yes',
+          '--cache-pause-wait=${CachePolicyEngine.tsInitialBufferWaitSecs}',
+        ];
         _log('TS startup phase: cache disabled; seekable cache disabled');
         _sessionStates[sessionId] = CachePolicySessionState(
           sessionId: sessionId,
@@ -363,7 +370,10 @@ class CachePolicyService implements CachePolicyProvider {
       return result.args;
     } catch (e) {
       // 最终防线：增强层异常绝不向播放链路传播。
-      _log('Degraded: $e (skip injection, playback unaffected)');
+      _log(
+        'Degraded: error-type=${e.runtimeType} '
+        '(skip injection, playback unaffected)',
+      );
       _sessionStates[sessionId] = CachePolicySessionState(
         sessionId: sessionId,
         url: url,
@@ -390,6 +400,7 @@ class CachePolicyService implements CachePolicyProvider {
     double? durationSec,
   }) async {
     final cfg = config ?? await _store.load();
+    if (!cfg.enabled) return const CachePolicyResult(skipped: true);
     int? size = knownFileSizeBytes;
     MediaProbeResult? currentProbe;
     if (size == null) {
@@ -509,7 +520,10 @@ class CachePolicyService implements CachePolicyProvider {
           }
         }
       } catch (e) {
-        _log('Intelligence degraded: $e (original policy retained)');
+        _log(
+          'Intelligence degraded: error-type=${e.runtimeType} '
+          '(original policy retained)',
+        );
       }
     }
 
@@ -611,7 +625,7 @@ class CachePolicyService implements CachePolicyProvider {
         return;
       }
       // 重算策略（Level 2 平均码率命中）→ 通知集成方动态更新本次播放。
-      final updated = await buildPolicy(
+      var updated = await buildPolicy(
         url: url,
         authHeader: authHeader,
         config: config,
@@ -620,6 +634,35 @@ class CachePolicyService implements CachePolicyProvider {
         durationSec: durationSec,
       );
       if (updated.skipped) return;
+      if (expectedState.tsRuntime) {
+        final cacheSecs = (updated.cacheSecs / 4).round().clamp(15, 60).toInt();
+        final maxBytes = updated.demuxerMaxBytes
+            .clamp(1, CachePolicyEngine.tsRuntimeMaxBytes)
+            .toInt();
+        updated = CachePolicyResult(
+          skipped: false,
+          cacheSecs: cacheSecs,
+          demuxerMaxBytes: maxBytes,
+          memoryBudgetBytes: updated.memoryBudgetBytes,
+          minCacheSecs: 15,
+          maxCacheSecs: 120,
+          fileSizeBytes: updated.fileSizeBytes,
+          bitrateMbps: updated.bitrateMbps,
+          bitrateSource: updated.bitrateSource,
+          networkFactor: updated.networkFactor,
+          healthScore: updated.healthScore,
+          layers: [
+            ...updated.layers,
+            'TS runtime limits: cache 15-60s, byte cap 128MiB',
+          ],
+          args: [
+            '--cache=yes',
+            '--cache-secs=$cacheSecs',
+            '--demuxer-max-bytes=$maxBytes',
+            '--demuxer-seekable-cache=no',
+          ],
+        );
+      }
       // 只允许仍属于本次 buildCacheArgs 的策略状态产生运行态副作用。
       if (!identical(_sessionStates[sessionId], expectedState)) return;
       final effectiveSize =
@@ -689,6 +732,7 @@ class CachePolicyService implements CachePolicyProvider {
         url: url,
         injected: true,
         result: updated,
+        tsRuntime: expectedState.tsRuntime,
       );
       _sessionStates[sessionId] = refreshedState;
       _recordSessionState(refreshedState);

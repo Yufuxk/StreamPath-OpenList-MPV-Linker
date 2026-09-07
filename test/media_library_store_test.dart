@@ -98,12 +98,14 @@ void main() {
     Object recentDirectories = const <Object>[],
     Object videoHistory = const <Object>[],
     Object audioHistory = const <Object>[],
+    Object? isoHistory,
   }) => <String, dynamic>{
     'version': version,
     'favorites': favorites,
     'recentDirectories': recentDirectories,
     'videoHistory': videoHistory,
     'audioHistory': audioHistory,
+    'isoHistory': ?isoHistory,
   };
 
   test('收藏可切换、按来源隔离并在重启后恢复', () async {
@@ -191,6 +193,80 @@ void main() {
     await store.removePlayback(video);
     expect(await store.playbackHistory('source-a', audio: false), isEmpty);
     expect(await store.playbackHistory('source-a', audio: true), hasLength(1));
+  });
+
+  test('ISO 最近播放使用独立分栏并在重启后恢复', () async {
+    final iso = item('DISC.iso', kind: MediaLibraryKind.iso);
+    await store.recordPlayback(iso, playbackSessionId: 'iso-session');
+
+    expect(await store.playbackHistory('source-a', audio: false), isEmpty);
+    expect(await store.playbackHistory('source-a', audio: true), isEmpty);
+    final isoHistory = await store.playbackHistory(
+      'source-a',
+      audio: false,
+      iso: true,
+    );
+    expect(isoHistory.single.item, same(iso));
+    expect(isoHistory.single.playbackSessionId, 'iso-session');
+
+    final reloaded = MediaLibraryStore.forPath(libraryFile.path);
+    final restored = await reloaded.playbackHistory(
+      'source-a',
+      audio: false,
+      iso: true,
+    );
+    expect(restored.single.item.kind, MediaLibraryKind.iso);
+    expect((jsonDecode(libraryFile.readAsStringSync()) as Map)['version'], 2);
+  });
+
+  test('本地 ISO 播放会话持久化来源快照和进程身份', () async {
+    final iso = item('本地盘.iso', kind: MediaLibraryKind.iso);
+    final modified = DateTime(2026, 9, 1, 12);
+    final snapshot = LocalDiscSessionSnapshot(
+      rootId: 'root-1',
+      relativePath: '电影/本地盘.iso',
+      size: 2048,
+      modified: modified,
+      fingerprint: 'fingerprint',
+      playerPid: 1234,
+      playerExecutablePath: r'C:\Players\mpv.exe',
+      playerCreationTime: 987654,
+    );
+
+    await store.recordPlayback(
+      iso,
+      playbackSessionId: 'local-disc-session',
+      localDiscSession: snapshot,
+    );
+    expect(
+      await store.updateLocalDiscTitleContext(
+        sourceId: 'source-a',
+        playbackSessionId: 'local-disc-session',
+        currentEdition: 2,
+        editionCount: 4,
+      ),
+      isTrue,
+    );
+
+    final reloaded = MediaLibraryStore.forPath(libraryFile.path);
+    final restored = await reloaded.playbackHistory(
+      'source-a',
+      audio: false,
+      iso: true,
+    );
+    expect(restored.single.localDiscSession?.rootId, 'root-1');
+    expect(restored.single.localDiscSession?.relativePath, '电影/本地盘.iso');
+    expect(restored.single.localDiscSession?.size, 2048);
+    expect(restored.single.localDiscSession?.modified, modified);
+    expect(restored.single.localDiscSession?.fingerprint, 'fingerprint');
+    expect(restored.single.localDiscSession?.playerPid, 1234);
+    expect(
+      restored.single.localDiscSession?.playerExecutablePath,
+      r'C:\Players\mpv.exe',
+    );
+    expect(restored.single.localDiscSession?.playerCreationTime, 987654);
+    expect(restored.single.localDiscSession?.currentEdition, 2);
+    expect(restored.single.localDiscSession?.editionCount, 4);
   });
 
   test('同一播放会话切集只更新原记录且不同会话分别保留', () async {
@@ -491,7 +567,7 @@ void main() {
     final original = utf8.encode(
       jsonEncode(
         libraryDocument(
-          version: 2,
+          version: 3,
           favorites: <Object>[
             MediaLibraryRecord(item: item('未来收藏.mkv'), updatedAt: now).toJson(),
           ],

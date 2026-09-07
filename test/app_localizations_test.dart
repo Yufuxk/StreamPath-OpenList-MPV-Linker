@@ -85,6 +85,7 @@ void main() {
     final samples = <String>[
       english.text('保存收藏失败：disk error'),
       english.text('音频已暂停：song.flac'),
+      english.text('继续播放 ISO：DISC.iso'),
       english.text('当前最多同时保留 4 个音频会话，请先关闭或删除一个音频下边栏后再播放。'),
       english.text('数据库维护完成，已创建 2 个备份'),
       english.format('排序：{mode} · {direction}', {
@@ -100,5 +101,74 @@ void main() {
     ];
 
     expect(samples, everyElement(isNot(contains(RegExp(r'[一-龥]')))));
+  });
+
+  test('ISO 流式播放进度、取消与错误文案覆盖四种语言', () {
+    const expectedTitles = <AppLanguage, String>{
+      AppLanguage.simplifiedChinese: 'ISO 远程播放测试',
+      AppLanguage.traditionalChinese: 'ISO 遠端播放測試',
+      AppLanguage.japanese: 'ISO リモート再生テスト',
+      AppLanguage.english: 'ISO remote playback test',
+    };
+    const expectedCancelling = <AppLanguage, String>{
+      AppLanguage.simplifiedChinese: '正在取消…',
+      AppLanguage.traditionalChinese: '正在取消…',
+      AppLanguage.japanese: 'キャンセルしています…',
+      AppLanguage.english: 'Cancelling…',
+    };
+
+    for (final language in AppLanguage.values) {
+      final localizations = AppLocalizations(language);
+      expect(localizations.text('ISO 远程播放测试'), expectedTitles[language]);
+      expect(localizations.text('正在取消…'), expectedCancelling[language]);
+      expect(localizations.text('正在启动 ISO Bridge…'), isNotEmpty);
+      expect(localizations.text('正在探测 ISO 流式读取…'), isNotEmpty);
+      expect(localizations.text('已取消 ISO 播放'), isNotEmpty);
+      expect(localizations.text('ISO 流式播放失败：{message}'), isNotEmpty);
+      expect(localizations.text('ISO 播放流提前结束'), isNotEmpty);
+      expect(
+        localizations.format(
+          '{path}  ·  第 {episode}/{total} 集  ·  已播放 {duration}',
+          {'path': 'BD', 'episode': 2, 'total': 4, 'duration': '02:03'},
+        ),
+        contains('2'),
+      );
+      expect(localizations.text('还没有收藏 ISO'), isNotEmpty);
+      final rangeError = localizations.text('当前 WebDAV 源不支持 ISO 流式随机读取');
+      if (language != AppLanguage.simplifiedChinese) {
+        expect(rangeError, isNot('当前 WebDAV 源不支持 ISO 流式随机读取'));
+      }
+    }
+  });
+
+  test('本地存储与蓝光菜单新增文案覆盖四种语言', () {
+    const sources = <String>[
+      '网络存储',
+      '本地存储',
+      '添加本地文件夹',
+      '选择本地文件夹',
+      '本地蓝光菜单需要使用 MPV 播放器',
+      '请选择本地 Blu-ray 的播放方式。菜单失败时不会自动切换模式。',
+      '蓝光菜单播放',
+      '主标题模式',
+      '本地蓝光路径不存在或不可访问',
+    ];
+
+    for (final language in AppLanguage.values) {
+      final localizations = AppLocalizations(language);
+      for (final source in sources) {
+        final translated = localizations.text(source);
+        expect(translated, isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(translated, isNot(source));
+        }
+      }
+    }
+    expect(
+      const AppLocalizations(
+        AppLanguage.english,
+      ).format('已挂载 {count} 个本地文件夹', {'count': 2}),
+      '2 local folders mounted',
+    );
   });
 }

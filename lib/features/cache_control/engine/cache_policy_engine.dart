@@ -43,6 +43,15 @@ class CachePolicyEngine {
   /// demuxer 打开争抢远端单连接。
   static const int tsRuntimeMaxBytes = 128 * 1024 * 1024;
 
+  /// 普通网络媒体在打开文件或 seek 后恢复播放前建立的前向缓冲。
+  static const int initialBufferWaitSecs = 10;
+
+  /// TS/M2TS 保持较短等待，避免破坏现有快速起播路径。
+  static const int tsInitialBufferWaitSecs = 5;
+
+  /// ISO Bridge 的固定块粒度，供双层预算协调使用。
+  static const int isoBlockSizeBytes = 4 * 1024 * 1024;
+
   /// 按当前码率与 1.3 安全系数估算字节上限真正能够覆盖的缓存秒数。
   ///
   /// 这是诊断用的保守估算值，不等同于 mpv 已经缓存的实际时长；
@@ -319,6 +328,9 @@ class CachePolicyEngine {
         '--cache-secs=$cacheSecs',
         '--demuxer-max-bytes=$maxBytes',
         '--demuxer-seekable-cache=no',
+        '--cache-pause=yes',
+        '--cache-pause-initial=yes',
+        '--cache-pause-wait=$tsInitialBufferWaitSecs',
       ],
     );
   }
@@ -465,6 +477,9 @@ class CachePolicyEngine {
       '--cache=yes',
       '--cache-secs=$cacheSecs',
       '--demuxer-max-bytes=$demuxerMaxBytes',
+      '--cache-pause=yes',
+      '--cache-pause-initial=yes',
+      '--cache-pause-wait=$initialBufferWaitSecs',
     ];
 
     return CachePolicyResult(

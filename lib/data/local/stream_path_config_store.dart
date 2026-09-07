@@ -301,6 +301,9 @@ class StreamPathConfigStore {
     if (version < 4) {
       migrated.putIfAbsent('language', () => 'zh-CN');
     }
+    if (version < 5) {
+      migrated.putIfAbsent('localRoots', () => const []);
+    }
     migrated['schemaVersion'] = StreamPathConfig.currentSchemaVersion;
     return migrated;
   }

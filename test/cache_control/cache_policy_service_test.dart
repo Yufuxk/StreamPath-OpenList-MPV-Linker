@@ -305,7 +305,7 @@ void main() {
       expect(logs.join('\n'), isNot(contains('applied to current playback')));
     });
 
-    test('TS 容器（.m2ts）：不注入缓存参数（等同直链），仅禁用可 seek 缓存', () async {
+    test('TS 容器（.m2ts）：起播关闭缓存并预配置运行态补水参数', () async {
       await store.save(CachePolicyConfig.defaults());
       final service = makeService();
 
@@ -315,7 +315,13 @@ void main() {
       );
 
       // 起播阶段显式关闭缓存；稳定播放后再进入轻量顺序预读。
-      expect(args, ['--cache=no', '--demuxer-seekable-cache=no']);
+      expect(args, [
+        '--cache=no',
+        '--demuxer-seekable-cache=no',
+        '--cache-pause=yes',
+        '--cache-pause-initial=yes',
+        '--cache-pause-wait=${CachePolicyEngine.tsInitialBufferWaitSecs}',
+      ]);
       expect(logs.join('\n'), contains('TS startup phase: cache disabled'));
     });
 
@@ -510,7 +516,13 @@ void main() {
         sessionId: 's1',
         url: 'http://h/dav/movie.m2ts',
       );
-      expect(tsArgs, ['--cache=no', '--demuxer-seekable-cache=no']);
+      expect(tsArgs, [
+        '--cache=no',
+        '--demuxer-seekable-cache=no',
+        '--cache-pause=yes',
+        '--cache-pause-initial=yes',
+        '--cache-pause-wait=${CachePolicyEngine.tsInitialBufferWaitSecs}',
+      ]);
       state = service.sessionState('s1');
       expect(state!.injected, isTrue);
       expect(state.tsOnly, isTrue);
@@ -732,6 +744,44 @@ void main() {
       expect(meta.durationSec, 50, reason: '时长按新文件重写');
       expect(meta.bitrateBps, isNull, reason: '旧文件码率必须清空');
       expect(meta.durationSource, 'mpv');
+    });
+
+    test('TS 运行态用 HEAD 大小与 MPV duration 生成真实码率和小窗口策略', () async {
+      await store.save(CachePolicyConfig.defaults());
+      const tsUrl = 'https://dav.example/media/movie.m2ts';
+      const size = 900 * 1024 * 1024;
+      final ready = Completer<CachePolicyResult>();
+      final service = CachePolicyService(
+        store: store,
+        mediaProbe: const _FakeProbe(sizeBytes: size),
+        memoryProvider: const NullMemoryProvider(),
+        metadataStore: metadataStore,
+      );
+      service.onPolicyReady = (sessionId, callbackUrl, result) {
+        if (sessionId == 'ts-runtime' && callbackUrl == tsUrl) {
+          ready.complete(result);
+        }
+      };
+
+      final startupArgs = await service.buildCacheArgs(
+        sessionId: 'ts-runtime',
+        url: tsUrl,
+        runtimeTs: true,
+      );
+      expect(startupArgs, contains('--cache=yes'));
+      expect(startupArgs, contains('--demuxer-seekable-cache=no'));
+      expect(service.sessionState('ts-runtime')!.tsRuntime, isTrue);
+
+      service.recordDuration('ts-runtime', tsUrl, 900);
+      final result = await ready.future.timeout(const Duration(seconds: 2));
+      expect(result.bitrateMbps, closeTo(size * 8 / 900 / 1000000, 0.01));
+      expect(result.bitrateSource, 'Level2 avg bitrate');
+      expect(result.cacheSecs, inInclusiveRange(15, 60));
+      expect(
+        result.demuxerMaxBytes,
+        lessThanOrEqualTo(CachePolicyEngine.tsRuntimeMaxBytes),
+      );
+      expect(result.args, contains('--demuxer-seekable-cache=no'));
     });
   });
 }

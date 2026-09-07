@@ -120,6 +120,7 @@ class WebDavClient {
     required ResponseType responseType,
     Map<String, Object?> headers = const {},
     Duration? requestTimeout,
+    CancelToken? cancelToken,
   }) async {
     final original = Uri.parse(url);
     var current = original;
@@ -145,6 +146,7 @@ class WebDavClient {
           validateStatus: (status) =>
               status != null && status >= 200 && status < 400,
         ),
+        cancelToken: cancelToken,
       );
 
       if (!_isRedirect(response.statusCode)) return response;

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 
 /// WebDavFile 类型判定：displayname 丢扩展名 / 与 href 不一致时，
@@ -194,6 +195,40 @@ void main() {
       );
       expect(f.isPlayable, isTrue);
       expect(f.isStrm, isFalse);
+    });
+  });
+
+  group('Blu-ray ISO 独立类型判定', () {
+    test('大小写与 href 回退均可识别 ISO', () {
+      const named = WebDavFile(
+        name: 'DISC.ISO',
+        href: '/dav/disc.bin',
+        isDirectory: false,
+      );
+      const hrefFallback = WebDavFile(
+        name: 'DISC',
+        href: '/dav/DISC%2Eiso',
+        isDirectory: false,
+      );
+
+      expect(named.isIso, isTrue);
+      expect(hrefFallback.isIso, isTrue);
+    });
+
+    test('ISO 不并入普通播放类型但映射为独立媒体中心类型', () {
+      const file = WebDavFile(
+        name: 'DISC.iso',
+        href: '/dav/DISC.iso',
+        isDirectory: false,
+      );
+
+      expect(file.isIso, isTrue);
+      expect(file.isVideo, isFalse);
+      expect(file.isAudio, isFalse);
+      expect(file.isStrm, isFalse);
+      expect(file.isPlayable, isFalse);
+      expect(file.isMediaPlayable, isFalse);
+      expect(MediaLibraryKindX.fromFile(file), MediaLibraryKind.iso);
     });
   });
 }

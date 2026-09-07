@@ -1,6 +1,9 @@
-/// 媒体中心容量配置，写入统一的 stream_path_config.json。
+enum MediaLibrarySharingMode { independent, localShared, allShared }
+
+/// 媒体中心容量与展示范围，写入统一的 stream_path_config.json。
 class MediaLibraryConfig {
   const MediaLibraryConfig({
+    this.sharingMode = MediaLibrarySharingMode.independent,
     this.maxFavoritesPerSource = defaultMaxFavoritesPerSource,
     this.maxContinuePerLane = defaultMaxContinuePerLane,
     this.maxRecentPlaybackPerLane = defaultMaxRecentPlaybackPerLane,
@@ -20,11 +23,20 @@ class MediaLibraryConfig {
   static const int systemMaxRecentDirectoriesPerSource = 500;
 
   final int maxFavoritesPerSource;
+  final MediaLibrarySharingMode sharingMode;
+
+  bool includesSource(String current, String candidate) =>
+      current == candidate ||
+      sharingMode == MediaLibrarySharingMode.allShared ||
+      (sharingMode == MediaLibrarySharingMode.localShared &&
+          current.startsWith('local:') &&
+          candidate.startsWith('local:'));
   final int maxContinuePerLane;
   final int maxRecentPlaybackPerLane;
   final int maxRecentDirectoriesPerSource;
 
   MediaLibraryConfig get normalized => MediaLibraryConfig(
+    sharingMode: sharingMode,
     maxFavoritesPerSource: maxFavoritesPerSource.clamp(
       minItemLimit,
       systemMaxFavoritesPerSource,
@@ -46,6 +58,7 @@ class MediaLibraryConfig {
   Map<String, dynamic> toJson() {
     final value = normalized;
     return <String, dynamic>{
+      'sharingMode': value.sharingMode.name,
       'maxFavoritesPerSource': value.maxFavoritesPerSource,
       'maxContinuePerLane': value.maxContinuePerLane,
       'maxRecentPlaybackPerLane': value.maxRecentPlaybackPerLane,
@@ -65,6 +78,11 @@ class MediaLibraryConfig {
     }
 
     return MediaLibraryConfig(
+      sharingMode:
+          MediaLibrarySharingMode.values
+              .where((mode) => mode.name == json?['sharingMode'])
+              .firstOrNull ??
+          MediaLibrarySharingMode.independent,
       maxFavoritesPerSource: readLimit(
         'maxFavoritesPerSource',
         defaultMaxFavoritesPerSource,

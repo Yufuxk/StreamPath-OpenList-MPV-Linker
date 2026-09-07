@@ -10,6 +10,18 @@ import '../../data/remote/webdav_client.dart';
 import '../../data/remote/webdav_xml_parser.dart';
 import '../repositories/directory_repository.dart';
 
+class WebDavCredentialSnapshot {
+  const WebDavCredentialSnapshot({
+    required this.baseUrl,
+    required this.username,
+    required this.password,
+  });
+
+  final String baseUrl;
+  final String username;
+  final String password;
+}
+
 /// 目录浏览业务服务：编排 缓存 → 网络 → 解析 全链路。
 ///
 /// 性能策略（"秒开"三要素）：
@@ -65,7 +77,10 @@ class WebDAVService implements DirectoryRepository {
           // 后台刷新失败静默处理：下次访问或手动刷新会重试。
           if (e is AppException) {
             // ignore: avoid_print
-            print('后台刷新目录失败：$e');
+            print(
+              'Background directory refresh failed '
+              '(error-type=${e.runtimeType})',
+            );
           }
         }),
       );
@@ -143,6 +158,13 @@ class WebDAVService implements DirectoryRepository {
   String get sourceId => _profileId?.trim().isNotEmpty == true
       ? _profileId!.trim()
       : mediaSourceId(baseUrl: baseUrl, username: _client.username ?? '');
+
+  /// 为独立播放会话冻结当前 WebDAV 来源与凭据；调用方不得持久化。
+  WebDavCredentialSnapshot get credentialSnapshot => WebDavCredentialSnapshot(
+    baseUrl: baseUrl,
+    username: _client.username ?? '',
+    password: _client.password ?? '',
+  );
 
   // ── 内部 ─────────────────────────────────────────────────────
 

@@ -13,6 +13,7 @@ import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/app_language.dart';
+import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
@@ -171,6 +172,63 @@ void main() {
 
     expect(find.byKey(const Key('cache-enabled-switch')), findsOneWidget);
     expect(find.byKey(const Key('server-url-field')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('菜单进度默认独立，可保存共享并切回独立', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    expect(configStore.current.menuProgressSharingEnabled, isFalse);
+    for (final sharing in [true, false]) {
+      final field = find.byKey(const Key('menu-progress-sharing'));
+      await tester.ensureVisible(field);
+      await tester.tap(field);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(sharing ? '共享（供标题模式续播）' : '独立（不记录进度）').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('save-settings-button')));
+      for (var i = 0; i < 30 && configStore.current.menuProgressSharingEnabled != sharing; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      for (var i = 0; i < 100; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.pump(const Duration(milliseconds: 30));
+        if (tester.widget<FilledButton>(find.byKey(const Key('save-settings-button'))).onPressed != null) break;
+      }
+      final saved = await tester.runAsync(configStore.load);
+      expect(saved!.menuProgressSharingEnabled, sharing);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('媒体中心共享模式可选择并保存', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-mediaLibrary')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(DropdownButtonFormField<MediaLibrarySharingMode>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('本地与网络存储共享').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-settings-button')));
+    for (var i = 0; i < 30 && configStore.current.mediaLibrary.sharingMode != MediaLibrarySharingMode.allShared; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(configStore.current.mediaLibrary.sharingMode, MediaLibrarySharingMode.allShared);
+    final saved = await tester.runAsync(configStore.load);
+    expect(saved!.mediaLibrary.sharingMode, MediaLibrarySharingMode.allShared);
     expect(tester.takeException(), isNull);
   });
 
@@ -527,7 +585,7 @@ void main() {
     );
   });
 
-  testWidgets('索引轮询只重建服务器分类并保留七个表单', (tester) async {
+  testWidgets('索引轮询只重建服务器分类并保留全部表单', (tester) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -607,7 +665,10 @@ void main() {
       }
     }
     expect(progressRequests, 1);
-    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    expect(
+      find.byType(Form, skipOffstage: false),
+      findsNWidgets(SettingsSection.values.length),
+    );
     builds.clear();
 
     await tester.pump(const Duration(seconds: 2));
@@ -636,7 +697,10 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    expect(
+      find.byType(Form, skipOffstage: false),
+      findsNWidgets(SettingsSection.values.length),
+    );
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     tester
@@ -661,7 +725,7 @@ void main() {
     }
   });
 
-  testWidgets('外观能力刷新只重建界面分类并保留七个表单', (tester) async {
+  testWidgets('外观能力刷新只重建界面分类并保留全部表单', (tester) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -674,7 +738,10 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    expect(
+      find.byType(Form, skipOffstage: false),
+      findsNWidgets(SettingsSection.values.length),
+    );
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     builds.clear();
@@ -697,7 +764,10 @@ void main() {
       if (section == SettingsSection.appearance) continue;
       expect(builds[section] ?? 0, 0, reason: '能力刷新不应重建 ${section.name} 分类');
     }
-    expect(find.byType(Form, skipOffstage: false), findsNWidgets(7));
+    expect(
+      find.byType(Form, skipOffstage: false),
+      findsNWidgets(SettingsSection.values.length),
+    );
   });
 
   testWidgets('诊断页提供检查、脱敏导出和非破坏性数据库维护入口', (tester) async {

@@ -1,8 +1,8 @@
 import 'package:path/path.dart' as p;
 
 import '../../core/constants.dart';
+import '../../data/models/media_directory_entry.dart';
 import '../../data/models/subtitle_item.dart';
-import '../../data/models/web_dav_file.dart';
 
 /// 字幕匹配算法。
 ///
@@ -23,13 +23,16 @@ class SubtitleMatcher {
   ///
   /// 除名称规则外，候选字幕的 href 必须与 [video] 同源且父目录相同，
   /// 防止浏览状态异常或跨目录候选把字幕备份目录中的文件带入播放会话。
-  List<SubtitleItem> matchFor(WebDavFile video, List<WebDavFile> siblings) {
-    return _match(video.name, siblings, videoHref: video.href);
+  List<SubtitleItem> matchFor(
+    MediaDirectoryEntry video,
+    List<MediaDirectoryEntry> siblings,
+  ) {
+    return _match(video.name, siblings, videoHref: video.entryKey);
   }
 
   List<SubtitleItem> _match(
     String videoName,
-    List<WebDavFile> siblings, {
+    List<MediaDirectoryEntry> siblings, {
     String? videoHref,
   }) {
     final videoCore = _stripLanguage(_segments(videoName)).core;
@@ -37,13 +40,15 @@ class SubtitleMatcher {
     final matches = <SubtitleItem>[];
     for (final f in siblings) {
       if (!f.isSubtitle) continue;
-      if (videoHref != null && !_isSameDirectory(videoHref, f.href)) continue;
+      if (videoHref != null && !_isSameDirectory(videoHref, f.entryKey)) {
+        continue;
+      }
       final m = _matchCore(videoCore, _segments(f.name));
       if (m == null) continue;
       matches.add(
         SubtitleItem(
           name: f.name,
-          url: f.href,
+          url: f.entryKey,
           language: m.language,
           score: m.score,
         ),
@@ -60,7 +65,10 @@ class SubtitleMatcher {
   }
 
   /// 严格按具体视频/STRM 所在目录返回最佳字幕。
-  SubtitleItem? findBestFor(WebDavFile video, List<WebDavFile> siblings) {
+  SubtitleItem? findBestFor(
+    MediaDirectoryEntry video,
+    List<MediaDirectoryEntry> siblings,
+  ) {
     final matches = matchFor(video, siblings);
     return matches.isEmpty ? null : matches.first;
   }
