@@ -541,6 +541,17 @@ void test_winhttp_session_reuses_keep_alive_connections() {
 }
 
 void test_metrics_v2_is_atomic_and_anonymous() {
+  BlurayMetrics bounded_timings;
+  for (std::uint64_t sequence = 0; sequence < 130; ++sequence) {
+    MediaGetTiming timing;
+    timing.sequence = sequence;
+    bounded_timings.record_media_timing(timing);
+  }
+  const auto timing_snapshot = bounded_timings.snapshot();
+  expect_network(timing_snapshot.media_get_timings.size() == 128 &&
+                     timing_snapshot.media_get_timings.front().sequence == 2 &&
+                     timing_snapshot.media_get_timings.back().sequence == 129,
+                 "media GET timing history is bounded");
   bridge::BlockCacheMetrics cache;
   cache.fetched_bytes = 17;
   cache.foreground_fetch_bytes = 11;
@@ -581,6 +592,7 @@ void test_metrics_v2_is_atomic_and_anonymous() {
   bluray.last_media_failure_http_status = 503;
   bluray.terminal_rejected_media_get_count = 2;
   bluray.structure_cache_hit = true;
+  bluray.media_get_timings = timing_snapshot.media_get_timings;
   NetworkPhaseMetricsSnapshot metadata_network;
   metadata_network.request_count = 21;
   metadata_network.remote_body_bytes = 22;
@@ -591,6 +603,10 @@ void test_metrics_v2_is_atomic_and_anonymous() {
   const CacheMetricsSnapshot caches{{}, cache, 4096};
   const auto json = metrics_json(caches, network, metadata_network,
                                  playback_network, bluray, 14, 15, {}, false);
+  expect_network(json.find("\"mediaGetTimings\":[{\"sequence\":2,") != std::string::npos &&
+                     json.find("\"firstBodyUs\":-1") != std::string::npos &&
+                     json.find("\"foregroundLoadingWaitUsTotal\":0") != std::string::npos,
+                 "timing diagnostics retain missing-stage sentinel and loading wait counters");
   expect_network(json.find("\"version\":2") != std::string::npos &&
                      json.find("\"network\"") != std::string::npos &&
                      json.find("\"cache\"") != std::string::npos &&
@@ -1310,6 +1326,77 @@ void test_remote_disc_endpoint_with_adapter() {
     "menu stop closes sockets without header timeout");
 }
 
+void test_streaming_range_validation() {
+  for (const int mode : {0, 1, 2, 3, 4}) {
+    TestHttpServer server([mode](std::size_t index, const TestRequest& request) {
+      auto response = valid_range_response(request);
+      if (index >= 2) {
+        if (mode == 1) response = valid_range_response(request, "\"changed\"");
+        if (mode == 2) response.status = 200;
+        if (mode == 3) response.headers[0].second = "bytes 1-4/8";
+        if (mode == 4) {
+          response.headers.emplace_back("Content-Length", "4");
+          response.body = "AB";
+        }
+      }
+      return response;
+    });
+    WinHttpRangeSource source(server.url(), server.url("/"), "", "");
+    std::vector<std::uint8_t> received;
+    bool failed = false;
+    try {
+      source.fetch_stream(0, 3, {}, [&](const std::uint8_t* bytes, std::size_t count) {
+        received.insert(received.end(), bytes, bytes + count);
+      });
+    } catch (const BridgeException&) { failed = true; }
+    if (mode == 0) {
+      expect_network(!failed && std::string(received.begin(), received.end()) == "ABCD",
+                     "streaming preserves validated range bytes");
+    } else if (mode == 4) {
+      expect_network(failed && received.size() <= 2,
+                     "streaming reports a truncated tail after any delivered prefix");
+    } else {
+      expect_network(failed && received.empty(),
+                     "status range and validator are checked before streaming publication");
+    }
+  }
+}
+
+void test_streaming_range_arrives_before_completion() {
+  constexpr std::uint64_t length = 1024 * 1024;
+  TestHttpServer server([length](std::size_t, const TestRequest& request) {
+    if (request.method == "HEAD") {
+      return TestResponse{200, {{"Content-Length", "1048576"}, {"ETag", "\"v1\""}}, {}};
+    }
+    const auto range = bridge::parse_byte_range(request.headers.at("range"), length);
+    return TestResponse{206,
+        {{"Content-Range", "bytes " + std::to_string(range.start) + "-" +
+             std::to_string(range.end) + "/1048576"}, {"ETag", "\"v1\""}},
+        std::string(static_cast<std::size_t>(range.end - range.start + 1), 'Q')};
+  });
+  WinHttpRangeSource source(server.url(), server.url("/"), "", "");
+  bool early = false;
+  std::size_t delivered = 0;
+  source.fetch_stream(0, length - 1, {}, [&](const std::uint8_t* data, std::size_t count) {
+    if (delivered == 0) early = source.remote_transfer_bytes() < length;
+    expect_network(std::all_of(data, data + count, [](std::uint8_t value) { return value == 'Q'; }),
+                   "stream bytes remain exact");
+    delivered += count;
+  });
+  expect_network(early && delivered == length, "WinHTTP delivers chunks before the whole range is read");
+  bool cancel = false;
+  delivered = 0;
+  bool cancelled = false;
+  try {
+    source.fetch_stream(0, length - 1, [&] { return cancel; },
+        [&](const std::uint8_t*, std::size_t count) { delivered += count; cancel = true; });
+  } catch (const bridge::FetchCancelled& error) {
+    cancelled = error.received_bytes() == delivered;
+  }
+  expect_network(cancelled && delivered > 0 && delivered < length,
+                 "streaming cancellation stops after delivered prefix and retains byte accounting");
+}
+
 void test_remote_mpv_block_adapter() {
   constexpr std::uint64_t total = 16 * bridge::kIsoBlockSize;
   TestHttpServer server([total](std::size_t, const TestRequest& request) {
@@ -1368,6 +1455,8 @@ int main() {
     test_generation_failure_state_does_not_poison_new_playback();
     test_capability_failures();
     test_validator_change_and_interrupted_body();
+    test_streaming_range_validation();
+    test_streaming_range_arrives_before_completion();
     test_last_modified_and_redirect_limit();
     test_playback_prefetch_range_size();
     test_cancelled_prefetch_skips_webdav_request();

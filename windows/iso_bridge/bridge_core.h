@@ -79,6 +79,7 @@ std::string json_escape(std::string_view value);
 class BlockSource {
  public:
   using CancellationProbe = std::function<bool()>;
+  using ChunkConsumer = std::function<void(const std::uint8_t*, std::size_t)>;
 
   virtual ~BlockSource() = default;
   virtual std::uint64_t size() const = 0;
@@ -88,6 +89,9 @@ class BlockSource {
       std::uint64_t start, std::uint64_t end,
       const CancellationProbe& cancelled);
   virtual void cancel_pending();
+  virtual void fetch_stream(std::uint64_t start, std::uint64_t end,
+                            const CancellationProbe& cancelled,
+                            const ChunkConsumer& consume);
 };
 
 class FetchCancelled final : public std::runtime_error {
@@ -103,6 +107,9 @@ class FetchCancelled final : public std::runtime_error {
 };
 
 struct BlockCacheMetrics {
+  std::uint64_t foreground_loading_wait_count = 0;
+  std::uint64_t foreground_loading_wait_us_total = 0;
+  std::uint64_t foreground_loading_wait_us_max = 0;
   // Legacy aggregate fields remain available to version 1 readers.
   std::uint64_t fetched_bytes = 0;
   std::uint64_t requests = 0;
@@ -165,7 +172,9 @@ class BlockCache {
                       std::size_t initial_prefetch_batch_blocks =
                           kInitialPlaybackPrefetchBatchBlocks,
                       std::size_t prefetch_batch_blocks =
-                          kPlaybackPrefetchBatchBlocks);
+                          kPlaybackPrefetchBatchBlocks,
+                      std::size_t recovery_prefetch_batch_blocks = 0,
+                      bool stream_prefetch = false);
   ~BlockCache();
   BlockCache(const BlockCache&) = delete;
   BlockCache& operator=(const BlockCache&) = delete;
@@ -174,7 +183,8 @@ class BlockCache {
   void reset_read_ahead();
   void shutdown();
   void configure(std::size_t block_count, std::size_t max_read_ahead_blocks,
-                 bool protect_read_ahead = false);
+                 bool protect_read_ahead = false,
+                 bool protect_unread_window = false);
   bool is_playback_current(std::uint64_t playback_generation) const;
   std::size_t limit_read_ahead(std::size_t requested_blocks) const;
   std::size_t read(std::uint64_t offset, std::uint8_t* destination,
@@ -221,8 +231,14 @@ class BlockCache {
   const std::size_t configuration_block_scale_;
   const std::size_t initial_prefetch_batch_blocks_;
   const std::size_t prefetch_batch_blocks_;
+  const std::size_t recovery_prefetch_batch_blocks_;
+  const bool stream_prefetch_;
+  std::exception_ptr playback_read_error_;
   std::size_t block_count_;
   bool protect_read_ahead_ = false;
+  bool protect_unread_window_ = false;
+  std::uint64_t unread_window_start_ = 0;
+  std::uint64_t unread_window_end_ = 0;
   std::size_t max_read_ahead_blocks_ = kMaximumPlaybackReadAheadBlocks;
   std::mutex playback_transition_mutex_;
   mutable std::mutex mutex_;
@@ -242,6 +258,7 @@ class BlockCache {
   std::uint64_t prefetch_generation_ = 0;
   std::uint64_t active_playback_generation_ = 0;
   bool initial_prefetch_batch_ = true;
+  bool recovery_prefetch_batch_ = false;
   bool refetch_count_available_ = true;
   std::uint64_t active_prefetch_count_ = 0;
   std::uint64_t prefetch_in_flight_bytes_ = 0;

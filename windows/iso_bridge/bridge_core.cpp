@@ -490,10 +490,23 @@ std::vector<std::uint8_t> BlockSource::fetch(
 
 void BlockSource::cancel_pending() {}
 
+void BlockSource::fetch_stream(std::uint64_t start, std::uint64_t end,
+                               const CancellationProbe& cancelled,
+                               const ChunkConsumer& consume) {
+  const auto bytes = fetch(start, end, cancelled);
+  consume(bytes.data(), bytes.size());
+}
+
 BlockCacheMetrics combine_sequential_cache_metrics(
     const BlockCacheMetrics& metadata,
     const BlockCacheMetrics& playback) {
   BlockCacheMetrics combined;
+  combined.foreground_loading_wait_count =
+      metadata.foreground_loading_wait_count + playback.foreground_loading_wait_count;
+  combined.foreground_loading_wait_us_total =
+      metadata.foreground_loading_wait_us_total + playback.foreground_loading_wait_us_total;
+  combined.foreground_loading_wait_us_max = std::max(
+      metadata.foreground_loading_wait_us_max, playback.foreground_loading_wait_us_max);
   combined.fetched_bytes = metadata.fetched_bytes + playback.fetched_bytes;
   combined.requests = metadata.requests + playback.requests;
   combined.hits = metadata.hits + playback.hits;
@@ -568,12 +581,16 @@ BlockCache::BlockCache(std::shared_ptr<BlockSource> source,
                        std::uint64_t block_size, std::size_t block_count,
                        std::size_t configuration_block_scale,
                        std::size_t initial_prefetch_batch_blocks,
-                       std::size_t prefetch_batch_blocks)
+                       std::size_t prefetch_batch_blocks,
+                       std::size_t recovery_prefetch_batch_blocks,
+                       bool stream_prefetch)
     : source_(std::move(source)),
       block_size_(block_size),
       configuration_block_scale_(configuration_block_scale),
       initial_prefetch_batch_blocks_(initial_prefetch_batch_blocks),
       prefetch_batch_blocks_(prefetch_batch_blocks),
+      recovery_prefetch_batch_blocks_(recovery_prefetch_batch_blocks),
+      stream_prefetch_(stream_prefetch),
       block_count_(block_count * configuration_block_scale),
       max_read_ahead_blocks_(kMaximumPlaybackReadAheadBlocks *
                              configuration_block_scale) {
@@ -617,6 +634,9 @@ std::uint64_t BlockCache::begin_playback() {
     ++active_playback_generation_;
     if (active_playback_generation_ == 0) ++active_playback_generation_;
     ++metrics_.playback_requests;
+    playback_read_error_ = {};
+    unread_window_start_ = 0;
+    unread_window_end_ = 0;
     prefetch_pending_ = false;
     prefetch_window_start_ = 0;
     prefetch_next_ = 0;
@@ -643,6 +663,8 @@ std::uint64_t BlockCache::begin_playback() {
 
 void BlockCache::reset_read_ahead() {
   std::lock_guard lock(mutex_);
+  unread_window_start_ = 0;
+  unread_window_end_ = 0;
   prefetch_pending_ = false;
   prefetch_window_start_ = 0;
   prefetch_next_ = 0;
@@ -654,7 +676,8 @@ void BlockCache::reset_read_ahead() {
 
 void BlockCache::configure(std::size_t block_count,
                            std::size_t max_read_ahead_blocks,
-                           bool protect_read_ahead) {
+                           bool protect_read_ahead,
+                           bool protect_unread_window) {
   if (block_count == 0 || max_read_ahead_blocks == 0) {
     throw std::invalid_argument("invalid block cache configuration");
   }
@@ -669,6 +692,8 @@ void BlockCache::configure(std::size_t block_count,
   max_read_ahead_blocks_ =
       max_read_ahead_blocks * configuration_block_scale_;
   protect_read_ahead_ = protect_read_ahead && max_read_ahead_blocks < block_count;
+  protect_unread_window_ =
+      protect_unread_window && max_read_ahead_blocks < block_count;
   while (entries_.size() > block_count_ && evict_one_locked()) {
   }
   space_available_.notify_all();
@@ -855,9 +880,24 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
     std::unique_lock lock(mutex_);
     while (true) {
       const auto existing = entries_.find(index);
+      if (playback_read_error_ && playback_generation == active_playback_generation_) {
+        std::rethrow_exception(playback_read_error_);
+      }
       if (existing != entries_.end()) {
         entry = existing->second;
-        while (entry->loading) entry->ready.wait(lock);
+        if (entry->loading && !prefetch) {
+          const auto started = std::chrono::steady_clock::now();
+          while (entry->loading) entry->ready.wait(lock);
+          const auto elapsed = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - started).count());
+          ++metrics_.foreground_loading_wait_count;
+          metrics_.foreground_loading_wait_us_total += elapsed;
+          metrics_.foreground_loading_wait_us_max =
+              std::max(metrics_.foreground_loading_wait_us_max, elapsed);
+        } else {
+          while (entry->loading) entry->ready.wait(lock);
+        }
         if (entry->cancelled) continue;
         if (entry->error) std::rethrow_exception(entry->error);
         if (!prefetch) {
@@ -986,6 +1026,11 @@ void BlockCache::schedule_prefetch(std::uint64_t next_offset,
       ++metrics_.stale_playback_cancellations;
       return;
     }
+    // 当前消费窗口独立于批次调度窗口，避免回退读取改变取消和补充规则。
+    if (protect_unread_window_) {
+      unread_window_start_ = start;
+      unread_window_end_ = end;
+    }
     bool replaced = false;
     if (start >= prefetch_window_start_ && start <= prefetch_end_) {
       if (protect_read_ahead_) prefetch_window_start_ = start;
@@ -1044,7 +1089,9 @@ void BlockCache::prefetch_loop() {
             prefetch_end_ - prefetch_window_start_ <= 2 * initial_prefetch_batch_blocks_;
         const std::size_t batch_blocks =
             (initial_prefetch_batch_ || short_disc_window)
-                ? initial_prefetch_batch_blocks_ : prefetch_batch_blocks_;
+                ? initial_prefetch_batch_blocks_
+                : (recovery_prefetch_batch_ ? recovery_prefetch_batch_blocks_
+                                            : prefetch_batch_blocks_);
         const std::uint64_t batch_limit = std::min<std::uint64_t>(
             prefetch_end_, batch_start + batch_blocks);
         batch_count = 0;
@@ -1084,6 +1131,9 @@ void BlockCache::prefetch_loop() {
       if (batch.empty()) continue;
       prefetch_next_ += batch_count;
       generation = prefetch_generation_;
+      // 首批后只插入一个过渡批次；新窗口仍从首批重新开始。
+      recovery_prefetch_batch_ = initial_prefetch_batch_ &&
+                                recovery_prefetch_batch_blocks_ != 0;
       initial_prefetch_batch_ = false;
       prefetch_pending_ = prefetch_next_ < prefetch_end_;
       ++metrics_.requests;
@@ -1098,61 +1148,115 @@ void BlockCache::prefetch_loop() {
                                      std::chrono::steady_clock::now());
     }
 
+    std::uint64_t published_bytes = 0;
     try {
-      auto bytes = source_->fetch(fetch_start, fetch_end, [this, generation] {
-        std::lock_guard lock(mutex_);
-        return stopping_ || generation != prefetch_generation_;
-      });
-      const std::size_t expected =
-          static_cast<std::size_t>(fetch_end - fetch_start + 1);
-      if (bytes.size() != expected) {
-        throw std::runtime_error("block source returned an invalid length");
-      }
-      std::lock_guard lock(mutex_);
-      if (generation != prefetch_generation_) {
-        ++metrics_.cancelled_prefetch_requests;
-        metrics_.cancelled_prefetch_bytes += bytes.size();
-        for (const auto& [index, entry] : batch) {
-          const auto found = entries_.find(index);
-          if (found != entries_.end() && found->second == entry &&
-                !entry->removed) {
-            entry->removed = true;
-            lru_.erase(entry->lru_position);
-            entries_.erase(found);
-          }
-          entry->cancelled = true;
-          entry->loading = false;
-        }
-      } else {
-        std::size_t copied = 0;
-        for (const auto& [index, entry] : batch) {
-          const std::uint64_t block_start = index * block_size_;
-          const std::size_t length = static_cast<std::size_t>(
-              std::min(block_size_, source_->size() - block_start));
-          entry->bytes.assign(bytes.begin() + copied,
-                              bytes.begin() + copied + length);
-          entry->prefetched = true;
-          entry->loading = false;
-          copied += length;
-          resident_bytes_ += length;
-        }
-        metrics_.fetched_bytes += bytes.size();
-        metrics_.prefetched_bytes += bytes.size();
-        metrics_.prefetch_fetch_bytes += bytes.size();
-        if (refetch_count_available_) {
-          try {
-            for (const auto& [index, entry] : batch) {
-              static_cast<void>(entry);
-              if (!fetched_block_indices_.insert(index).second) {
-                ++metrics_.refetch_count;
+      if (stream_prefetch_) {
+        std::size_t next_entry = 0;
+        std::vector<std::uint8_t> partial;
+        source_->fetch_stream(fetch_start, fetch_end, [this, generation] {
+          std::lock_guard lock(mutex_);
+          return stopping_ || generation != prefetch_generation_;
+        }, [&](const std::uint8_t* data, std::size_t size) {
+          while (size > 0) {
+            if (next_entry == batch.size()) {
+              throw std::runtime_error("block source returned excess bytes");
+            }
+            auto& [index, entry] = batch[next_entry];
+            const auto length = static_cast<std::size_t>(
+                std::min(block_size_, source_->size() - index * block_size_));
+            const auto copy = std::min(size, length - partial.size());
+            partial.insert(partial.end(), data, data + copy);
+            data += copy;
+            size -= copy;
+            if (partial.size() != length) continue;
+            std::lock_guard lock(mutex_);
+            if (stopping_ || generation != prefetch_generation_) {
+              throw FetchCancelled(published_bytes + partial.size());
+            }
+            // 已验证响应中的完整块立即可用；残块不进入缓存。
+            entry->bytes = std::move(partial);
+            partial.clear();
+            entry->prefetched = true;
+            entry->loading = false;
+            resident_bytes_ += length;
+            published_bytes += length;
+            metrics_.fetched_bytes += length;
+            metrics_.prefetched_bytes += length;
+            metrics_.prefetch_fetch_bytes += length;
+            metrics_.peak_bytes = std::max(metrics_.peak_bytes, resident_bytes_);
+            if (refetch_count_available_) {
+              try {
+                if (!fetched_block_indices_.insert(index).second) ++metrics_.refetch_count;
+              } catch (const std::bad_alloc&) {
+                refetch_count_available_ = false;
+                fetched_block_indices_.clear();
               }
             }
-          } catch (const std::bad_alloc&) {
-            refetch_count_available_ = false;
-            fetched_block_indices_.clear();
+            ++next_entry;
+            entry->ready.notify_all();
+            space_available_.notify_all();
+            entry.reset();
           }
+        });
+        if (published_bytes != fetch_end - fetch_start + 1 || !partial.empty()) {
+          throw std::runtime_error("block source returned an invalid length");
         }
-        metrics_.peak_bytes = std::max(metrics_.peak_bytes, resident_bytes_);
+      } else {
+        auto bytes = source_->fetch(fetch_start, fetch_end, [this, generation] {
+          std::lock_guard lock(mutex_);
+          return stopping_ || generation != prefetch_generation_;
+        });
+        const std::size_t expected =
+            static_cast<std::size_t>(fetch_end - fetch_start + 1);
+        if (bytes.size() != expected) {
+          throw std::runtime_error("block source returned an invalid length");
+        }
+        std::lock_guard lock(mutex_);
+        if (generation != prefetch_generation_) {
+          ++metrics_.cancelled_prefetch_requests;
+          metrics_.cancelled_prefetch_bytes += bytes.size();
+          for (const auto& [index, entry] : batch) {
+            const auto found = entries_.find(index);
+            if (found != entries_.end() && found->second == entry &&
+                  !entry->removed) {
+              entry->removed = true;
+              lru_.erase(entry->lru_position);
+              entries_.erase(found);
+            }
+            entry->cancelled = true;
+            entry->loading = false;
+          }
+        } else {
+          std::size_t copied = 0;
+          for (const auto& [index, entry] : batch) {
+            const std::uint64_t block_start = index * block_size_;
+            const std::size_t length = static_cast<std::size_t>(
+                std::min(block_size_, source_->size() - block_start));
+            entry->bytes.assign(bytes.begin() + copied,
+                                bytes.begin() + copied + length);
+            entry->prefetched = true;
+            entry->loading = false;
+            copied += length;
+            resident_bytes_ += length;
+          }
+          metrics_.fetched_bytes += bytes.size();
+          metrics_.prefetched_bytes += bytes.size();
+          metrics_.prefetch_fetch_bytes += bytes.size();
+          if (refetch_count_available_) {
+            try {
+              for (const auto& [index, entry] : batch) {
+                static_cast<void>(entry);
+                if (!fetched_block_indices_.insert(index).second) {
+                  ++metrics_.refetch_count;
+                }
+              }
+            } catch (const std::bad_alloc&) {
+              refetch_count_available_ = false;
+              fetched_block_indices_.clear();
+            }
+          }
+          metrics_.peak_bytes = std::max(metrics_.peak_bytes, resident_bytes_);
+        }
       }
     } catch (...) {
       std::lock_guard lock(mutex_);
@@ -1162,13 +1266,16 @@ void BlockCache::prefetch_loop() {
         try {
           std::rethrow_exception(std::current_exception());
         } catch (const FetchCancelled& error) {
-          metrics_.cancelled_prefetch_bytes += error.received_bytes();
+          metrics_.cancelled_prefetch_bytes += error.received_bytes() -
+              std::min(error.received_bytes(), published_bytes);
         } catch (...) {
         }
       }
       const auto error = cancelled ? std::exception_ptr{}
                                    : std::current_exception();
+      if (stream_prefetch_ && !cancelled) playback_read_error_ = error;
       for (const auto& [index, entry] : batch) {
+        if (stream_prefetch_ && !entry) continue;
         if (cancelled) {
           const auto found = entries_.find(index);
           if (found != entries_.end() && found->second == entry &&
@@ -1191,7 +1298,7 @@ void BlockCache::prefetch_loop() {
                                       std::chrono::steady_clock::now());
       for (const auto& [index, entry] : batch) {
         static_cast<void>(index);
-        entry->ready.notify_all();
+        if (entry) entry->ready.notify_all();
       }
       space_available_.notify_all();
     }
@@ -1263,21 +1370,28 @@ void BlockCache::touch_locked(std::uint64_t index,
 }
 
 bool BlockCache::evict_one_locked() {
-  for (auto iterator = lru_.rbegin(); iterator != lru_.rend(); ++iterator) {
-    const auto found = entries_.find(*iterator);
-    if (found == entries_.end() || found->second->loading) continue;
-    if (protect_read_ahead_ && found->first >= prefetch_window_start_ &&
-        found->first < prefetch_end_) continue;
-    if (found->second->prefetched) {
-      metrics_.prefetch_unused_bytes += found->second->bytes.size();
+  // 优先保留当前前向块；没有其他候选时仍允许腾出需求/批次容量。
+  for (const bool allow_unread : {false, true}) {
+    if (allow_unread && !protect_unread_window_) break;
+    for (auto iterator = lru_.rbegin(); iterator != lru_.rend(); ++iterator) {
+      const auto found = entries_.find(*iterator);
+      if (found == entries_.end() || found->second->loading) continue;
+      if (protect_read_ahead_ && found->first >= prefetch_window_start_ &&
+          found->first < prefetch_end_) continue;
+      if (protect_unread_window_ && !allow_unread &&
+          found->first >= unread_window_start_ &&
+          found->first < unread_window_end_) continue;
+      if (found->second->prefetched) {
+        metrics_.prefetch_unused_bytes += found->second->bytes.size();
+      }
+      found->second->removed = true;
+      ++metrics_.eviction_count;
+      resident_bytes_ -= found->second->bytes.size();
+      const auto forward = std::next(iterator).base();
+      lru_.erase(forward);
+      entries_.erase(found);
+      return true;
     }
-    found->second->removed = true;
-    ++metrics_.eviction_count;
-    resident_bytes_ -= found->second->bytes.size();
-    const auto forward = std::next(iterator).base();
-    lru_.erase(forward);
-    entries_.erase(found);
-    return true;
   }
   return false;
 }

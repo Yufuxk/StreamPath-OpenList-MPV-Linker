@@ -472,7 +472,7 @@ OpenList 恢复、视频 `MediaEntry` 或字幕匹配模块。
 2026-09-07 菜单接入现有缓存策略：MPV 自动预算 16 MiB，ISO 字节缓存按策略内存预算分配、最高 1 GiB，最多四分之三用于前向预读。窗口从 8 MiB 起步，连续读取后按消费速度与目标时长逐步扩大，Seek 后重新从短窗口起步；仅菜单保护未消费的前向窗口。短窗口保留 4 MiB 批次，长窗口合并最多 16 MiB Range，仍只有一个 worker。MPV 导航缓存条可能仍为 0，详见[菜单长缓存与波动回归](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单长缓存与波动回归.md)。菜单启动不再恢复 edition/时间。设置“WebDAV 蓝光菜单进度”默认为独立：不保存菜单线性进度；共享时保存明确 MPLS 的正片进度，退出同步到同源 ISO 的 Title/MPLS watch_later。菜单底栏与媒体中心继续播放依据历史保留光盘和目录，不要求时间进度；不保存光盘 VM 快照。详见[菜单进度独立与共享](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单进度独立与共享.md)。上一轮续播验证见[菜单缓存与续播修复验收](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单缓存与续播修复验收.md)。
 
 `.iso` 由 `WebDavFile.isIso` 独立识别，不加入 `videoExtensions`、`isPlayable`、
-`isMediaPlayable` 或 `MediaLibraryKind`。未启用菜单时，浏览页点击后直接进入 ISO 远程播放测试弹窗，不调用视频或
+`isMediaPlayable` 或 `MediaLibraryKind`。未启用菜单时，浏览页点击后直接进入 ISO 远程播放系统弹窗，不调用视频或
 音频播放函数，也不占用其会话槽位。`IsoPlaybackService` 仅由 `AppState` 可选注册；初始化
 失败不影响目录浏览、视频和音频。
 
@@ -504,7 +504,15 @@ helper 使用 WinHTTP 手动跟随最多五次重定向，Basic 只发送到 Web
 单位合并；选择完成后
 Flutter 在 `attachPlayer` 前发送一次 `configure_cache`，按所选 Title 最大约 8 秒数据量配置
 4～12 个预读块，并把容量设为预读块数加 2、限制为 4～16 块。新播放代际的首个后台批次只取
-两个块（8 MiB），后续由单 worker 把每四个相邻块合并成最多 16 MiB 的 Range。localhost 只绑定随机
+最多 2 MiB，下一批最多 8 MiB，此后由单 worker 合并成最多 16 MiB 的 Range；新代际或非连续窗口重新从短批次开始。
+该调整仅用于 Title 模式，实机非退化与平均 5 秒目标尚待验收；新增 loading 等待及 GET 分段诊断见
+下文。第二轮 Title 预读在验证响应头后按完整 256 KiB 块提前交付，不再等待整个合并 Range；
+残块不入缓存，断流仍明确失败，旧代际不得继续发布。菜单仍按原整批交付。
+Title 的当前前向消费窗口与调度窗口分离，回收时优先淘汰窗口外块，
+没有其他可回收条目时仍允许按 LRU 腾出容量；新播放代际清除旧窗口保护但保留有效完整块。
+该候选不改变批次、补充阈值或 MPV 参数，真实 Seek/切集非退化仍待验收，详见
+[频繁 Seek 缓存排查与优化方案](WebDAV%20ISO%20频繁Seek缓存排查与优化方案.md)及
+[播放列表 Seek 优化与验收](WebDAV%20ISO%20播放列表%20Seek%20优化与验收.md)。localhost 只绑定随机
 `127.0.0.1` 端口，端点为 `/<128-bit token>/title/<mpls>.m2ts`，支持 HEAD、普通 GET 和
 单段 Range。同一 MPLS 的媒体 GET 以独占租约复用一个 Persistent BLURAY Context，使 `bd_seek` 与
 `bd_read` 在同一实例上原子执行；Title 切换、初始化失败或读取硬错误才串行销毁并重建，播放

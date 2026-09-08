@@ -71,7 +71,7 @@ STRM、匹配外挂字幕与字体、启动 MPV 等外部播放器（目前主�
 保存文件快照和可用的 Title 信息，只在进入稳定 Title 后显示续播，文件被替换后不会
 沿用旧位置。
 
-## WebDAV Blu-ray ISO 远程播放测试
+## WebDAV Blu-ray ISO 远程播放系统
 
 点击 `.iso` 后，StreamPath 启动随软件发布的 Bridge 对远端镜像做严格探测，确认服务器
 支持随机读取后，按 Title/MPLS 解析光盘结构并提供 Title 选择；播放为流式随机读取，

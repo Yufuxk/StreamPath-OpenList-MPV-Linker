@@ -462,6 +462,13 @@ void main() {
     await settleBrowser(tester);
     await tester.tap(find.text('DISC.iso'));
     await waitForWidget(tester, find.text('蓝光菜单播放'));
+    final titleModeButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, '标题/播放列表模式'),
+    );
+    final menuModeButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, '蓝光菜单播放'),
+    );
+    expect(titleModeButton.autofocus, menuModeButton.autofocus);
     await tester.tap(find.text('蓝光菜单播放'));
     await waitForWidget(tester, find.text('正在播放 ISO：DISC.iso'));
     await waitForWidget(tester, find.text('ISO 播放器已启动，关闭 MPV 后将清理会话文件'));
@@ -600,7 +607,7 @@ void main() {
         tester,
         find.text(localizations.text('正在探测 ISO 流式读取…')),
       );
-      expect(find.text(localizations.text('ISO 远程播放测试')), findsOneWidget);
+      expect(find.text(localizations.text('ISO 远程播放系统')), findsOneWidget);
       expect(find.text(localizations.text('正在探测 ISO 流式读取…')), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('iso-streaming-cancel')));

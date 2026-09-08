@@ -467,6 +467,136 @@ void test_cache() {
          "cache metrics");
 }
 
+void test_title_recovery_batches() {
+  class RecordingSource final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 8192; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start,
+                                    std::uint64_t end) override {
+      std::lock_guard lock(mutex);
+      ranges.emplace_back(start, end - start + 1);
+      return std::vector<std::uint8_t>(static_cast<std::size_t>(end - start + 1), 7);
+    }
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+  };
+  for (const bool recovery : {false, true}) {
+    auto source = std::make_shared<RecordingSource>();
+    bridge::BlockCache cache(source, 8, 64, 1, 1, 8, recovery ? 4 : 0);
+    for (const std::uint64_t offset : {0ULL, 4096ULL}) {
+      const auto generation = cache.begin_playback();
+      std::size_t before = 0;
+      {
+        std::lock_guard lock(source->mutex);
+        before = source->ranges.size();
+      }
+      const auto fetched = cache.metrics().prefetched_bytes;
+      std::uint8_t byte = 0;
+      expect(cache.read(offset, &byte, 1, 24, generation) == 1 && byte == 7,
+             "recovery preserves demand bytes");
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (cache.metrics().prefetched_bytes < fetched + 24 * 8 &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      expect(cache.metrics().prefetched_bytes == fetched + 24 * 8,
+             "recovery fills bounded window");
+      std::lock_guard lock(source->mutex);
+      expect(source->ranges.at(before + 1).second == 8 &&
+                 source->ranges.at(before + 2).second == (recovery ? 32ULL : 64ULL) &&
+                 source->ranges.at(before + 3).second == 64,
+             "title ramps batches and resets on generation; legacy skips ramp");
+    }
+  }
+}
+
+void test_stream_prefetch_publication() {
+  class StreamingSource final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 1024; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start, std::uint64_t end) override {
+      return std::vector<std::uint8_t>(static_cast<std::size_t>(end - start + 1), 9);
+    }
+    void fetch_stream(std::uint64_t start, std::uint64_t end,
+                      const CancellationProbe& cancelled,
+                      const ChunkConsumer& consume) override {
+      std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end - start + 1), 7);
+      consume(bytes.data(), 11);
+      {
+        std::unique_lock lock(mutex);
+        started = true;
+        ready.notify_all();
+        ready.wait(lock, [&] { return released; });
+      }
+      if (cancelled()) throw bridge::FetchCancelled(11);
+      if (fail) throw std::runtime_error("stream tail failed");
+      consume(bytes.data() + 11, bytes.size() - 11);
+    }
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool started = false;
+    bool released = false;
+    bool fail = false;
+  };
+  for (const int mode : {0, 1, 2}) {
+    auto source = std::make_shared<StreamingSource>();
+    source->fail = mode == 1;
+    bridge::BlockCache cache(source, 8, 16, 1, 4, 4, 0, true);
+    cache.configure(16, 4, false, true);
+    const auto generation = cache.begin_playback();
+    std::uint8_t byte = 0;
+    cache.read(0, &byte, 1, 4, generation);
+    bool started = false;
+    {
+      std::unique_lock lock(source->mutex);
+      started = source->ready.wait_for(lock, std::chrono::seconds(2), [&] { return source->started; });
+    }
+    std::atomic<bool> read_done = false;
+    std::uint8_t streamed = 0;
+    std::thread reader([&] {
+      cache.read(8, &streamed, 1, 0, generation);
+      read_done = true;
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!read_done && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const bool early = read_done;
+    const auto partial_metrics = cache.metrics();
+    auto current = generation;
+    if (mode == 2) current = cache.begin_playback();
+    {
+      std::lock_guard lock(source->mutex);
+      source->released = true;
+      source->ready.notify_all();
+    }
+    reader.join();
+    expect(started && early && streamed == 7 && partial_metrics.prefetched_bytes == 8,
+           "complete block is readable before range tail; partial block is unpublished");
+    if (mode == 1) {
+      bool failed = false;
+      try { cache.read(16, &byte, 1, 0, current); }
+      catch (const std::runtime_error&) { failed = true; }
+      expect(failed, "stream tail failure reaches demand");
+      failed = false;
+      try { cache.read(8, &byte, 1, 0, current); }
+      catch (const std::runtime_error&) { failed = true; }
+      expect(failed, "stream error cannot be hidden by a completed cache hit");
+      current = cache.begin_playback();
+      expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == 9,
+             "new generation recovers without retaining partial bytes");
+    } else {
+      expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == (mode == 2 ? 9 : 7),
+             "tail completes or stale partial is discarded");
+    }
+    cache.shutdown();
+    if (mode == 2) {
+      expect(cache.metrics().cancelled_prefetch_bytes == 3,
+             "cancellation counts only unpublished bytes");
+    }
+  }
+}
+
 void test_metadata_cache_handoff_preserves_hot_blocks_and_refetch_history() {
   auto source = std::make_shared<FakeSource>(64);
   bridge::BlockCache metadata(source, 8, 8);
@@ -531,6 +661,10 @@ void test_prefetch_and_demand_share_inflight_block() {
   expect(waited_for_prefetch && demand_result == 1 && demanded == 8 &&
              source->calls == 2 && metrics.prefetch_hits == 1,
          "prefetch and demand share one inflight block result");
+  expect(metrics.foreground_loading_wait_count == 1 &&
+             metrics.foreground_loading_wait_us_total > 0 &&
+             metrics.foreground_loading_wait_us_max == metrics.foreground_loading_wait_us_total,
+         "foreground inflight wait is measured");
 }
 
 void test_new_generation_replaces_cancelled_same_block_load() {
@@ -734,6 +868,83 @@ void test_disc_short_window_refills_before_exhaustion() {
          "short disc window refills at half waterline despite larger batch cap");
 }
 
+void test_title_unread_window_retention() {
+  class RecordingSource final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 65536; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start,
+                                    std::uint64_t end) override {
+      std::lock_guard lock(mutex);
+      ranges.emplace_back(start, end - start + 1);
+      std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end - start + 1));
+      for (std::size_t i = 0; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<std::uint8_t>((start + i) & 0xffU);
+      }
+      return bytes;
+    }
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+  };
+  for (const std::size_t window : {64U, 160U, 192U}) {
+    auto source = std::make_shared<RecordingSource>();
+    const std::size_t capacity = window == 64 ? 6 : 14;
+    bridge::BlockCache cache(source, 8, capacity, 16, 8, 64, 32, true);
+    cache.configure(capacity, window / 16, false, true);
+    std::uint8_t byte = 0;
+    // 连续推进和远距离换代际均覆盖满容量回收。
+    for (const std::uint64_t base : {0ULL, 1024ULL, 2048ULL}) {
+      const auto generation = cache.begin_playback();
+      const auto before = cache.metrics();
+      std::size_t first_range = 0;
+      {
+        std::lock_guard lock(source->mutex);
+        first_range = source->ranges.size();
+      }
+      for (std::uint64_t i = 0; i < 256; ++i) {
+        const auto position = (base + i) * 8;
+        expect(cache.read(position, &byte, 1, window, generation) == 1 &&
+                   byte == static_cast<std::uint8_t>(position & 0xffU),
+               "title retention preserves bytes");
+        if (i % 64 == 0) {
+          const auto expected = before.prefetched_bytes + (window + i) * 8;
+          const auto deadline = std::chrono::steady_clock::now() +
+                                std::chrono::seconds(2);
+          while (cache.metrics().prefetched_bytes < expected &&
+                 std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+          expect(cache.metrics().prefetched_bytes == expected,
+                 "title retains its original refill threshold");
+        }
+        if (window == 64 && i == 32) {
+          expect(cache.metrics().prefetched_bytes == before.prefetched_bytes + 512,
+                 "title short window does not adopt menu half-window refill");
+        }
+      }
+      const auto after = cache.metrics();
+      expect(after.cache_miss_count == before.cache_miss_count + 1 &&
+                 after.refetch_count == 0 && after.eviction_count > 0 &&
+                 after.resident_bytes <= after.cache_capacity_bytes,
+             "title evicts old bytes without refetching its unread window");
+      {
+        std::lock_guard lock(source->mutex);
+        expect(source->ranges.at(first_range + 1).second == 8 * 8 &&
+                   source->ranges.at(first_range + 2).second == 32 * 8 &&
+                   source->ranges.at(first_range + 3).second ==
+                       (window == 64 ? 24ULL : 64ULL) * 8,
+               "title retains 2/8/16 MiB batch ramp after each generation");
+      }
+      // 同代际回退不改变调度窗口；新代际仍可命中保留块。
+      const auto requests = after.requests;
+      cache.read((base + 200) * 8, &byte, 1, window, generation);
+      const auto next = cache.begin_playback();
+      cache.read((base + 255) * 8, &byte, 1, 0, next);
+      expect(cache.metrics().requests == requests,
+             "backward and new-generation warm reads keep cached bytes");
+    }
+  }
+}
+
 void test_long_disc_buffer_preserves_unread_window() {
   const auto measure = [](bool protect) {
     auto source = std::make_shared<FakeSource>(4096);
@@ -753,6 +964,27 @@ void test_long_disc_buffer_preserves_unread_window() {
   };
   expect(measure(false) > 1, "plain LRU evicts unread bytes before consumption");
   expect(measure(true) == 1, "disc buffer has only the initial demand miss");
+}
+
+void test_title_unread_window_allows_capacity_reduction() {
+  auto source = std::make_shared<FakeSource>(65536);
+  bridge::BlockCache cache(source, 8, 14, 16, 8, 64, 32, true);
+  cache.configure(14, 10, false, true);
+  const auto generation = cache.begin_playback();
+  std::uint8_t byte = 0;
+  cache.read(0, &byte, 1, 160, generation);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (cache.metrics().prefetched_bytes < 1280 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(cache.metrics().prefetched_bytes == 1280, "title window filled");
+  cache.configure(6, 4, false, true);
+  expect(cache.metrics().resident_bytes <= 768,
+         "unread preference cannot prevent shrinking to configured capacity");
+  const auto next = cache.begin_playback();
+  expect(cache.read(8192, &byte, 1, 64, next) == 1 && byte == 0,
+         "new generation can read after reducing a full cache");
 }
 
 void test_disc_seek_retains_cached_bytes_and_playback_generation() {
@@ -811,6 +1043,7 @@ void test_seek_replaces_prefetch_window() {
 void test_stale_playback_cannot_replace_current_prefetch_window() {
   auto source = std::make_shared<FakeSource>(512);
   bridge::BlockCache cache(source, 8, 12);
+  cache.configure(12, 4, false, true);
   std::vector<std::uint8_t> byte(1);
 
   const auto previous = cache.begin_playback();
@@ -846,6 +1079,7 @@ void test_stale_playback_cannot_replace_current_prefetch_window() {
 void test_switch_does_not_wait_for_stale_prefetch() {
   auto source = std::make_shared<SwitchingSource>();
   bridge::BlockCache cache(source, 8, 12);
+  cache.configure(12, 4, false, true);
   std::vector<std::uint8_t> byte(1);
 
   const auto previous = cache.begin_playback();
@@ -876,6 +1110,7 @@ void test_switch_does_not_wait_for_stale_prefetch() {
 void test_switch_cancels_stale_foreground_range() {
   auto source = std::make_shared<SlowForegroundSource>();
   bridge::BlockCache cache(source, 8, 12);
+  cache.configure(12, 4, false, true);
   std::vector<std::uint8_t> old_byte(1);
   std::vector<std::uint8_t> current_byte(1);
   const auto previous = cache.begin_playback();
@@ -908,6 +1143,7 @@ void test_switch_cancels_stale_foreground_range() {
 void test_consecutive_seeks_keep_only_latest_generation() {
   auto source = std::make_shared<SlowForegroundSource>();
   bridge::BlockCache cache(source, 8, 12);
+  cache.configure(12, 4, false, true);
   std::vector<std::uint8_t> first_byte(1);
   std::vector<std::uint8_t> second_byte(1);
   std::vector<std::uint8_t> latest_byte(1);
@@ -1294,6 +1530,8 @@ int main() {
     test_json();
     test_m2ts_timestamp_normalization();
     test_cache();
+    test_title_recovery_batches();
+    test_stream_prefetch_publication();
     test_metadata_cache_handoff_preserves_hot_blocks_and_refetch_history();
     test_prefetch_and_demand_share_inflight_block();
     test_new_generation_replaces_cancelled_same_block_load();
@@ -1307,6 +1545,8 @@ int main() {
     test_disc_seek_retains_cached_bytes_and_playback_generation();
     test_long_disc_buffer_preserves_unread_window();
     test_disc_short_window_refills_before_exhaustion();
+    test_title_unread_window_retention();
+    test_title_unread_window_allows_capacity_reduction();
     test_stale_playback_cannot_replace_current_prefetch_window();
     test_switch_does_not_wait_for_stale_prefetch();
     test_switch_cancels_stale_foreground_range();

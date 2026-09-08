@@ -360,7 +360,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       canPop: false,
       child: AlertDialog(
         key: const Key('iso-streaming-dialog'),
-        title: const AppText('ISO 远程播放测试'),
+        title: const AppText('ISO 远程播放系统'),
         content: SizedBox(
           width: 420,
           child: Column(
@@ -1370,7 +1370,7 @@ class _BrowserPageState extends State<BrowserPage> {
           actions: [
             TextButton(onPressed: () => Navigator.of(dialogContext).pop(),
               child: const AppText('取消')),
-            OutlinedButton(autofocus: true,
+            OutlinedButton(
               onPressed: () => Navigator.of(dialogContext).pop(PlaybackMode.legacyTitle),
               child: const AppText('标题/播放列表模式')),
             OutlinedButton(

@@ -6,7 +6,7 @@ const Map<String, String> englishTranslations = <String, String>{
   "独立（不记录进度）": "Independent (do not record progress)",
   "共享（供标题模式续播）": "Shared (resume in title mode)",
   "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "Menus always start from the beginning. Shared mode records feature progress for title mode. Changes apply to new sessions.",
-  "ISO 远程播放测试": "ISO remote playback test",
+  "ISO 远程播放系统": "ISO remote playback system",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响":
       "The ISO remote playback test module failed to initialize. Video and audio playback are unaffected",
   "ISO 远程播放测试模块正在执行其他任务":
@@ -587,7 +587,7 @@ const Map<String, String> japaneseTranslations = <String, String>{
   "独立（不记录进度）": "独立（再生位置を記録しない）",
   "共享（供标题模式续播）": "共有（タイトルモードで再開）",
   "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "メニューは常に最初から開始します。共有時は本編の再生位置をタイトルモードに引き継ぎます。変更は新しいセッションに適用されます。",
-  "ISO 远程播放测试": "ISO リモート再生テスト",
+  "ISO 远程播放系统": "ISO リモート再生システム",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响":
       "ISO リモート再生テストモジュールを初期化できませんでした。動画と音声の再生には影響しません",
   "ISO 远程播放测试模块正在执行其他任务": "ISO リモート再生テストモジュールは別のタスクを実行中です",
@@ -1093,7 +1093,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "独立（不记录进度）": "獨立（不記錄進度）",
   "共享（供标题模式续播）": "共用（供標題模式續播）",
   "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "選單一律從頭啟動；共用時記錄正片進度供標題模式使用。變更對新工作階段生效。",
-  "ISO 远程播放测试": "ISO 遠端播放測試",
+  "ISO 远程播放系统": "ISO 遠端播放系統",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响": "ISO 遠端播放測試模組初始化失敗，不影響影片與音訊播放",
   "ISO 远程播放测试模块正在执行其他任务": "ISO 遠端播放測試模組正在執行其他工作",
   "正在检查 MPV 播放器…": "正在檢查 MPV 播放器…",

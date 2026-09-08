@@ -517,6 +517,12 @@ class WinHttpRangeSource final : public bridge::BlockSource {
     return fetch_impl(start, end, cancelled);
   }
 
+  void fetch_stream(std::uint64_t start, std::uint64_t end,
+                    const bridge::BlockSource::CancellationProbe& cancelled,
+                    const bridge::BlockSource::ChunkConsumer& consume) override {
+    static_cast<void>(fetch_impl(start, end, cancelled, consume));
+  }
+
   void cancel_pending() override {
     std::vector<std::shared_ptr<ActiveRequest>> active;
     {
@@ -862,7 +868,8 @@ class WinHttpRangeSource final : public bridge::BlockSource {
 
   std::vector<std::uint8_t> fetch_impl(
       std::uint64_t start, std::uint64_t end,
-      const bridge::BlockSource::CancellationProbe& cancelled) {
+      const bridge::BlockSource::CancellationProbe& cancelled,
+      const bridge::BlockSource::ChunkConsumer& consume = {}) {
     if (start > end || end >= size_) {
       throw BridgeException("internal_error", "Requested ISO range is invalid");
     }
@@ -873,7 +880,7 @@ class WinHttpRangeSource final : public bridge::BlockSource {
     });
     HttpResponse response;
     try {
-      response = request("GET", start, end, validator_, cancelled);
+      response = request("GET", start, end, validator_, cancelled, consume);
     } catch (...) {
       remote_transfer_active_microseconds_.fetch_add(
           static_cast<std::uint64_t>(
@@ -887,6 +894,17 @@ class WinHttpRangeSource final : public bridge::BlockSource {
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - transfer_started)
                 .count()));
+    if (!consume) {
+      validate_range_headers(response, start, end);
+      if (response.body.size() != static_cast<std::size_t>(end - start + 1)) {
+        throw BridgeException("network_error", "The ISO range body is incomplete", response.status);
+      }
+    }
+    return response.body;
+  }
+
+  void validate_range_headers(const HttpResponse& response,
+                              std::uint64_t start, std::uint64_t end) const {
     if (response.status == HTTP_STATUS_OK) {
       throw BridgeException("remote_changed",
                             "The remote ISO changed during playback",
@@ -905,13 +923,11 @@ class WinHttpRangeSource final : public bridge::BlockSource {
                             response.status);
     }
     const std::uint64_t expected = end - start + 1;
-    if (response.content_length != expected ||
-        response.body.size() != static_cast<std::size_t>(expected)) {
+    if (response.content_length != expected) {
       throw BridgeException("network_error", "The ISO range body is incomplete",
                             response.status);
     }
     verify_validator(response);
-    return response.body;
   }
 
   void probe() {
@@ -988,7 +1004,8 @@ class WinHttpRangeSource final : public bridge::BlockSource {
                        std::optional<std::uint64_t> range_start,
                        std::optional<std::uint64_t> range_end,
                        const std::wstring& if_range,
-                       const bridge::BlockSource::CancellationProbe& cancelled = {}) {
+                       const bridge::BlockSource::CancellationProbe& cancelled = {},
+                       const bridge::BlockSource::ChunkConsumer& consume = {}) {
     std::wstring current;
     {
       std::lock_guard lock(url_mutex_);
@@ -1112,7 +1129,12 @@ class WinHttpRangeSource final : public bridge::BlockSource {
         if (expected > kMaximumIsoRangeBytes) {
           throw BridgeException("network_error", "The WebDAV response is too large");
         }
-        response.body.reserve(static_cast<std::size_t>(expected));
+        if (consume) {
+          validate_range_headers(response, *range_start, *range_end);
+        } else {
+          response.body.reserve(static_cast<std::size_t>(expected));
+        }
+        std::size_t body_bytes = 0;
         std::array<std::uint8_t, 64U * 1024U> buffer{};
         const auto body_started = std::chrono::steady_clock::now();
         ScopeExit body_finished([this, body_started] {
@@ -1124,14 +1146,14 @@ class WinHttpRangeSource final : public bridge::BlockSource {
         });
         while (true) {
           if (cancelled && cancelled()) {
-            throw bridge::FetchCancelled(response.body.size());
+            throw bridge::FetchCancelled(body_bytes);
           }
           DWORD received = 0;
           try {
             received = request_handle->read(
                 buffer.data(), static_cast<DWORD>(buffer.size()), cancelled);
           } catch (const bridge::FetchCancelled&) {
-            throw bridge::FetchCancelled(response.body.size());
+            throw bridge::FetchCancelled(body_bytes);
           }
           if (received == 0) break;
           if (!if_range.empty()) {
@@ -1140,13 +1162,22 @@ class WinHttpRangeSource final : public bridge::BlockSource {
             probe_body_bytes_.fetch_add(received);
           }
           if (cancelled && cancelled()) {
-            throw bridge::FetchCancelled(response.body.size() + received);
+            throw bridge::FetchCancelled(body_bytes + received);
           }
-          if (response.body.size() + received > kMaximumIsoRangeBytes) {
+          if (body_bytes + received > kMaximumIsoRangeBytes ||
+              (consume && body_bytes + received > expected)) {
             throw BridgeException("network_error", "The WebDAV response is too large");
           }
-          response.body.insert(response.body.end(), buffer.begin(),
-                               buffer.begin() + received);
+          body_bytes += received;
+          if (consume) {
+            consume(buffer.data(), received);
+          } else {
+            response.body.insert(response.body.end(), buffer.begin(),
+                                 buffer.begin() + received);
+          }
+        }
+        if (consume && body_bytes != expected) {
+          throw BridgeException("network_error", "The ISO range body is incomplete", response.status);
         }
       }
       {
@@ -1206,6 +1237,20 @@ struct DiscReadContext {
   }
 };
 
+struct MediaGetTiming {
+  std::uint64_t sequence = 0;
+  std::uint64_t generation = 0;
+  std::uint64_t playlist = 0;
+  std::uint64_t request_byte = 0;
+  std::uint64_t started_us = 0;
+  std::int64_t context_ready_us = -1;
+  std::int64_t seek_ready_us = -1;
+  std::int64_t headers_ready_us = -1;
+  std::int64_t first_body_us = -1;
+  std::uint64_t discard_bytes = 0;
+  bool superseded = false;
+};
+
 struct BlurayMetricsSnapshot {
   std::uint64_t context_create_count = 0;
   std::uint64_t context_create_us_total = 0;
@@ -1223,10 +1268,12 @@ struct BlurayMetricsSnapshot {
   DWORD last_media_failure_http_status = 0;
   std::uint64_t terminal_rejected_media_get_count = 0;
   bool structure_cache_hit = false;
+  std::vector<MediaGetTiming> media_get_timings;
 };
 
 class BlurayMetrics final {
  public:
+  BlurayMetrics() { timings_.reserve(128); }
   void record_context_create(std::uint64_t microseconds) {
     context_create_count_.fetch_add(1);
     context_create_us_total_.fetch_add(microseconds);
@@ -1266,8 +1313,15 @@ class BlurayMetrics final {
     terminal_rejected_media_get_count_.fetch_add(1);
   }
   void record_structure_cache_hit() { structure_cache_hit_.store(true); }
+  void record_media_timing(const MediaGetTiming& timing) {
+    std::lock_guard lock(timings_mutex_);
+    // 仅保留最近 128 个 GET，不保存 URL 或凭据。
+    if (timings_.size() == 128) timings_.erase(timings_.begin());
+    timings_.push_back(timing);
+  }
 
   BlurayMetricsSnapshot snapshot() const {
+    std::lock_guard lock(timings_mutex_);
     return {
         context_create_count_.load(),
         context_create_us_total_.load(),
@@ -1285,10 +1339,13 @@ class BlurayMetrics final {
         last_media_failure_http_status_.load(),
         terminal_rejected_media_get_count_.load(),
         structure_cache_hit_.load(),
+        timings_,
     };
   }
 
  private:
+  mutable std::mutex timings_mutex_;
+  std::vector<MediaGetTiming> timings_;
   std::atomic<std::uint64_t> context_create_count_ = 0;
   std::atomic<std::uint64_t> context_create_us_total_ = 0;
   std::atomic<std::uint64_t> title_enumeration_us_ = 0;
@@ -2043,11 +2100,31 @@ class LoopbackHttpServer final {
     }
     auto active_socket = media_sockets_.activate(socket.get(), request_sequence);
     if (!active_socket.has_value()) return;
+    const auto get_started = std::chrono::steady_clock::now();
     bluray_metrics_.record_media_get();
     const std::uint64_t playback_generation = cache_.begin_playback();
     const auto playback_current = [this, playback_generation] {
       return cache_.is_playback_current(playback_generation);
     };
+    MediaGetTiming timing;
+    timing.sequence = request_sequence;
+    timing.generation = playback_generation;
+    timing.playlist = playlist;
+    timing.request_byte = start;
+    timing.started_us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            get_started - bridge_started_).count());
+    const auto elapsed_us = [&] {
+      return std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - get_started).count();
+    };
+    bool timing_recorded = false;
+    ScopeExit finish_timing([&] {
+      if (!timing_recorded) {
+        timing.superseded = !playback_current();
+        bluray_metrics_.record_media_timing(timing);
+      }
+    });
     bool response_headers_sent = false;
     try {
       if (!playback_current()) return;
@@ -2066,6 +2143,7 @@ class LoopbackHttpServer final {
       if (context->reused()) {
         bluray_metrics_.record_persistent_context_reuse();
       }
+      timing.context_ready_us = elapsed_us();
       if (!playback_current()) return;
       try {
         (*context)->set_playback_read_ahead(0, playback_generation);
@@ -2079,6 +2157,7 @@ class LoopbackHttpServer final {
             identity_media_range_plan(start, end, title->size);
         const std::int64_t seeked =
             api_.seek((*context)->get(), range_plan.packet_start);
+        timing.seek_ready_us = elapsed_us();
         if (!playback_current()) return;
         if (seeked < 0 || static_cast<std::uint64_t>(seeked) >= title->size ||
             static_cast<std::uint64_t>(seeked) > range_plan.packet_start) {
@@ -2094,6 +2173,7 @@ class LoopbackHttpServer final {
             playback_generation);
         std::uint64_t discard =
             range_plan.packet_start - static_cast<std::uint64_t>(seeked);
+        timing.discard_bytes = discard;
         std::array<std::uint8_t, bridge::kM2tsPacketSize * 256U> media_buffer{};
         while (discard > 0) {
           if (!playback_current()) return;
@@ -2116,6 +2196,7 @@ class LoopbackHttpServer final {
         if (!playback_current()) return;
         if (!send_headers(socket.get(), partial, start, end, title->size)) return;
         response_headers_sent = true;
+        timing.headers_ready_us = elapsed_us();
         std::uint64_t remaining = range_plan.response_length;
         std::uint64_t absolute_offset = source_start;
         const std::uint64_t aligned_end = std::min(
@@ -2164,6 +2245,9 @@ class LoopbackHttpServer final {
               return;
             }
             if (!first_body_sent) {
+              timing.first_body_us = elapsed_us();
+              bluray_metrics_.record_media_timing(timing);
+              timing_recorded = true;
               std::uint64_t expected_ready = 0;
               const auto ready_us = static_cast<std::uint64_t>(
                   std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2453,6 +2537,9 @@ void write_cache_phase_metrics(std::ostringstream& output,
          << cache.consumer_bytes_delivered
          << ",\"cacheHitCount\":" << cache.hits
          << ",\"cacheMissCount\":" << cache.cache_miss_count
+         << ",\"foregroundLoadingWaitCount\":" << cache.foreground_loading_wait_count
+         << ",\"foregroundLoadingWaitUsTotal\":" << cache.foreground_loading_wait_us_total
+         << ",\"foregroundLoadingWaitUsMax\":" << cache.foreground_loading_wait_us_max
          << ",\"prefetchHitCount\":" << cache.prefetch_hits
          << ",\"prefetchHitBytes\":" << cache.prefetch_hit_bytes
          << ",\"prefetchUnusedBytes\":" << cache.prefetch_unused_bytes
@@ -2575,7 +2662,24 @@ std::string metrics_json(
   } else {
     output << "\"transport_or_bridge\"";
   }
-  output << ",\"terminalRejectedMediaGetCount\":"
+  output << ",\"mediaGetTimings\":[";
+  bool first_timing = true;
+  for (const auto& timing : bluray.media_get_timings) {
+    if (!first_timing) output << ',';
+    first_timing = false;
+    output << "{\"sequence\":" << timing.sequence
+           << ",\"generation\":" << timing.generation
+           << ",\"playlist\":" << timing.playlist
+           << ",\"requestByte\":" << timing.request_byte
+           << ",\"startedUs\":" << timing.started_us
+           << ",\"contextReadyUs\":" << timing.context_ready_us
+           << ",\"seekReadyUs\":" << timing.seek_ready_us
+           << ",\"headersReadyUs\":" << timing.headers_ready_us
+           << ",\"firstBodyUs\":" << timing.first_body_us
+           << ",\"discardBytes\":" << timing.discard_bytes
+           << ",\"superseded\":" << (timing.superseded ? "true" : "false") << '}';
+  }
+  output << ']' << ",\"terminalRejectedMediaGetCount\":"
          << bluray.terminal_rejected_media_get_count
          << ",\"structureCacheHit\":"
          << (bluray.structure_cache_hit ? "true" : "false") << '}'
@@ -2944,8 +3048,12 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     bridge::BlockCache cache(
         source, bridge::kIsoDemandBlockSize, bridge::kIsoBlockCount,
         kIsoDemandBlockScale,
-        (virtual_disc ? 1 : bridge::kInitialPlaybackPrefetchBatchBlocks) * kIsoDemandBlockScale,
-        bridge::kPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale);
+        remote_menu
+            ? (virtual_disc ? 1 : bridge::kInitialPlaybackPrefetchBatchBlocks) * kIsoDemandBlockScale
+            : 2 * 1024 * 1024 / bridge::kIsoDemandBlockSize,
+        bridge::kPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
+        remote_menu ? 0 : bridge::kInitialPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
+        !remote_menu);
     if (metadata_cache != nullptr) {
       cache.restore_handoff(std::move(metadata_handoff));
       metadata_cache.reset();
@@ -3064,7 +3172,8 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
                                 "The cache configuration is invalid");
         }
         cache.configure(static_cast<std::size_t>(*block_count),
-                        static_cast<std::size_t>(*prefetch_blocks), virtual_disc);
+                        static_cast<std::size_t>(*prefetch_blocks), virtual_disc,
+                        !remote_menu);
         if (mounted_disc)
           mounted_disc->configure_read_ahead(
               static_cast<unsigned>(cache_seconds.value_or(60)));

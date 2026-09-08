@@ -105,10 +105,10 @@ void main() {
 
   test('ISO 流式播放进度、取消与错误文案覆盖四种语言', () {
     const expectedTitles = <AppLanguage, String>{
-      AppLanguage.simplifiedChinese: 'ISO 远程播放测试',
-      AppLanguage.traditionalChinese: 'ISO 遠端播放測試',
-      AppLanguage.japanese: 'ISO リモート再生テスト',
-      AppLanguage.english: 'ISO remote playback test',
+      AppLanguage.simplifiedChinese: 'ISO 远程播放系统',
+      AppLanguage.traditionalChinese: 'ISO 遠端播放系統',
+      AppLanguage.japanese: 'ISO リモート再生システム',
+      AppLanguage.english: 'ISO remote playback system',
     };
     const expectedCancelling = <AppLanguage, String>{
       AppLanguage.simplifiedChinese: '正在取消…',
@@ -119,7 +119,7 @@ void main() {
 
     for (final language in AppLanguage.values) {
       final localizations = AppLocalizations(language);
-      expect(localizations.text('ISO 远程播放测试'), expectedTitles[language]);
+      expect(localizations.text('ISO 远程播放系统'), expectedTitles[language]);
       expect(localizations.text('正在取消…'), expectedCancelling[language]);
       expect(localizations.text('正在启动 ISO Bridge…'), isNotEmpty);
       expect(localizations.text('正在探测 ISO 流式读取…'), isNotEmpty);
@@ -170,5 +170,110 @@ void main() {
       ).format('已挂载 {count} 个本地文件夹', {'count': 2}),
       '2 local folders mounted',
     );
+  });
+
+  test('本地蓝光续播、诊断与索引运行时文案覆盖四种语言', () {
+    const exactSources = <String>[
+      '本地蓝光内容已变更，已忽略旧续播位置',
+      '可继续上次播放的 Title，也可以从头打开菜单或主标题。',
+      '从头打开菜单',
+      '继续上次标题',
+      '无法确认对应蓝光播放器进程，未删除播放会话',
+      '本地蓝光播放服务已关闭',
+      '本地蓝光内容已变更，请从头播放',
+      '未配置播放器路径，请先在「设置」中配置',
+      '公开设置接口可访问',
+      '公开设置接口未返回 OpenList/AList JSON envelope',
+      '视频 SQLite',
+      '音频 SQLite',
+      '音频进度数据库未初始化',
+      '目录缓存',
+      'Hive 已打开',
+      'Hive 尚未初始化',
+      '当前未连接，未执行网络检查',
+      '根目录认证请求成功',
+      '播放器路径',
+      '播放器文件不存在',
+      '播放器文件存在',
+      '播放器可从 PATH 解析',
+      'PATH 中未找到播放器',
+      '无法完成 PATH 解析检查',
+      '没有活动 MPV 会话',
+      '只读属性查询成功',
+      '活动会话的 IPC 查询失败',
+      '自动恢复未启用',
+      '后台地址无效',
+      '数据目录写入',
+      '创建、刷新与删除测试文件成功',
+      'PRAGMA quick_check 通过',
+      '完整性检查报告异常',
+      '配置与迁移',
+      '配置版本、迁移记录或凭据存在异常',
+      '配置版本有效，迁移与凭据状态正常',
+      '请先配置有效的 OpenList/AList 后台地址',
+      '普通用户 Token 无效，请填写具有搜索权限的最小权限 Token',
+      'OpenList/AList 返回了无法识别的索引状态',
+      '索引能力探测异常，请检查后台地址和网络连接',
+      '索引更新请求正在处理，请勿重复提交',
+      'OpenList/AList 正在更新索引，本次请求已跳过',
+      '索引更新已提交，OpenList/AList 将在后台执行',
+      '索引更新请求异常，请检查后台地址和网络连接',
+      '无法解析服务端最大索引深度；已禁止提交索引更新',
+      '未配置普通用户账号密码',
+      '未配置管理员账号密码',
+      '登录成功',
+      '普通用户账号启用了 2FA，请填写独立的普通用户 Token',
+      '管理员账号启用了 2FA，请填写独立的管理员 Token',
+      '普通用户登录请求超过总时间限制',
+      '管理员登录请求超过总时间限制',
+    ];
+    const dynamicSources = <String>[
+      '读取本地蓝光续播记录失败：disk error',
+      '本地蓝光已暂停：DISC.iso',
+      '正在播放本地蓝光：DISC.iso',
+      '继续播放本地蓝光：DISC.iso',
+      '重新连接失败：network error',
+      '无法启动播放器「mpv.exe」：文件不存在或路径错误',
+      '播放器启动失败：process error',
+      '播放器文件不存在：mpv.exe',
+      '公开设置接口返回 code 500：backend error',
+      '公开设置接口返回 HTTP 500',
+      '认证或网络请求失败：network error',
+      '公开设置接口请求失败：network error',
+      '写入检查失败：access denied',
+      '索引搜索失败：backend error',
+      '索引状态不可用：当前后台缺少 /api/admin/index/progress 端点',
+      '读取索引状态失败：backend error',
+      '无法读取索引状态：backend error',
+      '索引增量更新不可用：当前后台缺少 /api/admin/index/update 端点；不会回退为全量构建',
+      '索引更新未启动：backend error',
+      '无法读取当前用户根路径：backend error',
+      '无法读取最大索引深度：backend error；已禁止提交索引更新',
+      '读取 OpenList/AList 能力失败：backend error',
+      '普通用户登录请求异常：backend error',
+      '管理员登录请求异常：backend error',
+      '普通用户登录失败：bad credentials',
+      '管理员登录失败：bad credentials',
+    ];
+
+    for (final language in const [AppLanguage.japanese, AppLanguage.english]) {
+      final localizations = AppLocalizations(language);
+      for (final source in [...exactSources, ...dynamicSources]) {
+        expect(
+          localizations.text(source),
+          isNot(source),
+          reason: '${language.name}: $source',
+        );
+      }
+    }
+
+    const english = AppLocalizations(AppLanguage.english);
+    for (final source in [...exactSources, ...dynamicSources]) {
+      expect(
+        english.text(source),
+        isNot(contains(RegExp(r'[一-龥]'))),
+        reason: source,
+      );
+    }
   });
 }
