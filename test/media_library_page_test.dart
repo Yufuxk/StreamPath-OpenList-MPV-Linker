@@ -635,6 +635,107 @@ void main() {
     expect(find.textContaining('已播放 02:00'), findsOneWidget);
   });
 
+  testWidgets('自然切集后立即退出保留第二集零秒入口，完成和手动清空仍移除', (tester) async {
+    final first = item('第一集.mkv', MediaLibraryKind.video);
+    final second = item('第二集.mkv', MediaLibraryKind.video);
+    final firstUrl = 'https://example.test${file(first.name).href}';
+    final secondUrl = 'https://example.test${file(second.name).href}';
+    await tester.runAsync(() async {
+      await store.recordPlayback(first, playbackSessionId: 'transition');
+      await videoProgress.saveProgress(
+        url: firstUrl,
+        positionMs: 120000,
+        durationMs: 600000,
+      );
+    });
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [file(first.name), file(second.name)],
+            lastAccessedAt: DateTime.now(),
+          ),
+        ],
+      ),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(first.name), findsOneWidget);
+
+    await tester.runAsync(() async {
+      await store.recordPlayback(second, playbackSessionId: 'transition');
+      await videoProgress.deleteProgress(firstUrl);
+      await videoProgress.saveProgress(
+        url: secondUrl,
+        positionMs: 0,
+        durationMs: 600000,
+      );
+    });
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.text(second.name));
+    expect(find.text(first.name), findsNothing);
+    await tester.runAsync(() async {
+      expect(
+        (await videoProgress.getProgress(secondUrl))!.resumeSeconds,
+        isNull,
+      );
+      await store.clearContinuePlayback(sourceId);
+    });
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.text('没有可继续播放的视频'));
+
+    await tester.runAsync(
+      () => store.recordPlayback(second, playbackSessionId: 'transition'),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.text(second.name));
+    await tester.runAsync(() => videoProgress.deleteProgress(secondUrl));
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.text('没有可继续播放的视频'));
+  });
+
+  testWidgets('零秒短视频保留入口，音频零秒和无记录视频仍隐藏', (tester) async {
+    final video = item('短视频.mkv', MediaLibraryKind.video);
+    final missing = item('无进度.mkv', MediaLibraryKind.video);
+    final audio = item('歌曲.flac', MediaLibraryKind.audio);
+    await tester.runAsync(() async {
+      await store.recordPlayback(video);
+      await store.recordPlayback(missing);
+      await store.recordPlayback(audio);
+      await videoProgress.saveProgress(
+        url: 'https://example.test${file(video.name).href}',
+        positionMs: 0,
+        durationMs: 30000,
+      );
+      await audioProgress.saveProgress(
+        url: 'https://example.test${file(audio.name).href}',
+        positionMs: 0,
+        durationMs: 180000,
+      );
+    });
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [file(video.name), file(missing.name), file(audio.name)],
+            lastAccessedAt: DateTime.now(),
+          ),
+        ],
+      ),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(video.name), findsOneWidget);
+    expect(find.text(missing.name), findsNothing);
+    await tester.tap(find.text('音频').last);
+    await tester.pumpAndSettle();
+    expect(find.text(audio.name), findsNothing);
+  });
+
   testWidgets('播放会话切集时原位更新且不同会话保留独立记录', (tester) async {
     final first = item('会话第一集.mkv', MediaLibraryKind.video);
     final second = item('会话第二集.mkv', MediaLibraryKind.video);

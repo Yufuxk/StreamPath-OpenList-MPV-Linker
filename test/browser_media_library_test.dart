@@ -11,7 +11,10 @@ import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/media_library_item.dart';
+import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
+import 'package:streampath/core/utils/app_paths.dart';
+import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
@@ -23,6 +26,8 @@ void main() {
   late MediaLibraryStore libraryStore;
   late PlaybackProgressService progressService;
   late AppState appState;
+  late _TransitionPlayer player;
+  final statusFiles = <File>[];
 
   setUpAll(() {
     sqfliteFfiInit();
@@ -63,7 +68,9 @@ void main() {
         ..write(_directoryXml(request.uri.path));
       await request.response.close();
     });
+    player = _TransitionPlayer(configStore: configStore);
     appState = AppState(
+      playerService: player,
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         '${tempDir.path}${Platform.pathSeparator}history.json',
@@ -81,6 +88,10 @@ void main() {
 
   tearDown(() async {
     appState.dispose();
+    for (final file in statusFiles) {
+      if (await file.exists()) await file.delete();
+    }
+    statusFiles.clear();
     await progressService.close();
     await directoryCache.close();
     await Hive.close();
@@ -108,6 +119,91 @@ void main() {
     value: appState,
     child: MaterialApp(theme: AppTheme.light(), home: const BrowserPage()),
   );
+
+  for (final scenario in const [
+    (position: 0.0, previousAtEnd: false),
+    (position: 0.25, previousAtEnd: false),
+    (position: 0.0, previousAtEnd: true),
+  ]) {
+    testWidgets(
+      '切集退出同步第二集历史（${scenario.position} 秒，上一集片尾采样：${scenario.previousAtEnd}）',
+      (tester) async {
+        final sessionId =
+            'transition-${tempDir.path.split(Platform.pathSeparator).last}';
+        final sourceId = appState.mediaSourceId!;
+        final created = DateTime.now().subtract(const Duration(seconds: 5));
+        final history = PlaybackHistory(
+          sessionId: sessionId,
+          sourceId: sourceId,
+          dirCrumbs: const [],
+          fileName: '第一集.mkv',
+          videoIndex: 0,
+          playlistFileNames: const ['第一集.mkv', '第二集.mkv'],
+          updatedAt: created,
+          playerPid: 4242,
+          ipcPipeName: 'test-only',
+          launchEpoch: 'transition',
+        );
+        await tester.runAsync(() async {
+          await appState.playbackHistoryStore.upsert(history);
+          await libraryStore.recordPlayback(
+            MediaLibraryItem(
+              sourceId: sourceId,
+              parentPath: '',
+              name: history.fileName,
+              kind: MediaLibraryKind.video,
+            ),
+            playbackSessionId: sessionId,
+          );
+          final cache = await AppPaths.cacheDirectory();
+          final status = File(
+            '${cache.path}${Platform.pathSeparator}${ExternalPlayerService.sessionStatusFileName(sessionId, launchEpoch: history.launchEpoch)}',
+          );
+          statusFiles.add(status);
+          // MPV 退出时 path 已清空，但 playlist-pos 和最终采样仍有效。
+          await status.writeAsString(
+            scenario.previousAtEnd
+                ? '0\nhttps://example.test/first.mkv\n0\n119\n120\n'
+                : '1\n\n0\n${scenario.position}\n120\n',
+          );
+        });
+        player.running = scenario.previousAtEnd;
+        await tester.pumpWidget(buildBrowser());
+        if (scenario.previousAtEnd) {
+          for (var attempt = 0; attempt < 5; attempt++) {
+            await settleBrowser(tester);
+          }
+          player.running = false;
+          await tester.runAsync(
+            () => statusFiles.single.writeAsString('1\n\n0\n0\n-1\n'),
+          );
+          await tester.pump(const Duration(seconds: 2));
+        }
+        for (var attempt = 0; attempt < 20; attempt++) {
+          await tester.pump(const Duration(milliseconds: 700));
+          await settleBrowser(tester);
+          final sessions = appState.playbackHistoryStore.sessions;
+          if (sessions.isEmpty || sessions.single.playerPid == null) break;
+        }
+        List<MediaLibraryRecord>? records;
+        libraryStore
+            .playbackHistory(sourceId, audio: false)
+            .then((value) => records = value);
+        for (var attempt = 0; attempt < 20 && records == null; attempt++) {
+          await settleBrowser(tester);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await settleBrowser(tester);
+        final histories = appState.playbackHistoryStore.sessions;
+        expect(histories.single.fileName, '第二集.mkv');
+        expect(histories.single.videoIndex, 1);
+        expect(histories.single.playerPid, isNull);
+        expect(records, isNotNull);
+        expect(records!.single.item.name, '第二集.mkv');
+        expect(records!.single.playbackSessionId, sessionId);
+      },
+    );
+  }
 
   testWidgets('当前目录搜索、Win+V 菜单和收藏保持最小接入', (tester) async {
     tester.view.physicalSize = const Size(1100, 760);
@@ -159,6 +255,34 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });
+}
+
+class _TransitionPlayer extends ExternalPlayerService {
+  _TransitionPlayer({required super.configStore});
+  bool running = false;
+
+  @override
+  Future<void> captureOpenListProcessIdentity() async {}
+
+  @override
+  Future<void> restoreSession({
+    required String sessionId,
+    String? profileId,
+    required int? pid,
+    String? executablePath,
+    int? creationTime,
+    String? ipcPipeName,
+    String? launchEpoch,
+  }) async {}
+
+  @override
+  Future<bool> isPlayerRunning([String? sessionId]) async => running;
+
+  @override
+  Future<void> waitForExitSync(
+    String sessionId, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {}
 }
 
 String _directoryXml(String requestPath) {

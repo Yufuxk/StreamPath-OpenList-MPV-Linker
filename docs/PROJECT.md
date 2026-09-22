@@ -6,16 +6,28 @@
 
 ## 1. 技术基线
 
-| 项目 | 当前选择 |
-| --- | --- |
-| 客户端 | Flutter 3.44.6、Dart 3.12.2、Windows x64 |
-| 状态管理 | `provider` / `ChangeNotifier` |
-| WebDAV | Dio 5.11，手动重定向与 XML multistatus 解析 |
-| 目录缓存 | Hive |
-| 播放进度 | SQLite：`sqflite_common_ffi` + `sqlite3` Native Assets |
-| 外部播放器 | MPV 为主要目标，其他播放器走参数模板；WebDAV ISO 由固定 libbluray Bridge 解析，本地 ISO/BDMV 由受控 MPV `bd://` 入口播放 |
-| Windows 集成 | `win32`、`super_clipboard`、`flutter_acrylic`、MethodChannel |
-| 测试 | `flutter_test`、本地 HTTP 服务器、条件式实体 MPV 测试 |
+### WebDAV BDMV 文件夹扩展
+
+`WebDavBdmvService` 从光盘根或 BDMV 入口生成仅含 BDMV/CERTIFICATE 子树的会话清单；限制同源、直接子项、路径、大小写冲突、层深、条数和总大小。`WebDavBdmv` 保存规范光盘根与原生结构 revision。播放仍经过 `IsoPlaybackService`，Title 使用现有 libbluray DLL 的 `bd_open_files` 回调接 MPLS/loopback，菜单通过 `WinFspDisc` 只读目录树接普通 MPV，capability 为 `winfsp-bdmv-v1`。Title 不要求 WinFsp；原 ISO 协议、路径与缓存键继续兼容。
+
+`BdmvSource` 复用 WinHTTP Range、认证、If-Range 和取消机制；文件映射为对齐且留有间隔的内部地址区间，`BlockCache::extent_end` 使需求读取与预读停在文件尾。所有文件共享会话缓存预算与 worker；只对 M2TS 做流式预读，最多保留 8 个文件 HTTP source。此地址空间不是合成 ISO。打开时按需校验实际读取的文件。新鲜 PROPFIND 清单中的强 ETag 或有效 Last-Modified 随文件传入原生，以有序路径、类型、长度及版本生成 bdmv-manifest-v2 复合身份；全部非空文件版本可靠时复用结构缓存 schema 1，缺少可靠版本时冷解析并使用仅会话有效的字幕 revision。采用全清单版本作为依赖的保守超集，目录新增/删除、备份路径和同大小内容变更均影响身份；缓存依赖以完整清单为准。文件首次实际 Range 同时校验 206/范围/长度/版本并填充缓存，无版本时从该响应取得，必要时仅为当前文件补充 HEAD；同文件首次读取同步初始化，网络不占用跨文件 source 表锁。后续维持 If-Range 校验，首读版本与目录信息不符明确失败。远程目录不是事务快照，准备期间应保持盘片静止，实际读取遇到版本变化即失败。
+
+BDMV 外挂字幕以光盘根为发现范围，沿用字幕子目录约定，另接纳上一级带光盘名前缀的直接字幕文件；原生 revision 就绪后重载绑定，变化沿用原有重新确认逻辑。媒体库使用可空 `discRootPath`，保持旧 ISO 记录兼容。活动字幕会话按自己的 revision 恢复。跨文件网络 wall-clock 并集和并发峰值目前无法精确合并，相关遥测返回 null；请求数、字节数、请求活跃时间及共享缓存数据仍可用。
+
+BDMV 字幕发现与 Bridge 准备并行，在 Title 选择/MPV 启动前汇合；取消立即清理 Bridge 并阻止迟到结果启动，字幕发现停止后续请求，已发出的读取仍受原有超时约束。绑定文件保留；revision 变化或缺少可靠版本时提示重新确认。会话 disc-startup.json 记录方式选择到 Process.start 成功的时间、Title 人工选择等待与扣除后的处理时间。实机验收范围与受控对照结果见[打开速度优化记录](WebDAV%20BDMV%20打开速度优化规划.md)。
+
+支持范围为 Windows x64、未加密 Blu-ray；菜单限 HDMV。不支持解密、BD-J 或完整盘片磁盘缓存。验证与剩余实机验收见 [BDMV 规划与交付记录](WebDAV%20BDMV%20文件夹支持规划.md)。
+
+| 项目         | 当前选择                                                                                     |
+| ---------- | ---------------------------------------------------------------------------------------- |
+| 客户端        | Flutter 3.44.6、Dart 3.12.2、Windows x64                                                   |
+| 状态管理       | `provider` / `ChangeNotifier`                                                            |
+| WebDAV     | Dio 5.11，手动重定向与 XML multistatus 解析                                                       |
+| 目录缓存       | Hive                                                                                     |
+| 播放进度       | SQLite：`sqflite_common_ffi` + `sqlite3` Native Assets                                    |
+| 外部播放器      | MPV 为主要目标，其他播放器走参数模板；WebDAV ISO 由固定 libbluray Bridge 解析，本地 ISO/BDMV 由受控 MPV `bd://` 入口播放 |
+| Windows 集成 | `win32`、`super_clipboard`、`flutter_acrylic`、MethodChannel                                |
+| 测试         | `flutter_test`、本地 HTTP 服务器、条件式实体 MPV 测试                                                  |
 
 项目采用便携数据布局，不依赖当前工作目录。开发构建会从可执行文件路径向上定位
 项目根；便携构建直接使用可执行文件所在目录。不可写时才回退系统应用支持目录。
@@ -148,8 +160,6 @@ lib/
 `mediaLibrary.sharingMode` 控制展示范围：`independent` 默认各来源独立，`localShared` 合并本地挂载，`allShared` 合并本地与网络来源。共享媒体中心和底栏保留每条记录的原始 `sourceId`，进度读取、会话恢复及切集写回均使用该身份；切换模式不迁移数据库、不改写路径，现有按来源容量限制继续生效。跨来源打开条目复用对应 `BrowserPage`，网络连接仍先验证再激活。共享列表批量清理只作用于当前展示范围，设置页既有“当前来源”清理仍保持原范围。
 
 本地蓝光历史的可选 `playbackBarDismissed` 只控制底栏可见性，独立于媒体中心的 `continueDismissed`。删除底栏仍核验并关闭对应播放器，但不删除媒体中心历史、Title 快照或续播点。蓝光播放方式按钮统一为带边框按钮，取消动作保持原样。
-
-本次上述改动已于 2026-09-05 由用户在本机完成构建、Test 和各项实际功能验证，验收结论为通过。
 
 最外层目录固定提供“网络存储”和“本地存储”两个入口。网络存储沿用当前 WebDAV 首页和已挂载连接；本地存储只显示配置中启用的本地根目录，未配置或目录暂不可用时显示空状态，不影响 WebDAV。
 
@@ -406,13 +416,13 @@ MPV 会话同时更新时互相覆盖或留下半写入 JSON。
 
 ### 5.4 实体版本结果
 
-| 构建 | 版本 | Lua/命令/IPC/进度 | 认证隔离 | 远程 LRC + 封面 |
-| --- | --- | --- | --- | --- |
-| `mpv-0.34.0-x86_64` | 0.34.0 | 通过 | 通过 | 通过 |
-| `mpv-v0.41.0-x86_64-pc-windows-msvc` | 0.41.0-dev-g41f6a6450 | 通过 | 通过 | 通过 |
-| `mpv-lazy-20260510-noVS` | 0.41.0-615-g7b057f66f | 通过 | 通过 | 通过 |
-| `mpv-x86_64-20260610-git-304426c` | 0.41.0-744-g304426c39 | 通过 | 通过 | 通过 |
-| `mpv-v0.41.0-460-g2f6561947` | v0.41.0-460-g2f6561947 | 通过 | 通过 | 通过 |
+| 构建                                   | 版本                     | Lua/命令/IPC/进度 | 认证隔离 | 远程 LRC + 封面 |
+| ------------------------------------ | ---------------------- | ------------- | ---- | ----------- |
+| `mpv-0.34.0-x86_64`                  | 0.34.0                 | 通过            | 通过   | 通过          |
+| `mpv-v0.41.0-x86_64-pc-windows-msvc` | 0.41.0-dev-g41f6a6450  | 通过            | 通过   | 通过          |
+| `mpv-lazy-20260510-noVS`             | 0.41.0-615-g7b057f66f  | 通过            | 通过   | 通过          |
+| `mpv-x86_64-20260610-git-304426c`    | 0.41.0-744-g304426c39  | 通过            | 通过   | 通过          |
+| `mpv-v0.41.0-460-g2f6561947`         | v0.41.0-460-g2f6561947 | 通过            | 通过   | 通过          |
 
 四个固定版本来自
 `C:\Users\YX\Documents\StreamPathProject\cross_version_testing\打包版本`，第五个版本来自
@@ -465,11 +475,13 @@ OpenList 恢复、视频 `MediaEntry` 或字幕匹配模块。
 
 ### 5.6 WebDAV Blu-ray ISO 无驱动 Bridge 链路
 
-阶段二已接入可选的 WebDAV HDMV 菜单流程，代码和自动检查已完成，等待用户真实验收，尚未标记为正式能力。当前通过 helper 内 WinFsp 只读 ISO 使用用户配置的普通本地菜单 MPV，无需专用播放器；复用既有 RangeSource/Metadata Cache/BlockCache，详见[集成与验收](WebDAV%20ISO%20蓝光菜单播放流程系统/WinFsp集成与优化验收.md)。菜单组件通过能力核验后才提供入口，用户明确选择菜单，失败时可返回 Title/MPLS 选择，不自动切换或完整下载。未启用菜单时保持原有 Title/MPLS 流程。本地 ISO/BDMV 菜单边界不变。
+WebDAV HDMV 菜单为可选测试功能，通过 helper 内 WinFsp 只读 ISO 使用用户配置的普通本地菜单 MPV，无需专用播放器；复用既有 RangeSource/Metadata Cache/BlockCache，详见[集成与验收](WebDAV%20ISO%20蓝光菜单播放流程系统/WinFsp集成与优化验收.md)。菜单组件通过能力核验后才提供入口，用户明确选择菜单，失败时可返回 Title/MPLS 选择，不自动切换或完整下载。未启用菜单时保持原有 Title/MPLS 流程。本地 ISO/BDMV 菜单边界不变。
 
 远程菜单复用既有 Range、validator、BlockCache、进程身份和会话清理，使用独立的 `webdavHdmvMenu` 历史键；仅支持未加密 HDMV，拒绝 BD-J。真实光盘、体验、网盘请求行为和旧 Title 性能回归由用户验收。实现状态与验收记录见[阶段二说明](WebDAV%20ISO%20蓝光菜单播放流程系统/阶段二实现与验收说明.md)。
 
-2026-09-07 菜单接入现有缓存策略：MPV 自动预算 16 MiB，ISO 字节缓存按策略内存预算分配、最高 1 GiB，最多四分之三用于前向预读。窗口从 8 MiB 起步，连续读取后按消费速度与目标时长逐步扩大，Seek 后重新从短窗口起步；仅菜单保护未消费的前向窗口。短窗口保留 4 MiB 批次，长窗口合并最多 16 MiB Range，仍只有一个 worker。MPV 导航缓存条可能仍为 0，详见[菜单长缓存与波动回归](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单长缓存与波动回归.md)。菜单启动不再恢复 edition/时间。设置“WebDAV 蓝光菜单进度”默认为独立：不保存菜单线性进度；共享时保存明确 MPLS 的正片进度，退出同步到同源 ISO 的 Title/MPLS watch_later。菜单底栏与媒体中心继续播放依据历史保留光盘和目录，不要求时间进度；不保存光盘 VM 快照。详见[菜单进度独立与共享](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单进度独立与共享.md)。上一轮续播验证见[菜单缓存与续播修复验收](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单缓存与续播修复验收.md)。
+菜单使用统一缓存策略：MPV 自动预算 16 MiB，ISO 字节缓存按策略内存预算分配、最高 1 GiB，最多四分之三用于前向预读。窗口从 8 MiB 起步，连续读取后按消费速度与目标时长逐步扩大，Seek 后重新从短窗口起步；仅菜单保护未消费的前向窗口。短窗口保留 4 MiB 批次，长窗口合并最多 16 MiB Range，仍只有一个 worker。MPV 导航缓存条可能仍为 0，详见[菜单长缓存与波动回归](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单长缓存与波动回归.md)。菜单每次从光盘入口启动，不恢复 edition/时间。设置“WebDAV 蓝光菜单进度”默认为独立：不保存菜单线性进度；共享时保存明确 MPLS 的正片进度，退出同步到同源 ISO 的 Title/MPLS watch_later。菜单底栏与媒体中心继续播放依据历史保留光盘和目录，不要求时间进度；不保存光盘 VM 快照。详见[菜单进度独立与共享](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单进度独立与共享.md)。
+
+菜单独立缓存面板（Ctrl+Alt+i）：WinFsp 通过原有每秒 metrics 快照发布最后成功读取位置之后的连续已完成缓存字节，BlockCache 只观察、不请求数据、不改变 LRU。会话 Lua 使用同一连续读取代际内的字节增量与媒体时间增量估算时长；Seek/切集/菜单切换、在途或失败读取、陈旧快照清除旧估算。显示 MiB 与明确标注的估算时长，不写 MPV 原生缓存属性。四语言通过既有本地化目录提供，新会话使用当前应用语言；面板只负责显示缓存信息。详见[缓存显示与验证](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单缓存秒数显示调查.md)。
 
 `.iso` 由 `WebDavFile.isIso` 独立识别，不加入 `videoExtensions`、`isPlayable`、
 `isMediaPlayable` 或 `MediaLibraryKind`。未启用菜单时，浏览页点击后直接进入 ISO 远程播放系统弹窗，不调用视频或
@@ -479,8 +491,7 @@ OpenList 恢复、视频 `MediaEntry` 或字幕匹配模块。
 `IsoAccessProvider` 是播放器编排与访问方式之间的最小边界。唯一生产实现
 `IsoBridgeAccessProvider` 以 pipe 名与 StreamPath PID 启动 x64 helper，核对 pipe 服务 PID，
 再通过内存 `open` 消息发送当前 WebDAV URL、来源和凭据快照。helper 与应用命令行、环境变量、
-manifest 和日志都不保存这些值。旧 `FullDownloadIsoAccessProvider`、
-`WebDavClient.downloadFile()` 和完整下载界面已经删除；manifest v1 只为旧活动会话安全收尾。
+manifest 和日志都不保存这些值。播放仅使用流式读取；manifest v1 仅用于旧活动会话安全收尾。
 
 helper 使用 WinHTTP 手动跟随最多五次重定向，Basic 只发送到 WebDAV 基准同源地址。HEAD 仅
 收集提示，权威探测必须由 `GET Range: bytes=0-0` 获得精确 206、Content-Range、长度与一个
@@ -505,12 +516,13 @@ helper 使用 WinHTTP 手动跟随最多五次重定向，Basic 只发送到 Web
 Flutter 在 `attachPlayer` 前发送一次 `configure_cache`，按所选 Title 最大约 8 秒数据量配置
 4～12 个预读块，并把容量设为预读块数加 2、限制为 4～16 块。新播放代际的首个后台批次只取
 最多 2 MiB，下一批最多 8 MiB，此后由单 worker 合并成最多 16 MiB 的 Range；新代际或非连续窗口重新从短批次开始。
-该调整仅用于 Title 模式，实机非退化与平均 5 秒目标尚待验收；新增 loading 等待及 GET 分段诊断见
-下文。第二轮 Title 预读在验证响应头后按完整 256 KiB 块提前交付，不再等待整个合并 Range；
-残块不入缓存，断流仍明确失败，旧代际不得继续发布。菜单仍按原整批交付。
+该批次规则仅用于 Title 模式。Title 预读在验证响应头后按完整 256 KiB 块交付；
+残块不入缓存，断流仍明确失败，旧代际不得继续发布。WinFsp 菜单同样按完整块交付，
+保留原 4～16 MiB 批次、单 worker、窗口与预算；旧 remote-disc 适配器仍整批交付。
+菜单流式预读的真实 WebDAV 性能与非退化验收尚未完成，详见[菜单流式预读实现与验证](WebDAV%20ISO%20蓝光菜单播放流程系统/菜单流式预读实现与验证.md)。
 Title 的当前前向消费窗口与调度窗口分离，回收时优先淘汰窗口外块，
 没有其他可回收条目时仍允许按 LRU 腾出容量；新播放代际清除旧窗口保护但保留有效完整块。
-该候选不改变批次、补充阈值或 MPV 参数，真实 Seek/切集非退化仍待验收，详见
+真实 Seek/切集非退化仍待验收，详见
 [频繁 Seek 缓存排查与优化方案](WebDAV%20ISO%20频繁Seek缓存排查与优化方案.md)及
 [播放列表 Seek 优化与验收](WebDAV%20ISO%20播放列表%20Seek%20优化与验收.md)。localhost 只绑定随机
 `127.0.0.1` 端口，端点为 `/<128-bit token>/title/<mpls>.m2ts`，支持 HEAD、普通 GET 和
@@ -523,20 +535,20 @@ request 的受支持关闭语义取消旧前台与预读请求；迟到完成解
 租约、Title 打开、seek、丢弃偏差、响应头和正文读取均检查代际；context 创建和 seek 前即绑定
 generation，被取代的请求直接关闭连接，不返回伪造的 416/503，也不会把 context 交给并发 handler。
 loopback 媒体 socket 允许 MPV cache
-正常反压，不再以 10 秒发送超时截断长响应。远端 Range、validator 或读取硬错误会跨
-libbluray C 回调边界恢复为明确错误，并以 RST 终止已声明完整长度的 localhost 响应，不再让 MPV
+正常反压，不设发送超时。远端 Range、validator 或读取硬错误会跨
+libbluray C 回调边界恢复为明确错误，并以 RST 终止已声明完整长度的 localhost 响应，避免 MPV
 把截断流误判为自然 EOF；失败缓存条目只在当前播放代际内保持一致，新代际会重新读取。
 
 HTTP `Content-Range` 与实际 Title 字节保持恒等映射；时间反演重定向因无法保证 EOF 与字节长度
 一致而禁用，控制协议请求启用时失败关闭。WinHTTP request 对象持有其父 connection，异步关闭
-request 一次并等待 `HANDLE_CLOSING` 后释放，不再使用自引用、回收线程或 detach。终止失败按
+request 一次并等待 `HANDLE_CLOSING` 后释放。终止失败按
 playback generation 隔离，旧请求不能污染新代际。最终 metrics 保留原聚合字段，并以
 `metadataNetwork`、`playbackNetwork`、`metadataCache`、`playbackCache` 分开记录枚举与播放阶段；
 同时记录 request context 创建、关闭、
 存活与峰值，以及远端传输墙钟并集、并发传输墙钟、预读并发峰值、在途字节峰值、批间空窗和
 预读命中字节；性能归档记录脱敏的 MPV 终止原因、位置、时长、错误类别、shutdown、helper 哈希、
-按 MPLS/目标位置对齐的 Seek 样本、缓存暂停和 Bridge/MPV 总预算。当前这些字段仅用于 Phase 4
-门禁，生产路径仍为单预读 worker 和最多 16 MiB 的单 Range。
+按 MPLS/目标位置对齐的 Seek 样本、缓存暂停和 Bridge/MPV 总预算。这些字段用于性能观测与验收，
+生产路径为单预读 worker 和最多 16 MiB 的单 Range。
 
 本地 M3U8 只含 loopback URI。启动时移除 `{url}`、`{subfile}`、`{start}`、旧 ISO/播放列表、
 HTTP header、cookie、referrer、proxy 和原生续播参数；不使用 `--bluray-device`、
@@ -560,6 +572,23 @@ ISO Title 顺序、选择结果和最后 MPLS 只写入 `iso_catalog.json`；各
 保护，清理不得与 helper 读写并发。缓存命中判定只在 helper 启动枚举阶段执行，不进入播放或 Seek
 热路径。
 
+ISO 外挂字幕由 `IsoSubtitleContext` 共用 `MediaDirectorySource` 发现资源，持久绑定位于
+`library/iso_subtitles/<匿名 ISO 键>.json`，不进入普通视频字幕或进度状态。使用 `IsoSubtitleMatcher` 综合时长、集数、名称、语言和格式选择最高分候选，明确 MPLS 优先于推测，用户绑定与禁用优先；来源、ISO 路径及大小/修改时间共同约束复用。目录发现复用
+当前完整目录缓存，字幕目录只读取一层；缓存元数据不能等同于远端内容强校验。
+WebDAV 原始字幕字节写入 ISO 会话目录，本地字幕直接引用经过来源解析的路径；字幕最多 64 个、
+单文件 16 MiB、会话副本总量 64 MiB，字幕/字体共享 10 秒准备预算，目录发现另有 10 秒预算。
+字体复用既有局部字体目录与下载器。本地会话副本位于 `cache/local_iso_subtitles`，通用清缓存
+保留该目录；播放退出和后续浏览/启动检查只回收进程身份明确失效的会话。
+Lua 使用最终 Title 顺序或 MPV 明确 MPLS 标签识别节目，身份与时长确认后加载字幕。
+菜单字幕加载不执行 Seek、不修改 `sub-delay`，保留用户的菜单章节落点和播放位置。
+MPV 原生菜单切换后的外挂字幕存在时间轴兼容限制，可能与画面不同步。
+普通 Seek 不重复加载字幕；
+时长同时用于字幕匹配评分及核对播放器已识别身份。轨道归属同时核对字幕类型、ID、路径和会话标记。
+运行中映射更新核对 session/generation/MPLS，并等待 Lua 回执。该链路不依赖菜单进度共享，
+不修改 native、Range、WinFsp 或用户 MPV 配置。实现与验收边界见
+[WebDAV 与本地 ISO 外挂字幕实现规划](WebDAV与本地ISO外挂字幕实现规划.md)。
+自动评分权重、目录范围及验证见 [ISO 外挂字幕自动评分](ISO外挂字幕自动评分.md)。
+
 ISO 同时只允许一个准备或播放任务。manifest v2 依次写 `bridge-starting`、`launching`、
 `playing`，保存 transport 与 MPV/helper 各自的 PID、规范 exe 路径和 Windows 创建时间，
 不保存端口或 token。helper 在绑定前依赖控制 pipe，绑定后持有 MPV 句柄，因此 StreamPath
@@ -569,13 +598,10 @@ ISO 同时只允许一个准备或播放任务。manifest v2 依次写 `bridge-s
 
 WebDAV 远程 ISO 支持 Windows x64 未加密 Blu-ray ISO 的原有 Title/MPLS 和可选 WinFsp HDMV 菜单；不实现 DVD ISO、
 AACS、BD+、BD-J 或完整媒体磁盘缓存。本地 ISO/BDMV 的 `bd://menu`
-能力已在阶段一接入，但真实样盘验收仍待执行。界面覆盖四语言。V2 自动化测试与
-Windows 构建已通过；Phase 5 顺序双 Cache、16 MiB 元数据热块交接、分阶段指标，以及 Phase 6
-Structure Cache 的严格编解码/失效/原子替换和旧归档兼容已完成自动化验证。2026-08-30 同源真实
-轮次的 6 个完成 Seek 样本均小于 10 秒，最慢
-8.968 秒。真实未加密 WebDAV Blu-ray ISO 的固定五轮前后基线、多 Clip、自动切 Title、音轨、
+能力由配置的 MPV 提供，完整菜单交互仍需在目标环境验收。界面覆盖四语言。
+自动化与本机受控测试不能替代真实网络和光盘验收。真实未加密 WebDAV Blu-ray ISO 的
+固定五轮前后基线、多 Clip、自动切 Title、音轨、
 PGS、跨进程生命周期、Structure Cache Warm 收益、固定 Seek 非退化和读取量完整验收仍待完成。
-
 
 ## 6. 缓存控制系统
 
@@ -631,8 +657,8 @@ Last-Modified 用于元数据失效判断。
 ### 6.3 本地智能建议器
 
 智能层只处理匿名聚合数据，不调用在线服务。ISO 使用真实 WebDAV ISO URL 计算来源哈希，
-不得采集 localhost M2TS 地址或保存 URL、令牌和认证头。默认影子模式只记录建议，最终策略
-与确定性基线一致；达到 `minSamples` 且用户开启“应用智能优化”后，建议也只能在硬内存边界、
+不得采集 localhost M2TS 地址或保存 URL、令牌和认证头。默认开启“应用智能优化”；关闭时仅记录建议，最终策略与确定性基线一致。达到
+`minSamples` 且应用开关开启后，建议也只能在硬内存边界、
 档位、TS 规则和 ISO 总预算内调整引擎输入。码率桶最多 256 个，来源画像最多 128 个，按旧
 记录淘汰。读写串行并用临时文件替换；采样回调不等待磁盘写入。建议器超时或永久不返回时
 记录诊断并回退基础策略。
@@ -668,6 +694,15 @@ Last-Modified 用于元数据失效判断。
    证明目标监听器的 OwningProcess 与记录 PID 相同，地址或监听器歧义时失败关闭。同一物理
    地址和端口的并发重启共享一个在途结果，只发送一次关闭信号并启动一次进程。
 
+本机重启目录由每个服务器档案的 `openListRecovery.restartDirectory` 控制：
+`userProfile` 为默认（含旧配置缺失字段），使用当前进程 `USERPROFILE`；`installation`
+使用已校验监听进程的 exe 父目录。成功连接后即后台捕获身份，不要求已打开恢复开关；
+后台地址未填时使用 WebDAV 地址识别。路径沿用按 origin/本机地址/端口隔离的进程内身份
+记录，软件重开后重新识别，不将磁盘上的历史 PID 或路径作为重启授权。重启前重新探测
+身份并在停止前检查工作目录存在，再将确定的目录传入隐藏启动的 `Start-Process`。
+保留 `server --force-bin-dir`，不改数据目录；目录模式同时进入播放启动快照，防止切换
+服务器档案后使用新档案模式。凭据重载保留这一非秘密字段。
+
 管理 API 最多跟随 5 次同源重定向，跨来源立即拒绝，防止 Token 外发。媒体 Range
 探测可跟随网盘签名地址，但 WebDAV Basic 仅在原来源发送。相同后台与同一凭据的在途
 刷新合并；成功冷却按后台、凭据和媒体地址隔离，并且只有目标媒体最终可读才记成功；
@@ -681,13 +716,17 @@ Windows 服务及非标准启动方式不会被自动重启。2FA 返回时提�
 
 ## 8. 界面行为
 
-设置页使用顶部分类栏，将配置拆分为“服务器”“播放”“媒体中心”“缓存”“诊断”“界面”
-和“基础设置”七个分页。
+设置页使用顶部分类栏，将配置拆分为“服务器”“本地存储”“播放”“媒体中心”“缓存”“诊断”“界面”
+和“基础设置”八个分页。
 分页由统一的页面描述列表注册，新增分类时只需补充页面元数据与内容构建器。每个分页拥有
 独立表单、滚动控制器和显式滚动条；页面级滚轮兜底保证鼠标位于表单或空白区域时仍能
 滚动，并通过统一事件解析避免重复滚动。保存仍一次提交全部配置；隐藏分页校验失败时会
 自动切换到对应页。
 当前选择只缓存在进程内，退出设置页后再次进入仍显示上次分页，软件重启后恢复服务器页。
+设置内容最大宽度为 1200；顶部提供统一的“保存全部配置”入口。
+`SettingsColumns` 根据可用宽度与文字缩放将分组并排或换行，使用稳定的 Wrap/SizedBox
+结构保留跨断点的输入状态。字段配对同样保持结构，紧凑控件样式仅作用于设置页。
+
 基础设置页最底部提供独立的“配置维护”区域；“重置全部设置”必须经过确认，随后将统一
 配置及基础缓存策略、智能缓存策略、缓存过期策略恢复为内置默认值。统一配置的主文件与
 恢复备份会同时写入默认值，避免主文件损坏时恢复出重置前的连接信息。该操作不调用缓存
@@ -741,13 +780,15 @@ STRM 归入视频。从任何资产打开媒体时只向浏览页返回父目录
 加载完整父目录、确认真实条目存在后调用原播放入口，因此稳定播放列表、字幕、LRC、封面和
 STRM 安全校验不被旁路。播放器成功启动和现有状态监控检测到切集或切歌后，浏览页才旁路
 更新长期历史。同一视频或音频播放会话始终复用一条媒体中心记录，切集或切歌只更新该记录的
-当前条目；播放器关闭后再次启动会获得新的播放会话，即使目录和文件相同也会创建新的记录。
+当前条目；退出时也会根据本次会话最终的有效集数补齐视频历史，切集不沿用上一集的进度采样。
+播放器关闭后再次启动会获得新的播放会话，即使目录和文件相同也会创建新的记录。
 个人资产和 SQLite 进度成功写入后发送轻量的进程内通知，媒体中心保持打开时
 按当前来源只刷新对应历史或 URL；本地蓝光服务只转发当前蓝光会话和全库清理通知，ISO 后台
 读取期间保留已有继续播放列表。首次有效播放状态、暂停或恢复、自动切集或切歌会立即保存正式进度，
 连续播放最多每 10 秒保存一次。切集或切歌继续复用现有 JSONL 与 `watch_later` 合并，退出同步
-仍是最终进度来源；不增加 MPV 回调、会话协议或数据库表。继续播放最多八路分批读取现有视频
-`getResumeProgress()` 和音频 `getProgress()`，过滤 0 秒、无进度和现有规则判定的片尾。
+仍是最终进度来源。继续播放最多八路分批读取现有视频
+`getResumeProgress()` 和音频 `getProgress()`。视频保留已落库的 0 秒记录，点击后从头播放；
+音频仍过滤 0 秒。无进度记录及正数进度按现有规则判定的片尾不显示。
 远端缺失或暂时不可用时只提示，不自动删除收藏和历史。
 
 设置页“媒体中心”分页提供当前来源的收藏、继续播放、最近播放和最近目录分项清理。清空继续
@@ -756,7 +797,7 @@ STRM 安全校验不被旁路。播放器成功启动和现有状态监控检测
 历史，因此对应的媒体中心继续播放入口同步消失，但底层进度仍保留。清空收藏或最近目录不影响
 其他资产。所有清理操作都必须确认，并通过 `MediaLibraryStore` 原有串行原子写入执行。
 
-媒体中心与浏览页新增控件只使用 `ColorScheme`、`GlassTokens`、`GlassSurface` 和
+媒体中心与浏览页控件只使用 `ColorScheme`、`GlassTokens`、`GlassSurface` 和
 `showGlassDialog`，经典、Acrylic、Mica 三种外观共用同一业务结构；不得增加独立材质判断，
 也不得在虚拟列表条目上叠加模糊层。
 
@@ -795,12 +836,12 @@ Windows 11 圆角）。标题栏由表现层自绘（`presentation/widgets/windo
 经 `streampath/appearance` 通道提供最小化/最大化/关闭操作，最大化状态由 `WM_SIZE` 推送同步。
 磨砂模式下，标题栏使用页面 AppBar 与 Scaffold 的等价半透明合成色，使两者最终观感一致。
 Windows runner 通过 `WM_NCCALCSIZE` 将 Flutter 客户区扩展到窗口最上方，由同一个磨砂标题栏
-直接绘制圆角区域；原生框架保持 `COLOR_NONE`，不再额外绘制异色带。`WM_NCHITTEST` 为边缘
+直接绘制圆角区域；原生框架保持 `COLOR_NONE`。`WM_NCHITTEST` 为边缘
 保留八方向缩放，并让标题栏空白区返回 `HTCAPTION`，因此拖动与双击最大化使用 Windows
 原生语义，右侧窗口控制按钮仍由 Flutter 响应。
 窗口装饰始终关闭 DWM 原生边框；`WM_NCACTIVATE` 先重申无边框状态，再以 `lParam = -1`
-交还 Windows 更新窗口材质激活状态，仅跳过过渡帧的非客户区重绘。标题栏点击不再闪边，
-阴影、圆角、缩放边缘和磨砂聚焦效果继续保留。
+交还 Windows 更新窗口材质激活状态，仅跳过过渡帧的非客户区重绘，
+保留阴影、圆角、缩放边缘和磨砂聚焦效果。
 三个窗口控制图标使用同一视觉框，并直接采用 Windows `Segoe Fluent Icons` 的 Caption
 字形；旧系统回退 `Segoe MDL2 Assets`，由系统字体栅格化保持原生比例与 DPI 细线观感。
 标题栏位于 Navigator 之上，其 Tooltip 依赖一个额外的空条目 Overlay 提供挂载点。
@@ -849,7 +890,6 @@ OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、�
 音频实体测试使用当前项目实测 MPV，实际解析 M3U8，加载 WAV 音频、LRC 字幕轨道和
 外挂图片轨道，并验证自然完成 JSONL。多版本测试还覆盖远程 LRC 本地化后的故障组合，
 仍由环境变量显式启用。
-
 
 ## 10. 构建和便携发布
 
@@ -912,8 +952,9 @@ OpenList 加盐 hash 和 Token 隔离、MPV 参数/Lua/watch_later/JSONL/IPC、�
     都不得以“修复”为名删除播放进度。
 22. ISO 必须保持独立媒体类型；Bridge 只实现未加密 Blu-ray Title/MPLS 远程流式播放
     和多集业务模型。媒体中心必须使用 ISO 独立分栏，浏览页底栏只复用普通视频的会话配额与
-    展示机制；不得写入视频/音频进度、字幕或 OpenList 恢复。ISO 顺序和续播只能使用自己的
+    展示机制；不得写入视频/音频进度、普通视频字幕或 OpenList 恢复。ISO 外挂字幕使用独立 MPLS 绑定与会话脚本。ISO 顺序和续播只能使用自己的
     匿名索引与 watch_later；缓存只能通过 `IsoCacheCoordinator` 复用共享策略与学习核心，
     不得接入普通媒体执行控制器，也不得把 localhost M2TS 作为学习来源。
 23. `iso_temp` 只有在 MPV 与 helper 身份都明确失效后才能自动删除；任一身份未知必须保留。
     不支持 Range 或远端读取失败必须明确结束，不得重试、自动重启或转入完整下载。
+24. 用户配置数据（stream_path_data）必须始终保持固定的标准、格式，防止出现跨版本后用户数据无法互通

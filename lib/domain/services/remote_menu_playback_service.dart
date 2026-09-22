@@ -6,6 +6,8 @@ import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
 import '../../data/models/player_config.dart';
+import '../../data/models/app_language.dart';
+import '../../presentation/playback/menu_cache_panel_script.dart';
 import 'local_disc_playback_service.dart';
 import 'mpv_scripts.dart';
 import 'iso_player_arguments.dart';
@@ -14,6 +16,7 @@ import 'iso_player_arguments.dart';
 class RemoteMenuPlaybackService {
   RemoteMenuPlaybackService({
     required this.configLoader,
+    this.languageLoader,
     String? helperExecutable,
   }) : helperExecutable =
            helperExecutable ??
@@ -23,6 +26,7 @@ class RemoteMenuPlaybackService {
            );
 
   final Future<PlayerConfig> Function() configLoader;
+  final Future<AppLanguage> Function()? languageLoader;
   final String helperExecutable;
   static const runtimeMissing = '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单';
 
@@ -132,12 +136,19 @@ class RemoteMenuPlaybackService {
     final menuScript = config.menuProgressSharingEnabled
         ? await writeProgressScript(sessionDirectory)
         : null;
+    final cacheScript = await MenuCachePanelScript.write(
+      sessionDirectory,
+      await languageLoader?.call() ?? AppLanguage.simplifiedChinese,
+    );
     return buildArgs(
       config,
       endpoint: endpoint,
       ipcPipeName: ipcPipeName,
       scriptPath: script,
-    )..insertAll(0, [if (menuScript != null) '--script=$menuScript']);
+    )..insertAll(0, [
+      '--script=$cacheScript',
+      if (menuScript != null) '--script=$menuScript',
+    ]);
   }
 
   static Future<String> writeProgressScript(Directory directory) async {
@@ -234,8 +245,8 @@ end)
         endpoint.host.isNotEmpty ||
         endpoint.hasQuery ||
         endpoint.hasFragment ||
-        endpoint.toFilePath(windows: true) !=
-            p.join(p.dirname(scriptPath), 'disc', 'disc.iso')) {
+        !{p.join(p.dirname(scriptPath), 'disc', 'disc.iso'),
+          p.join(p.dirname(scriptPath), 'disc')}.contains(endpoint.toFilePath(windows: true))) {
       throw ArgumentError('Invalid mounted disc path');
     }
     return [

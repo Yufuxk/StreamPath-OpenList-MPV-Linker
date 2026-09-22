@@ -23,6 +23,15 @@ void main() {
     if (await tempRoot.exists()) await tempRoot.delete(recursive: true);
   });
 
+  test('普通缓存清理不删除尚未验证播放器身份的本地 ISO 字幕会话', () async {
+    final session=Directory(p.join(cacheDir.path,'local_iso_subtitles','local_disc_123_1'));
+    await session.create(recursive:true);
+    final resource=File(p.join(session.path,'subtitle.ass'));
+    await resource.writeAsString('in use');
+    await CacheCleanupService(storeClearers:const [],dataDirectoryProvider:() async => dataDir).clear();
+    expect(await resource.readAsString(),'in use');
+  });
+
   test('清空新布局缓存和旧平铺残留，同时保留配置与打开的存储文件', () async {
     final configFile = File(p.join(configDir.path, 'stream_path_config.json'));
     final hiveFile = File(p.join(cacheDir.path, 'directory_cache.hive'));

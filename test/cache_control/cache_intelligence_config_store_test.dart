@@ -18,10 +18,10 @@ void main() {
 
   tearDown(() => tempDir.deleteSync(recursive: true));
 
-  test('默认配置为影子模式', () {
+  test('默认配置开启应用智能优化', () {
     final config = CacheIntelligenceConfig.defaults();
     expect(config.enabled, isTrue);
-    expect(config.applyOptimizations, isFalse);
+    expect(config.applyOptimizations, isTrue);
     expect(config.minSamples, 5);
     expect(config.maxAdjustmentRatio, 0.20);
   });
@@ -63,7 +63,7 @@ void main() {
   test('损坏文件回退默认且不抛异常', () async {
     await file.writeAsString('{broken');
     final config = await store.load();
-    expect(config.applyOptimizations, isFalse);
+    expect(config.applyOptimizations, isTrue);
     expect(config.enabled, isTrue);
   });
 }

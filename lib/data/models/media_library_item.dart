@@ -65,6 +65,7 @@ class MediaLibraryItem {
     required this.parentPath,
     required this.name,
     required this.kind,
+    this.discRootPath,
     this.sourceKind = MediaSourceKind.webdav,
     this.playbackMode = PlaybackMode.legacyTitle,
   });
@@ -73,21 +74,25 @@ class MediaLibraryItem {
   final String parentPath;
   final String name;
   final MediaLibraryKind kind;
+  final String? discRootPath;
   final MediaSourceKind sourceKind;
   final PlaybackMode playbackMode;
 
   String get normalizedParentPath => normalizeLibraryPath(parentPath);
 
-  String get targetPath => normalizeLibraryPath(
-    normalizedParentPath.isEmpty ? name : '$normalizedParentPath/$name',
-  );
+  String get targetPath =>
+      discRootPath ??
+      normalizeLibraryPath(
+        normalizedParentPath.isEmpty ? name : '$normalizedParentPath/$name',
+      );
 
   String get stableKey =>
       '$sourceId\u0000${kind.name}\u0000$targetPath\u0000${playbackMode.name}';
 
   bool matches(MediaDirectoryEntry file) {
     final fileKind = MediaLibraryKindX.fromEntry(file);
-    return file.name == name && fileKind == kind;
+    return file.name == name &&
+        (fileKind == kind || (discRootPath != null && file.isDirectory));
   }
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -95,6 +100,7 @@ class MediaLibraryItem {
     'parentPath': normalizedParentPath,
     'name': name,
     'kind': kind.name,
+    if (discRootPath != null) 'discRootPath': discRootPath,
     'sourceKind': sourceKind.jsonValue,
     'playbackMode': playbackMode.jsonValue,
   };
@@ -120,6 +126,7 @@ class MediaLibraryItem {
       parentPath: normalizeLibraryPath(parentPath),
       name: name,
       kind: kind,
+      discRootPath: json['discRootPath'] as String?,
       sourceKind: MediaSourceKindJson.fromJson(json['sourceKind']),
       playbackMode: PlaybackModeJson.fromJson(json['playbackMode']),
     );

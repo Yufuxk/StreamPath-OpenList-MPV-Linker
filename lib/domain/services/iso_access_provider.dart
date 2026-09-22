@@ -8,6 +8,7 @@ import 'package:win32/win32.dart';
 
 import '../../core/errors/app_exception.dart';
 import '../../data/models/web_dav_file.dart';
+import '../../data/models/webdav_bdmv.dart';
 import 'iso_bridge_client.dart';
 import 'player_process_controller.dart';
 import 'webdav_service.dart';
@@ -70,6 +71,7 @@ class IsoBridgeReady {
   factory IsoBridgeReady.fromMessage(
     Map<String, dynamic> message, {
     bool remoteMenu = false,
+    bool bdmv = false,
     String? mountedSessionPath,
   }) {
     final port = (message['port'] as num?)?.toInt();
@@ -146,16 +148,16 @@ class IsoBridgeReady {
     }
     if (remoteMenu &&
         (mountedSessionPath == null ||
-            message['capability'] != 'winfsp-disc-v1' ||
+            message['capability'] != (bdmv ? 'winfsp-bdmv-v1' : 'winfsp-disc-v1') ||
             message['mode'] != 'hdmv' ||
-            totalBytes % 2048 != 0 ||
+            (!bdmv && totalBytes % 2048 != 0) ||
             titles.isNotEmpty)) {
       throw const IsoBridgeProtocolException('远程蓝光菜单能力响应无效');
     }
     if (mountedSessionPath != null &&
         (!remoteMenu ||
             message['discPath'] !=
-                p.join(mountedSessionPath, 'disc', 'disc.iso'))) {
+                (bdmv ? p.join(mountedSessionPath, 'disc') : p.join(mountedSessionPath, 'disc', 'disc.iso')))) {
       throw const IsoBridgeProtocolException('远程蓝光菜单能力响应无效');
     }
     if (!remoteMenu && titles.isEmpty) {
@@ -711,7 +713,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     if (!Platform.isWindows) {
       throw AppException.config('ISO Bridge 仅支持 Windows x64');
     }
-    if (!file.isIso) throw AppException.config('仅支持 Blu-ray ISO 文件');
+    if (!file.isIso && file is! WebDavBdmv) throw AppException.config('仅支持 Blu-ray ISO 文件');
     if (_activeProcess != null) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
@@ -758,6 +760,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         if (remoteMenu) 'mode': 'hdmv',
         if (remoteMenu) 'transport': 'winfsp',
         'version': 1,
+        if (file is WebDavBdmv) 'sourceKind': 'bdmv',
         'url': webDavService.resolveUrl(file.href),
         'origin': snapshot.baseUrl,
         'username': snapshot.username,
@@ -765,6 +768,13 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         'sessionPath': sessionDirectory.path,
         'structureCachePath': structureCachePath,
       });
+      if (file is WebDavBdmv) {
+        for (final item in file.files) {
+          if (_cancelRequested) throw AppException.network('ISO 流式播放已取消');
+          await client.send(item);
+        }
+        await client.send({'type': 'files_end'});
+      }
       Map<String, dynamic> response;
       while (true) {
         response = await client.receive();
@@ -779,8 +789,16 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
       final ready = IsoBridgeReady.fromMessage(
         response,
         remoteMenu: remoteMenu,
+        bdmv: file is WebDavBdmv,
         mountedSessionPath: remoteMenu ? sessionDirectory.path : null,
       );
+      if (file is WebDavBdmv) {
+        final revision = response['structureRevision'];
+        if (revision is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(revision)) {
+          throw const IsoBridgeProtocolException('BDMV structure identity is invalid');
+        }
+        file.structureRevision = revision;
+      }
       if (_cancelRequested) {
         throw AppException.network('ISO 流式播放已取消');
       }

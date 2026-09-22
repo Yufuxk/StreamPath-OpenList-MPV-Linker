@@ -28,7 +28,8 @@ target_include_directories(streampath_iso_bridge_core PUBLIC
 target_compile_options(streampath_iso_bridge_core PRIVATE /W4 /WX /EHsc /utf-8)
 
 include("winfsp.cmake")
-add_executable(streampath_iso_bridge WIN32 "main.cpp")
+add_executable(streampath_iso_bridge WIN32 "main.cpp"
+  "disc_files.h" "bdmv_source.inc" "bdmv_callbacks.inc")
 target_compile_features(streampath_iso_bridge PRIVATE cxx_std_17)
 target_compile_options(streampath_iso_bridge PRIVATE /W4 /WX /EHsc /utf-8)
 target_compile_definitions(streampath_iso_bridge PRIVATE

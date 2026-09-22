@@ -17,3 +17,5 @@ fontconfig 与 libxml2。
 
 libbluray 与 libudfread 按 GNU LGPL 2.1 或后续版本授权；完整条款见同目录
 `COPYING`。本运行库未链接 libaacs 或 libbdplus，也不提供 AACS/BD+ 绕过能力。
+
+文件回调公开 ABI 头文件 `include/libbluray/filesystem.h` 来自 VideoLAN 官方 libbluray 1.5.0 发布源码（`https://download.videolan.org/pub/videolan/libbluray/1.5.0/libbluray-1.5.0.tar.xz`），保留原 LGPL 声明。随包 1.5.1 修订运行库的 `bd_open_files` 导出已核验，并通过真实 BDMV 文件回调枚举及读取验证；运行库二进制未更换。

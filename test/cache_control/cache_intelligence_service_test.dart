@@ -61,7 +61,9 @@ void main() {
     tearDown(() => tempDir.deleteSync(recursive: true));
 
     test('历史码率达到样本数后预测；影子模式不标记应用', () async {
-      await configStore.save(const CacheIntelligenceConfig(minSamples: 2));
+      await configStore.save(
+        const CacheIntelligenceConfig(minSamples: 2, applyOptimizations: false),
+      );
       const url = 'https://media.example/library/01.mkv';
       await service.observeBitrate(
         url: url,

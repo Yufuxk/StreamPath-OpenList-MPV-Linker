@@ -2,10 +2,59 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  "BDMV 远程播放系统": "BDMV Remote Playback",
+  "仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。": "Only unencrypted Blu-ray BDMV is supported. Keep the network connected during playback.",
+
+  "正在读取 BDMV 目录": "Reading BDMV directory",
+  "BDMV 目录读取超时": "BDMV directory read timed out",
+  "BDMV 目录包含无效路径": "BDMV directory contains invalid paths",
+  "BDMV 目录超出读取限制": "BDMV directory exceeds read limits",
+
+  "本机服务重启目录": "Local server restart directory",
+  "默认路径（用户目录）": "Default path (user profile)",
+  "安装路径（程序所在目录）": "Installation path (executable directory)",
+  "默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。":
+      "Uses the Windows user profile by default. The installation directory is detected and recorded after connecting to the local server.",
+  "重启工作目录不可用，已取消重启且未停止服务":
+      "The restart working directory is unavailable. Restart was cancelled without stopping the server.",
+
+  'ISO 前向缓存': 'ISO forward cache',
+  '连续已缓存': 'Contiguous cached data',
+  '估算顺序可读时长': 'Estimated sequential read duration',
+  '采样中或暂不可用': 'Sampling or unavailable',
+  '按近期播放速度估算，非音视频队列时长': 'Estimated from recent playback; not the A/V queue',
+  'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i to close',
+  '正在准备外挂字幕…': 'Preparing external subtitles…',
+  'ISO 外挂字幕': 'ISO external subtitles',
+  '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
+      'Score by duration, episode, name, language and format; explicit MPLS and manual bindings take priority.',
+  '当前节目尚不可识别或正在菜单中，自动外挂暂停。':
+      'The program is not identified or a menu is visible. Automatic subtitles are suspended.',
+  'ISO 信息已变化，旧绑定暂停应用；请重新确认。':
+      'The ISO has changed. Previous bindings are suspended; please confirm them again.',
+  '部分字幕或字体资源不可用，视频播放不受影响。':
+      'Some subtitle or font resources are unavailable. Video playback is unaffected.',
+  '字幕绑定文件不可用，原文件未覆盖':
+      'The subtitle map is unavailable. The original file was not overwritten.',
+  '等待播放器提供节目列表。': 'Waiting for the player to provide the program list.',
+  '字幕绑定已保存': 'Subtitle binding saved',
+  '字幕绑定已保存并应用': 'Subtitle binding saved and applied',
+  '字幕绑定已保存；节目已变化，请刷新后重试应用':
+      'Binding saved. The program changed; refresh and retry applying it.',
+  '字幕绑定保存失败': 'Could not save the subtitle binding',
+  '字幕资源准备失败，视频继续播放': 'Subtitle preparation failed. Video playback continues.',
+  '字幕绑定已保存；播放器暂不可用': 'Binding saved. The player is temporarily unavailable.',
+  '重试应用字幕': 'Retry applying subtitles',
+  '自动建议': 'Automatic suggestion',
+  '未绑定': 'Unbound',
+  '不使用外挂字幕': 'No external subtitles',
+  '此会话未启用 ISO 外挂字幕，请重新打开 ISO':
+      'ISO external subtitles are not enabled for this session. Reopen the ISO.',
   "WebDAV 蓝光菜单进度": "WebDAV Blu-ray menu progress",
   "独立（不记录进度）": "Independent (do not record progress)",
   "共享（供标题模式续播）": "Shared (resume in title mode)",
-  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "Menus always start from the beginning. Shared mode records feature progress for title mode. Changes apply to new sessions.",
+  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。":
+      "Menus always start from the beginning. Shared mode records feature progress for title mode. Changes apply to new sessions.",
   "ISO 远程播放系统": "ISO remote playback system",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响":
       "The ISO remote playback test module failed to initialize. Video and audio playback are unaffected",
@@ -583,10 +632,52 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  "BDMV 远程播放系统": "BDMV リモート再生",
+  "仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。": "暗号化されていない Blu-ray BDMV に対応しています。再生中はネットワーク接続を維持してください。",
+
+  "正在读取 BDMV 目录": "BDMV ディレクトリを読み込み中",
+  "BDMV 目录读取超时": "BDMV ディレクトリの読み込みがタイムアウトしました",
+  "BDMV 目录包含无效路径": "BDMV ディレクトリに無効なパスが含まれています",
+  "BDMV 目录超出读取限制": "BDMV ディレクトリが読み込み制限を超えています",
+
+  "本机服务重启目录": "ローカルサービスの再起動ディレクトリ",
+  "默认路径（用户目录）": "既定のパス（ユーザーフォルダー）",
+  "安装路径（程序所在目录）": "インストール先（実行ファイルのフォルダー）",
+  "默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。":
+      "既定では Windows ユーザーフォルダーを使用します。ローカルサービスへの接続後、インストール先を自動検出して記録します。",
+  "重启工作目录不可用，已取消重启且未停止服务": "再起動用の作業ディレクトリを利用できません。サービスを停止せずに再起動を中止しました。",
+
+  'ISO 前向缓存': 'ISO 先読みキャッシュ',
+  '连续已缓存': '連続キャッシュ済みデータ',
+  '估算顺序可读时长': '推定連続読み取り時間',
+  '采样中或暂不可用': '計測中または利用不可',
+  '按近期播放速度估算，非音视频队列时长': '直近の再生から推定。音声・映像キューの時間ではありません',
+  'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i で閉じる',
+  '正在准备外挂字幕…': '外部字幕を準備しています…',
+  'ISO 外挂字幕': 'ISO 外部字幕',
+  '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
+      '長さ・話数・名前・言語・形式で総合評価します。明示的な MPLS と手動設定を優先します。',
+  '当前节目尚不可识别或正在菜单中，自动外挂暂停。': '番組を識別できないか、メニュー表示中のため、外部字幕を一時停止しています。',
+  'ISO 信息已变化，旧绑定暂停应用；请重新确认。': 'ISO が変更されています。以前の割り当ては適用されません。再確認してください。',
+  '部分字幕或字体资源不可用，视频播放不受影响。': '一部の字幕やフォントを利用できません。映像の再生には影響しません。',
+  '字幕绑定文件不可用，原文件未覆盖': '字幕の割り当てファイルを利用できません。元のファイルは上書きしていません。',
+  '等待播放器提供节目列表。': 'プレーヤーから番組一覧を取得しています。',
+  '字幕绑定已保存': '字幕の割り当てを保存しました',
+  '字幕绑定已保存并应用': '字幕の割り当てを保存して適用しました',
+  '字幕绑定已保存；节目已变化，请刷新后重试应用': '割り当てを保存しました。番組が変更されたため、更新後に再適用してください。',
+  '字幕绑定保存失败': '字幕の割り当てを保存できませんでした',
+  '字幕资源准备失败，视频继续播放': '字幕を準備できませんでした。映像の再生は続行します。',
+  '字幕绑定已保存；播放器暂不可用': '割り当てを保存しました。プレーヤーは現在利用できません。',
+  '重试应用字幕': '字幕の適用を再試行',
+  '自动建议': '自動候補',
+  '未绑定': '未割り当て',
+  '不使用外挂字幕': '外部字幕を使用しない',
+  '此会话未启用 ISO 外挂字幕，请重新打开 ISO': 'このセッションでは ISO 外部字幕が有効ではありません。ISO を開き直してください。',
   "WebDAV 蓝光菜单进度": "WebDAV Blu-ray メニューの再生履歴",
   "独立（不记录进度）": "独立（再生位置を記録しない）",
   "共享（供标题模式续播）": "共有（タイトルモードで再開）",
-  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "メニューは常に最初から開始します。共有時は本編の再生位置をタイトルモードに引き継ぎます。変更は新しいセッションに適用されます。",
+  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。":
+      "メニューは常に最初から開始します。共有時は本編の再生位置をタイトルモードに引き継ぎます。変更は新しいセッションに適用されます。",
   "ISO 远程播放系统": "ISO リモート再生システム",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响":
       "ISO リモート再生テストモジュールを初期化できませんでした。動画と音声の再生には影響しません",
@@ -1089,10 +1180,52 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  "BDMV 远程播放系统": "BDMV 遠端播放系統",
+  "仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。": "僅支援未加密 Blu-ray BDMV；播放期間請保持網路連線。",
+
+  "正在读取 BDMV 目录": "正在讀取 BDMV 目錄",
+  "BDMV 目录读取超时": "BDMV 目錄讀取逾時",
+  "BDMV 目录包含无效路径": "BDMV 目錄包含無效路徑",
+  "BDMV 目录超出读取限制": "BDMV 目錄超出讀取限制",
+
+  "本机服务重启目录": "本機服務重啟目錄",
+  "默认路径（用户目录）": "預設路徑（使用者目錄）",
+  "安装路径（程序所在目录）": "安裝路徑（程式所在目錄）",
+  "默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。":
+      "預設使用 Windows 使用者目錄；連線本機服務後自動辨識並記錄安裝目錄。",
+  "重启工作目录不可用，已取消重启且未停止服务": "重啟工作目錄無法使用，已取消重啟且未停止服務",
+
+  'ISO 前向缓存': 'ISO 前向快取',
+  '连续已缓存': '連續已快取',
+  '估算顺序可读时长': '估算順序可讀時長',
+  '采样中或暂不可用': '取樣中或暫不可用',
+  '按近期播放速度估算，非音视频队列时长': '按近期播放速度估算，非影音佇列時長',
+  'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i 關閉',
+  '正在准备外挂字幕…': '正在準備外掛字幕…',
+  'ISO 外挂字幕': 'ISO 外掛字幕',
+  '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
+      '按時長、集數、名稱、語言和格式綜合評分；明確 MPLS 和手動綁定優先。',
+  '当前节目尚不可识别或正在菜单中，自动外挂暂停。': '目前節目尚無法識別或正在選單中，自動外掛暫停。',
+  'ISO 信息已变化，旧绑定暂停应用；请重新确认。': 'ISO 資訊已變更，舊綁定暫停套用；請重新確認。',
+  '部分字幕或字体资源不可用，视频播放不受影响。': '部分字幕或字型資源無法使用，影片播放不受影響。',
+  '字幕绑定文件不可用，原文件未覆盖': '字幕綁定檔案無法使用，原檔案未覆寫',
+  '等待播放器提供节目列表。': '等待播放器提供節目清單。',
+  '字幕绑定已保存': '字幕綁定已儲存',
+  '字幕绑定已保存并应用': '字幕綁定已儲存並套用',
+  '字幕绑定已保存；节目已变化，请刷新后重试应用': '字幕綁定已儲存；節目已變更，請重新整理後重試套用',
+  '字幕绑定保存失败': '字幕綁定儲存失敗',
+  '字幕资源准备失败，视频继续播放': '字幕資源準備失敗，影片繼續播放',
+  '字幕绑定已保存；播放器暂不可用': '字幕綁定已儲存；播放器暫時無法使用',
+  '重试应用字幕': '重試套用字幕',
+  '自动建议': '自動建議',
+  '未绑定': '未綁定',
+  '不使用外挂字幕': '不使用外掛字幕',
+  '此会话未启用 ISO 外挂字幕，请重新打开 ISO': '此工作階段未啟用 ISO 外掛字幕，請重新開啟 ISO',
   "WebDAV 蓝光菜单进度": "WebDAV 藍光選單進度",
   "独立（不记录进度）": "獨立（不記錄進度）",
   "共享（供标题模式续播）": "共用（供標題模式續播）",
-  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。": "選單一律從頭啟動；共用時記錄正片進度供標題模式使用。變更對新工作階段生效。",
+  "菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。":
+      "選單一律從頭啟動；共用時記錄正片進度供標題模式使用。變更對新工作階段生效。",
   "ISO 远程播放系统": "ISO 遠端播放系統",
   "ISO 远程播放测试模块初始化失败，视频和音频播放不受影响": "ISO 遠端播放測試模組初始化失敗，不影響影片與音訊播放",
   "ISO 远程播放测试模块正在执行其他任务": "ISO 遠端播放測試模組正在執行其他工作",

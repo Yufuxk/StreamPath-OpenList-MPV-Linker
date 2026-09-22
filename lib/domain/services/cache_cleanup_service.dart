@@ -145,7 +145,8 @@ class CacheCleanupService implements CacheCleaner {
     final targets = <FileSystemEntity>[];
     await for (final entity in cacheDir.list(followLinks: false)) {
       final name = p.basename(entity.path).toLowerCase();
-      if (_isOpenStoreFile(name) || _preservedCacheNames.contains(name)) {
+      if (_isOpenStoreFile(name) || _preservedCacheNames.contains(name) ||
+          name == 'local_iso_subtitles') {
         continue;
       }
       await _validateDeleteTarget(entity, cacheDir);

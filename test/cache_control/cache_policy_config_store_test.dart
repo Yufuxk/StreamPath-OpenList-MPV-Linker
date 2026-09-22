@@ -25,7 +25,7 @@ void main() {
       final def = CachePolicyConfig.defaults();
       expect(def.enabled, isTrue);
       expect(def.mode, CachePolicyMode.auto);
-      expect(def.memoryBudgetRatio, 0.25);
+      expect(def.memoryBudgetRatio, 0.35);
       expect(def.baseCacheSecs, 120);
       expect(def.smallFileThresholdMB, 500);
       expect(def.assumedBandwidthMbps, isNull);
@@ -97,7 +97,7 @@ void main() {
         'overrideUserCacheArgs': 'yes',
       });
       expect(config.enabled, isTrue);
-      expect(config.memoryBudgetRatio, 0.25);
+      expect(config.memoryBudgetRatio, 0.35);
       expect(config.baseCacheSecs, 120);
       expect(config.smallFileThresholdMB, 500);
       expect(config.assumedBandwidthMbps, isNull);

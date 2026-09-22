@@ -16,6 +16,24 @@ import 'package:streampath/domain/services/webdav_service.dart';
 import 'package:streampath/domain/services/remote_menu_playback_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/data/local/iso_subtitle_store.dart';
+import 'package:streampath/domain/services/iso_subtitle_service.dart';
+import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
+
+class _CancellingSubtitles extends IsoSubtitleContext {
+  _CancellingSubtitles({required super.source, required super.iso,
+    required super.isoPath, required super.store, required this.onPrepare});
+  final void Function() onPrepare;
+
+  @override
+  Future<List<String>> prepareArgs(Directory directory, {
+    required String sessionId, required String pipeName, required bool menu,
+    required bool autoSelect, List<Map<String, String>> playlist = const [],
+  }) async {
+    onPrepare();
+    return [];
+  }
+}
 
 final _helperIdentity = PlayerProcessIdentity(
   pid: 3131,
@@ -293,6 +311,51 @@ void main() {
       p.join(tempDirectory.path, IsoPlaybackService.tempDirectoryName),
     ),
   );
+
+  test('BDMV 准备先打开 Bridge，等待字幕后才启动播放器并记录完整耗时', () async {
+    final provider = _FakeIsoAccessProvider();
+    var launched = false;
+    final service = buildService(provider, onLaunch: (_) => launched = true);
+    final subtitles = Completer<IsoSubtitleContext?>();
+    final opening = service.start(webDavService: webDavService, file: isoFile,
+        subtitlePreparation: subtitles.future, startupClock: Stopwatch()..start());
+    for (var i = 0; i < 100 && provider.handle == null; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(provider.handle, isNotNull);
+    expect(launched, isFalse);
+    subtitles.complete(null);
+    final result = await opening;
+    expect(launched, isTrue);
+    final timing = jsonDecode(await File(p.join(result!.sessionDirectoryPath, 'disc-startup.json')).readAsString());
+    expect(timing['modeToProcessStartedMs'], greaterThanOrEqualTo(timing['processingMs']));
+    await service.terminateSession(result.sessionDirectoryPath);
+    service.dispose();
+  });
+
+  for (final menu in [false, true]) {
+    test('字幕准备未完成时取消 ${menu ? "菜单" : "Title"}，清理 Bridge 且迟到结果不启动 MPV', () async {
+      final provider = _FakeIsoAccessProvider(handleFactory: menu ? _FakeRemoteHandle.new : null);
+      var launched = false;
+      final service = buildService(provider, remoteProvider: provider,
+          menuService: _FakeMenuService(), onLaunch: (_) => launched = true);
+      addTearDown(service.dispose);
+      final pending = Completer<IsoSubtitleContext?>();
+      final opening = menu
+          ? service.startRemoteMenu(webDavService: webDavService, file: isoFile, subtitlePreparation: pending.future)
+          : service.start(webDavService: webDavService, file: isoFile, subtitlePreparation: pending.future);
+      for (var i = 0; i < 100 && provider.handle == null; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(provider.handle, isNotNull);
+      service.cancel();
+      expect(await opening.timeout(const Duration(seconds: 2)), isNull);
+      expect(provider.handle!.cleaned, isTrue);
+      pending.complete(null);
+      await Future<void>.delayed(Duration.zero);
+      expect(launched, isFalse);
+    });
+  }
 
   test('菜单使用独立 provider、模式与会话键，复用暂停和清理', () async {
     final legacy = _FakeIsoAccessProvider();
@@ -636,6 +699,25 @@ void main() {
     expect(provider.cancelCalled, isTrue);
     expect(service.isBusy, isFalse);
     service.dispose();
+  });
+
+  test('字幕准备期间取消不会启动播放器，并清理 Bridge 会话', () async {
+    final provider = _FakeIsoAccessProvider();
+    var launched = false;
+    final service = buildService(provider, onLaunch: (_) => launched = true);
+    addTearDown(service.dispose);
+    final result = await service.start(
+      webDavService: webDavService,
+      file: isoFile,
+      subtitles: _CancellingSubtitles(
+        source: WebDavMediaSourceAdapter(webDavService), iso: isoFile,
+        isoPath: 'media/DISC.iso', store: IsoSubtitleStore(tempDirectory),
+        onPrepare: service.cancel,
+      ),
+    );
+    expect(result, isNull);
+    expect(launched, isFalse);
+    expect(provider.handle!.cleaned, isTrue);
   });
 
   test('Bridge 未知启动异常转换为统一错误并清理会话', () async {

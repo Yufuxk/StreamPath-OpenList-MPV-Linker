@@ -1,5 +1,8 @@
 import '../../core/utils/url_utils.dart';
 
+/// 本机服务重启时的工作目录。
+enum OpenListRestartDirectory { userProfile, installation }
+
 /// OpenList / AList 播放失败自动恢复配置。
 ///
 /// 默认关闭，确保升级后不改变既有播放器、WebDAV、字幕和续播行为。
@@ -12,6 +15,7 @@ class OpenListRecoveryConfig {
     this.username = '',
     this.password = '',
     this.token = '',
+    this.restartDirectory = OpenListRestartDirectory.userProfile,
   });
 
   /// 是否在 MPV 明确报告媒体加载/读取失败后尝试自动恢复。
@@ -29,6 +33,8 @@ class OpenListRecoveryConfig {
   /// 可选管理员 Token。非空时优先使用，兼容启用了 2FA 的账号。
   final String token;
 
+  final OpenListRestartDirectory restartDirectory;
+
   bool get hasCredentials =>
       token.trim().isNotEmpty ||
       (username.trim().isNotEmpty && password.isNotEmpty);
@@ -38,6 +44,7 @@ class OpenListRecoveryConfig {
   Map<String, dynamic> toJson({bool includeSecrets = true}) =>
       <String, dynamic>{
         'enabled': enabled,
+        'restartDirectory': restartDirectory.name,
         'baseUrl': baseUrl,
         'username': username,
         if (includeSecrets) 'password': password,
@@ -48,6 +55,9 @@ class OpenListRecoveryConfig {
     if (json == null) return const OpenListRecoveryConfig();
     return OpenListRecoveryConfig(
       enabled: json['enabled'] as bool? ?? false,
+      restartDirectory: json['restartDirectory'] == 'installation'
+          ? OpenListRestartDirectory.installation
+          : OpenListRestartDirectory.userProfile,
       baseUrl: stripUserInfo(json['baseUrl'] as String? ?? ''),
       username: json['username'] as String? ?? '',
       password: json['password'] as String? ?? '',

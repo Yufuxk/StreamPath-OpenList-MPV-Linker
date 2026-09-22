@@ -553,8 +553,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             )
           : await service.getProgress(url, profileId: record.item.sourceId);
       if (progress == null ||
-          progress.positionMs <= 0 ||
-          progress.isFinishedNearEnd()) {
+          progress.positionMs < 0 ||
+          (progress.positionMs == 0 &&
+              record.item.kind == MediaLibraryKind.audio) ||
+          (progress.positionMs > 0 && progress.isFinishedNearEnd())) {
         return null;
       }
       return progress;

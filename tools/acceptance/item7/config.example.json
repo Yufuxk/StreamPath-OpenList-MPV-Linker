@@ -1,0 +1,13 @@
+{
+  "upstreamHost": "127.0.0.1",
+  "upstreamPort": 5244,
+  "proxyPortA": 18244,
+  "proxyPortB": 18245,
+  "username": "WebDAV username",
+  "profileId": "StreamPath profile UUID",
+  "mediaPathSegments": [
+    "dav-root",
+    "folder",
+    "acceptance.iso"
+  ]
+}

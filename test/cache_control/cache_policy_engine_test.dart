@@ -148,10 +148,13 @@ void main() {
 
     test('模式对预算比例缩放并 clamp', () {
       const config = CachePolicyConfig(mode: CachePolicyMode.performance);
-      expect(engine.effectiveBudgetRatio(config), 0.3); // 0.25 × 1.2
+      expect(
+        engine.effectiveBudgetRatio(config),
+        closeTo(0.42, 0.001),
+      ); // 0.35 × 1.2
 
       const economy = CachePolicyConfig(mode: CachePolicyMode.economy);
-      expect(engine.effectiveBudgetRatio(economy), closeTo(0.15, 0.001));
+      expect(engine.effectiveBudgetRatio(economy), closeTo(0.21, 0.001));
 
       const maxed = CachePolicyConfig(
         mode: CachePolicyMode.performance,
@@ -307,7 +310,7 @@ void main() {
     });
 
     test('内存紧张时高码率上限被预算截断', () {
-      const config = CachePolicyConfig(); // 25% 预算
+      const config = CachePolicyConfig(memoryBudgetRatio: 0.25); // 25% 预算
       final result = engine.buildPolicy(
         config: config,
         bitrateMbps: 100,

@@ -351,6 +351,7 @@ void main() {
             enabled: true,
             baseUrl: 'http://h',
             token: 'token',
+            restartDirectory: OpenListRestartDirectory.installation,
           ),
           appearance: AppearanceConfig(
             style: InterfaceStyle.glass,
@@ -370,6 +371,10 @@ void main() {
       expect(config.hiddenExtensions, ['.ass'], reason: '隐藏后缀应保持不变');
       expect(config.openListRecovery.enabled, isTrue, reason: '恢复配置应保持不变');
       expect(config.openListRecovery.token, 'token');
+      expect(
+        config.openListRecovery.restartDirectory,
+        OpenListRestartDirectory.installation,
+      );
       expect(
         config.appearance.style,
         InterfaceStyle.glass,
@@ -621,6 +626,9 @@ void main() {
         serverUrl: 'https://example.test/dav',
         username: 'alice',
         password: 'secret-value',
+        openListRecovery: OpenListRecoveryConfig(
+          restartDirectory: OpenListRestartDirectory.installation,
+        ),
         openListIndex: OpenListIndexConfig(userToken: 'least-privilege-token'),
       );
       final secureStore = StreamPathConfigStore.forPath(
@@ -640,6 +648,10 @@ void main() {
         credentialStore: credentialStore,
       ).load();
       expect(reloaded.password, 'secret-value');
+      expect(
+        reloaded.openListRecovery.restartDirectory,
+        OpenListRestartDirectory.installation,
+      );
       expect(
         reloaded.activeProfile?.openListIndex.userToken,
         'least-privilege-token',

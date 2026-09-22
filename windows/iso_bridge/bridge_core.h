@@ -83,6 +83,8 @@ class BlockSource {
 
   virtual ~BlockSource() = default;
   virtual std::uint64_t size() const = 0;
+  // 多文件来源将读取和预读限制在当前文件内。
+  virtual std::uint64_t extent_end(std::uint64_t) const { return size(); }
   virtual std::vector<std::uint8_t> fetch(std::uint64_t start,
                                           std::uint64_t end) = 0;
   virtual std::vector<std::uint8_t> fetch(
@@ -191,6 +193,8 @@ class BlockCache {
                    std::size_t length, std::size_t read_ahead_blocks = 0,
                    std::uint64_t playback_generation = 0);
   BlockCacheMetrics metrics() const;
+  std::uint64_t contiguous_cached_bytes(std::uint64_t offset) const;
+  const std::shared_ptr<BlockSource>& source() const { return source_; }
   BlockCacheHandoff take_handoff(std::uint64_t maximum_retained_bytes);
   void restore_handoff(BlockCacheHandoff handoff);
 
@@ -212,7 +216,8 @@ class BlockCache {
                                std::uint64_t playback_generation,
                                bool prefetch = false);
   void schedule_prefetch(std::uint64_t next_offset, std::size_t block_count,
-                         std::uint64_t playback_generation);
+                         std::uint64_t playback_generation,
+                         std::uint64_t extent_end);
   void prefetch_loop();
   void update_prefetch_pending_gap_locked(
       std::chrono::steady_clock::time_point now);

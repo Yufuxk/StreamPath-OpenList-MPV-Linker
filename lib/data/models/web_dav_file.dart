@@ -19,6 +19,8 @@ class WebDavFile implements MediaDirectoryEntry {
     this.size = 0,
     this.modified,
     this.contentType,
+    this.etag,
+    this.lastModifiedHeader,
     this.isSelfEntry = false,
   });
 
@@ -50,6 +52,9 @@ class WebDavFile implements MediaDirectoryEntry {
   /// MIME 类型（getcontenttype），可能为 null。
   @override
   final String? contentType;
+
+  final String? etag;
+  final String? lastModifiedHeader;
 
   @override
   MediaSourceKind get sourceKind => MediaSourceKind.webdav;
@@ -169,6 +174,8 @@ class WebDavFile implements MediaDirectoryEntry {
     'size': size,
     'modified': modified?.millisecondsSinceEpoch,
     'contentType': contentType,
+    'etag': etag,
+    'lastModifiedHeader': lastModifiedHeader,
   };
 
   factory WebDavFile.fromCacheMap(Map<dynamic, dynamic> map) => WebDavFile(
@@ -181,5 +188,7 @@ class WebDavFile implements MediaDirectoryEntry {
         ? null
         : DateTime.fromMillisecondsSinceEpoch(map['modified'] as int),
     contentType: map['contentType'] as String?,
+    etag: map['etag'] as String?,
+    lastModifiedHeader: map['lastModifiedHeader'] as String?,
   );
 }

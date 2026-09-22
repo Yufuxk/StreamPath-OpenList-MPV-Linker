@@ -50,6 +50,10 @@ class WebDavFontDirectory {
 class WebDavFontMatcher {
   const WebDavFontMatcher();
 
+  /// 本地 ISO 与 WebDAV 共用明确目录名的优先级。
+  static int? directoryScore(String name) =>
+      _folderScores[_normalizeFolderName(name)];
+
   WebDavFontDirectory? findBestFor(
     MediaDirectoryEntry media,
     List<MediaDirectoryEntry> siblings, {

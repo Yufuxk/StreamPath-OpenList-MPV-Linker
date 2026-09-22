@@ -15,6 +15,7 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/local_root_config.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/openlist_index_config.dart';
+import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
@@ -36,6 +37,7 @@ import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 import '../widgets/settings_category_forms.dart';
+import '../widgets/settings_columns.dart';
 import '../widgets/local_root_dialog.dart';
 
 /// 设置页中的可用分类。
@@ -794,6 +796,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _serverPasswordController.text = profile.password;
     _defaultDirectoryController.text = profile.defaultDirectory;
     _openListRecoveryEnabled = profile.openListRecovery.enabled;
+    _draft.openListRestartDirectory = profile.openListRecovery.restartDirectory;
     _openListBaseUrlController.text = profile.openListRecovery.baseUrl;
     _openListUsernameController.text = profile.openListRecovery.username;
     _openListPasswordController.text = profile.openListRecovery.password;
@@ -833,6 +836,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _serverPasswordController.clear();
     _defaultDirectoryController.clear();
     _openListRecoveryEnabled = false;
+    _draft.openListRestartDirectory = OpenListRestartDirectory.userProfile;
     _openListBaseUrlController.clear();
     _openListUsernameController.clear();
     _openListPasswordController.clear();
@@ -1390,18 +1394,15 @@ class _SettingsPageState extends State<SettingsPage> {
         key: const Key('local-storage-settings-section'),
         icon: Icons.folder_copy_outlined,
         title: '本地文件夹',
+        trailing: FilledButton.icon(
+          key: const Key('settings-add-local-root-button'),
+          onPressed: _saving ? null : _editLocalRoot,
+          icon: const Icon(Icons.add),
+          label: const AppText('添加本地文件夹'),
+        ),
         description: '可直接输入绝对路径，或使用 Windows 原生目录选择器。删除挂载不会删除磁盘文件。',
         child: Column(
           children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                key: const Key('settings-add-local-root-button'),
-                onPressed: _saving ? null : _editLocalRoot,
-                icon: const Icon(Icons.add),
-                label: const AppText('添加本地文件夹'),
-              ),
-            ),
             if (_localRoots.isEmpty) ...[
               const SizedBox(height: 20),
               const AppText('尚未添加本地文件夹'),
@@ -1413,10 +1414,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.folder_outlined),
                   title: AppText(root.displayName),
-                  subtitle: AppText(
-                    root.path,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  subtitle: Tooltip(
+                    message: root.path,
+                    child: AppText(
+                      root.path,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -1465,378 +1469,418 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SettingsGroupCard(
-          icon: Icons.dns_outlined,
-          title: '服务器档案',
-          description: '每个档案使用稳定 profileId 隔离缓存、媒体资产与播放进度。',
-          child: Column(
-            children: [
-              if (_profiles.isNotEmpty)
-                DropdownButtonFormField<String>(
-                  key: const Key('settings-profile-selector'),
-                  initialValue: _selectedProfileId,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.text('编辑档案'),
-                    border: OutlineInputBorder(),
-                  ),
-                  items: [
-                    for (final profile in _profiles)
-                      DropdownMenuItem(
-                        value: profile.profileId,
-                        child: AppText(profile.name),
-                      ),
-                  ],
-                  onChanged: _selectProfileForEditing,
-                ),
-              if (_profiles.isNotEmpty) const SizedBox(height: 12),
-              TextFormField(
-                key: const Key('profile-name-field'),
-                controller: _profileNameController,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('档案名称'),
-                  prefixIcon: Icon(Icons.label_outline),
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) => value == null || value.trim().isEmpty
-                    ? context.l10n.text('请输入档案名称')
-                    : null,
-              ),
-              const SizedBox(height: 12),
-              SegmentedButton<CredentialStorageMode>(
-                key: const Key('credential-storage-mode'),
-                segments: const [
-                  ButtonSegment(
-                    value: CredentialStorageMode.windowsCredential,
-                    label: AppText('Windows 凭据'),
-                    icon: Icon(Icons.security_outlined),
-                  ),
-                  ButtonSegment(
-                    value: CredentialStorageMode.portablePlaintext,
-                    label: AppText('便携明文'),
-                    icon: Icon(Icons.folder_copy_outlined),
-                  ),
-                ],
-                selected: {_credentialStorageMode},
-                onSelectionChanged: (values) =>
-                    setState(() => _credentialStorageMode = values.single),
-              ),
-              const SizedBox(height: 6),
-              AppText(
-                _credentialStorageMode ==
-                        CredentialStorageMode.windowsCredential
-                    ? '密码与 Token 保存在当前 Windows 用户的凭据管理器中，配置 JSON 不含敏感值。'
-                    : '密码与 Token 以明文写入便携配置；复制数据目录即可迁移，但需自行保护文件。',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+        SettingsColumns(
+          firstFraction: 0.5,
+          children: [
+            _SettingsGroupCard(
+              icon: Icons.dns_outlined,
+              title: '服务器档案',
+              description: '每个档案使用稳定 profileId 隔离缓存、媒体资产与播放进度。',
+              child: Column(
                 children: [
-                  TextButton.icon(
-                    onPressed: _newProfileForEditing,
-                    icon: const Icon(Icons.add),
-                    label: const AppText('新建档案'),
+                  if (_profiles.isNotEmpty)
+                    DropdownButtonFormField<String>(
+                      key: const Key('settings-profile-selector'),
+                      initialValue: _selectedProfileId,
+                      decoration: InputDecoration(
+                        labelText: context.l10n.text('编辑档案'),
+                        border: OutlineInputBorder(),
+                      ),
+                      items: [
+                        for (final profile in _profiles)
+                          DropdownMenuItem(
+                            value: profile.profileId,
+                            child: AppText(profile.name),
+                          ),
+                      ],
+                      onChanged: _selectProfileForEditing,
+                    ),
+                  if (_profiles.isNotEmpty) const SizedBox(height: 12),
+                  TextFormField(
+                    key: const Key('profile-name-field'),
+                    controller: _profileNameController,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('档案名称'),
+                      prefixIcon: Icon(Icons.label_outline),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? context.l10n.text('请输入档案名称')
+                        : null,
                   ),
-                  const SizedBox(width: 8),
-                  TextButton.icon(
-                    onPressed: _selectedProfileId == null
-                        ? null
-                        : _confirmDeleteSelectedProfile,
-                    icon: const Icon(Icons.delete_outline),
-                    label: const AppText('删除档案'),
+                  const SizedBox(height: 12),
+                  SegmentedButton<CredentialStorageMode>(
+                    key: const Key('credential-storage-mode'),
+                    segments: const [
+                      ButtonSegment(
+                        value: CredentialStorageMode.windowsCredential,
+                        label: AppText('Windows 凭据'),
+                        icon: Icon(Icons.security_outlined),
+                      ),
+                      ButtonSegment(
+                        value: CredentialStorageMode.portablePlaintext,
+                        label: AppText('便携明文'),
+                        icon: Icon(Icons.folder_copy_outlined),
+                      ),
+                    ],
+                    selected: {_credentialStorageMode},
+                    onSelectionChanged: (values) =>
+                        setState(() => _credentialStorageMode = values.single),
                   ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        _SettingsGroupCard(
-          icon: Icons.cloud_outlined,
-          title: 'WebDAV 服务器',
-          description: '用于登录、浏览目录和访问媒体文件。',
-          child: Column(
-            children: [
-              TextFormField(
-                key: const Key('server-url-field'),
-                controller: _serverUrlController,
-                keyboardType: TextInputType.url,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('服务器地址'),
-                  hintText: context.l10n.text('https://example.com/dav'),
-                  prefixIcon: Icon(Icons.link),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                key: const Key('profile-default-directory-field'),
-                controller: _defaultDirectoryController,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('默认目录'),
-                  hintText: context.l10n.text('媒体/电影'),
-                  helperText: context.l10n.text('相对于 WebDAV 根目录；留空则进入根目录。'),
-                  prefixIcon: Icon(Icons.folder_open_outlined),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                key: const Key('server-username-field'),
-                controller: _serverUsernameController,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('用户名'),
-                  prefixIcon: Icon(Icons.person_outline),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                key: const Key('server-password-field'),
-                controller: _serverPasswordController,
-                obscureText: true,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('密码'),
-                  helperText: context.l10n.text(
-                    '连接信息完整时，下次启动会自动连接；服务器允许时密码可以留空。',
-                  ),
-                  prefixIcon: Icon(Icons.lock_outline),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        _SettingsGroupCard(
-          icon: Icons.health_and_safety_outlined,
-          title: 'OpenList/AList 后台与自动恢复',
-          description: '管理员凭据供播放恢复和索引更新共用。',
-          child: Column(
-            children: [
-              SwitchListTile(
-                key: const Key('openlist-recovery-switch'),
-                contentPadding: EdgeInsets.zero,
-                title: const AppText('启用播放失败自动恢复'),
-                subtitle: AppText(
-                  _openListStorageRecoveryUnavailable
-                      ? '当前后台缺少存储恢复端点，自动恢复已禁用'
-                      : '默认关闭，不会改变普通 WebDAV 播放行为',
-                ),
-                value: _openListRecoveryEnabled,
-                onChanged: _openListStorageRecoveryUnavailable
-                    ? null
-                    : (value) =>
-                          setState(() => _openListRecoveryEnabled = value),
-              ),
-              const SizedBox(height: 4),
-              TextFormField(
-                key: const Key('openlist-recovery-base-url'),
-                controller: _openListBaseUrlController,
-                onChanged: _handleOpenListAdminConfigChanged,
-                keyboardType: TextInputType.url,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('后台地址'),
-                  hintText: context.l10n.text('http://192.168.2.124:5244'),
-                  helperText: context.l10n.text(
-                    '基础 WebDAV 可独立连接；搜索、索引更新和存储恢复按实际端点能力分别判断。',
-                  ),
-                  prefixIcon: Icon(Icons.dns_outlined),
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (!_requiresOpenListAdminConfig) return null;
-                  if (OpenListRecoveryService.normalizeBaseUri(value ?? '') ==
-                      null) {
-                    return context.l10n.text('请输入有效的 HTTP/HTTPS 后台地址');
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                key: const Key('openlist-recovery-token'),
-                controller: _openListTokenController,
-                onChanged: _handleOpenListAdminConfigChanged,
-                obscureText: true,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('管理员 Token（推荐）'),
-                  helperText: context.l10n.text(
-                    '优先使用 Token；Authorization 不会添加 Bearer。',
-                  ),
-                  prefixIcon: Icon(Icons.key_outlined),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _buildFieldPair(
-                TextFormField(
-                  key: const Key('openlist-recovery-username'),
-                  controller: _openListUsernameController,
-                  onChanged: _handleOpenListAdminConfigChanged,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.text('管理员用户名'),
-                    helperText: context.l10n.text('填写 Token 时可留空'),
-                    prefixIcon: Icon(Icons.admin_panel_settings_outlined),
-                    border: OutlineInputBorder(),
-                  ),
-                  validator: (value) {
-                    if (!_requiresOpenListAdminConfig ||
-                        _openListTokenController.text.trim().isNotEmpty) {
-                      return null;
-                    }
-                    return (value ?? '').trim().isEmpty
-                        ? context.l10n.text('请输入管理员用户名或填写 Token')
-                        : null;
-                  },
-                ),
-                TextFormField(
-                  key: const Key('openlist-recovery-password'),
-                  controller: _openListPasswordController,
-                  onChanged: _handleOpenListAdminConfigChanged,
-                  obscureText: true,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    labelText: context.l10n.text('管理员密码'),
-                    helperText: context.l10n.text('启用 2FA 时请使用 Token'),
-                    prefixIcon: Icon(Icons.lock_outline),
-                    border: OutlineInputBorder(),
-                  ),
-                  validator: (value) {
-                    if (!_requiresOpenListAdminConfig ||
-                        _openListTokenController.text.trim().isNotEmpty) {
-                      return null;
-                    }
-                    return (value ?? '').isEmpty
-                        ? context.l10n.text('请输入管理员密码或填写 Token')
-                        : null;
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (_openListCapabilitySummary != null) ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: AppText(
-                    _openListCapabilitySummary!,
-                    key: const Key('openlist-capability-summary'),
+                  const SizedBox(height: 6),
+                  AppText(
+                    _credentialStorageMode ==
+                            CredentialStorageMode.windowsCredential
+                        ? '密码与 Token 保存在当前 Windows 用户的凭据管理器中，配置 JSON 不含敏感值。'
+                        : '密码与 Token 以明文写入便携配置；复制数据目录即可迁移，但需自行保护文件。',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  '安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton.icon(
+                        onPressed: _newProfileForEditing,
+                        icon: const Icon(Icons.add),
+                        label: const AppText('新建档案'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: _selectedProfileId == null
+                            ? null
+                            : _confirmDeleteSelectedProfile,
+                        icon: const Icon(Icons.delete_outline),
+                        label: const AppText('删除档案'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            _SettingsGroupCard(
+              icon: Icons.cloud_outlined,
+              title: 'WebDAV 服务器',
+              description: '用于登录、浏览目录和访问媒体文件。',
+              child: Column(
+                children: [
+                  TextFormField(
+                    key: const Key('server-url-field'),
+                    controller: _serverUrlController,
+                    keyboardType: TextInputType.url,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('服务器地址'),
+                      hintText: context.l10n.text('https://example.com/dav'),
+                      prefixIcon: Icon(Icons.link),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    key: const Key('profile-default-directory-field'),
+                    controller: _defaultDirectoryController,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('默认目录'),
+                      hintText: context.l10n.text('媒体/电影'),
+                      helperText: context.l10n.text('相对于 WebDAV 根目录；留空则进入根目录。'),
+                      prefixIcon: Icon(Icons.folder_open_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    key: const Key('server-username-field'),
+                    controller: _serverUsernameController,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('用户名'),
+                      prefixIcon: Icon(Icons.person_outline),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    key: const Key('server-password-field'),
+                    controller: _serverPasswordController,
+                    obscureText: true,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('密码'),
+                      helperText: context.l10n.text(
+                        '连接信息完整时，下次启动会自动连接；服务器允许时密码可以留空。',
+                      ),
+                      prefixIcon: Icon(Icons.lock_outline),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
-          icon: Icons.manage_search_outlined,
-          title: 'OpenList/AList 索引',
-          description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
-          child: Column(
-            children: [
-              TextFormField(
-                key: const Key('openlist-index-user-token'),
-                controller: _openListIndexUserTokenController,
-                enabled: !_openListSearchUnavailable,
-                obscureText: true,
-                contextMenuBuilder: buildClipboardHistoryMenu,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('普通用户 Token（推荐用于 2FA）'),
-                  helperText: context.l10n.text(
-                    '只用于索引搜索，请使用最小权限普通用户 Token；不会复用管理员 Token。',
+        SettingsColumns(
+          firstFraction: 0.5,
+          children: [
+            _SettingsGroupCard(
+              icon: Icons.health_and_safety_outlined,
+              title: 'OpenList/AList 后台与自动恢复',
+              description: '管理员凭据供播放恢复和索引更新共用。',
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    key: const Key('openlist-recovery-switch'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const AppText('启用播放失败自动恢复'),
+                    subtitle: AppText(
+                      _openListStorageRecoveryUnavailable
+                          ? '当前后台缺少存储恢复端点，自动恢复已禁用'
+                          : '默认关闭，不会改变普通 WebDAV 播放行为',
+                    ),
+                    value: _openListRecoveryEnabled,
+                    onChanged: _openListStorageRecoveryUnavailable
+                        ? null
+                        : (value) =>
+                              setState(() => _openListRecoveryEnabled = value),
                   ),
-                  prefixIcon: const Icon(Icons.person_outline),
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                key: const Key('openlist-index-auto-update-switch'),
-                contentPadding: EdgeInsets.zero,
-                title: const AppText('定时更新全部索引'),
-                subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
-                value: _openListIndexAutoUpdateEnabled,
-                onChanged: _openListIndexUpdateUnavailable
-                    ? null
-                    : (value) => setState(
-                        () => _openListIndexAutoUpdateEnabled = value,
+                  const SizedBox(height: 4),
+                  TextFormField(
+                    key: const Key('openlist-recovery-base-url'),
+                    controller: _openListBaseUrlController,
+                    onChanged: _handleOpenListAdminConfigChanged,
+                    keyboardType: TextInputType.url,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('后台地址'),
+                      hintText: context.l10n.text('http://192.168.2.124:5244'),
+                      helperText: context.l10n.text(
+                        '基础 WebDAV 可独立连接；搜索、索引更新和存储恢复按实际端点能力分别判断。',
                       ),
-              ),
-              const SizedBox(height: 4),
-              TextFormField(
-                key: const Key('openlist-index-update-interval'),
-                controller: _openListIndexIntervalController,
-                enabled:
-                    _openListIndexAutoUpdateEnabled &&
-                    !_openListIndexUpdateUnavailable,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('更新间隔（分钟）'),
-                  helperText: context.l10n.text(
-                    '最短 5 分钟，最长 7 天；低于最短值的外部配置会自动按 5 分钟执行。',
+                      prefixIcon: Icon(Icons.dns_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) {
+                      if (!_requiresOpenListAdminConfig) return null;
+                      if (OpenListRecoveryService.normalizeBaseUri(
+                            value ?? '',
+                          ) ==
+                          null) {
+                        return context.l10n.text('请输入有效的 HTTP/HTTPS 后台地址');
+                      }
+                      return null;
+                    },
                   ),
-                  prefixIcon: Icon(Icons.schedule_outlined),
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) => !_openListIndexAutoUpdateEnabled
-                    ? null
-                    : _validateNumber(
-                        value,
-                        min: OpenListIndexConfig.minUpdateIntervalMinutes
-                            .toDouble(),
-                        max: OpenListIndexConfig.maxUpdateIntervalMinutes
-                            .toDouble(),
-                        unit: '分钟',
-                        integer: true,
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    key: const Key('openlist-recovery-token'),
+                    controller: _openListTokenController,
+                    onChanged: _handleOpenListAdminConfigChanged,
+                    obscureText: true,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('管理员 Token（推荐）'),
+                      helperText: context.l10n.text(
+                        '优先使用 Token；Authorization 不会添加 Bearer。',
                       ),
+                      prefixIcon: Icon(Icons.key_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildFieldPair(
+                    TextFormField(
+                      key: const Key('openlist-recovery-username'),
+                      controller: _openListUsernameController,
+                      onChanged: _handleOpenListAdminConfigChanged,
+                      contextMenuBuilder: buildClipboardHistoryMenu,
+                      decoration: InputDecoration(
+                        labelText: context.l10n.text('管理员用户名'),
+                        helperText: context.l10n.text('填写 Token 时可留空'),
+                        prefixIcon: Icon(Icons.admin_panel_settings_outlined),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        if (!_requiresOpenListAdminConfig ||
+                            _openListTokenController.text.trim().isNotEmpty) {
+                          return null;
+                        }
+                        return (value ?? '').trim().isEmpty
+                            ? context.l10n.text('请输入管理员用户名或填写 Token')
+                            : null;
+                      },
+                    ),
+                    TextFormField(
+                      key: const Key('openlist-recovery-password'),
+                      controller: _openListPasswordController,
+                      onChanged: _handleOpenListAdminConfigChanged,
+                      obscureText: true,
+                      contextMenuBuilder: buildClipboardHistoryMenu,
+                      decoration: InputDecoration(
+                        labelText: context.l10n.text('管理员密码'),
+                        helperText: context.l10n.text('启用 2FA 时请使用 Token'),
+                        prefixIcon: Icon(Icons.lock_outline),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (value) {
+                        if (!_requiresOpenListAdminConfig ||
+                            _openListTokenController.text.trim().isNotEmpty) {
+                          return null;
+                        }
+                        return (value ?? '').isEmpty
+                            ? context.l10n.text('请输入管理员密码或填写 Token')
+                            : null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<OpenListRestartDirectory>(
+                    key: ValueKey(
+                      'openlist-restart-directory-${_selectedProfileId ?? "new"}',
+                    ),
+                    initialValue: _draft.openListRestartDirectory,
+                    isExpanded: true,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('本机服务重启目录'),
+                      helperText: context.l10n.text(
+                        '默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。',
+                      ),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: OpenListRestartDirectory.userProfile,
+                        child: AppText('默认路径（用户目录）'),
+                      ),
+                      DropdownMenuItem(
+                        value: OpenListRestartDirectory.installation,
+                        child: AppText('安装路径（程序所在目录）'),
+                      ),
+                    ],
+                    onChanged: (value) => setState(
+                      () => _draft.openListRestartDirectory = value!,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_openListCapabilitySummary != null) ...[
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: AppText(
+                        _openListCapabilitySummary!,
+                        key: const Key('openlist-capability-summary'),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: AppText(
+                      '安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: FilledButton.icon(
-                  key: const Key('openlist-index-update-now'),
-                  onPressed:
-                      _updatingOpenListIndex || _openListIndexUpdateUnavailable
-                      ? null
-                      : _updateOpenListIndexNow,
-                  icon: _updatingOpenListIndex
-                      ? const SizedBox.square(
-                          dimension: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh),
-                  label: AppText(_updatingOpenListIndex ? '正在提交…' : '立即更新索引'),
-                ),
+            ),
+            _SettingsGroupCard(
+              icon: Icons.manage_search_outlined,
+              title: 'OpenList/AList 索引',
+              description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
+              child: Column(
+                children: [
+                  TextFormField(
+                    key: const Key('openlist-index-user-token'),
+                    controller: _openListIndexUserTokenController,
+                    enabled: !_openListSearchUnavailable,
+                    obscureText: true,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('普通用户 Token（推荐用于 2FA）'),
+                      helperText: context.l10n.text(
+                        '只用于索引搜索，请使用最小权限普通用户 Token；不会复用管理员 Token。',
+                      ),
+                      prefixIcon: const Icon(Icons.person_outline),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    key: const Key('openlist-index-auto-update-switch'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const AppText('定时更新全部索引'),
+                    subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
+                    value: _openListIndexAutoUpdateEnabled,
+                    onChanged: _openListIndexUpdateUnavailable
+                        ? null
+                        : (value) => setState(
+                            () => _openListIndexAutoUpdateEnabled = value,
+                          ),
+                  ),
+                  const SizedBox(height: 4),
+                  TextFormField(
+                    key: const Key('openlist-index-update-interval'),
+                    controller: _openListIndexIntervalController,
+                    enabled:
+                        _openListIndexAutoUpdateEnabled &&
+                        !_openListIndexUpdateUnavailable,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('更新间隔（分钟）'),
+                      helperText: context.l10n.text(
+                        '最短 5 分钟，最长 7 天；低于最短值的外部配置会自动按 5 分钟执行。',
+                      ),
+                      prefixIcon: Icon(Icons.schedule_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) => !_openListIndexAutoUpdateEnabled
+                        ? null
+                        : _validateNumber(
+                            value,
+                            min: OpenListIndexConfig.minUpdateIntervalMinutes
+                                .toDouble(),
+                            max: OpenListIndexConfig.maxUpdateIntervalMinutes
+                                .toDouble(),
+                            unit: '分钟',
+                            integer: true,
+                          ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      key: const Key('openlist-index-update-now'),
+                      onPressed:
+                          _updatingOpenListIndex ||
+                              _openListIndexUpdateUnavailable
+                          ? null
+                          : _updateOpenListIndexNow,
+                      icon: _updatingOpenListIndex
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh),
+                      label: AppText(
+                        _updatingOpenListIndex ? '正在提交…' : '立即更新索引',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildOpenListIndexProgressPanel(),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: AppText(
+                      _openListIndexUpdateUnavailable
+                          ? '当前后台缺少索引更新所需端点，手动与定时更新已禁用；不会回退为全量构建。'
+                          : '保护规则：手动与定时请求互斥；若服务端正在构建索引则直接跳过；StreamPath 不会递归扫描 WebDAV。需先在 OpenList/AList 启用数据库索引与自动更新能力。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              _buildOpenListIndexProgressPanel(),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  _openListIndexUpdateUnavailable
-                      ? '当前后台缺少索引更新所需端点，手动与定时更新已禁用；不会回退为全量构建。'
-                      : '保护规则：手动与定时请求互斥；若服务端正在构建索引则直接跳过；StreamPath 不会递归扫描 WebDAV。需先在 OpenList/AList 启用数据库索引与自动更新能力。',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ],
     );
@@ -1979,8 +2023,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildPlaybackSettings() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return SettingsColumns(
+      firstFraction: 0.55,
       children: [
         _SettingsGroupCard(
           icon: Icons.video_settings_outlined,
@@ -2056,7 +2100,6 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
-        const SizedBox(height: 16),
         _SettingsGroupCard(
           icon: Icons.subtitles_outlined,
           title: '播放行为',
@@ -2100,8 +2143,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   DropdownMenuItem(value: false, child: AppText('独立（不记录进度）')),
                   DropdownMenuItem(value: true, child: AppText('共享（供标题模式续播）')),
                 ],
-                onChanged: (value) => setState(() =>
-                    _draft.menuProgressSharingEnabled = value!),
+                onChanged: (value) =>
+                    setState(() => _draft.menuProgressSharingEnabled = value!),
               ),
               const SizedBox(height: 8),
               const AppText('菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。'),
@@ -2303,22 +2346,31 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildCachePage() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildCacheSettings(),
-        const SizedBox(height: 16),
-        _buildCacheExpirationSettings(),
-        const SizedBox(height: 16),
-        _buildIntelligenceSettings(),
-        const SizedBox(height: 16),
-        _buildCacheCleanupSettings(),
-        const SizedBox(height: 16),
-        _buildLearningDataCleanupSettings(),
-      ],
-    );
-  }
+  Widget _buildCachePage() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SettingsColumns(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildCacheSettings(),
+              const SizedBox(height: 16),
+              _buildCacheExpirationSettings(),
+            ],
+          ),
+          _buildIntelligenceSettings(),
+        ],
+      ),
+      const SizedBox(height: 16),
+      SettingsColumns(
+        children: [
+          _buildCacheCleanupSettings(),
+          _buildLearningDataCleanupSettings(),
+        ],
+      ),
+    ],
+  );
 
   Widget _buildDiagnosticsSettings() {
     final snapshot = _diagnosticSnapshot;
@@ -2847,122 +2899,132 @@ class _SettingsPageState extends State<SettingsPage> {
     final capabilities = appearanceController.capabilities;
     final result = appearanceController.lastResult;
     final capabilityError = appearanceController.capabilityError;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return SettingsColumns(
+      firstFraction: 0.5,
       children: [
-        _SettingsGroupCard(
-          icon: Icons.layers_outlined,
-          title: '界面样式',
-          description: '默认样式保持原有不透明界面；Windows 材质使用 Acrylic 或 Mica 系统背景。',
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: SegmentedButton<InterfaceStyle>(
-              key: const Key('interface-style-selector'),
-              segments: const [
-                ButtonSegment(
-                  value: InterfaceStyle.classic,
-                  icon: Icon(Icons.crop_square_rounded),
-                  label: AppText('默认'),
-                ),
-                ButtonSegment(
-                  value: InterfaceStyle.glass,
-                  icon: Icon(Icons.blur_on_outlined),
-                  label: AppText('Windows 材质'),
-                ),
-              ],
-              selected: {_interfaceStyle},
-              onSelectionChanged: (selection) {
-                if (selection.isNotEmpty) {
-                  setState(() => _interfaceStyle = selection.first);
-                }
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        _SettingsGroupCard(
-          icon: Icons.opacity_outlined,
-          title: 'Windows 系统材质',
-          description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              AppText('材质模式', style: Theme.of(context).textTheme.labelLarge),
-              const SizedBox(height: 10),
-              Align(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SettingsGroupCard(
+              icon: Icons.layers_outlined,
+              title: '界面样式',
+              description: '默认样式保持原有不透明界面；Windows 材质使用 Acrylic 或 Mica 系统背景。',
+              child: Align(
                 alignment: Alignment.centerLeft,
-                child: SegmentedButton<WindowMaterialPreference>(
-                  key: const Key('window-material-selector'),
+                child: SegmentedButton<InterfaceStyle>(
+                  key: const Key('interface-style-selector'),
                   segments: const [
                     ButtonSegment(
-                      value: WindowMaterialPreference.automatic,
-                      icon: Icon(Icons.auto_awesome_outlined),
-                      label: AppText('自动'),
+                      value: InterfaceStyle.classic,
+                      icon: Icon(Icons.crop_square_rounded),
+                      label: AppText('默认'),
                     ),
                     ButtonSegment(
-                      value: WindowMaterialPreference.acrylic,
+                      value: InterfaceStyle.glass,
                       icon: Icon(Icons.blur_on_outlined),
-                      label: AppText('Acrylic'),
-                    ),
-                    ButtonSegment(
-                      value: WindowMaterialPreference.mica,
-                      icon: Icon(Icons.texture_outlined),
-                      label: AppText('Mica'),
+                      label: AppText('Windows 材质'),
                     ),
                   ],
-                  selected: {_windowMaterial},
-                  onSelectionChanged: glassSelected
-                      ? (selection) {
-                          if (selection.isNotEmpty) {
-                            setState(() => _windowMaterial = selection.first);
-                          }
-                        }
-                      : null,
+                  selected: {_interfaceStyle},
+                  onSelectionChanged: (selection) {
+                    if (selection.isNotEmpty) {
+                      setState(() => _interfaceStyle = selection.first);
+                    }
+                  },
                 ),
               ),
-              const SizedBox(height: 8),
-              AppText(
-                _windowMaterialDescription(capabilities),
-                key: const Key('window-material-description'),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
+            ),
+            const SizedBox(height: 16),
+            _SettingsGroupCard(
+              icon: Icons.opacity_outlined,
+              title: 'Windows 系统材质',
+              description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Expanded(child: AppText('界面背景密度')),
                   AppText(
-                    '$opacityPercent%',
-                    key: const Key('glass-opacity-value'),
+                    '材质模式',
                     style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: SegmentedButton<WindowMaterialPreference>(
+                      key: const Key('window-material-selector'),
+                      segments: const [
+                        ButtonSegment(
+                          value: WindowMaterialPreference.automatic,
+                          icon: Icon(Icons.auto_awesome_outlined),
+                          label: AppText('自动'),
+                        ),
+                        ButtonSegment(
+                          value: WindowMaterialPreference.acrylic,
+                          icon: Icon(Icons.blur_on_outlined),
+                          label: AppText('Acrylic'),
+                        ),
+                        ButtonSegment(
+                          value: WindowMaterialPreference.mica,
+                          icon: Icon(Icons.texture_outlined),
+                          label: AppText('Mica'),
+                        ),
+                      ],
+                      selected: {_windowMaterial},
+                      onSelectionChanged: glassSelected
+                          ? (selection) {
+                              if (selection.isNotEmpty) {
+                                setState(
+                                  () => _windowMaterial = selection.first,
+                                );
+                              }
+                            }
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  AppText(
+                    _windowMaterialDescription(capabilities),
+                    key: const Key('window-material-description'),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      const Expanded(child: AppText('界面背景密度')),
+                      AppText(
+                        '$opacityPercent%',
+                        key: const Key('glass-opacity-value'),
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    key: const Key('glass-opacity-slider'),
+                    min: AppearanceConfig.minGlassOpacity,
+                    max: AppearanceConfig.maxGlassOpacity,
+                    divisions: 35,
+                    label: '$opacityPercent%',
+                    value: _glassOpacity,
+                    onChanged: glassSelected
+                        ? (value) => _mutateAppearanceSection(
+                            () => _glassOpacity = value,
+                          )
+                        : null,
+                  ),
+                  AppText(
+                    glassSelected
+                        ? '数值越低，系统材质越明显；最低值已限制以保证文字对比度。'
+                        : '选择“Windows 材质”后可调整。',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
-              Slider(
-                key: const Key('glass-opacity-slider'),
-                min: AppearanceConfig.minGlassOpacity,
-                max: AppearanceConfig.maxGlassOpacity,
-                divisions: 35,
-                label: '$opacityPercent%',
-                value: _glassOpacity,
-                onChanged: glassSelected
-                    ? (value) =>
-                          _mutateAppearanceSection(() => _glassOpacity = value)
-                    : null,
-              ),
-              AppText(
-                glassSelected
-                    ? '数值越低，系统材质越明显；最低值已限制以保证文字对比度。'
-                    : '选择“Windows 材质”后可调整。',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
-        const SizedBox(height: 16),
         _SettingsGroupCard(
           key: const Key('windows-appearance-capabilities-section'),
           icon: Icons.monitor_heart_outlined,
@@ -3208,23 +3270,22 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildFieldPair(Widget first, Widget second) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 620) {
-          return Column(children: [first, const SizedBox(height: 12), second]);
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: first),
-            const SizedBox(width: 12),
-            Expanded(child: second),
-          ],
-        );
-      },
-    );
-  }
+  Widget _buildFieldPair(Widget first, Widget second) => LayoutBuilder(
+    builder: (context, constraints) {
+      final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+      final width = constraints.maxWidth >= 620 * scale
+          ? (constraints.maxWidth - 12) / 2
+          : constraints.maxWidth;
+      return Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          SizedBox(width: width, child: first),
+          SizedBox(width: width, child: second),
+        ],
+      );
+    },
+  );
 
   Widget _buildNavigationBar(
     BuildContext context,
@@ -3238,11 +3299,11 @@ class _SettingsPageState extends State<SettingsPage> {
       child: SizedBox(
         width: double.infinity,
         child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1040),
+          child: SizedBox(
+            width: 1248,
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
               child: Row(
                 children: [
                   for (var index = 0; index < sections.length; index++) ...[
@@ -3268,50 +3329,12 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildPageShell(_SettingsSectionDefinition definition) {
     final scrollController = _pageScrollControllers[definition.section]!;
     final formKey = _formKeys[definition.section]!;
-    final header = _SettingsPageHeader(definition: definition);
     final content = definition.builder();
     return SettingsCategoryForm(
       sectionName: definition.section.name,
       formKey: formKey,
       scrollController: scrollController,
-      header: header,
       content: content,
-    );
-  }
-
-  Widget _buildBottomBar(BuildContext context) {
-    final tokens = Theme.of(context).glass;
-    return GlassSurface(
-      level: GlassSurfaceLevel.chrome,
-      automaticBorder: false,
-      border: Border(top: BorderSide(color: tokens.dividerColor)),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      child: SafeArea(
-        top: false,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            FilledButton.icon(
-              key: const Key('save-settings-button'),
-              onPressed:
-                  !_loaded ||
-                      _saving ||
-                      _resettingSettings ||
-                      _clearingMediaLibrary
-                  ? null
-                  : _save,
-              icon: _saving
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.save_outlined),
-              label: AppText(_saving ? '保存中…' : '保存全部配置'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -3321,51 +3344,77 @@ class _SettingsPageState extends State<SettingsPage> {
     final selectedIndex = sections.indexWhere(
       (definition) => definition.section == _selectedSection,
     );
-    return Scaffold(
-      appBar: AppBar(
-        title: const AppText('设置'),
-        actions: [
-          IconButton(
-            tooltip: context.l10n.text('从配置文件重新加载'),
-            onPressed:
-                !_loaded ||
-                    _saving ||
-                    _resettingSettings ||
-                    _clearingMediaLibrary
-                ? null
-                : _reloadConfig,
-            icon: const Icon(Icons.refresh),
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        inputDecorationTheme: theme.inputDecorationTheme.copyWith(
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 12,
           ),
-          TextButton.icon(
-            onPressed:
-                !_loaded ||
-                    _saving ||
-                    _resettingSettings ||
-                    _clearingMediaLibrary
-                ? null
-                : _save,
-            icon: const Icon(Icons.save_outlined),
-            label: const AppText('保存'),
-          ),
-        ],
+          helperMaxLines: 4,
+          errorMaxLines: 4,
+        ),
+        listTileTheme: theme.listTileTheme.copyWith(
+          dense: true,
+          visualDensity: const VisualDensity(vertical: -2),
+        ),
       ),
-      body: !_loaded
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                _buildNavigationBar(context, sections),
-                Expanded(
-                  child: IndexedStack(
-                    index: selectedIndex < 0 ? 0 : selectedIndex,
-                    children: [
-                      for (final definition in sections)
-                        _buildPageShell(definition),
-                    ],
-                  ),
-                ),
-              ],
+      child: Scaffold(
+        appBar: AppBar(
+          title: const AppText('设置'),
+          actions: [
+            IconButton(
+              tooltip: context.l10n.text('从配置文件重新加载'),
+              onPressed:
+                  !_loaded ||
+                      _saving ||
+                      _resettingSettings ||
+                      _clearingMediaLibrary
+                  ? null
+                  : _reloadConfig,
+              icon: const Icon(Icons.refresh),
             ),
-      bottomNavigationBar: _loaded ? _buildBottomBar(context) : null,
+            Padding(
+              padding: const EdgeInsets.only(right: 20),
+              child: FilledButton.icon(
+                key: const Key('save-settings-button'),
+                onPressed:
+                    !_loaded ||
+                        _saving ||
+                        _resettingSettings ||
+                        _clearingMediaLibrary
+                    ? null
+                    : _save,
+                icon: _saving
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_outlined),
+                label: AppText(_saving ? '保存中…' : '保存全部配置'),
+              ),
+            ),
+          ],
+        ),
+        body: !_loaded
+            ? const Center(child: CircularProgressIndicator())
+            : Column(
+                children: [
+                  _buildNavigationBar(context, sections),
+                  Expanded(
+                    child: IndexedStack(
+                      index: selectedIndex < 0 ? 0 : selectedIndex,
+                      children: [
+                        for (final definition in sections)
+                          _buildPageShell(definition),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 }
@@ -3458,7 +3507,7 @@ class _SettingsNavigationButton extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(10),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -3488,53 +3537,6 @@ class _SettingsNavigationButton extends StatelessWidget {
   }
 }
 
-class _SettingsPageHeader extends StatelessWidget {
-  const _SettingsPageHeader({required this.definition});
-
-  final _SettingsSectionDefinition definition;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Container(
-          width: 46,
-          height: 46,
-          decoration: BoxDecoration(
-            color: scheme.primaryContainer,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(definition.icon, color: scheme.onPrimaryContainer),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AppText(
-                definition.label,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.3,
-                ),
-              ),
-              const SizedBox(height: 2),
-              AppText(
-                definition.description,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _SettingsGroupCard extends StatelessWidget {
   const _SettingsGroupCard({
     super.key,
@@ -3542,12 +3544,14 @@ class _SettingsGroupCard extends StatelessWidget {
     required this.title,
     required this.description,
     required this.child,
+    this.trailing,
   });
 
   final IconData icon;
   final String title;
   final String description;
   final Widget child;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -3559,9 +3563,9 @@ class _SettingsGroupCard extends StatelessWidget {
           : GlassSurfaceLevel.raised,
       border: Border.all(color: tokens.borderColor),
       showShadow: false,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(12),
       clipBehavior: Clip.antiAlias,
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -3588,9 +3592,10 @@ class _SettingsGroupCard extends StatelessWidget {
                   ],
                 ),
               ),
+              if (trailing != null) ...[const SizedBox(width: 12), trailing!],
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 10),
           child,
         ],
       ),

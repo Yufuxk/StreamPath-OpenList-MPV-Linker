@@ -1,4 +1,5 @@
 #include "bridge_core.h"
+#include "disc_files.h"
 #include "iso_structure_cache.h"
 #include "remote_disc_endpoint.h"
 
@@ -538,61 +539,143 @@ void test_stream_prefetch_publication() {
     bool released = false;
     bool fail = false;
   };
-  for (const int mode : {0, 1, 2}) {
-    auto source = std::make_shared<StreamingSource>();
-    source->fail = mode == 1;
-    bridge::BlockCache cache(source, 8, 16, 1, 4, 4, 0, true);
-    cache.configure(16, 4, false, true);
-    const auto generation = cache.begin_playback();
-    std::uint8_t byte = 0;
-    cache.read(0, &byte, 1, 4, generation);
-    bool started = false;
-    {
-      std::unique_lock lock(source->mutex);
-      started = source->ready.wait_for(lock, std::chrono::seconds(2), [&] { return source->started; });
+  for (const bool menu : {false, true}) {
+    for (const int mode : {0, 1, 2, 3}) {
+      auto source = std::make_shared<StreamingSource>();
+      source->fail = mode == 1;
+      bridge::BlockCache cache(source, 8, 16, 1, 4, 4, 0, true);
+      cache.configure(16, 4, menu, !menu);
+      const auto generation = cache.begin_playback();
+      std::uint8_t byte = 0;
+      cache.read(0, &byte, 1, 4, generation);
+      bool started = false;
+      {
+        std::unique_lock lock(source->mutex);
+        started = source->ready.wait_for(lock, std::chrono::seconds(2), [&] { return source->started; });
+      }
+      std::atomic<bool> read_done = false;
+      std::uint8_t streamed = 0;
+      std::thread reader([&] {
+        cache.read(8, &streamed, 1, 0, generation);
+        read_done = true;
+      });
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+      while (!read_done && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      const bool early = read_done;
+      const auto partial_metrics = cache.metrics();
+      auto current = generation;
+      if (mode == 2) current = cache.begin_playback();
+      if (mode == 3) cache.reset_read_ahead();
+      {
+        std::lock_guard lock(source->mutex);
+        source->released = true;
+        source->ready.notify_all();
+      }
+      reader.join();
+      expect(started && early && streamed == 7 && partial_metrics.prefetched_bytes == 8,
+             "complete block is readable before range tail; partial block is unpublished");
+      if (mode == 1) {
+        bool failed = false;
+        try { cache.read(16, &byte, 1, 0, current); }
+        catch (const std::runtime_error&) { failed = true; }
+        expect(failed, "stream tail failure reaches demand");
+        failed = false;
+        try { cache.read(8, &byte, 1, 0, current); }
+        catch (const std::runtime_error&) { failed = true; }
+        expect(failed, "stream error cannot be hidden by a completed cache hit");
+        current = cache.begin_playback();
+        expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == 9,
+               "new generation recovers without retaining partial bytes");
+      } else {
+        expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == (mode >= 2 ? 9 : 7),
+               "tail completes or stale partial is discarded");
+      }
+      cache.shutdown();
+      if (mode >= 2) {
+        expect(cache.metrics().cancelled_prefetch_bytes == 3,
+               "cancellation counts only unpublished bytes");
+      }
     }
-    std::atomic<bool> read_done = false;
-    std::uint8_t streamed = 0;
-    std::thread reader([&] {
-      cache.read(8, &streamed, 1, 0, generation);
-      read_done = true;
-    });
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (!read_done && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+void test_menu_batch_tail_does_not_block_completed_prefix() {
+  class TailSource final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 64ULL * 1024 * 1024; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start, std::uint64_t end) override {
+      std::vector<std::uint8_t> result;
+      fetch_stream(start, end, {}, [&](const std::uint8_t* data, std::size_t count) {
+        result.insert(result.end(), data, data + count);
+      });
+      return result;
     }
-    const bool early = read_done;
-    const auto partial_metrics = cache.metrics();
-    auto current = generation;
-    if (mode == 2) current = cache.begin_playback();
-    {
-      std::lock_guard lock(source->mutex);
-      source->released = true;
-      source->ready.notify_all();
+    void fetch_stream(std::uint64_t start, std::uint64_t end,
+                      const CancellationProbe& cancelled,
+                      const ChunkConsumer& consume) override {
+      const auto length = static_cast<std::size_t>(end - start + 1);
+      std::vector<std::uint8_t> bytes(length, 7);
+      const auto prefix = (std::min)(length, static_cast<std::size_t>(bridge::kIsoDemandBlockSize));
+      consume(bytes.data(), prefix);
+      if (length == prefix) return;
+      {
+        std::unique_lock lock(mutex);
+        started = true;
+        ready.notify_all();
+        ready.wait(lock, [&] { return released; });
+      }
+      if (cancelled && cancelled()) throw bridge::FetchCancelled(prefix);
+      consume(bytes.data() + prefix, length - prefix);
     }
-    reader.join();
-    expect(started && early && streamed == 7 && partial_metrics.prefetched_bytes == 8,
-           "complete block is readable before range tail; partial block is unpublished");
-    if (mode == 1) {
-      bool failed = false;
-      try { cache.read(16, &byte, 1, 0, current); }
-      catch (const std::runtime_error&) { failed = true; }
-      expect(failed, "stream tail failure reaches demand");
-      failed = false;
-      try { cache.read(8, &byte, 1, 0, current); }
-      catch (const std::runtime_error&) { failed = true; }
-      expect(failed, "stream error cannot be hidden by a completed cache hit");
-      current = cache.begin_playback();
-      expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == 9,
-             "new generation recovers without retaining partial bytes");
-    } else {
-      expect(cache.read(16, &byte, 1, 0, current) == 1 && byte == (mode == 2 ? 9 : 7),
-             "tail completes or stale partial is discarded");
-    }
-    cache.shutdown();
-    if (mode == 2) {
-      expect(cache.metrics().cancelled_prefetch_bytes == 3,
-             "cancellation counts only unpublished bytes");
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool started = false, released = false;
+  };
+  for (const std::size_t batch_mib : {4U, 16U}) {
+    for (const bool streaming : {false, true}) {
+      auto source = std::make_shared<TailSource>();
+      const auto batch = batch_mib * 4;
+      bridge::BlockCache cache(source, bridge::kIsoDemandBlockSize, 12, 16,
+                               batch, batch, 0, streaming);
+      cache.configure(12, 8, true);
+      const auto generation = cache.begin_playback();
+      std::uint8_t byte = 0;
+      cache.read(0, &byte, 1, 2 * batch, generation);
+      bool started;
+      {
+        std::unique_lock lock(source->mutex);
+        started = source->ready.wait_for(lock, std::chrono::seconds(2), [&] { return source->started; });
+      }
+      std::atomic<bool> done = false;
+      std::exception_ptr read_error;
+      std::thread reader([&] {
+        try { cache.read(bridge::kIsoDemandBlockSize, &byte, 1, 0, generation); }
+        catch (...) { read_error = std::current_exception(); }
+        done = true;
+      });
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+      while (!done && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      const bool early = done;
+      const auto available = cache.contiguous_cached_bytes(bridge::kIsoDemandBlockSize);
+      {
+        std::lock_guard lock(source->mutex);
+        source->released = true;
+        source->ready.notify_all();
+      }
+      reader.join();
+      cache.shutdown();
+      if (read_error) std::rethrow_exception(read_error);
+      expect(started && early == streaming && byte == 7,
+             "menu prefix demand waits for batch tail only without streaming");
+      expect(available == (streaming ? bridge::kIsoDemandBlockSize : 0),
+             "menu reports only completed prefix while range tail is blocked");
+      expect(cache.metrics().prefetch_active_peak == 1,
+             "menu streaming retains one prefetch worker");
+      std::cout << "menu tail gate: batchMiB=" << batch_mib
+                << " streaming=" << streaming << " early=" << early << '\n';
     }
   }
 }
@@ -1523,15 +1606,87 @@ void test_remote_disc_random_reads_and_protocol() {
       "Accept-Encoding: gzip\r\n\r\n", disc).status != 206, "encoded disc request rejected");
 }
 
+void test_contiguous_cached_bytes() {
+  auto source = std::make_shared<FakeSource>(100);
+  bridge::BlockCache cache(source, 16, 8);
+  std::array<std::uint8_t, 16> bytes{};
+  cache.read(0, bytes.data(), 16);
+  cache.read(32, bytes.data(), 16);
+  const auto calls = source->calls.load();
+  expect(cache.contiguous_cached_bytes(5) == 11, "cache display stops at first hole");
+  expect(cache.contiguous_cached_bytes(16) == 0, "uncached position has no forward bytes");
+  expect(source->calls == calls, "cache observation never performs IO");
+  cache.read(16, bytes.data(), 16);
+  expect(cache.contiguous_cached_bytes(5) == 43, "adjacent resident blocks are counted");
+  cache.read(96, bytes.data(), 4);
+  expect(cache.contiguous_cached_bytes(98) == 2, "partial EOF block is clipped");
+  expect(cache.contiguous_cached_bytes(101) == 0, "position past EOF is empty");
+  auto pending_source = std::make_shared<FailingSource>();
+  bridge::BlockCache pending(pending_source, 16, 4);
+  bool failed = false;
+  std::thread reader([&] {
+    try { pending.read(0, bytes.data(), 16); }
+    catch (const std::runtime_error&) { failed = true; }
+  });
+  const bool started = pending_source->wait_for_request();
+  const auto in_flight = pending.contiguous_cached_bytes(0);
+  pending_source->release_failure();
+  reader.join();
+  expect(started && failed, "controlled failing read completed");
+  expect(in_flight == 0, "in-flight data is not counted");
+  expect(pending.contiguous_cached_bytes(0) == 0, "failed data is not counted");
+}
+
+void test_bdmv_file_boundaries() {
+  class Source final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 112; }
+    std::uint64_t extent_end(std::uint64_t offset) const override {
+      return offset < 35 ? 35 : offset >= 64 && offset < 99 ? 99 : offset;
+    }
+    std::vector<std::uint8_t> fetch(std::uint64_t start, std::uint64_t end) override {
+      if (end < start || end >= extent_end(start)) throw std::runtime_error("crossed file boundary");
+      ++calls;
+      return std::vector<std::uint8_t>(static_cast<std::size_t>(end - start + 1), start < 35 ? 1 : 2);
+    }
+    std::atomic<int> calls = 0;
+  };
+  auto source = std::make_shared<Source>();
+  bridge::BlockCache cache(source, 16, 8, 1, 2, 4, 0, true);
+  const auto generation = cache.begin_playback();
+  std::array<std::uint8_t, 64> data{};
+  expect(cache.read(0, data.data(), 64, 8, generation) == 35, "first file EOF clips read");
+  expect(data[34] == 1, "first file tail retained");
+  expect(cache.read(64, data.data(), 64, 8, generation) == 35, "second file EOF clips read");
+  expect(data[0] == 2 && data[34] == 2, "equal offsets in different files stay isolated");
+  expect(cache.contiguous_cached_bytes(32) == 3, "forward bytes stop at file EOF");
+  expect(cache.contiguous_cached_bytes(35) == 0, "padding is not cached content");
+  expect(cache.read(35, data.data(), 1) == 0, "padding is not readable");
+  cache.shutdown();
+  bridge::DiscFiles files;
+  files.add("BDMV", "", 0, true);
+  files.add("BDMV/STREAM", "", 0, true);
+  files.add("BDMV/STREAM/00001.m2ts", "", 35, false);
+  files.add("BDMV/STREAM/00002.m2ts", "", 99, false);
+  expect(files.find("bdmv/stream/00001.m2ts")->size == 35, "case-insensitive logical lookup");
+  expect(files.at(35) == nullptr, "address padding has no file");
+  bool rejected = false;
+  try { files.add("BDMV/../evil", "", 1, false); } catch (const std::invalid_argument&) { rejected = true; }
+  expect(rejected, "path traversal rejected");
+}
+
 int main() {
   try {
+    test_bdmv_file_boundaries();
     test_ranges();
+    test_contiguous_cached_bytes();
     test_remote_disc_random_reads_and_protocol();
     test_json();
     test_m2ts_timestamp_normalization();
     test_cache();
     test_title_recovery_batches();
     test_stream_prefetch_publication();
+    test_menu_batch_tail_does_not_block_completed_prefix();
     test_metadata_cache_handoff_preserves_hot_blocks_and_refetch_history();
     test_prefetch_and_demand_share_inflight_block();
     test_new_generation_replaces_cancelled_same_block_load();
