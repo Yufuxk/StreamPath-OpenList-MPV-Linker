@@ -729,7 +729,8 @@ std::size_t BlockCache::read(std::uint64_t offset, std::uint8_t* destination,
       return 0;
     }
   }
-  const std::uint64_t available = source_->size() - offset;
+  const auto extent_end = source_->extent_end(offset);
+  const std::uint64_t available = extent_end - offset;
   const std::size_t wanted = static_cast<std::size_t>(
       std::min<std::uint64_t>(available, static_cast<std::uint64_t>(length)));
   std::size_t copied = 0;
@@ -753,13 +754,30 @@ std::size_t BlockCache::read(std::uint64_t offset, std::uint8_t* destination,
     copied += chunk;
   }
   if (copied > 0 && read_ahead_blocks > 0) {
-    schedule_prefetch(offset + copied, read_ahead_blocks, playback_generation);
+    schedule_prefetch(offset + copied, read_ahead_blocks, playback_generation, extent_end);
   }
   if (copied > 0) {
     std::lock_guard lock(mutex_);
     metrics_.consumer_bytes_delivered += copied;
   }
   return copied;
+}
+
+std::uint64_t BlockCache::contiguous_cached_bytes(std::uint64_t offset) const {
+  std::lock_guard lock(mutex_);
+  const auto start = offset;
+  // 只统计已完成的连续块，遇到空洞或在途块立即停止，不触发读取。
+  const auto end = source_->extent_end(offset);
+  while (offset < end) {
+    const auto found = entries_.find(offset / block_size_);
+    if (found == entries_.end()) break;
+    const auto& entry = *found->second;
+    if (entry.loading || entry.cancelled || entry.error || entry.removed) break;
+    const auto within = offset % block_size_;
+    if (within >= entry.bytes.size()) break;
+    offset += entry.bytes.size() - within;
+  }
+  return offset - start;
 }
 
 BlockCacheMetrics BlockCache::metrics() const {
@@ -842,7 +860,7 @@ void BlockCache::restore_handoff(BlockCacheHandoff handoff) {
       throw std::invalid_argument("invalid cache handoff");
     }
     const std::uint64_t expected =
-        std::min(block_size_, source_->size() - start);
+        std::min(block_size_, source_->extent_end(start) - start);
     if (block.bytes.size() != expected ||
         retained_bytes > std::numeric_limits<std::uint64_t>::max() -
                              block.bytes.size()) {
@@ -934,7 +952,7 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
   try {
     const std::uint64_t start = index * block_size_;
     const std::uint64_t end =
-        std::min(source_->size() - 1, start + block_size_ - 1);
+        std::min(source_->extent_end(start) - 1, start + block_size_ - 1);
     auto bytes = source_->fetch(start, end, [this, playback_generation] {
       if (playback_generation == 0) return false;
       std::lock_guard lock(mutex_);
@@ -1004,11 +1022,12 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
 
 void BlockCache::schedule_prefetch(std::uint64_t next_offset,
                                    std::size_t block_count,
-                                   std::uint64_t playback_generation) {
-  if (block_count == 0 || next_offset >= source_->size()) return;
+                                   std::uint64_t playback_generation,
+                                   std::uint64_t extent_end) {
+  if (block_count == 0 || next_offset >= extent_end) return;
   const std::uint64_t total_blocks =
-      source_->size() / block_size_ +
-      (source_->size() % block_size_ == 0 ? 0ULL : 1ULL);
+      extent_end / block_size_ +
+      (extent_end % block_size_ == 0 ? 0ULL : 1ULL);
   const std::uint64_t start =
       next_offset / block_size_ +
       (next_offset % block_size_ == 0 ? 0ULL : 1ULL);
@@ -1141,7 +1160,7 @@ void BlockCache::prefetch_loop() {
       fetch_start = batch.front().first * block_size_;
       const std::uint64_t last_start = batch.back().first * block_size_;
       const std::uint64_t last_length =
-          std::min(block_size_, source_->size() - last_start);
+          std::min(block_size_, source_->extent_end(last_start) - last_start);
       fetch_end = last_start + last_length - 1;
       in_flight_bytes = fetch_end - fetch_start + 1;
       record_prefetch_started_locked(in_flight_bytes,
@@ -1163,7 +1182,7 @@ void BlockCache::prefetch_loop() {
             }
             auto& [index, entry] = batch[next_entry];
             const auto length = static_cast<std::size_t>(
-                std::min(block_size_, source_->size() - index * block_size_));
+                std::min(block_size_, source_->extent_end(index * block_size_) - index * block_size_));
             const auto copy = std::min(size, length - partial.size());
             partial.insert(partial.end(), data, data + copy);
             data += copy;
@@ -1231,7 +1250,7 @@ void BlockCache::prefetch_loop() {
           for (const auto& [index, entry] : batch) {
             const std::uint64_t block_start = index * block_size_;
             const std::size_t length = static_cast<std::size_t>(
-                std::min(block_size_, source_->size() - block_start));
+                std::min(block_size_, source_->extent_end(block_start) - block_start));
             entry->bytes.assign(bytes.begin() + copied,
                                 bytes.begin() + copied + length);
             entry->prefetched = true;

@@ -12,6 +12,7 @@ import '../../data/local/stream_path_config_store.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/web_dav_file.dart';
+import '../../data/models/webdav_bdmv.dart';
 import '../../features/cache_control/iso_cache_coordinator.dart';
 import 'iso_access_provider.dart';
 import 'iso_player_arguments.dart';
@@ -19,6 +20,7 @@ import 'mpv_watch_later_sync.dart';
 import 'player_process_controller.dart';
 import 'webdav_service.dart';
 import 'remote_menu_playback_service.dart';
+import 'iso_subtitle_service.dart';
 
 enum IsoPlaybackPhase {
   checkingPlayer,
@@ -237,6 +239,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
        remoteMenu =
            remoteMenuService ??
            RemoteMenuPlaybackService(
+             languageLoader: () async => (await configStore.load()).language,
              configLoader:
                  configLoader ??
                  (() async => (await configStore.load()).toPlayerConfig()),
@@ -288,6 +291,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   Directory? _tempRoot;
   bool _operationActive = false;
   bool _cancelRequested = false;
+  Completer<IsoSubtitleContext?>? _subtitleCancellation;
   bool _disposed = false;
   int _sessionSequence = 0;
 
@@ -327,20 +331,26 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     required WebDavFile file,
     IsoProgressCallback? onProgress,
     IsoTitleSelector? selectTitles,
+    IsoSubtitleContext? subtitles,
+    Future<IsoSubtitleContext?>? subtitlePreparation,
+    Stopwatch? startupClock,
   }) async {
     if (_disposed) throw AppException.process('ISO 远程播放测试模块已关闭');
     if (isBusy) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
-    if (!file.isIso) throw AppException.config('仅支持 Blu-ray ISO 文件');
+    if (!file.isIso && file is! WebDavBdmv) throw AppException.config('仅支持 Blu-ray ISO 文件');
 
     final performanceClock = Stopwatch()..start();
     int? probeCompletedAtMs;
     _operationActive = true;
     _cancelRequested = false;
+    _subtitleCancellation = Completer<IsoSubtitleContext?>();
+    subtitlePreparation?.ignore();
     IsoAccessHandle? handle;
     Directory? sessionDirectory;
     var runtimeOwnsSession = false;
+    var selectionWaitMs = 0;
     try {
       onProgress?.call(
         IsoPlaybackProgress(
@@ -447,7 +457,16 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         return null;
       }
 
+      if (subtitlePreparation != null) {
+        subtitles = await Future.any([subtitlePreparation, _subtitleCancellation!.future]);
+      }
+      if (_cancelRequested) { await handle.cleanup(); return null; }
+      await subtitles?.refreshDiscRevision();
       final catalog = await _catalog();
+      subtitles?.titleCatalog = probedTitles.map((title) => <String, dynamic>{
+        'id': title.mplsId,
+        'duration': title.duration.inMilliseconds / 1000,
+      }).toList();
       final saved = await catalog.load(isoKey);
       final orderedTitles = _applySavedOrder(probedTitles, saved.order);
       final availableIds = orderedTitles.map((title) => title.mplsId).toSet();
@@ -471,6 +490,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ),
         lastMplsId: saved.lastMplsId,
       );
+      final selectionClock = Stopwatch()..start();
       final selection = selectTitles == null
           ? IsoTitleSelection.all(orderedTitles)
           : await selectTitles(request);
@@ -478,6 +498,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         await handle.cleanup();
         return null;
       }
+      selectionWaitMs = selectionClock.elapsedMilliseconds;
       performance.markSelectionConfirmed();
       final validatedSelection = _validateSelection(
         availableTitles: orderedTitles,
@@ -573,6 +594,21 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         cacheSecs: startCachePlan?.cacheSecs,
         mpvMaxBytes: startCachePlan?.mpvMaxBytes,
       );
+      if (config.subtitleInjectionEnabled && subtitles != null) {
+        final subtitleArgs = await subtitles.prepareArgs(handle.sessionDirectory,
+          sessionId: p.basename(handle.sessionDirectory.path),
+          pipeName: ipcPipeName, menu: false,
+          autoSelect: config.subtitleAutoSelectEnabled,
+          playlist: selectedTitles.map((title) => {
+            'id': title.mplsId, 'path': handle!.playbackUri(title.mplsId).toString(),
+            'duration': (title.duration.inMilliseconds / 1000).toString(),
+          }).toList());
+        args.insertAll(0, subtitleArgs);
+      }
+      if (_cancelRequested) {
+        await handle.cleanup();
+        return null;
+      }
       await _writeLaunchingManifest(
         handle,
         ownerIdentity: ownerIdentity,
@@ -582,6 +618,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
       performance.markMpvLaunch();
       final pid = await _processStarter(config.executable, args);
+      if (startupClock != null) {
+        await _writeStartupTiming(handle.sessionDirectory, startupClock.elapsedMilliseconds, selectionWaitMs);
+      }
       final identity = await _captureIdentityWithRetry(pid);
       if (identity == null) {
         throw AppException.process('无法确认 ISO 播放器进程身份');
@@ -674,16 +713,30 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     }
   }
 
+  Future<void> _writeStartupTiming(Directory directory, int elapsed, int selectionWait) async {
+    try {
+      await File(p.join(directory.path, 'disc-startup.json')).writeAsString(jsonEncode({
+        'version': 1, 'modeToProcessStartedMs': elapsed,
+        'titleSelectionWaitMs': selectionWait, 'processingMs': elapsed - selectionWait,
+      }));
+    } on FileSystemException { /* 遥测写入失败不影响播放。 */ }
+  }
+
   Future<IsoPlaybackLaunchResult?> startRemoteMenu({
     required WebDAVService webDavService,
     required WebDavFile file,
     IsoProgressCallback? onProgress,
+    IsoSubtitleContext? subtitles,
+    Future<IsoSubtitleContext?>? subtitlePreparation,
+    Stopwatch? startupClock,
   }) async {
     if (_disposed || isBusy) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
     _operationActive = true;
     _cancelRequested = false;
+    _subtitleCancellation = Completer<IsoSubtitleContext?>();
+    subtitlePreparation?.ignore();
     IsoAccessHandle? handle;
     PlayerProcessIdentity? player;
     Directory? directory;
@@ -740,6 +793,11 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ),
       );
       if (_cancelRequested) return null;
+      if (subtitlePreparation != null) {
+        subtitles = await Future.any([subtitlePreparation, _subtitleCancellation!.future]);
+      }
+      if (_cancelRequested) return null;
+      await subtitles?.refreshDiscRevision();
       final menuPlan = await _cacheCoordinator?.buildMenuPlan(
         logicalSourceUrl: webDavService.resolveUrl(file.href),
         totalBytes: handle.totalBytes,
@@ -757,6 +815,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ipcPipeName:
             '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
       );
+      if (config.subtitleInjectionEnabled && subtitles != null) {
+        args.insertAll(0, await subtitles.prepareArgs(directory,
+          sessionId: p.basename(directory.path),
+          pipeName: '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
+          menu: true, autoSelect: config.subtitleAutoSelectEnabled));
+      }
       if (_cancelRequested) return null;
       final journal = config.menuProgressSharingEnabled
           ? File(p.join(directory.path, 'menu-progress.jsonl'))
@@ -777,6 +841,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ),
       );
       final pid = await _processStarter(executable, args);
+      if (startupClock != null) {
+        await _writeStartupTiming(directory, startupClock.elapsedMilliseconds, 0);
+      }
       player = await _captureIdentityWithRetry(pid);
       if (player == null) {
         throw AppException.process('无法确认 MPV 播放器身份');
@@ -851,6 +918,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   void cancel() {
     if (!_operationActive) return;
     _cancelRequested = true;
+    if (_subtitleCancellation?.isCompleted == false) _subtitleCancellation!.complete(null);
     _accessProvider.cancel();
     _remoteMenuAccess.cancel();
   }
@@ -1582,7 +1650,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         .replace(userInfo: '', query: '', fragment: '')
         .normalizePath()
         .toString();
-    return sha256.convert(utf8.encode('$profileId\n$canonical')).toString();
+    return sha256.convert(utf8.encode('$profileId\n${uri.path.endsWith('/') ? 'bdmv\n' : ''}$canonical')).toString();
   }
 
   static String _buildPipeToken(String sessionDirectoryPath) => sha256

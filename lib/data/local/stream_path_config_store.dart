@@ -332,6 +332,7 @@ class StreamPathConfigStore {
             password: secrets.webDavPassword,
             openListRecovery: OpenListRecoveryConfig(
               enabled: profile.openListRecovery.enabled,
+              restartDirectory: profile.openListRecovery.restartDirectory,
               baseUrl: profile.openListRecovery.baseUrl,
               username: profile.openListRecovery.username,
               password: secrets.openListPassword,

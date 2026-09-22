@@ -132,6 +132,135 @@ void main() {
     );
   }
 
+  testWidgets('各语言在窄屏与宽屏均可访问全部分类且无溢出', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    for (final language in AppLanguage.values) {
+      for (final size in [const Size(800, 600), const Size(1280, 800)]) {
+        tester.view.physicalSize = size;
+        await tester.pumpWidget(
+          buildSettings(language: language, theme: AppTheme.light()),
+        );
+        await tester.pumpAndSettle();
+        for (final section in SettingsSection.values) {
+          final tab = find.byKey(Key('settings-section-${section.name}'));
+          await tester.ensureVisible(tab);
+          await tester.tap(tab);
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: '$language $size $section',
+          );
+          expect(
+            find.byKey(const Key('save-settings-button')).hitTestable(),
+            findsOneWidget,
+          );
+        }
+      }
+    }
+  });
+
+  testWidgets('文字放大及深色材质下全部分类无溢出', (tester) async {
+    tester.view.physicalSize = const Size(1000, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    for (final scale in [1.25, 1.5]) {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await tester.pumpWidget(
+        buildSettings(
+          language: AppLanguage.english,
+          theme: AppTheme.dark(glass: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final section in SettingsSection.values) {
+        final tab = find.byKey(Key('settings-section-${section.name}'));
+        await tester.ensureVisible(tab);
+        await tester.tap(tab);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull, reason: '$scale $section');
+      }
+    }
+  });
+
+  testWidgets('跨双列断点保留输入焦点和未保存草稿', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('player-name-field'));
+    await tester.enterText(field, '播放器草稿');
+    final editable = find.descendant(
+      of: field,
+      matching: find.byType(EditableText),
+    );
+    final state = tester.state(editable);
+    final focus = tester.widget<EditableText>(editable).focusNode;
+    expect(focus.hasFocus, isTrue);
+    for (final size in [const Size(800, 600), const Size(1440, 900)]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(tester.state(editable), same(state));
+      expect(focus.hasFocus, isTrue);
+      expect(tester.widget<TextFormField>(field).controller!.text, '播放器草稿');
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('重启目录默认用户目录并可保存安装目录', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    final field = find.byWidgetPredicate(
+      (w) => w is DropdownButtonFormField<OpenListRestartDirectory>,
+    );
+    expect(
+      tester
+          .widget<DropdownButtonFormField<OpenListRestartDirectory>>(field)
+          .initialValue,
+      OpenListRestartDirectory.userProfile,
+    );
+    await tester.ensureVisible(field);
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('安装路径（程序所在目录）').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-settings-button')));
+    for (
+      var i = 0;
+      i < 60 &&
+          configStore.current.openListRecovery.restartDirectory !=
+              OpenListRestartDirectory.installation;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(
+      configStore.current.openListRecovery.restartDirectory,
+      OpenListRestartDirectory.installation,
+    );
+    expect(
+      (await tester.runAsync(
+        configStore.load,
+      ))!.openListRecovery.restartDirectory,
+      OpenListRestartDirectory.installation,
+    );
+  });
+
   testWidgets('顶部分类切换后在进程内记住上次页面', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -193,14 +322,29 @@ void main() {
       await tester.tap(find.text(sharing ? '共享（供标题模式续播）' : '独立（不记录进度）').last);
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('save-settings-button')));
-      for (var i = 0; i < 30 && configStore.current.menuProgressSharingEnabled != sharing; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      for (
+        var i = 0;
+        i < 30 && configStore.current.menuProgressSharingEnabled != sharing;
+        i++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
         await tester.pump(const Duration(milliseconds: 50));
       }
       for (var i = 0; i < 100; i++) {
-        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        );
         await tester.pump(const Duration(milliseconds: 30));
-        if (tester.widget<FilledButton>(find.byKey(const Key('save-settings-button'))).onPressed != null) break;
+        if (tester
+                .widget<FilledButton>(
+                  find.byKey(const Key('save-settings-button')),
+                )
+                .onPressed !=
+            null) {
+          break;
+        }
       }
       final saved = await tester.runAsync(configStore.load);
       expect(saved!.menuProgressSharingEnabled, sharing);
@@ -217,16 +361,29 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('settings-section-mediaLibrary')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byType(DropdownButtonFormField<MediaLibrarySharingMode>));
+    await tester.tap(
+      find.byType(DropdownButtonFormField<MediaLibrarySharingMode>),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('本地与网络存储共享').last);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('save-settings-button')));
-    for (var i = 0; i < 30 && configStore.current.mediaLibrary.sharingMode != MediaLibrarySharingMode.allShared; i++) {
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    for (
+      var i = 0;
+      i < 30 &&
+          configStore.current.mediaLibrary.sharingMode !=
+              MediaLibrarySharingMode.allShared;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
       await tester.pump(const Duration(milliseconds: 50));
     }
-    expect(configStore.current.mediaLibrary.sharingMode, MediaLibrarySharingMode.allShared);
+    expect(
+      configStore.current.mediaLibrary.sharingMode,
+      MediaLibrarySharingMode.allShared,
+    );
     final saved = await tester.runAsync(configStore.load);
     expect(saved!.mediaLibrary.sharingMode, MediaLibrarySharingMode.allShared);
     expect(tester.takeException(), isNull);
@@ -928,14 +1085,14 @@ void main() {
     expect(saved.glassOpacity, closeTo(0.70, 0.001));
     expect(appearanceController.glassActive, isTrue);
     expect(find.text('全部配置已保存'), findsOneWidget);
-    final snackBarBottom = tester.getBottomRight(find.byType(SnackBar)).dy;
-    final saveButtonTop = tester
-        .getTopLeft(find.byKey(const Key('save-settings-button')))
-        .dy;
     expect(
-      snackBarBottom,
-      lessThanOrEqualTo(saveButtonTop),
-      reason: '保存提示应悬浮在设置下边栏上方，不能覆盖保存按钮',
+      tester
+          .getRect(find.byType(SnackBar))
+          .overlaps(
+            tester.getRect(find.byKey(const Key('save-settings-button'))),
+          ),
+      isFalse,
+      reason: '保存提示不能覆盖顶部保存按钮',
     );
     expect(
       find.byKey(const Key('save-settings-button')).hitTestable(),

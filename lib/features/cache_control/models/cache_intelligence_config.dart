@@ -1,11 +1,11 @@
 /// 第三阶段本地智能缓存配置（独立文件 `cache_intelligence.json`）。
 ///
-/// 默认开启采集但不应用优化，即“影子模式”。所有数值在解析时收敛，
+/// 默认开启采集并应用满足样本条件的优化。所有数值在解析时收敛，
 /// 配置损坏也不会把非法参数带入播放链路。
 class CacheIntelligenceConfig {
   const CacheIntelligenceConfig({
     this.enabled = true,
-    this.applyOptimizations = false,
+    this.applyOptimizations = true,
     this.bitratePredictionEnabled = true,
     this.storageOptimizationEnabled = true,
     this.habitLearningEnabled = true,
@@ -47,7 +47,7 @@ class CacheIntelligenceConfig {
       enabled: json['enabled'] is bool ? json['enabled'] as bool : true,
       applyOptimizations: json['applyOptimizations'] is bool
           ? json['applyOptimizations'] as bool
-          : false,
+          : true,
       bitratePredictionEnabled: json['bitratePredictionEnabled'] is bool
           ? json['bitratePredictionEnabled'] as bool
           : true,

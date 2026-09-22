@@ -1,0 +1,14 @@
+{
+  "upstreamHost": "192.168.2.124",
+  "upstreamPort": 5244,
+  "proxyPortA": 18244,
+  "proxyPortB": 18245,
+  "username": "Yu",
+  "profileId": "04b8200e-7639-44d2-9e18-f0e4c9711971",
+  "mediaPathSegments": [
+    "QuarkFilmsData_SPECIAL",
+    "0.MOVIE SPs",
+    "《秒速5厘米》- 2007",
+    "5 Centimeters Per Second.2007.iso"
+  ]
+}

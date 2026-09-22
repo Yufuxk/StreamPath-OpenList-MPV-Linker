@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bridge_core.h"
+#include "disc_files.h"
 #include <filesystem>
 #include <memory>
 
@@ -10,7 +11,8 @@ namespace streampath::iso_bridge {
 class WinFspDisc {
  public:
   WinFspDisc(BlockCache& cache, std::uint64_t size,
-             const std::filesystem::path& mount_path, bool prefetch = false);
+             const std::filesystem::path& mount_path, bool prefetch = false,
+             const DiscFiles* files = nullptr);
   ~WinFspDisc();
   WinFspDisc(const WinFspDisc&) = delete;
   WinFspDisc& operator=(const WinFspDisc&) = delete;

@@ -6,7 +6,7 @@ import '../models/cache_intelligence_config.dart';
 /// 第三阶段智能缓存配置存储。
 ///
 /// 每次 [load] 都重读文件，使设置页和用户手工编辑保持同步。失败时回退
-/// 默认影子模式，任何异常都不进入播放链路。
+/// 异常时回退默认配置，不阻断播放链路。
 class CacheIntelligenceConfigStore {
   CacheIntelligenceConfigStore._(this._file);
 

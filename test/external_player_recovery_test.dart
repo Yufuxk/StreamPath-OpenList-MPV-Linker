@@ -91,6 +91,7 @@ class _BlockingRecoveryProvider implements PlaybackLinkRecoveryProvider {
 class _RecordingRestarter implements PlaybackServerRestarter {
   final List<String> capturedBaseUrls = [];
   final List<String> restartedBaseUrls = [];
+  final List<OpenListRestartDirectory> restartedDirectories = [];
 
   @override
   Future<bool> capture(String baseUrl) async {
@@ -99,8 +100,12 @@ class _RecordingRestarter implements PlaybackServerRestarter {
   }
 
   @override
-  Future<OpenListProcessRestartResult> restart(String baseUrl) async {
+  Future<OpenListProcessRestartResult> restart(
+    String baseUrl, {
+    OpenListRestartDirectory directory = OpenListRestartDirectory.userProfile,
+  }) async {
     restartedBaseUrls.add(baseUrl);
+    restartedDirectories.add(directory);
     return const OpenListProcessRestartResult(
       success: false,
       message: '测试禁止进入本机服务重启',
@@ -158,6 +163,7 @@ void main() {
     enabled: true,
     baseUrl: 'http://127.0.0.1:5244',
     token: 'token-a',
+    restartDirectory: OpenListRestartDirectory.installation,
   );
   const recoveryB = OpenListRecoveryConfig(
     enabled: true,
@@ -230,6 +236,31 @@ void main() {
     '${jsonEncode(<String, Object?>{'epoch': epoch, 'outcome': 'position', 'playlist_pos': 0, 'path': mediaUrl, 'position': 12.0, 'duration': 120.0, 'reason': 'error', 'file_error': 'simulated read failure'})}\n',
     flush: true,
   );
+
+  test('连接成功后的识别不依赖恢复开关，未填后台时使用 WebDAV 地址', () async {
+    final directory = Directory.systemTemp.createTempSync(
+      'capture_after_connect_',
+    );
+    final store = StreamPathConfigStore.forPath(
+      p.join(directory.path, 'config.json'),
+      credentialStore: MemoryProfileCredentialStore({}),
+    );
+    final restarter = _RecordingRestarter();
+    final service = ExternalPlayerService(
+      configStore: store,
+      serverRestarter: restarter,
+    );
+    try {
+      await store.save(
+        const StreamPathConfig(serverUrl: 'http://127.0.0.1:5244/dav'),
+      );
+      await service.captureOpenListProcessIdentity();
+      expect(restarter.capturedBaseUrls, ['http://127.0.0.1:5244/dav']);
+      expect(restarter.restartedBaseUrls, isEmpty);
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
 
   test('A 档案启动后切换 B，自动恢复仍完整使用 A 启动快照', () async {
     final directory = Directory.systemTemp.createTempSync(
@@ -328,7 +359,98 @@ void main() {
       expect(progressA?.positionMs, 42000);
       expect(progressB, isNull);
       expect(restarter.restartedBaseUrls, isEmpty);
+      expect(
+        provider.calls.single.config.restartDirectory,
+        OpenListRestartDirectory.installation,
+      );
       expect(restarter.capturedBaseUrls, isNot(contains(recoveryB.baseUrl)));
+    } finally {
+      for (final process in processes) {
+        process.kill();
+      }
+      await service?.waitForExitSync(
+        'snapshot-session',
+        timeout: const Duration(seconds: 5),
+      );
+      await service?.terminateSession('snapshot-session');
+      await progress.close();
+      try {
+        await directory.delete(recursive: true);
+      } catch (_) {}
+    }
+  }, skip: !Platform.isWindows);
+
+  test('第三次重启使用启动快照中的目录模式', () async {
+    final directory = Directory.systemTemp.createTempSync(
+      'streampath_recovery_snapshot_',
+    );
+    final processes = <Process>[];
+    final progress = await PlaybackProgressService.open(
+      inMemoryDatabasePath,
+      factory: databaseFactoryFfi,
+    );
+    ExternalPlayerService? service;
+    try {
+      final executable = await createLongRunningFakeMpv(directory);
+      final store = StreamPathConfigStore.forPath(
+        p.join(directory.path, 'config.json'),
+        credentialStore: MemoryProfileCredentialStore({}),
+      );
+      await store.save(
+        configFor(
+          player: playerConfig(executable, 'A'),
+          activeProfileId: 'profile-a',
+        ),
+      );
+      final provider = _SequenceRecoveryProvider([
+        for (var i = 0; i < 2; i++)
+          const OpenListRecoveryResult(
+            outcome: OpenListRecoveryOutcome.retryableFailure,
+            storageReloaded: false,
+            message: 'simulated failure',
+          ),
+      ]);
+      final restarter = _RecordingRestarter();
+      final processController = _FakePlayerProcessController();
+      final terminalEvent = Completer<PlaybackRecoveryEvent>();
+      service = ExternalPlayerService(
+        configStore: store,
+        progressService: progress,
+        watchLaterDir: Directory(p.join(directory.path, 'watch-later')),
+        linkRecoveryProvider: provider,
+        serverRestarter: restarter,
+        processController: processController,
+        onPlaybackRecovery: (event) {
+          if (event.stage == PlaybackRecoveryStage.relaunched ||
+              event.stage == PlaybackRecoveryStage.failed) {
+            if (!terminalEvent.isCompleted) terminalEvent.complete(event);
+          }
+        },
+      );
+
+      final initial = await service.launch(
+        entries: const [MediaEntry(url: mediaUrl, title: 'movie.mkv')],
+        sessionId: 'snapshot-session',
+        username: 'a-user',
+        password: 'a-pass',
+      );
+      processes.add(initial.process);
+      await store.save(
+        configFor(
+          player: playerConfig(executable, 'B'),
+          activeProfileId: 'profile-b',
+        ),
+      );
+      await writeFailure(initial.progressFilePath!, initial.launchEpoch);
+
+      final event = await terminalEvent.future.timeout(
+        const Duration(seconds: 12),
+      );
+      expect(event.stage, PlaybackRecoveryStage.failed);
+      expect(restarter.restartedBaseUrls, [recoveryA.baseUrl]);
+      expect(restarter.restartedDirectories, [
+        OpenListRestartDirectory.installation,
+      ]);
     } finally {
       for (final process in processes) {
         process.kill();

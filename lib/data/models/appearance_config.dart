@@ -27,7 +27,7 @@ class AppearanceConfig {
     this.glassOpacity = defaultGlassOpacity,
   });
 
-  static const double defaultGlassOpacity = 0.82;
+  static const double defaultGlassOpacity = 0.60;
   static const double minGlassOpacity = 0.60;
   static const double maxGlassOpacity = 0.95;
 

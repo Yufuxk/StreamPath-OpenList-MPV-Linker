@@ -1440,10 +1440,118 @@ void test_remote_mpv_block_adapter() {
          "adapter rejects non-loopback URL");
 }
 
+void test_bdmv_manifest_cache_invalidation() {
+  auto make_files = [](const std::string& version) {
+    bridge::DiscFiles files;
+    files.add("BDMV", "", 0, true);
+    files.add("BDMV/index.bdmv", "http://127.0.0.1:1/index", 8, false, version);
+    return files;
+  };
+  BdmvSource first(make_files("\"v1\""), "http://127.0.0.1:1/", "", "");
+  BdmvSource replacement(make_files("\"v2\""), "http://127.0.0.1:1/", "", "");
+  BdmvSource unknown(make_files("W/\"weak\""), "http://127.0.0.1:1/", "", "");
+  expect_network(first.structure_identity()->validator_digest != replacement.structure_identity()->validator_digest,
+                 "same-sized replacement invalidates cached titles");
+  expect_network(!unknown.structure_identity(), "missing reliable manifest version disables cross-session cache");
+  auto files = make_files("\"v1\"");
+  files.add("BDMV/BACKUP", "", 0, true);
+  BdmvSource membership(std::move(files), "http://127.0.0.1:1/", "", "");
+  expect_network(first.structure_identity()->validator_digest != membership.structure_identity()->validator_digest,
+                 "directory membership and fallback paths affect identity");
+  expect_network(first.metrics().request_count == 0 && unknown.metrics().request_count == 0,
+                 "even incomplete manifests never trigger full-disc probing");
+}
+
+void test_bdmv_lazy_first_read() {
+  std::atomic<bool> changed = false;
+  TestHttpServer server([&](std::size_t, const TestRequest& request) {
+    return valid_range_response(request, changed ? "\"v2\"" : "\"v1\"");
+  });
+  WinHttpRangeSource source(server.url("/file"), server.url("/"), "", "", std::nullopt, 8, true);
+  expect_network(server.requests().empty(), "lazy construction has no HTTP requests");
+  auto first = std::async(std::launch::async, [&] { return source.fetch(0, 3); });
+  auto second = std::async(std::launch::async, [&] { return source.fetch(4, 7); });
+  expect_network(first.get().size() == 4 && second.get().size() == 4, "concurrent first reads retain data");
+  expect_network(server.requests().size() == 2 && source.metrics().probe_body_bytes == 0,
+                 "first reads perform only effective GETs");
+  changed = true;
+  bool rejected = false;
+  try { source.fetch(0, 3); } catch (const BridgeException& error) { rejected = error.code() == "remote_changed"; }
+  expect_network(rejected, "lazy learned validator rejects changed content");
+}
+
+void test_bdmv_lazy_header_failures() {
+  for (int mode = 0; mode < 3; ++mode) {
+    TestHttpServer server([&](std::size_t, const TestRequest& request) -> TestResponse {
+      if (request.method == "HEAD") {
+        if (mode == 2) return {200, {{"Content-Length", "8"}, {"ETag", "\"v1\""}}, {}};
+        return {405, {}, {}};
+      }
+      if (mode == 0) return {200, {}, "ABCDEFGH"};
+      auto result = valid_range_response(request);
+      result.headers.erase(result.headers.begin() + 1);
+      return result;
+    });
+    WinHttpRangeSource source(server.url("/file"), server.url("/"), "", "", std::nullopt, 8, true);
+    std::size_t published = 0;
+    bool rejected = false;
+    try { source.fetch_stream(0, 7, {}, [&](const auto*, std::size_t n) { published += n; }); }
+    catch (const BridgeException&) { rejected = true; }
+    expect_network(mode == 2 ? (!rejected && published == 8) : (rejected && published == 0),
+                   "invalid headers never publish bytes; HEAD-only validator can authorize effective read");
+    expect_network(server.requests().size() == (mode == 0 ? 1U : 2U), "only required HEAD fallback is sent");
+  }
+}
+
+void test_bdmv_callbacks_and_version_identity() {
+  std::atomic<bool> changed = false;
+  TestHttpServer server([&](std::size_t, const TestRequest& request) {
+    return valid_range_response(request, changed ? "\"v2\"" : "\"v1\"");
+  });
+  bridge::DiscFiles files;
+  files.add("BDMV", "", 0, true);
+  files.add("BDMV/STREAM", "", 0, true);
+  for (int i = 0; i < 10; ++i)
+    files.add("BDMV/STREAM/" + std::to_string(i) + ".m2ts", server.url("/" + std::to_string(i)), 8, false, "\"v1\"");
+  auto source = std::make_shared<BdmvSource>(std::move(files), server.url("/"), "", "");
+  const auto identity = source->structure_identity();
+  expect_network(identity && identity->content_length == 80, "BDMV composite identity covers all files");
+  expect_network(source->metrics().request_count == 0, "BDMV manifest identity requires no remote probes");
+  bridge::BlockCache cache(source, bridge::kIsoDemandBlockSize, 8);
+  DiscReadContext context;
+  context.cache = &cache;
+  context.files = &source->files;
+  auto* dir = open_bdmv_dir(&context, "BDMV\\STREAM");
+  expect_network(dir != nullptr, "Windows separators supported by directory callback");
+  BD_DIRENT entry{};
+  int count = 0;
+  while (dir->read(dir, &entry) == 0) ++count;
+  dir->close(dir);
+  expect_network(count == 10, "directory enumeration reaches EOF");
+  auto* first = open_bdmv_file(&context, "BDMV/STREAM/0.m2ts");
+  auto* second = open_bdmv_file(&context, "BDMV/STREAM/0.m2ts");
+  expect_network(first && second, "independent handles opened");
+  std::array<std::uint8_t, 32> bytes{};
+  expect_network(first->seek(first, -2, SEEK_END) == 6, "file seek from end");
+  expect_network(first->read(first, bytes.data(), bytes.size()) == 2, "file read clips EOF");
+  expect_network(first->eof(first) == 1 && second->tell(second) == 0, "independent cursor and EOF");
+  expect_network(source->metrics().request_count == 1, "BDMV first read uses one effective GET without HEAD or byte probe");
+  first->close(first); second->close(second);
+  changed = true;
+  auto* modified = open_bdmv_file(&context, "BDMV/STREAM/9.m2ts");
+  expect_network(modified->read(modified, bytes.data(), bytes.size()) == -1 && context.read_error,
+                 "file validator changes propagate through C callback");
+  modified->close(modified);
+}
+
 int main() {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 1;
   try {
+    test_bdmv_manifest_cache_invalidation();
+    test_bdmv_lazy_first_read();
+    test_bdmv_lazy_header_failures();
+    test_bdmv_callbacks_and_version_identity();
     test_unknown_head_and_exact_range();
     test_request_contexts_close_after_normal_requests();
     test_disc_read_distinguishes_error_from_cancellation();

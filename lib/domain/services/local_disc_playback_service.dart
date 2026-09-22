@@ -17,6 +17,7 @@ import '../../data/models/player_config.dart';
 import 'iso_playback_service.dart';
 import 'mpv_scripts.dart';
 import 'player_process_controller.dart';
+import 'iso_subtitle_service.dart';
 
 enum LocalDiscLaunchMode { menu, longestTitle }
 
@@ -123,6 +124,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     bool resumeFromSavedPosition = false,
     int? resumeEdition,
     String? expectedFingerprint,
+    IsoSubtitleContext? subtitles,
   }) async {
     if (_disposed) {
       throw AppException.process('本地蓝光播放服务已关闭');
@@ -153,6 +155,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     final profileId = 'local:$rootId';
     final pipeName = '${r'\\.\pipe\streampath_local_disc_'}$now';
     final dataDirectory = await AppPaths.cacheDirectory();
+    if (subtitles != null) await cleanupSubtitleSessions();
     final statusFilePath = p.join(
       dataDirectory.path,
       'local-disc-current-$sessionId.txt',
@@ -193,6 +196,13 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
           ? resume.positionMs ~/ 1000
           : null,
     );
+    if (config.subtitleInjectionEnabled && subtitles != null) {
+      final directory = Directory(p.join(dataDirectory.path, 'local_iso_subtitles', sessionId));
+      args.insertAll(0, await subtitles.prepareArgs(directory,
+        sessionId: sessionId, pipeName: pipeName,
+        menu: mode == LocalDiscLaunchMode.menu,
+        autoSelect: config.subtitleAutoSelectEnabled));
+    }
     final Process process;
     try {
       process = await Process.start(
@@ -201,14 +211,29 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
         mode: ProcessStartMode.detached,
       );
     } on FileSystemException catch (error) {
+      if (subtitles != null) await _deleteSubtitleDirectory(sessionId);
       throw AppException.process(
         '无法启动播放器「${config.executable}」：文件不存在或路径错误',
         error,
       );
     } on ProcessException catch (error) {
+      if (subtitles != null) await _deleteSubtitleDirectory(sessionId);
       throw AppException.process('播放器启动失败：${error.message}', error);
     }
     final identity = await _processController.capture(process.pid);
+    if (subtitles != null && identity != null) {
+      final directory = await _subtitleDirectory(sessionId);
+      if (await directory.exists()) {
+        try {
+          await File(p.join(directory.path, 'owner.json')).writeAsString(jsonEncode({
+            'pid':identity.pid,'executable':identity.executablePath,'created':identity.creationTime,
+          }),flush:true);
+        } on FileSystemException {
+          // 无身份记录时保留资源，不能在播放器存活期间猜测清理。
+          subtitles.issues.add('cleanup');
+        }
+      }
+    }
     final result = LocalDiscPlaybackResult(
       sessionId: sessionId,
       process: process,
@@ -290,6 +315,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     if (outcome.isSafeToRelaunch && identical(_sessions[sessionId], runtime)) {
       runtime.tracker.stop();
       _sessions.remove(sessionId);
+      await _deleteSubtitleDirectory(sessionId);
       _notifyLibraryProgress();
     }
     return outcome;
@@ -313,6 +339,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
         runtime.tracker.stop();
         await _saveFinalProgress(runtime);
         _sessions.remove(runtime.result.sessionId);
+        await _deleteSubtitleDirectory(runtime.result.sessionId);
         _notifyLibraryProgress();
         return;
       }
@@ -328,6 +355,73 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       final delay = runtime.tracker.nextProbeDelay;
       if (delay == null) return;
       await Future<void>.delayed(delay);
+    }
+  }
+
+  static Future<Directory> _subtitleDirectory(String sessionId) async {
+    if (!RegExp(r'^local_disc_\d+_\d+$').hasMatch(sessionId)) {
+      throw ArgumentError.value(sessionId, 'sessionId');
+    }
+    return Directory(p.join(
+      (await AppPaths.cacheDirectory()).path,
+      'local_iso_subtitles',
+      sessionId,
+    ));
+  }
+
+  Future<void> _deleteSubtitleDirectory(String sessionId) async {
+    final directory = await _subtitleDirectory(sessionId);
+    try {
+      if (await FileSystemEntity.type(directory.path, followLinks: false) !=
+          FileSystemEntityType.directory) {
+        return;
+      }
+      // 只删除固定会话根内生成的目录，符号链接不能扩大清理范围。
+      final root = Directory(p.dirname(directory.path));
+      if (!p.isWithin(await root.resolveSymbolicLinks(),
+          await directory.resolveSymbolicLinks())) {
+        return;
+      }
+      await directory.delete(recursive: true);
+    } on FileSystemException {
+      // 下次清理继续处理已经退出的会话。
+    }
+  }
+
+  Future<void> cleanupSubtitleSessions() async {
+    try {
+      final root = Directory(p.join(
+        (await AppPaths.cacheDirectory()).path, 'local_iso_subtitles'));
+      if (!await root.exists()) return;
+      await for (final directory in root.list(followLinks: false)) {
+        final id = p.basename(directory.path);
+        if (directory is! Directory ||
+            !RegExp(r'^local_disc_\d+_\d+$').hasMatch(id)) {
+          continue;
+        }
+        try {
+          final owner = File(p.join(directory.path, 'owner.json'));
+          if (!await owner.exists()) continue;
+          final data = jsonDecode(await owner.readAsString());
+          if (data is! Map || data['pid'] is! int ||
+              data['created'] is! int || data['executable'] is! String) {
+            continue;
+          }
+          final identity = PlayerProcessIdentity.fromStored(
+            pid: data['pid'], executablePath: data['executable'],
+            creationTime: data['created']);
+          if (identity != null && await _processController.probeOwned(identity) ==
+              PlayerProcessLiveness.exited) {
+            await _deleteSubtitleDirectory(id);
+          }
+        } on FileSystemException {
+          continue;
+        } on FormatException {
+          continue;
+        }
+      }
+    } on FileSystemException {
+      // 清理失败不影响浏览或正在运行的播放器。
     }
   }
 

@@ -49,8 +49,8 @@ class CachePolicyConfig {
 
   // ── 边界常量 ─────────────────────────────────────────────────
 
-  /// 内存预算比例默认值（设计方案：系统可用内存的 20%~30%）。
-  static const double defaultMemoryBudgetRatio = 0.25;
+  /// 内存预算比例默认值：系统可用内存的 35%。
+  static const double defaultMemoryBudgetRatio = 0.35;
 
   /// 内存预算比例合法范围。
   static const double minMemoryBudgetRatio = 0.05;

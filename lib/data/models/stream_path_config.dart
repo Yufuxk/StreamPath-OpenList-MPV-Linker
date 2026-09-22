@@ -31,7 +31,7 @@ import 'server_profile.dart';
 ///   "appearance": {
 ///     "style": "classic",
 ///     "material": "automatic",
-///     "glassOpacity": 0.82
+///     "glassOpacity": 0.60
 ///   },
 ///   "playerStartupTimeoutSeconds": 60,
 ///   "mediaLibrary": {

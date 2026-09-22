@@ -8,6 +8,8 @@
 #include <ws2tcpip.h>
 
 #include <libbluray/bluray.h>
+#include <libbluray/filesystem.h>
+#include "disc_files.h"
 
 #include <algorithm>
 #include <array>
@@ -161,6 +163,7 @@ struct NetworkMetricsSnapshot {
   std::uint64_t request_context_closed_count = 0;
   std::uint64_t request_context_live = 0;
   std::uint64_t request_context_peak = 0;
+  bool cross_resource_timings_valid = true;
 };
 
 struct NetworkPhaseMetricsSnapshot {
@@ -173,6 +176,7 @@ struct NetworkPhaseMetricsSnapshot {
   std::uint64_t concurrent_transfer_wall_clock_us = 0;
   std::uint64_t request_context_created_count = 0;
   std::uint64_t request_context_closed_count = 0;
+  bool cross_resource_timings_valid = true;
 };
 
 std::uint64_t counter_delta(std::uint64_t current,
@@ -199,6 +203,7 @@ NetworkPhaseMetricsSnapshot network_phase_metrics(
                     previous.request_context_created_count),
       counter_delta(current.request_context_closed_count,
                     previous.request_context_closed_count),
+      current.cross_resource_timings_valid,
   };
 }
 
@@ -461,7 +466,13 @@ struct HttpResponse {
   std::vector<std::uint8_t> body;
 };
 
-class WinHttpRangeSource final : public bridge::BlockSource {
+class RemoteSource : public bridge::BlockSource {
+ public:
+  virtual NetworkMetricsSnapshot metrics() const = 0;
+  virtual std::uint64_t remote_transfer_active_microseconds() const = 0;
+};
+
+class WinHttpRangeSource final : public RemoteSource {
  private:
   class ActiveRequest;
   struct RequestLifecycleCounters {
@@ -473,10 +484,13 @@ class WinHttpRangeSource final : public bridge::BlockSource {
 
  public:
   WinHttpRangeSource(std::string url, std::string base_origin,
-                     std::string username, std::string password)
+                     std::string username, std::string password,
+                     std::optional<std::pair<bridge::StructureCacheValidatorKind, std::wstring>> pinned = std::nullopt,
+                     std::uint64_t pinned_size = 0, bool lazy = false)
       : auth_origin_(parse_url(wide_from_utf8(base_origin))),
         initial_url_(wide_from_utf8(url)),
         current_url_(initial_url_) {
+    lazy_ = lazy;
     if (!username.empty()) {
       authorization_ = wide_from_utf8(
           "Basic " + base64_encode(username + ":" + password));
@@ -491,7 +505,15 @@ class WinHttpRangeSource final : public bridge::BlockSource {
     WinHttpSetTimeouts(session_.get(), kNetworkTimeoutMilliseconds,
                        kNetworkTimeoutMilliseconds, kNetworkTimeoutMilliseconds,
                        kNetworkTimeoutMilliseconds);
-    probe();
+    if (pinned) {
+      size_ = pinned_size;
+      validator_ = pinned->second;
+      validator_is_etag_ = pinned->first == bridge::StructureCacheValidatorKind::strong_etag;
+    } else if (lazy_) {
+      size_ = pinned_size;
+    } else {
+      probe();
+    }
   }
 
   ~WinHttpRangeSource() = default;
@@ -870,6 +892,8 @@ class WinHttpRangeSource final : public bridge::BlockSource {
       std::uint64_t start, std::uint64_t end,
       const bridge::BlockSource::CancellationProbe& cancelled,
       const bridge::BlockSource::ChunkConsumer& consume = {}) {
+    std::unique_lock<std::mutex> initialization_lock(initialization_mutex_, std::defer_lock);
+    if (lazy_ && !initialized_.load()) initialization_lock.lock();
     if (start > end || end >= size_) {
       throw BridgeException("internal_error", "Requested ISO range is invalid");
     }
@@ -900,11 +924,12 @@ class WinHttpRangeSource final : public bridge::BlockSource {
         throw BridgeException("network_error", "The ISO range body is incomplete", response.status);
       }
     }
+    if (lazy_) initialized_.store(true);
     return response.body;
   }
 
   void validate_range_headers(const HttpResponse& response,
-                              std::uint64_t start, std::uint64_t end) const {
+                              std::uint64_t start, std::uint64_t end, bool check_validator = true) const {
     if (response.status == HTTP_STATUS_OK) {
       throw BridgeException("remote_changed",
                             "The remote ISO changed during playback",
@@ -927,7 +952,7 @@ class WinHttpRangeSource final : public bridge::BlockSource {
       throw BridgeException("network_error", "The ISO range body is incomplete",
                             response.status);
     }
-    verify_validator(response);
+    if (check_validator) verify_validator(response);
   }
 
   void probe() {
@@ -1129,8 +1154,28 @@ class WinHttpRangeSource final : public bridge::BlockSource {
         if (expected > kMaximumIsoRangeBytes) {
           throw BridgeException("network_error", "The WebDAV response is too large");
         }
+        if (lazy_) {
+          validate_range_headers(response, *range_start, *range_end, false);
+          const bool needs_head = validator_.empty()
+              ? !strong_etag(response.etag) && !response.last_modified
+              : validator_is_etag_ ? !strong_etag(response.etag) : !response.last_modified;
+          if (needs_head) {
+            const auto head = request("HEAD", std::nullopt, std::nullopt, {}, cancelled);
+            if (head.status >= 200 && head.status < 300 && head.content_length == size_) {
+              response.etag = head.etag;
+              response.last_modified = head.last_modified;
+            }
+          }
+          if (validator_.empty()) {
+            const auto tag = strong_etag(response.etag);
+            if (tag) { validator_ = *tag; validator_is_etag_ = true; }
+            else if (response.last_modified) validator_ = *response.last_modified;
+            else throw BridgeException("range_unsupported", "The BDMV file has no stable validator");
+          }
+          verify_validator(response);
+        }
         if (consume) {
-          validate_range_headers(response, *range_start, *range_end);
+          if (!lazy_) validate_range_headers(response, *range_start, *range_end);
         } else {
           response.body.reserve(static_cast<std::size_t>(expected));
         }
@@ -1156,7 +1201,7 @@ class WinHttpRangeSource final : public bridge::BlockSource {
             throw bridge::FetchCancelled(body_bytes);
           }
           if (received == 0) break;
-          if (!if_range.empty()) {
+          if (lazy_ || !if_range.empty()) {
             remote_transfer_bytes_.fetch_add(received);
           } else {
             probe_body_bytes_.fetch_add(received);
@@ -1190,6 +1235,9 @@ class WinHttpRangeSource final : public bridge::BlockSource {
     throw BridgeException("network_error", "The WebDAV request failed");
   }
 
+  bool lazy_ = false;
+  std::atomic<bool> initialized_{false};
+  std::mutex initialization_mutex_;
   InternetHandle session_;
   ParsedUrl auth_origin_;
   std::wstring authorization_;
@@ -1223,8 +1271,11 @@ class WinHttpRangeSource final : public bridge::BlockSource {
       concurrent_transfer_started_;
 };
 
+#include "bdmv_source.inc"
+
 struct DiscReadContext {
   bridge::BlockCache* cache = nullptr;
+  const bridge::DiscFiles* files = nullptr;
   std::size_t read_ahead_blocks = 0;
   std::uint64_t playback_generation = 0;
   std::exception_ptr read_error;
@@ -1236,6 +1287,8 @@ struct DiscReadContext {
     playback_generation = generation;
   }
 };
+
+#include "bdmv_callbacks.inc"
 
 struct MediaGetTiming {
   std::uint64_t sequence = 0;
@@ -1404,6 +1457,7 @@ class LibblurayApi final {
     load(bd_get_version_, "bd_get_version");
     load(bd_init_, "bd_init");
     load(bd_open_stream_, "bd_open_stream");
+    load(bd_open_files_, "bd_open_files");
     load(bd_close_, "bd_close");
     load(bd_get_disc_info_, "bd_get_disc_info");
     load(bd_get_titles_, "bd_get_titles");
@@ -1441,11 +1495,14 @@ class LibblurayApi final {
                 .count()));
       });
       context_.cache = &cache;
+      if (const auto* source = dynamic_cast<BdmvSource*>(cache.source().get()))
+        context_.files = &source->files;
       context_.playback_generation = playback_generation;
       std::lock_guard lifecycle_lock(api_.lifecycle_mutex_);
       value_ = api_.bd_init_();
       if (value_ == nullptr ||
-          api_.bd_open_stream_(value_, &context_, read_disc_blocks) == 0) {
+          (context_.files ? api_.bd_open_files_(value_, &context_, open_bdmv_dir, open_bdmv_file) :
+           api_.bd_open_stream_(value_, &context_, read_disc_blocks)) == 0) {
         if (value_ != nullptr) api_.bd_close_(value_);
         value_ = nullptr;
         rethrow_read_error();
@@ -1646,6 +1703,7 @@ class LibblurayApi final {
   GetVersion bd_get_version_ = nullptr;
   Init bd_init_ = nullptr;
   OpenStream bd_open_stream_ = nullptr;
+  decltype(&bd_open_files) bd_open_files_ = nullptr;
   Close bd_close_ = nullptr;
   GetDiscInfo bd_get_disc_info_ = nullptr;
   GetTitles bd_get_titles_ = nullptr;
@@ -2515,9 +2573,9 @@ void write_network_phase_metrics(
          << metrics.response_body_active_us_total
          << ",\"remoteBodyBytes\":" << metrics.remote_body_bytes
          << ",\"remoteTransferWallClockUs\":"
-         << metrics.remote_transfer_wall_clock_us
+         << (metrics.cross_resource_timings_valid ? std::to_string(metrics.remote_transfer_wall_clock_us) : "null")
          << ",\"concurrentTransferWallClockUs\":"
-         << metrics.concurrent_transfer_wall_clock_us
+         << (metrics.cross_resource_timings_valid ? std::to_string(metrics.concurrent_transfer_wall_clock_us) : "null")
          << ",\"requestContextCreatedCount\":"
          << metrics.request_context_created_count
          << ",\"requestContextClosedCount\":"
@@ -2600,17 +2658,17 @@ std::string metrics_json(
          << network.response_body_active_us_total
          << ",\"remoteBodyBytes\":" << network.remote_body_bytes
          << ",\"probeBodyBytes\":" << network.probe_body_bytes
-         << ",\"activeRequestPeak\":" << network.active_request_peak
+         << ",\"activeRequestPeak\":" << (network.cross_resource_timings_valid ? std::to_string(network.active_request_peak) : "null")
          << ",\"remoteTransferWallClockUs\":"
-         << network.remote_transfer_wall_clock_us
+         << (network.cross_resource_timings_valid ? std::to_string(network.remote_transfer_wall_clock_us) : "null")
          << ",\"concurrentTransferWallClockUs\":"
-         << network.concurrent_transfer_wall_clock_us
+         << (network.cross_resource_timings_valid ? std::to_string(network.concurrent_transfer_wall_clock_us) : "null")
          << ",\"requestContextCreatedCount\":"
          << network.request_context_created_count
          << ",\"requestContextClosedCount\":"
          << network.request_context_closed_count
          << ",\"requestContextLive\":" << network.request_context_live
-         << ",\"requestContextPeak\":" << network.request_context_peak << '}'
+         << ",\"requestContextPeak\":" << (network.cross_resource_timings_valid ? std::to_string(network.request_context_peak) : "null") << '}'
          << ",\"metadataNetwork\":";
   write_network_phase_metrics(output, metadata_network);
   output << ",\"playbackNetwork\":";
@@ -2981,8 +3039,41 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
 
     const auto bridge_started = std::chrono::steady_clock::now();
-    auto source = std::make_shared<WinHttpRangeSource>(*url, *origin, *username,
-                                                        *password);
+    const bool bdmv = json_string(*open, "sourceKind") == "bdmv";
+    std::shared_ptr<RemoteSource> source;
+    std::shared_ptr<BdmvSource> folder_source;
+    std::optional<bridge::StructureCacheIdentity> structure_identity;
+    if (bdmv) {
+      bridge::DiscFiles files;
+      std::size_t manifest_bytes = 0;
+      while (true) {
+        const auto frame = read_frame(pipe.get());
+        if (!frame || (manifest_bytes += frame->size()) > 16U * 1024U * 1024U)
+          throw BridgeException("protocol_error", "Invalid BDMV manifest");
+        const auto item = bridge::parse_json_object(*frame);
+        if (!item) throw BridgeException("protocol_error", "Invalid BDMV entry");
+        if (json_string(*item, "type") == "files_end") break;
+        const auto path = json_string(*item, "path");
+        const auto file_url = json_string(*item, "url");
+        const auto length = json_integer(*item, "size");
+        const auto directory = json_boolean(*item, "directory");
+        if (json_string(*item, "type") != "disc_file" || !path || !file_url ||
+            !length || *length < 0 || !directory)
+          throw BridgeException("protocol_error", "Invalid BDMV entry");
+        files.add(*path, *file_url, static_cast<std::uint64_t>(*length), *directory,
+            json_string(*item, "etag").value_or(""), json_string(*item, "lastModified").value_or(""));
+      }
+      if (!files.find("BDMV/index.bdmv") || files.bytes == 0)
+        throw BridgeException("invalid_disc", "Missing BDMV structure");
+      folder_source = std::make_shared<BdmvSource>(std::move(files), *origin, *username, *password);
+      source = folder_source;
+      structure_identity = folder_source->structure_identity();
+    } else {
+      auto iso_source = std::make_shared<WinHttpRangeSource>(*url, *origin, *username, *password);
+      structure_identity = bridge::make_structure_cache_identity(iso_source->size(),
+          iso_source->structure_cache_validator_kind(), iso_source->validator());
+      source = iso_source;
+    }
     const NetworkMetricsSnapshot pre_metadata_network = source->metrics();
     std::unique_ptr<bridge::BlockCache> metadata_cache;
     BlurayMetrics bluray_metrics;
@@ -2991,9 +3082,6 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       return 1;
     }
     std::vector<TitleInfo> titles;
-    const auto structure_identity = bridge::make_structure_cache_identity(
-        source->size(), source->structure_cache_validator_kind(),
-        source->validator());
     bool should_write_structure_cache = false;
     try {
       auto cached_titles =
@@ -3053,7 +3141,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
             : 2 * 1024 * 1024 / bridge::kIsoDemandBlockSize,
         bridge::kPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
         remote_menu ? 0 : bridge::kInitialPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
-        !remote_menu);
+        !remote_menu || virtual_disc);
     if (metadata_cache != nullptr) {
       cache.restore_handoff(std::move(metadata_handoff));
       metadata_cache.reset();
@@ -3079,7 +3167,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       if (!bridge::WinFspDisc::available()) {
         throw BridgeException("winfsp_unavailable", "WinFsp runtime is unavailable");
       }
-      mounted_disc = std::make_unique<bridge::WinFspDisc>(cache, source->size(), mount_path, true);
+      mounted_disc = std::make_unique<bridge::WinFspDisc>(cache, source->size(), mount_path, true, folder_source ? &folder_source->files : nullptr);
     }
     const auto write_snapshot = [&](bool final_snapshot = false) {
       const NetworkMetricsSnapshot current_network = source->metrics();
@@ -3100,12 +3188,25 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     ScopeExit final_metrics([&] {
       if (!final_snapshot_written) static_cast<void>(write_snapshot());
     });
-    std::string ready = ready_json(port, token, source->size(), titles);
+    std::string ready = ready_json(port, token, folder_source ? folder_source->files.bytes : source->size(), titles);
+    if (bdmv) {
+      std::ostringstream revision;
+      if (structure_identity) {
+        for (const auto byte : structure_identity->validator_digest)
+          revision << std::hex << std::setfill('0') << std::setw(2) << static_cast<unsigned>(byte);
+      } else {
+        // 未验证的目录版本只在本次会话内有效。
+        revision << random_token() << random_token();
+      }
+      ready.pop_back();
+      ready += ",\"structureRevision\":" + bridge::json_escape(revision.str()) + "}";
+    }
     if (remote_menu) {
       ready.pop_back();
       if (virtual_disc) {
-        ready += R"(,"capability":"winfsp-disc-v1","mode":"hdmv","discPath":)" +
-            bridge::json_escape(utf8_from_wide((mount_path / L"disc.iso").wstring())) + "}";
+        ready += std::string(R"(,"capability":)") + bridge::json_escape(bdmv ? "winfsp-bdmv-v1" : "winfsp-disc-v1") +
+            R"(,"mode":"hdmv","discPath":)" +
+            bridge::json_escape(utf8_from_wide((bdmv ? mount_path : mount_path / L"disc.iso").wstring())) + "}";
       } else {
         ready += R"(,"capability":"remote-disc-blocks-v1","mode":"hdmv"})";
       }

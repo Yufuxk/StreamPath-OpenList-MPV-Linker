@@ -24,6 +24,7 @@ void main() {
     var alive = true;
     var launchCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       snapshotLoader: (uri) async => identity,
       identityValidator: (value) async => value == identity,
       signalSender: (value) async {
@@ -31,7 +32,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => alive,
-      launcher: (value) async {
+      launcher: (value, workingDirectory) async {
         launchCount++;
         return 456;
       },
@@ -51,11 +52,12 @@ void main() {
     if (!Platform.isWindows) return;
     var launchCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       snapshotLoader: (uri) async => identity,
       identityValidator: (value) async => true,
       signalSender: (value) async => false,
       aliveProbe: (pid) async => true,
-      launcher: (value) async {
+      launcher: (value, workingDirectory) async {
         launchCount++;
         return 456;
       },
@@ -82,6 +84,7 @@ void main() {
     );
     var signalCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       snapshotLoader: (uri) async => unsupported,
       identityValidator: (value) async => true,
       signalSender: (value) async {
@@ -89,7 +92,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => false,
-      launcher: (value) async => 456,
+      launcher: (value, workingDirectory) async => 456,
       readyProbe: (uri) async => true,
       pollInterval: Duration.zero,
     );
@@ -107,6 +110,7 @@ void main() {
     var launchCount = 0;
     var alive = true;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       snapshotLoader: (uri) async => uri.port == 5244 ? identity : null,
       identityValidator: (value) async => true,
       signalSender: (value) async {
@@ -115,7 +119,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => alive,
-      launcher: (value) async {
+      launcher: (value, workingDirectory) async {
         launchCount++;
         return 456;
       },
@@ -155,6 +159,7 @@ void main() {
     var capturePhase = true;
     var signalCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       targetResolver: (uri) async => currentTarget,
       snapshotLoader: (uri) async => capturePhase ? originalIdentity : null,
       identityValidator: (value) async => true,
@@ -163,7 +168,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => false,
-      launcher: (value) async => 456,
+      launcher: (value, workingDirectory) async => 456,
       readyProbe: (uri) async => true,
       pollInterval: Duration.zero,
     );
@@ -182,6 +187,7 @@ void main() {
     var snapshotCount = 0;
     var signalCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       targetResolver: (uri) async => null,
       snapshotLoader: (uri) async {
         snapshotCount++;
@@ -193,7 +199,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => false,
-      launcher: (value) async => 456,
+      launcher: (value, workingDirectory) async => 456,
       readyProbe: (uri) async => true,
       pollInterval: Duration.zero,
     );
@@ -211,6 +217,7 @@ void main() {
     var signalCount = 0;
     var launchCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       snapshotLoader: (uri) async => identity,
       identityValidator: (value) async {
         validationCount++;
@@ -221,7 +228,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => false,
-      launcher: (value) async {
+      launcher: (value, workingDirectory) async {
         launchCount++;
         return 456;
       },
@@ -258,6 +265,7 @@ void main() {
     int? signaledPid;
     var alive = true;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       targetResolver: (uri) async => uri.port == 5244 ? target : targetB,
       snapshotLoader: (uri) async {
         if (!capturePhase) return null;
@@ -270,7 +278,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => alive,
-      launcher: (value) async => 456,
+      launcher: (value, workingDirectory) async => 456,
       readyProbe: (uri) async => true,
       pollInterval: Duration.zero,
     );
@@ -299,6 +307,7 @@ void main() {
     int? signaledPid;
     var alive = true;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       targetResolver: (uri) async => target,
       snapshotLoader: (uri) async {
         if (!capturePhase) return null;
@@ -312,7 +321,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => alive,
-      launcher: (value) async => 456,
+      launcher: (value, workingDirectory) async => 456,
       readyProbe: (uri) async => true,
       pollInterval: Duration.zero,
     );
@@ -337,6 +346,7 @@ void main() {
     var signalCount = 0;
     var launchCount = 0;
     final service = OpenListProcessRestartService(
+      directoryExists: (_) async => true,
       targetResolver: (uri) async => target,
       snapshotLoader: (uri) async => identity,
       identityValidator: (value) async => true,
@@ -346,7 +356,7 @@ void main() {
         return true;
       },
       aliveProbe: (pid) async => false,
-      launcher: (value) async {
+      launcher: (value, workingDirectory) async {
         launchCount++;
         return 456;
       },

@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../data/models/openlist_recovery_config.dart';
+
 /// OpenList/AList 进程身份所属的本机监听目标。
 class OpenListProcessTargetKey {
   const OpenListProcessTargetKey({
@@ -70,7 +72,10 @@ class OpenListProcessRestartResult {
 abstract interface class PlaybackServerRestarter {
   Future<bool> capture(String baseUrl);
 
-  Future<OpenListProcessRestartResult> restart(String baseUrl);
+  Future<OpenListProcessRestartResult> restart(
+    String baseUrl, {
+    OpenListRestartDirectory directory = OpenListRestartDirectory.userProfile,
+  });
 }
 
 typedef OpenListProcessSnapshotLoader =
@@ -83,7 +88,10 @@ typedef OpenListGracefulSignalSender =
     Future<bool> Function(OpenListProcessIdentity identity);
 typedef OpenListProcessAliveProbe = Future<bool> Function(int pid);
 typedef OpenListProcessLauncher =
-    Future<int?> Function(OpenListProcessIdentity identity);
+    Future<int?> Function(
+      OpenListProcessIdentity identity,
+      String workingDirectory,
+    );
 typedef OpenListServerReadyProbe = Future<bool> Function(Uri baseUri);
 
 /// Windows 本机 OpenList/AList 安全重启器。
@@ -101,6 +109,7 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
     OpenListProcessAliveProbe? aliveProbe,
     OpenListProcessLauncher? launcher,
     OpenListServerReadyProbe? readyProbe,
+    Future<bool> Function(String)? directoryExists,
     this.shutdownTimeout = const Duration(seconds: 15),
     this.readinessTimeout = const Duration(seconds: 30),
     this.pollInterval = const Duration(milliseconds: 500),
@@ -110,7 +119,9 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
        _signalSender = signalSender ?? _sendGracefulCtrlC,
        _aliveProbe = aliveProbe ?? _isProcessAlive,
        _launcher = launcher ?? _launchServer,
-       _readyProbe = readyProbe ?? _probeServerReady;
+       _readyProbe = readyProbe ?? _probeServerReady,
+       _directoryExists =
+           directoryExists ?? ((path) => Directory(path).exists());
 
   final OpenListProcessSnapshotLoader _snapshotLoader;
   final OpenListProcessTargetResolver _targetResolver;
@@ -119,6 +130,7 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
   final OpenListProcessAliveProbe _aliveProbe;
   final OpenListProcessLauncher _launcher;
   final OpenListServerReadyProbe _readyProbe;
+  final Future<bool> Function(String) _directoryExists;
   final Duration shutdownTimeout;
   final Duration readinessTimeout;
   final Duration pollInterval;
@@ -157,7 +169,10 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
   }
 
   @override
-  Future<OpenListProcessRestartResult> restart(String baseUrl) async {
+  Future<OpenListProcessRestartResult> restart(
+    String baseUrl, {
+    OpenListRestartDirectory directory = OpenListRestartDirectory.userProfile,
+  }) async {
     final baseUri = _normalizeBaseUri(baseUrl);
     if (baseUri == null || !Platform.isWindows) {
       return const OpenListProcessRestartResult(
@@ -178,7 +193,7 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
       final inflight = _inflightRestarts[restartKey];
       if (inflight != null) return await inflight;
 
-      final pending = _restartResolvedTarget(baseUri, target);
+      final pending = _restartResolvedTarget(baseUri, target, directory);
       _inflightRestarts[restartKey] = pending;
       try {
         return await pending;
@@ -198,6 +213,7 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
   Future<OpenListProcessRestartResult> _restartResolvedTarget(
     Uri baseUri,
     OpenListProcessTargetKey target,
+    OpenListRestartDirectory directory,
   ) async {
     final detected = await _snapshotLoader(baseUri);
     if (detected != null) {
@@ -214,6 +230,17 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
       return const OpenListProcessRestartResult(
         success: false,
         message: '未记录到可安全重启的本机 OpenList/AList 进程',
+      );
+    }
+    final workingDirectory = directory == OpenListRestartDirectory.installation
+        ? p.windows.dirname(identity.executablePath)
+        : Platform.environment['USERPROFILE'];
+    if (workingDirectory == null ||
+        workingDirectory.isEmpty ||
+        !await _directoryExists(workingDirectory)) {
+      return const OpenListProcessRestartResult(
+        success: false,
+        message: '重启工作目录不可用，已取消重启且未停止服务',
       );
     }
     if (!await _identityValidator(identity)) {
@@ -235,7 +262,7 @@ class OpenListProcessRestartService implements PlaybackServerRestarter {
         message: 'OpenList/AList 未在安全期限内退出，已取消重启且未强制结束进程',
       );
     }
-    final newPid = await _launcher(identity);
+    final newPid = await _launcher(identity, workingDirectory);
     if (newPid == null || newPid <= 0) {
       return const OpenListProcessRestartResult(
         success: false,
@@ -505,13 +532,14 @@ if(-not \$sent){ exit 14 }
     return false;
   }
 
-  static Future<int?> _launchServer(OpenListProcessIdentity identity) async {
+  static Future<int?> _launchServer(
+    OpenListProcessIdentity identity,
+    String workingDirectory,
+  ) async {
     final executable = File(identity.executablePath);
     if (!await executable.exists()) return null;
     final escapedExecutable = executable.path.replaceAll("'", "''");
-    final escapedDirectory = p.windows
-        .dirname(executable.path)
-        .replaceAll("'", "''");
+    final escapedDirectory = workingDirectory.replaceAll("'", "''");
     final script =
         '''
 \$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()

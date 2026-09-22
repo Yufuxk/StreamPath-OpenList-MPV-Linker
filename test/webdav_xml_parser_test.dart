@@ -1,9 +1,26 @@
+import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/data/remote/webdav_xml_parser.dart';
 
 void main() {
   const parser = WebDavXmlParser();
+
+  test('版本属性只读取成功 propstat，目录缓存保留原始版本', () {
+    final files = parser.parse(
+      '''<d:multistatus xmlns:d="DAV:"><d:response><d:href>/disc/index.bdmv</d:href>
+      <d:propstat><d:prop><d:getetag>"bad"</d:getetag></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+      <d:propstat><d:prop><d:getetag>"valid"</d:getetag><d:getlastmodified>Wed, 26 Jun 2024 12:00:00 GMT</d:getlastmodified></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>''',
+      requestUrl: 'https://disc.test/disc/',
+    );
+    expect(files.single.etag, '"valid"');
+    expect(files.single.lastModifiedHeader, 'Wed, 26 Jun 2024 12:00:00 GMT');
+    final restored = WebDavFile.fromCacheMap(files.single.toCacheMap());
+    expect(restored.etag, files.single.etag);
+    expect(restored.lastModifiedHeader, files.single.lastModifiedHeader);
+    expect(WebDavFile.fromCacheMap({}).etag, isNull);
+  });
 
   group('WebDavXmlParser 解析', () {
     test('标准 DAV: 命名空间响应解析文件与目录', () {

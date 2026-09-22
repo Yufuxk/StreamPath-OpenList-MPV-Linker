@@ -107,6 +107,7 @@ class _PlaybackLaunchContext {
       serverUrl: serverUrl,
       recovery: OpenListRecoveryConfig(
         enabled: recovery.enabled,
+        restartDirectory: recovery.restartDirectory,
         baseUrl: recovery.baseUrl,
         username: recovery.username,
         password: recovery.password,
@@ -354,9 +355,12 @@ class ExternalPlayerService {
   /// 在连接或用户刷新成功后更新本机 OpenList/AList 进程身份。
   Future<void> captureOpenListProcessIdentity() async {
     try {
-      final config = (await _configStore.load()).openListRecovery;
-      if (config.enabled && config.baseUrl.trim().isNotEmpty) {
-        await _serverRestarter.capture(config.baseUrl);
+      final config = await _configStore.load();
+      final baseUrl = config.openListRecovery.baseUrl.trim().isNotEmpty
+          ? config.openListRecovery.baseUrl
+          : config.serverUrl;
+      if (baseUrl.trim().isNotEmpty) {
+        await _serverRestarter.capture(baseUrl);
       }
     } catch (_) {
       // 进程识别是第三次恢复的可选前置；失败不影响连接、浏览或播放。
@@ -1890,7 +1894,10 @@ class ExternalPlayerService {
 
       var serverRestarted = false;
       if (attempt == 3) {
-        final restart = await _serverRestarter.restart(config.baseUrl);
+        final restart = await _serverRestarter.restart(
+          config.baseUrl,
+          directory: config.restartDirectory,
+        );
         if (!_isRecoveryCurrent(runtime, state)) return true;
         if (!restart.success) {
           state.recovering = false;

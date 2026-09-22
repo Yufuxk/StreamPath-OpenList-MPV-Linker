@@ -63,6 +63,8 @@ class SettingsConfigDraft {
   int playerStartupTimeoutSeconds =
       AppConstants.defaultPlayerStartupTimeoutSeconds;
   bool openListRecoveryEnabled = false;
+  OpenListRestartDirectory openListRestartDirectory =
+      OpenListRestartDirectory.userProfile;
   bool openListIndexAutoUpdateEnabled = false;
   List<ServerProfile> profiles = const [];
   String? selectedProfileId;
@@ -72,7 +74,7 @@ class SettingsConfigDraft {
   CachePolicyMode cacheMode = CachePolicyMode.auto;
   bool overrideUserCacheArgs = false;
   bool intelligenceEnabled = true;
-  bool applyIntelligence = false;
+  bool applyIntelligence = true;
   bool bitratePredictionEnabled = true;
   bool storageOptimizationEnabled = true;
   bool habitLearningEnabled = true;
@@ -109,6 +111,7 @@ class SettingsConfigDraft {
         fullConfig.activeProfile?.defaultDirectory ?? '';
     credentialStorageMode = fullConfig.credentialStorageMode;
     openListRecoveryEnabled = fullConfig.openListRecovery.enabled;
+    openListRestartDirectory = fullConfig.openListRecovery.restartDirectory;
     openListBaseUrlController.text = fullConfig.openListRecovery.baseUrl;
     openListUsernameController.text = fullConfig.openListRecovery.username;
     openListPasswordController.text = fullConfig.openListRecovery.password;
@@ -244,6 +247,7 @@ class SettingsConfigDraft {
   OpenListRecoveryConfig buildOpenListRecoveryConfig() =>
       OpenListRecoveryConfig(
         enabled: openListRecoveryEnabled,
+        restartDirectory: openListRestartDirectory,
         baseUrl: openListBaseUrlController.text.trim(),
         username: openListUsernameController.text.trim(),
         password: openListPasswordController.text,

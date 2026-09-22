@@ -16,6 +16,7 @@ struct WinFspDisc::Impl {
   const std::uint64_t size;
   const std::uint64_t generation;
   const bool prefetch;
+  const DiscFiles* files;
   std::atomic<unsigned> read_ahead_seconds = 60;
   HMODULE module = nullptr;
   FSP_FILE_SYSTEM* fs = nullptr;
@@ -25,6 +26,11 @@ struct WinFspDisc::Impl {
   std::atomic<bool> stopping = false;
   std::atomic<std::uint64_t> reads = 0, bytes = 0, read_us = 0;
   std::array<std::atomic<std::uint64_t>, 4> sizes{};
+  std::mutex observation_mutex;
+  std::uint64_t read_serial = 0, sequence = 0, observed_next = 0;
+  std::uint64_t sequence_bytes = 0;
+  bool observation_ready = false;
+  std::uint64_t snapshot_serial = 0;
 
   decltype(&FspFileSystemCreate) create = nullptr;
   decltype(&FspFileSystemDelete) destroy = nullptr;
@@ -36,15 +42,16 @@ struct WinFspDisc::Impl {
 
   struct File {
     bool directory;
+    const DiscFile* entry = nullptr;
     std::mutex mutex;
     std::uint64_t next = 0, sequential = 0;
     std::chrono::steady_clock::time_point sequential_started{};
     bool expanded_read_ahead = false;
   };
 
-  Impl(BlockCache& cache_value, std::uint64_t size_value, bool prefetch_value)
+  Impl(BlockCache& cache_value, std::uint64_t size_value, bool prefetch_value, const DiscFiles* files_value)
       : cache(cache_value), size(size_value), generation(cache.begin_playback()),
-        prefetch(prefetch_value) {}
+        prefetch(prefetch_value), files(files_value) {}
 
   ~Impl() {
     stop();
@@ -158,16 +165,32 @@ struct WinFspDisc::Impl {
   static Impl& self(FSP_FILE_SYSTEM* fs) {
     return *static_cast<Impl*>(fs->UserContext);
   }
-  static int kind(PCWSTR name) {
+  const DiscFile* find(PCWSTR name) const {
+    if (!files || name[0] != L'\\') return nullptr;
+    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name + 1, -1,
+        nullptr, 0, nullptr, nullptr);
+    if (count <= 1) return nullptr;
+    std::string path(static_cast<std::size_t>(count), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name + 1, -1, path.data(), count, nullptr, nullptr);
+    path.pop_back();
+    return files->find(path);
+  }
+  int kind(PCWSTR name) const {
     if (wcscmp(name, L"\\") == 0) return 1;
+    if (files) {
+      const auto* entry = find(name);
+      return entry ? (entry->directory ? 1 : 2) : 0;
+    }
     return _wcsicmp(name, L"\\disc.iso") == 0 ? 2 : 0;
   }
-  static void info(Impl& state, bool directory, FSP_FSCTL_FILE_INFO* out) {
+  static void info(Impl& state, bool directory, FSP_FSCTL_FILE_INFO* out,
+                   const DiscFile* entry = nullptr) {
     *out = {};
+    const auto size = entry ? entry->size : state.size;
     out->FileAttributes = directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_READONLY;
-    out->FileSize = directory ? 0 : state.size;
-    out->AllocationSize = directory ? 0 : (state.size + 4095) / 4096 * 4096;
-    out->IndexNumber = directory ? 1 : 2;
+    out->FileSize = directory ? 0 : size;
+    out->AllocationSize = directory ? 0 : (size + 4095) / 4096 * 4096;
+    out->IndexNumber = entry ? static_cast<UINT64>(entry - state.files->entries.data()) + 2 : directory ? 1 : 2;
   }
   static NTSTATUS volume(FSP_FILE_SYSTEM* fs, FSP_FSCTL_VOLUME_INFO* out) {
     *out = {};
@@ -184,30 +207,35 @@ struct WinFspDisc::Impl {
     return STATUS_SUCCESS;
   }
   static NTSTATUS security_by_name(FSP_FILE_SYSTEM* fs, PWSTR name, PUINT32 attrs,
-                                    PSECURITY_DESCRIPTOR out, SIZE_T* size) {
-    const int type = kind(name);
+                                    PSECURITY_DESCRIPTOR out, SIZE_T* size) try {
+    const int type = self(fs).kind(name);
     if (!type) return STATUS_OBJECT_NAME_NOT_FOUND;
     if (attrs) *attrs = type == 1 ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_READONLY;
     return copy_security(self(fs), out, size);
+  } catch (const std::bad_alloc&) {
+    return STATUS_INSUFFICIENT_RESOURCES;
   }
   static NTSTATUS open(FSP_FILE_SYSTEM* fs, PWSTR name, UINT32 options,
-                       UINT32 access, PVOID* context, FSP_FSCTL_FILE_INFO* out) {
-    const int type = kind(name);
+                       UINT32 access, PVOID* context, FSP_FSCTL_FILE_INFO* out) try {
+    const int type = self(fs).kind(name);
     if (!type) return STATUS_OBJECT_NAME_NOT_FOUND;
     if (access & (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA |
                   FILE_WRITE_ATTRIBUTES | DELETE | WRITE_DAC | WRITE_OWNER))
       return STATUS_MEDIA_WRITE_PROTECTED;
     if (type == 1 && (options & FILE_NON_DIRECTORY_FILE)) return STATUS_FILE_IS_A_DIRECTORY;
     if (type == 2 && (options & FILE_DIRECTORY_FILE)) return STATUS_NOT_A_DIRECTORY;
-    auto* file = new (std::nothrow) File{type == 1};
+    auto* file = new (std::nothrow) File{type == 1, self(fs).find(name)};
     if (!file) return STATUS_INSUFFICIENT_RESOURCES;
     *context = file;
-    info(self(fs), file->directory, out);
+    info(self(fs), file->directory, out, file->entry);
     return STATUS_SUCCESS;
+  } catch (const std::bad_alloc&) {
+    return STATUS_INSUFFICIENT_RESOURCES;
   }
   static void close(FSP_FILE_SYSTEM*, PVOID context) { delete static_cast<File*>(context); }
   static NTSTATUS file_info(FSP_FILE_SYSTEM* fs, PVOID context, FSP_FSCTL_FILE_INFO* out) {
-    info(self(fs), static_cast<File*>(context)->directory, out);
+    auto* file = static_cast<File*>(context);
+    info(self(fs), file->directory, out, file->entry);
     return STATUS_SUCCESS;
   }
   static NTSTATUS get_security(FSP_FILE_SYSTEM* fs, PVOID,
@@ -223,15 +251,19 @@ struct WinFspDisc::Impl {
     if (state.stopping) return STATUS_CANCELLED;
     if (state.failed) return STATUS_IO_DEVICE_ERROR;
     if (length == 0) return STATUS_SUCCESS;
-    if (offset >= state.size) return STATUS_END_OF_FILE;
-    const auto wanted = static_cast<std::size_t>(std::min<std::uint64_t>(length, state.size - offset));
+    const auto file_size = file.entry ? file.entry->size : state.size;
+    const auto base = file.entry ? file.entry->base : 0;
+    if (offset >= file_size) return STATUS_END_OF_FILE;
+    const auto wanted = static_cast<std::size_t>(std::min<std::uint64_t>(length, file_size - offset));
     const auto began = std::chrono::steady_clock::now();
     ++state.reads;
     ++state.sizes[length <= 4096 ? 0 : length <= 65536 ? 1 : length <= 262144 ? 2 : 3];
     try {
       std::size_t ahead = 0;
+      std::uint64_t serial;
       {
         std::lock_guard lock(file.mutex);
+        const bool discontinuity = offset != file.next || file.sequential == 0;
         if (offset != file.next && file.expanded_read_ahead)
           state.cache.reset_read_ahead();
         if (offset != file.next || file.sequential == 0) {
@@ -240,7 +272,9 @@ struct WinFspDisc::Impl {
         }
         file.sequential = offset == file.next ? file.sequential + wanted : wanted;
         file.next = offset + wanted;
-        if (state.prefetch && file.sequential >= kIsoDemandBlockSize) {
+        if (state.prefetch && (!file.entry ||
+            (file.entry->path.size() >= 5 && _stricmp(file.entry->path.c_str() + file.entry->path.size() - 5, ".m2ts") == 0)) &&
+            file.sequential >= kIsoDemandBlockSize) {
           std::size_t blocks = 2;
           const auto seconds = state.read_ahead_seconds.load();
           const double elapsed = std::chrono::duration<double>(
@@ -256,8 +290,16 @@ struct WinFspDisc::Impl {
           ahead = state.cache.limit_read_ahead(blocks);
           file.expanded_read_ahead = blocks > 2;
         }
+        {
+          std::lock_guard observation_lock(state.observation_mutex);
+          serial = ++state.read_serial;
+          if (discontinuity || state.observed_next != base + offset) ++state.sequence;
+          state.observed_next = base + file.next;
+          state.sequence_bytes = file.sequential;
+          state.observation_ready = false;
+        }
       }
-      const auto count = state.cache.read(offset, static_cast<std::uint8_t*>(buffer),
+      const auto count = state.cache.read(base + offset, static_cast<std::uint8_t*>(buffer),
                                           wanted, ahead, state.generation);
       if (count != wanted) {
         if (state.stopping) return STATUS_CANCELLED;
@@ -266,6 +308,10 @@ struct WinFspDisc::Impl {
       }
       *transferred = static_cast<ULONG>(count);
       state.bytes += count;
+      {
+        std::lock_guard lock(state.observation_mutex);
+        if (serial == state.read_serial) state.observation_ready = true;
+      }
       state.read_us += static_cast<std::uint64_t>(std::chrono::duration_cast<
           std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count());
       return STATUS_SUCCESS;
@@ -278,27 +324,50 @@ struct WinFspDisc::Impl {
   }
   static NTSTATUS read_directory(FSP_FILE_SYSTEM* fs, PVOID context, PWSTR,
                                  PWSTR marker, PVOID buffer, ULONG length,
-                                 PULONG transferred) {
+                                 PULONG transferred) try {
     auto& state = self(fs);
     *transferred = 0;
     if (!static_cast<File*>(context)->directory) return STATUS_NOT_A_DIRECTORY;
-    if (!marker || _wcsicmp(marker, L"disc.iso") < 0) {
+    const auto* file = static_cast<File*>(context);
+    std::vector<std::pair<std::wstring, const DiscFile*>> children;
+    if (state.files) {
+      for (const auto* child : state.files->children(file->entry ? file->entry->path : "")) {
+        const auto name = child->path.substr(child->path.find_last_of('/') + 1);
+        const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.c_str(), -1, nullptr, 0);
+        if (count <= 1) return STATUS_OBJECT_NAME_INVALID;
+        std::wstring wide(static_cast<std::size_t>(count), L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.c_str(), -1, wide.data(), count);
+        wide.pop_back();
+        children.emplace_back(std::move(wide), child);
+      }
+      std::sort(children.begin(), children.end(), [](const auto& a, const auto& b) {
+        return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
+      });
+    } else {
+      children.emplace_back(L"disc.iso", nullptr);
+    }
+    for (const auto& child : children) {
+      if (marker && _wcsicmp(marker, child.first.c_str()) >= 0) continue;
       alignas(FSP_FSCTL_DIR_INFO) std::array<std::uint8_t,
-          sizeof(FSP_FSCTL_DIR_INFO) + sizeof(L"disc.iso")> storage{};
+          sizeof(FSP_FSCTL_DIR_INFO) + 512> storage{};
       auto* entry = reinterpret_cast<FSP_FSCTL_DIR_INFO*>(storage.data());
-      entry->Size = static_cast<UINT16>(sizeof(FSP_FSCTL_DIR_INFO) + sizeof(L"disc.iso") - sizeof(wchar_t));
-      info(state, false, &entry->FileInfo);
-      std::memcpy(entry->FileNameBuf, L"disc.iso", sizeof(L"disc.iso") - sizeof(wchar_t));
+      const auto name_bytes = child.first.size() * sizeof(wchar_t);
+      if (name_bytes > 510) return STATUS_OBJECT_NAME_INVALID;
+      entry->Size = static_cast<UINT16>(sizeof(FSP_FSCTL_DIR_INFO) + name_bytes);
+      info(state, child.second && child.second->directory, &entry->FileInfo, child.second);
+      std::memcpy(entry->FileNameBuf, child.first.data(), name_bytes);
       if (!state.add_dir(entry, buffer, length, transferred)) return STATUS_SUCCESS;
     }
     state.add_dir(nullptr, buffer, length, transferred);
     return STATUS_SUCCESS;
+  } catch (const std::bad_alloc&) {
+    return STATUS_INSUFFICIENT_RESOURCES;
   }
 };
 
 WinFspDisc::WinFspDisc(BlockCache& cache, std::uint64_t size,
-                     const std::filesystem::path& path, bool prefetch)
-    : impl_(std::make_unique<Impl>(cache, size, prefetch)) {
+                     const std::filesystem::path& path, bool prefetch, const DiscFiles* files)
+    : impl_(std::make_unique<Impl>(cache, size, prefetch, files)) {
   if (size == 0 || size > INT64_MAX || !path.is_absolute() || std::filesystem::exists(path))
     throw std::invalid_argument("Expected a new absolute mount path and positive disc size");
   impl_->initialize(path);
@@ -325,8 +394,28 @@ bool WinFspDisc::available() {
 }
 std::string WinFspDisc::metrics_json() const {
   std::ostringstream out;
+  std::uint64_t next, sequence, consumed, serial;
+  bool ready;
+  {
+    std::lock_guard lock(impl_->observation_mutex);
+    next = impl_->observed_next;
+    sequence = impl_->sequence;
+    consumed = impl_->sequence_bytes;
+    serial = impl_->read_serial;
+    ready = impl_->observation_ready && !impl_->failed;
+  }
+  const auto forward = ready ? impl_->cache.contiguous_cached_bytes(next) : 0;
+  {
+    std::lock_guard lock(impl_->observation_mutex);
+    ready = ready && serial == impl_->read_serial;
+  }
   out << "{\"schema\":1,\"readCalls\":" << impl_->reads
       << ",\"readBytes\":" << impl_->bytes << ",\"readUs\":" << impl_->read_us
+      << ",\"snapshotSerial\":" << ++impl_->snapshot_serial
+      << ",\"readSequence\":" << sequence
+      << ",\"sequenceBytes\":" << consumed
+      << ",\"forwardReady\":" << (ready ? "true" : "false")
+      << ",\"forwardBytes\":" << (ready ? forward : 0)
       << ",\"failed\":" << (impl_->failed ? "true" : "false")
       << ",\"readSizeBuckets\":[";
   for (std::size_t i = 0; i < impl_->sizes.size(); ++i)

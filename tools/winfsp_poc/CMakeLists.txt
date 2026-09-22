@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.20)
+project(streampath_winfsp_poc LANGUAGES CXX)
+set(BRIDGE "${CMAKE_CURRENT_LIST_DIR}/../../windows/iso_bridge")
+set(WINFSP_SDK "" CACHE PATH "Fixed WinFsp v2.1 source directory")
+if(NOT EXISTS "${WINFSP_SDK}/inc/winfsp/winfsp.h")
+  message(FATAL_ERROR "Set WINFSP_SDK to the verified WinFsp v2.1 source directory")
+endif()
+add_executable(streampath_winfsp_poc
+  "winfsp_poc.cpp" "${BRIDGE}/winfsp_disc.cpp" "${BRIDGE}/bridge_core.cpp")
+target_compile_features(streampath_winfsp_poc PRIVATE cxx_std_17)
+target_compile_definitions(streampath_winfsp_poc PRIVATE
+  NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+target_compile_options(streampath_winfsp_poc PRIVATE /W4 /WX /EHsc /utf-8)
+target_include_directories(streampath_winfsp_poc PRIVATE "${BRIDGE}")
+target_include_directories(streampath_winfsp_poc SYSTEM PRIVATE "${WINFSP_SDK}/inc")
+target_link_libraries(streampath_winfsp_poc PRIVATE advapi32 bcrypt ole32 oleaut32)

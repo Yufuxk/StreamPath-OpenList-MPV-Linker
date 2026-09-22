@@ -56,6 +56,8 @@ class WebDavXmlParser {
           size: _parseSize(response),
           modified: _parseModified(response),
           contentType: _firstText(response, 'getcontenttype'),
+          etag: _successfulProperty(response, 'getetag'),
+          lastModifiedHeader: _successfulProperty(response, 'getlastmodified'),
         ),
       );
     }
@@ -76,6 +78,36 @@ class WebDavXmlParser {
     final rp = strip(r.path);
     if (hp.isEmpty || rp.isEmpty) return false;
     return hp == rp;
+  }
+
+  String? _successfulProperty(XmlElement response, String name) {
+    for (final propstat in response.childElements.where(
+      (e) => e.localName == 'propstat',
+    )) {
+      final status = propstat.childElements
+          .where((e) => e.localName == 'status')
+          .firstOrNull
+          ?.innerText;
+      if (status == null ||
+          !RegExp(r'^HTTP/\S+ 2\d\d(?: |$)').hasMatch(status.trim())) {
+        continue;
+      }
+      for (final prop in propstat.childElements.where(
+        (e) => e.localName == 'prop',
+      )) {
+        final text = prop.childElements
+            .where((e) => e.localName == name)
+            .firstOrNull
+            ?.innerText
+            .trim();
+        if (text != null &&
+            text.isNotEmpty &&
+            !text.contains(RegExp(r'[\r\n]'))) {
+          return text;
+        }
+      }
+    }
+    return null;
   }
 
   /// 取 response 下指定本地名元素的文本（首个非空）。

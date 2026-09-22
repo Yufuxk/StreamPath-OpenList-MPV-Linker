@@ -1,3 +1,5 @@
+import '../../data/models/webdav_bdmv.dart';
+import '../../domain/services/webdav_bdmv_service.dart';
 import 'dart:async';
 import '../../domain/services/remote_menu_playback_service.dart';
 import 'dart:io';
@@ -38,6 +40,8 @@ import '../../domain/services/player_process_controller.dart';
 import '../../domain/services/webdav_service.dart';
 import '../../domain/services/webdav_media_source_adapter.dart';
 import '../../domain/services/webdav_font_matcher.dart';
+import '../../domain/services/iso_subtitle_service.dart';
+import '../widgets/iso_subtitle_dialog.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../controllers/directory_browser_controller.dart';
 import '../controllers/directory_scroll_state.dart';
@@ -127,9 +131,10 @@ class _IsoDialogResult {
 }
 
 class _IsoTitleSelectionDialog extends StatefulWidget {
-  const _IsoTitleSelectionDialog({required this.request, this.menuUnavailableReason});
+  const _IsoTitleSelectionDialog({required this.request, this.menuUnavailableReason, this.subtitles});
 
   final IsoTitleSelectionRequest request;
+  final IsoSubtitleContext? subtitles;
   final String? menuUnavailableReason;
 
   @override
@@ -233,6 +238,12 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
       ),
     ),
     actions: [
+      if (widget.subtitles != null)
+        TextButton(onPressed: () => showDialog<void>(context: context,
+          builder: (_) => IsoSubtitleDialog(subtitles: widget.subtitles!,
+            titles: _titles.map((t) => <String,dynamic>{'id':t.mplsId,
+              'duration':t.duration.inMilliseconds/1000}).toList())),
+          child: const AppText('ISO 外挂字幕')),
       TextButton(
         onPressed: () => Navigator.of(context).pop(),
         child: const AppText('取消播放'),
@@ -263,11 +274,17 @@ class _IsoStreamingDialog extends StatefulWidget {
     required this.file,
     this.remoteMenu = false,
     this.menuUnavailableReason,
+    this.subtitles,
+    this.startupClock,
+    this.cancelPreparation,
   });
 
   final IsoPlaybackService service;
   final WebDAVService webDavService;
   final WebDavFile file;
+  final Future<IsoSubtitleContext?>? subtitles;
+  final Stopwatch? startupClock;
+  final VoidCallback? cancelPreparation;
   final bool remoteMenu;
   final String? menuUnavailableReason;
 
@@ -278,6 +295,8 @@ class _IsoStreamingDialog extends StatefulWidget {
 class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
   late IsoPlaybackProgress _progress;
   bool _cancelling = false;
+  IsoSubtitleContext? _subtitles;
+  bool _preparingSubtitles = true;
 
   @override
   void initState() {
@@ -291,9 +310,26 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
 
   Future<void> _start() async {
     try {
+      Future<IsoSubtitleContext?>? preparation;
+      if (widget.file is WebDavBdmv) {
+        preparation = widget.subtitles?.then((value) { _subtitles = value; return value; });
+        // 提前注册错误处理，避免原生准备期间异步异常无人接收。
+        preparation?.ignore();
+      } else {
+        _subtitles = await widget.subtitles;
+      }
+      if (!mounted) return;
+      if (_cancelling) {
+        Navigator.of(context).pop(const _IsoDialogResult.cancelled());
+        return;
+      }
+      setState(() => _preparingSubtitles = false);
       final result = widget.remoteMenu
           ? await widget.service.startRemoteMenu(
               webDavService: widget.webDavService, file: widget.file,
+              subtitles: _subtitles,
+              subtitlePreparation: preparation,
+              startupClock: widget.startupClock,
               onProgress: (progress) {
                 if (mounted) setState(() => _progress = progress);
               },
@@ -302,6 +338,9 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
         webDavService: widget.webDavService,
         file: widget.file,
         selectTitles: _selectTitles,
+        subtitles: _subtitles,
+        subtitlePreparation: preparation,
+        startupClock: widget.startupClock,
         onProgress: (progress) {
           if (mounted) setState(() => _progress = progress);
         },
@@ -329,6 +368,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       context: context,
       barrierDismissible: false,
       builder: (_) => _IsoTitleSelectionDialog(request: request,
+        subtitles: _subtitles,
         menuUnavailableReason: widget.menuUnavailableReason),
     );
     return selection;
@@ -337,10 +377,11 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
   void _cancel() {
     if (_cancelling || (!widget.remoteMenu && _progress.phase == IsoPlaybackPhase.launching)) return;
     setState(() => _cancelling = true);
+    widget.cancelPreparation?.call();
     widget.service.cancel();
   }
 
-  String _statusText() => switch (_progress.phase) {
+  String _statusText() => _preparingSubtitles ? '正在准备外挂字幕…' : switch (_progress.phase) {
     IsoPlaybackPhase.checkingPlayer => '正在检查 MPV 播放器…',
     IsoPlaybackPhase.startingBridge => '正在启动 ISO Bridge…',
     IsoPlaybackPhase.probingStream => '正在探测 ISO 流式读取…',
@@ -360,7 +401,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       canPop: false,
       child: AlertDialog(
         key: const Key('iso-streaming-dialog'),
-        title: const AppText('ISO 远程播放系统'),
+        title: AppText(widget.file is WebDavBdmv ? 'BDMV 远程播放系统' : 'ISO 远程播放系统'),
         content: SizedBox(
           width: 420,
           child: Column(
@@ -377,7 +418,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               const SizedBox(height: 12),
               const LinearProgressIndicator(),
               const SizedBox(height: 12),
-              const AppText('仅支持未加密 Blu-ray ISO；播放期间请保持网络连接。'),
+              AppText(widget.file is WebDavBdmv ? '仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。' : '仅支持未加密 Blu-ray ISO；播放期间请保持网络连接。'),
             ],
           ),
         ),
@@ -416,6 +457,7 @@ class _BrowserPageState extends State<BrowserPage> {
   late final LocalDiscPlaybackService _localDiscPlaybackService;
   MediaLibraryStore? _mediaLibraryStore;
   bool _hasLocalDisc = false;
+  bool _preparingBdmv = false;
   int _localDiscProbeGeneration = 0;
   int _localDiscContinueGeneration = 0;
   Timer? _localDiscContinueDebounce;
@@ -491,6 +533,9 @@ class _BrowserPageState extends State<BrowserPage> {
         .where((profile) => profile.profileId == item.sourceId)
         .firstOrNull;
     if (profile == null) return null;
+    if (item.discRootPath != null) {
+      return '${joinUrl(profile.serverUrl, item.discRootPath!).replaceAll(RegExp(r'/+$'), '')}/';
+    }
     for (final snapshot in appState.directoryCache.visitedDirectories(
       item.sourceId,
     )) {
@@ -563,6 +608,7 @@ class _BrowserPageState extends State<BrowserPage> {
     super.initState();
     final appState = context.read<AppState>();
     _localDiscPlaybackService = appState.localDiscPlaybackService;
+    unawaited(_localDiscPlaybackService.cleanupSubtitleSessions());
     _mediaLibraryStore = appState.mediaLibraryStore;
     _isoPlaybackService = appState.isoPlaybackService;
     final localRoot = widget.localRoot;
@@ -822,7 +868,7 @@ class _BrowserPageState extends State<BrowserPage> {
     String? parentPath,
     PlaybackMode? playbackMode,
   }) {
-    final kind = MediaLibraryKindX.fromEntry(file);
+    final kind = file is WebDavBdmv ? MediaLibraryKind.iso : MediaLibraryKindX.fromEntry(file);
     if (kind == null) return null;
     return MediaLibraryItem(
       sourceId: _sourceId,
@@ -833,6 +879,7 @@ class _BrowserPageState extends State<BrowserPage> {
       parentPath: parentPath ?? _currentPath,
       name: file.name,
       kind: kind,
+      discRootPath: file is WebDavBdmv ? file.rootPath : null,
     );
   }
 
@@ -1248,11 +1295,15 @@ class _BrowserPageState extends State<BrowserPage> {
     if (!mounted || selection == null) return;
     try {
       final discRelativePath = _localSource!.discRelativePath(devicePath);
+      final subtitles = devicePath.toLowerCase().endsWith('.iso')
+          ? await _isoSubtitlesForPath(_source, discRelativePath) : null;
+      if (!mounted) return;
       final result = await _localDiscPlaybackService.launch(
         rootId: root.rootId,
         relativePath: discRelativePath,
         devicePath: devicePath,
         mode: selection.mode,
+        subtitles: subtitles,
         resumeFromSavedPosition: selection.resumesSavedTitle,
         resumeEdition: selection.resumeEdition,
         expectedFingerprint: selection.resumesSavedTitle
@@ -1296,8 +1347,29 @@ class _BrowserPageState extends State<BrowserPage> {
       }
       await _refreshLocalDiscContinue();
       _showLibraryError('本地蓝光播放器已启动');
+      if (subtitles != null && subtitles.issues.isNotEmpty) {
+        _showLibraryError('部分字幕或字体资源不可用，视频播放不受影响。');
+      }
     } on AppException catch (error) {
       _showLibraryError(error.message);
+    }
+  }
+
+  Future<void> _playRemoteBdmv(String path, {String? sessionId}) async {
+    if (_preparingBdmv) return;
+    final service = context.read<AppState>().webDavService;
+    if (service == null) return;
+    setState(() => _preparingBdmv = true);
+    try {
+      final disc = await WebDavBdmvService.discover(service, path);
+      if (!mounted || service != context.read<AppState>().webDavService) return;
+      await _playIso(disc, sessionId: sessionId);
+    } on AppException catch (error) {
+      if (mounted) _showLibraryError(error.message);
+    } on TimeoutException {
+      if (mounted) _showLibraryError('BDMV 目录读取超时');
+    } finally {
+      if (mounted) setState(() => _preparingBdmv = false);
     }
   }
 
@@ -1350,6 +1422,7 @@ class _BrowserPageState extends State<BrowserPage> {
       return;
     }
 
+    Stopwatch? startupClock;
     var remoteMenu = false;
     var menuReason = titleOnly ? 'disabled' : await isoService.remoteMenu.unavailableReason();
     if (!mounted) return;
@@ -1394,28 +1467,45 @@ class _BrowserPageState extends State<BrowserPage> {
         if (!mounted) return;
         continue;
       }
+      startupClock = Stopwatch()..start();
       remoteMenu = mode == PlaybackMode.webdavHdmvMenu;
       break;
     }
+    startupClock ??= Stopwatch()..start();
+    var preparationCancelled = false;
+    final subtitlePreparation = _createIsoSubtitles(_source, file,
+        cancelled: file is WebDavBdmv ? () => preparationCancelled : null);
+    if (!mounted) return;
     final result = await showGlassDialog<_IsoDialogResult>(
       context: context,
       barrierDismissible: false,
       builder: (_) => _IsoStreamingDialog(
         service: isoService,
+        startupClock: startupClock,
+        cancelPreparation: () => preparationCancelled = true,
         webDavService: webDavService,
         file: file,
+        subtitles: subtitlePreparation,
         remoteMenu: remoteMenu,
         menuUnavailableReason: titleOnly ? null : menuReason,
       ),
     );
+    if (result?.launched != true) preparationCancelled = true;
     if (!mounted || result == null) return;
+    final subtitles = result.launched ? await subtitlePreparation : null;
+    if (!mounted) return;
     if (result.launched) {
+      if (subtitles != null && subtitles.issues.isNotEmpty) {
+        _showLibraryError('部分字幕或字体资源不可用，视频播放不受影响。');
+      }
       final launch = result.launchResult!;
       final resolvedSessionId = sessionId ?? _newSessionId();
       final now = DateTime.now();
       final history = PlaybackHistory(
         sessionId: resolvedSessionId,
-        dirCrumbs: List<String>.of(_crumbs),
+        dirCrumbs: file is WebDavBdmv
+            ? (file.rootPath.isEmpty ? <String>[] : file.rootPath.split('/')..removeLast())
+            : List<String>.of(_crumbs),
         fileName: file.name,
         videoIndex: 0,
         updatedAt: now,
@@ -1449,7 +1539,7 @@ class _BrowserPageState extends State<BrowserPage> {
       unawaited(
         _recordPlaybackFile(
           file,
-          parentPath: _currentPath,
+          parentPath: file is WebDavBdmv ? (file.rootPath.isEmpty ? '' : p.posix.dirname(file.rootPath).replaceFirst(RegExp(r'^\.$'), '')) : _currentPath,
           playbackSessionId: resolvedSessionId,
           playbackMode: launch.playbackMode,
         ),
@@ -1498,6 +1588,63 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   // ── 视频播放联动（自动切集） ─────────────────────────────────
+
+  Future<IsoSubtitleContext?> _createIsoSubtitles(
+      MediaDirectorySource source, MediaDirectoryEntry iso, {bool Function()? cancelled}) async {
+    if (!context.read<AppState>().configStore.current.subtitleInjectionEnabled) return null;
+    try {
+      return await IsoSubtitleContext.create(source, iso, cancelled: cancelled);
+    } on AppException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放');
+    } on FileSystemException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放');
+    } on FormatException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放'); }
+    return null;
+  }
+
+  Future<IsoSubtitleContext?> _isoSubtitlesForPath(
+      MediaDirectorySource source, String path) async {
+    if (!context.read<AppState>().configStore.current.subtitleInjectionEnabled) return null;
+    try {
+      final parent = p.posix.dirname(path);
+      final files = await source.fetchDirectory(parent == '.' ? '' : parent);
+      final file = files.where((e) => (e.isIso || e.isDirectory) && e.name == p.posix.basename(path)).firstOrNull;
+      if (file != null && mounted) {
+        if (file.isDirectory && source is WebDavMediaSourceAdapter) {
+          final disc = await WebDavBdmvService.discover(source.service, path);
+          if (mounted) return _createIsoSubtitles(source, disc);
+        } else if (file.isIso) {
+          return _createIsoSubtitles(source, file);
+        }
+      }
+    } on AppException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放'); }
+    return null;
+  }
+
+  Future<void> _showIsoSubtitleSession(MediaDirectorySource source,
+      String isoPath, Directory directory) async {
+    final subtitles = await _isoSubtitlesForPath(source, isoPath);
+    if (!mounted || subtitles == null) return;
+    try {
+      final session = await IsoSubtitleSession.restore(subtitles, directory);
+      if (!mounted) return;
+      if (session == null) {
+        _showLibraryError('此会话未启用 ISO 外挂字幕，请重新打开 ISO');
+        return;
+      }
+      await showDialog<void>(context:context,
+        builder:(_) => IsoSubtitleDialog(subtitles:subtitles,session:session));
+    } on FileSystemException { if (mounted) _showLibraryError('字幕绑定已保存；播放器暂不可用');
+    } on FormatException { if (mounted) _showLibraryError('字幕绑定文件不可用，原文件未覆盖'); }
+  }
+
+  Future<void> _showLocalIsoSubtitles(_LocalDiscContinueEntry entry) async {
+    final source = _localSourceFor(entry.record.item.sourceId);
+    final id = entry.record.playbackSessionId;
+    if (source == null || id == null) return;
+    final base = await AppPaths.cacheDirectory();
+    if (!mounted) return;
+    await _showIsoSubtitleSession(source, entry.record.item.targetPath,
+      Directory(p.join(base.path,'local_iso_subtitles',id)));
+  }
 
   Future<SubtitleItem?> _resolvedSubtitleFor(MediaDirectoryEntry video) async {
     final appState = context.read<AppState>();
@@ -2553,10 +2700,20 @@ class _BrowserPageState extends State<BrowserPage> {
       }
     }
 
-    _rememberReportedProgress(session, lines, running: running);
     final loadedPos = lines == null || lines.isEmpty
         ? null
         : int.tryParse(lines[0].trim());
+    final mediaChanged =
+        loadedPos != null &&
+        loadedPos >= 0 &&
+        loadedPos < names.length &&
+        loadedPos != session.lastSyncedPos;
+    if (mediaChanged) {
+      // 切集后的零秒或未知进度不能回退到上一集的片尾采样。
+      session.lastReportedPositionSeconds = null;
+      session.lastReportedDurationSeconds = null;
+    }
+    _rememberReportedProgress(session, lines, running: running);
     final hasLoadedCurrentMedia =
         loadedPos != null &&
         loadedPos >= 0 &&
@@ -2614,6 +2771,11 @@ class _BrowserPageState extends State<BrowserPage> {
         return;
       }
 
+      // shutdown 时 path 可能已清空，仍按本会话有效的 playlist-pos 收敛历史。
+      if (mediaChanged) {
+        await _updateVideoPlaybackHistory(session, loadedPos);
+        if (!mounted || !_playbackSessions.contains(session)) return;
+      }
       session.finishPending = 0;
       final needsHistoryUpdate =
           session.history.playerPid != null ||
@@ -2658,7 +2820,6 @@ class _BrowserPageState extends State<BrowserPage> {
 
     final paused = lines.length >= 3 ? lines[2].trim() == '1' : false;
     final pauseChanged = paused != session.paused;
-    final mediaChanged = pos != session.lastSyncedPos;
     if (mediaChanged) {
       try {
         await playerService.syncActiveProgress(sessionId);
@@ -2680,22 +2841,28 @@ class _BrowserPageState extends State<BrowserPage> {
     }
 
     if (pos == session.lastSyncedPos) return;
+    await _updateVideoPlaybackHistory(session, pos);
+  }
+
+  Future<void> _updateVideoPlaybackHistory(
+    PlaybackUiSession session,
+    int pos,
+  ) async {
     session.lastSyncedPos = pos;
     final history = session.history.copyWith(
-      fileName: names[pos],
+      fileName: session.playlistFileNames[pos],
       videoIndex: pos,
       updatedAt: DateTime.now(),
     );
     session.history = history;
-    await store.upsert(history);
-    unawaited(
-      _recordPlaybackByName(
-        dirCrumbs: history.dirCrumbs,
-        fileName: names[pos],
-        audio: false,
-        playbackSessionId: history.sessionId,
-        playbackSourceId: history.sourceId,
-      ),
+    await context.read<AppState>().playbackHistoryStore.upsert(history);
+    if (!mounted || !_playbackSessions.contains(session)) return;
+    await _recordPlaybackByName(
+      dirCrumbs: history.dirCrumbs,
+      fileName: history.fileName,
+      audio: false,
+      playbackSessionId: history.sessionId,
+      playbackSourceId: history.sourceId,
     );
     if (!mounted || !_playbackSessions.contains(session)) return;
     setState(() {});
@@ -2901,7 +3068,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
     if (history.kind == PlaybackHistoryKind.iso) {
       final iso = _files
-          .where((file) => file.isIso && file.name == history.fileName)
+          .where((file) => (file.isIso || file.isDirectory) && file.name == history.fileName)
           .firstOrNull;
       if (iso == null) {
         ScaffoldMessenger.of(
@@ -2910,7 +3077,11 @@ class _BrowserPageState extends State<BrowserPage> {
         return;
       }
       if (iso is WebDavFile) {
-        await _playIso(iso, sessionId: history.sessionId);
+        if (iso.isDirectory) {
+          await _playRemoteBdmv([...history.dirCrumbs, iso.name].join('/'), sessionId: history.sessionId);
+        } else {
+          await _playIso(iso, sessionId: history.sessionId);
+        }
       }
       return;
     }
@@ -3043,6 +3214,10 @@ class _BrowserPageState extends State<BrowserPage> {
     });
     await _load();
     if (!mounted || item.kind == MediaLibraryKind.directory) return;
+    if (!_isLocal && item.discRootPath != null) {
+      await _playRemoteBdmv(item.discRootPath!, sessionId: resumeSessionId);
+      return;
+    }
     final file = _files.where(item.matches).firstOrNull;
     if (file == null) {
       _showLibraryError(
@@ -3060,7 +3235,9 @@ class _BrowserPageState extends State<BrowserPage> {
       );
       return;
     }
-    if (file.isAudio) {
+    if (item.kind == MediaLibraryKind.iso && file.isDirectory && !_isLocal) {
+      await _playRemoteBdmv(item.targetPath, sessionId: resumeSessionId);
+    } else if (file.isAudio) {
       await _playAudio(file, sessionId: resumeSessionId);
     } else if (file.isIso && file is WebDavFile) {
       await _playIso(file, sessionId: resumeSessionId);
@@ -3445,6 +3622,9 @@ class _BrowserPageState extends State<BrowserPage> {
     ];
     return PlaybackBar(
       key: ValueKey<String>('local-disc-playback-bar-${record.recordKey}'),
+      onSubtitles: entry.running && record.item.name.toLowerCase().endsWith('.iso') &&
+          context.read<AppState>().configStore.current.subtitleInjectionEnabled
+          ? () => _showLocalIsoSubtitles(entry) : null,
       title: title,
       dirLabel: _barDirectoryLabel(record.item.sourceId, details.join(' · ')),
       icon: icon,
@@ -3665,6 +3845,12 @@ class _BrowserPageState extends State<BrowserPage> {
 
     return PlaybackBar(
       key: ValueKey<String>('iso-playback-bar-$sessionId'),
+      onSubtitles: history.isoSessionDirectoryPath != null &&
+          (history.sourceId == null || history.sourceId == _sourceId) &&
+          context.read<AppState>().configStore.current.subtitleInjectionEnabled
+          ? () => _showIsoSubtitleSession(_source,
+            [...history.dirCrumbs,history.fileName].join('/'),
+            Directory(history.isoSessionDirectoryPath!)) : null,
       title: title,
       dirLabel: _barDirectoryLabel(history.sourceId, dirLabel),
       icon: icon,
@@ -3787,21 +3973,23 @@ class _BrowserPageState extends State<BrowserPage> {
         );
       },
     );
-    if (!_isLocal || !_hasLocalDisc) return fileList;
+    final remoteBdmv = !_isLocal && WebDavBdmvService.isCandidate(
+      _currentPath, _files.whereType<WebDavFile>());
+    if (!(_isLocal && _hasLocalDisc) && !remoteBdmv) return fileList;
     return Column(
       children: [
         ListTile(
-          key: const Key('local-bdmv-menu-action'),
+          key: Key(remoteBdmv ? 'webdav-bdmv-action' : 'local-bdmv-menu-action'),
           leading: const Icon(Icons.album_outlined),
           title: const AppText('检测到 Blu-ray BDMV'),
           subtitle: const AppText('由 MPV/libbluray 显示并控制蓝光菜单'),
           trailing: FilledButton.icon(
-            onPressed: () => _playLocalDisc(
+            onPressed: _preparingBdmv ? null : remoteBdmv ? () => _playRemoteBdmv(_currentPath) : () => _playLocalDisc(
               relativePath: _currentPath,
               displayName: _crumbs.lastOrNull ?? widget.localRoot!.displayName,
             ),
             icon: const Icon(Icons.play_arrow),
-            label: const AppText('选择播放方式'),
+            label: AppText(_preparingBdmv ? '正在读取 BDMV 目录' : '选择播放方式'),
           ),
         ),
         Expanded(child: fileList),

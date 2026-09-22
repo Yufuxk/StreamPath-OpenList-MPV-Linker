@@ -11,14 +11,12 @@ class SettingsCategoryForm extends StatelessWidget {
     required this.sectionName,
     required this.formKey,
     required this.scrollController,
-    required this.header,
     required this.content,
   });
 
   final String sectionName;
   final GlobalKey<FormState> formKey;
   final ScrollController scrollController;
-  final Widget header;
   final Widget content;
 
   @override
@@ -37,13 +35,18 @@ class SettingsCategoryForm extends StatelessWidget {
             child: SingleChildScrollView(
               key: PageStorageKey<String>('settings-page-$sectionName'),
               controller: scrollController,
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
+              padding: EdgeInsets.fromLTRB(
+                MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+                16,
+                MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+                24,
+              ),
               child: Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 760),
+                  constraints: const BoxConstraints(maxWidth: 1200),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [header, const SizedBox(height: 20), content],
+                    children: [content],
                   ),
                 ),
               ),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:streampath/data/models/webdav_bdmv.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -47,6 +48,7 @@ class _BlockingIsoProvider implements IsoAccessProvider {
   Completer<IsoAccessHandle>? _completed;
   Directory? _sessionDirectory;
   bool completeImmediately = false;
+  WebDavFile? preparedFile;
   bool remoteMenu = false;
   Object? prepareError;
 
@@ -60,6 +62,7 @@ class _BlockingIsoProvider implements IsoAccessProvider {
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
   }) async {
     _sessionDirectory = sessionDirectory;
+    preparedFile = file;
     final error = prepareError;
     if (error != null) {
       onPhase?.call(IsoAccessPhase.startingBridge);
@@ -178,6 +181,7 @@ void main() {
   late IsoPlaybackService isoPlaybackService;
   late _BlockingIsoProvider isoProvider;
   late Map<int, bool> processAlive;
+  bool serveBdmv = false;
 
   setUpAll(() {
     sqfliteFfiInit();
@@ -185,6 +189,7 @@ void main() {
   });
 
   setUp(() async {
+    serveBdmv = false;
     tempDirectory = Directory.systemTemp.createTempSync(
       'browser_iso_playback_',
     );
@@ -244,7 +249,7 @@ void main() {
           'xml',
           charset: 'utf-8',
         )
-        ..write(_directoryXml());
+        ..write(serveBdmv ? _bdmvDirectoryXml(request.uri.path) : _directoryXml());
       await request.response.close();
     });
     appState = AppState(
@@ -405,6 +410,30 @@ void main() {
     expect(isoRootIsEmpty, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('远程 BDMV 根目录进入复用 Title 选择并可取消', (tester) async {
+    tester.view.physicalSize = const Size(1100, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    serveBdmv = true;
+    await tester.runAsync(() => appState.webDavService!.refreshDirectory(''));
+    isoProvider.completeImmediately = true;
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    expect(find.byKey(const Key('webdav-bdmv-action')), findsOneWidget);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('选择播放方式'));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    });
+    await waitForWidget(tester, find.byKey(const Key('iso-title-selection-dialog')));
+    expect(isoProvider.preparedFile, isA<WebDavBdmv>(), reason: tester.widgetList<Text>(find.byType(Text)).map((e) => e.data).join(' | '));
+    expect((isoProvider.preparedFile! as WebDavBdmv).rootPath, '');
+    expect(find.text('Title 0'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '取消播放'));
+    await settleBrowser(tester);
+    expect(isoPlaybackService.isBusy, isFalse);
   });
 
   testWidgets('Bridge 解析后可选择 Title、调整顺序并取消清理', (tester) async {
@@ -639,3 +668,20 @@ String _directoryXml() => '''
   </d:response>
 </d:multistatus>
 ''';
+
+String _bdmvDirectoryXml(String path) {
+  final entries = switch (path.replaceAll(RegExp(r'/+$'), '')) {
+    '/dav' => [('BDMV', true)],
+    '/dav/BDMV' => [('index.bdmv', false), ('PLAYLIST', true), ('CLIPINF', true), ('STREAM', true)],
+    '/dav/BDMV/PLAYLIST' => [('00001.mpls', false)],
+    '/dav/BDMV/STREAM' => [('00001.m2ts', false)],
+    _ => <(String, bool)>[],
+  };
+  final parent = path.replaceAll(RegExp(r'/+$'), '');
+  return '<d:multistatus xmlns:d="DAV:">${entries.map((e) =>
+    '<d:response><d:href>$parent/${e.$1}${e.$2 ? '/' : ''}</d:href>'
+    '<d:propstat><d:prop><d:displayname>${e.$1}</d:displayname>'
+    '<d:resourcetype>${e.$2 ? '<d:collection/>' : ''}</d:resourcetype>'
+    '<d:getcontentlength>${e.$2 ? 0 : 100}</d:getcontentlength>'
+    '</d:prop></d:propstat></d:response>').join()}</d:multistatus>';
+}

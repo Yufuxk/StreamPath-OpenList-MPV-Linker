@@ -17,6 +17,7 @@ class PlaybackBar extends StatefulWidget {
     required this.onPressed,
     required this.onDelete,
     required this.onSecondaryTapDown,
+    this.onSubtitles,
   });
 
   final String title;
@@ -27,6 +28,7 @@ class PlaybackBar extends StatefulWidget {
   final VoidCallback? onPressed;
   final VoidCallback onDelete;
   final GestureTapDownCallback onSecondaryTapDown;
+  final VoidCallback? onSubtitles;
 
   @override
   State<PlaybackBar> createState() => _PlaybackBarState();
@@ -79,6 +81,10 @@ class _PlaybackBarState extends State<PlaybackBar> {
                 ),
               ),
               const SizedBox(width: 8),
+              if (widget.onSubtitles != null)
+                IconButton(icon: const Icon(Icons.subtitles_outlined),
+                  tooltip: context.l10n.text('ISO 外挂字幕'),
+                  onPressed: widget.deleting ? null : widget.onSubtitles),
               IconButton.filled(
                 icon: Icon(widget.icon),
                 tooltip: widget.tooltip,
