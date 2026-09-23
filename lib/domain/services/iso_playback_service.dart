@@ -32,6 +32,20 @@ enum IsoPlaybackPhase {
   playing,
 }
 
+class DiscStartupTrace {
+  DiscStartupTrace() : startedAtUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch {
+    clock.start();
+    mark('clicked');
+  }
+
+  final Stopwatch clock = Stopwatch();
+  final int startedAtUtcUs;
+  final Map<String, int> _eventsMs = {};
+
+  void mark(String event) => _eventsMs[event] = clock.elapsedMilliseconds;
+  Map<String, int> get eventsMs => Map<String, int>.unmodifiable(_eventsMs);
+}
+
 @immutable
 class IsoDiscChapter {
   const IsoDiscChapter({
@@ -334,6 +348,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     IsoSubtitleContext? subtitles,
     Future<IsoSubtitleContext?>? subtitlePreparation,
     Stopwatch? startupClock,
+    DiscStartupTrace? startupTrace,
   }) async {
     if (_disposed) throw AppException.process('ISO 远程播放测试模块已关闭');
     if (isBusy) {
@@ -417,6 +432,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           helperIdentity: helperIdentity,
         ),
       );
+      startupTrace?.mark('bridgeReady');
       if (_cancelRequested) {
         await handle.cleanup();
         return null;
@@ -428,7 +444,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         titlesReadyAtMs: performanceClock.elapsedMilliseconds,
         helperExecutablePath: handle.helperIdentity.executablePath,
       );
-      unawaited(performance.initialize());
+      await performance.initialize();
 
       final probedTitles = handle.titles
           .map(
@@ -462,6 +478,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       }
       if (_cancelRequested) { await handle.cleanup(); return null; }
       await subtitles?.refreshDiscRevision();
+      startupTrace?.mark('subtitleDiscoveryJoined');
       final catalog = await _catalog();
       subtitles?.titleCatalog = probedTitles.map((title) => <String, dynamic>{
         'id': title.mplsId,
@@ -491,6 +508,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         lastMplsId: saved.lastMplsId,
       );
       final selectionClock = Stopwatch()..start();
+      startupTrace?.mark('titleSelectionShown');
       final selection = selectTitles == null
           ? IsoTitleSelection.all(orderedTitles)
           : await selectTitles(request);
@@ -499,6 +517,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         return null;
       }
       selectionWaitMs = selectionClock.elapsedMilliseconds;
+      startupTrace?.mark('titleSelectionConfirmed');
       performance.markSelectionConfirmed();
       final validatedSelection = _validateSelection(
         availableTitles: orderedTitles,
@@ -535,6 +554,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           prefetchBlocks: cachePlan.prefetchBlocks,
         );
       }
+      startupTrace?.mark('cachePlanReady');
       performance.markPlaybackPlan(
         titles: selectedTitles,
         cachePlan: cachePlan,
@@ -573,6 +593,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         selectedTitles,
         resumeByMplsId,
       );
+      startupTrace?.mark('sessionFilesReady');
       final startIndex = _resolvePlaylistStart(
         selectedTitles,
         saved.lastMplsId,
@@ -605,6 +626,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           }).toList());
         args.insertAll(0, subtitleArgs);
       }
+      startupTrace?.mark('subtitleResourcesReady');
       if (_cancelRequested) {
         await handle.cleanup();
         return null;
@@ -616,10 +638,17 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         titles: selectedTitles,
         journalFile: journalFile,
       );
+      startupTrace?.mark('launchFilesReady');
       performance.markMpvLaunch();
+      startupTrace?.mark('processStartStarted');
       final pid = await _processStarter(config.executable, args);
+      final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
+      startupTrace?.mark('processStarted');
       if (startupClock != null) {
-        await _writeStartupTiming(handle.sessionDirectory, startupClock.elapsedMilliseconds, selectionWaitMs);
+        await _writeStartupTiming(handle.sessionDirectory,
+            startupClock.elapsedMilliseconds, selectionWaitMs,
+            startupTrace: startupTrace, pid: pid,
+            processStartedUtcUs: processStartedUtcUs);
       }
       final identity = await _captureIdentityWithRetry(pid);
       if (identity == null) {
@@ -713,11 +742,20 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     }
   }
 
-  Future<void> _writeStartupTiming(Directory directory, int elapsed, int selectionWait) async {
+  Future<void> _writeStartupTiming(Directory directory, int elapsed, int selectionWait, {
+    DiscStartupTrace? startupTrace,
+    required int pid,
+    required int processStartedUtcUs,
+  }) async {
     try {
       await File(p.join(directory.path, 'disc-startup.json')).writeAsString(jsonEncode({
         'version': 1, 'modeToProcessStartedMs': elapsed,
         'titleSelectionWaitMs': selectionWait, 'processingMs': elapsed - selectionWait,
+        if (startupTrace != null) 'clickToProcessStartedMs': startupTrace.eventsMs['processStarted'],
+        if (startupTrace != null) 'firstClickUtcUs': startupTrace.startedAtUtcUs,
+        'processStartedUtcUs': processStartedUtcUs,
+        if (startupTrace != null) 'eventsMs': startupTrace.eventsMs,
+        'pid': pid,
       }));
     } on FileSystemException { /* 遥测写入失败不影响播放。 */ }
   }
@@ -729,6 +767,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     IsoSubtitleContext? subtitles,
     Future<IsoSubtitleContext?>? subtitlePreparation,
     Stopwatch? startupClock,
+    DiscStartupTrace? startupTrace,
+    String? precheckedMenuExecutable,
   }) async {
     if (_disposed || isBusy) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
@@ -743,7 +783,11 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     var registered = false;
     try {
       final config = await _configLoader();
-      final executable = await remoteMenu.requireCapability(config: config);
+      final executable = file is WebDavBdmv &&
+              precheckedMenuExecutable == config.executable
+          ? config.executable
+          : await remoteMenu.requireCapability(config: config);
+      startupTrace?.mark('menuCapabilityConfirmed');
       if (_cancelRequested) return null;
       final owner = await _loadOwnerIdentity();
       if (owner == null) throw AppException.process('无法确认 StreamPath 进程身份');
@@ -792,12 +836,14 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           ),
         ),
       );
+      startupTrace?.mark('bridgeReady');
       if (_cancelRequested) return null;
       if (subtitlePreparation != null) {
         subtitles = await Future.any([subtitlePreparation, _subtitleCancellation!.future]);
       }
       if (_cancelRequested) return null;
       await subtitles?.refreshDiscRevision();
+      startupTrace?.mark('subtitleDiscoveryJoined');
       final menuPlan = await _cacheCoordinator?.buildMenuPlan(
         logicalSourceUrl: webDavService.resolveUrl(file.href),
         totalBytes: handle.totalBytes,
@@ -807,6 +853,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         prefetchBlocks: menuPlan?.prefetchBlocks ?? 96,
         cacheSecs: menuPlan?.cacheSecs ?? 60,
       );
+      startupTrace?.mark('cachePlanReady');
       final args = await remoteMenu.prepareArgs(
         config: config,
         sessionDirectory: directory,
@@ -821,6 +868,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           pipeName: '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
           menu: true, autoSelect: config.subtitleAutoSelectEnabled));
       }
+      startupTrace?.mark('subtitleResourcesReady');
       if (_cancelRequested) return null;
       final journal = config.menuProgressSharingEnabled
           ? File(p.join(directory.path, 'menu-progress.jsonl'))
@@ -834,15 +882,21 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         journalFile: journal,
         playbackMode: PlaybackMode.webdavHdmvMenu,
       );
+      startupTrace?.mark('launchFilesReady');
       onProgress?.call(
         IsoPlaybackProgress(
           phase: IsoPlaybackPhase.launching,
           fileName: file.name,
         ),
       );
+      startupTrace?.mark('processStartStarted');
       final pid = await _processStarter(executable, args);
+      final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
+      startupTrace?.mark('processStarted');
       if (startupClock != null) {
-        await _writeStartupTiming(directory, startupClock.elapsedMilliseconds, 0);
+        await _writeStartupTiming(directory, startupClock.elapsedMilliseconds, 0,
+            startupTrace: startupTrace, pid: pid,
+            processStartedUtcUs: processStartedUtcUs);
       }
       player = await _captureIdentityWithRetry(pid);
       if (player == null) {
@@ -1389,6 +1443,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         for (final name in [
           'iso-bridge-metrics.json',
           'remote-menu-mpv.json',
+          'disc-startup.json',
         ]) {
           final source = File(p.join(runtime.sessionDirectory.path, name));
           if (await source.exists()) {
@@ -2943,7 +2998,11 @@ class _IsoPerformanceTracker {
     );
     try {
       await archive.create(recursive: true);
-      for (final source in <File?>[metricsFile, eventsFile]) {
+      for (final source in <File?>[
+        metricsFile,
+        eventsFile,
+        File(p.join(sessionDirectory.path, 'disc-startup.json')),
+      ]) {
         if (source != null && await source.exists()) {
           await source.copy(p.join(archive.path, p.basename(source.path)));
         }

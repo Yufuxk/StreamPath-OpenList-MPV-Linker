@@ -51,86 +51,96 @@ class WebDavBdmvService {
     final seen = <String>{};
     final pending = <(String, int)>[(rootPath, 0)];
     while (pending.isNotEmpty) {
-      final (directory, depth) = pending.removeAt(0);
-      final remaining = deadline.difference(DateTime.now());
-      if (remaining <= Duration.zero) throw AppException.network('BDMV 目录读取超时');
-      final entries = await service
-          .fetchDirectory(directory, forceRefresh: true)
-          .timeout(remaining);
-      for (final file in entries) {
-        if (file.isSelfEntry) continue;
-        final url = service.resolveUrl(file.href);
-        final uri = Uri.parse(url);
-        final child = uri.pathSegments.where((s) => s.isNotEmpty).toList();
-        if (!urls.isSameOrigin(service.baseUrl, url) ||
-            child.length <= segments.length ||
-            List.generate(
-              segments.length,
-              (i) => child[i] == segments[i],
-            ).contains(false)) {
-          throw AppException.config('BDMV 目录包含无效路径');
-        }
-        final relative = child.skip(segments.length).join('/');
-        final parent = p.posix.dirname(relative);
-        final expected = directory == rootPath
-            ? '.'
-            : p.posix.relative(
-                directory,
-                from: rootPath.isEmpty ? '.' : rootPath,
-              );
-        if (parent != expected) throw AppException.config('BDMV 目录包含无效路径');
-        if (depth == 0 &&
-            file.isDirectory &&
-            {'aacs', 'bdsvm'}.contains(relative.toLowerCase())) {
-          throw AppException.config('暂不支持 AACS 或 BD+ 加密的 Blu-ray ISO');
-        }
-        if (depth == 0 &&
-            (!file.isDirectory ||
-                !{'bdmv', 'certificate'}.contains(relative.toLowerCase()))) {
-          continue;
-        }
-        if (child.any(
-              (part) =>
-                  part.isEmpty ||
-                  part == '.' ||
-                  part == '..' ||
-                  part.contains(RegExp(r'[\\:\x00-\x1f<>"|?*]')) ||
-                  part.endsWith('.') ||
-                  part.endsWith(' ') ||
-                  utf8.encode(part).length > 255,
-            ) ||
-            !seen.add(relative.toLowerCase()) ||
-            file.size < 0) {
-          throw AppException.config('BDMV 目录包含无效路径');
-        }
-        final item = <String, Object>{
-          'type': 'disc_file',
-          'path': relative,
-          'url': url,
-          'size': file.isDirectory ? 0 : file.size,
-          'directory': file.isDirectory,
-          if (_strongEtag(file.etag)) 'etag': file.etag!,
-          if (_httpDate(file.lastModifiedHeader))
-            'lastModified': file.lastModifiedHeader!,
-        };
-        manifestBytes += utf8.encode(jsonEncode(item)).length;
-        if (manifest.length >= 32768 ||
-            manifestBytes > 16 * 1024 * 1024 ||
-            depth > 16) {
-          throw AppException.config('BDMV 目录超出读取限制');
-        }
-        manifest.add(item);
-        if (file.isDirectory) {
-          pending.add((
-            child
-                .skip(
-                  Uri.parse(
-                    service.baseUrl,
-                  ).pathSegments.where((s) => s.isNotEmpty).length,
-                )
-                .join('/'),
-            depth + 1,
-          ));
+      final batch = pending.take(4).toList();
+      pending.removeRange(0, batch.length);
+      final listings = await Future.wait(
+        batch.map((item) {
+          final remaining = deadline.difference(DateTime.now());
+          if (remaining <= Duration.zero) {
+            throw AppException.network('BDMV 目录读取超时');
+          }
+          return service
+              .fetchDirectory(item.$1, forceRefresh: true)
+              .timeout(remaining);
+        }),
+      );
+      for (var i = 0; i < batch.length; i++) {
+        final (directory, depth) = batch[i];
+        for (final file in listings[i]) {
+          if (file.isSelfEntry) continue;
+          final url = service.resolveUrl(file.href);
+          final uri = Uri.parse(url);
+          final child = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+          if (!urls.isSameOrigin(service.baseUrl, url) ||
+              child.length <= segments.length ||
+              List.generate(
+                segments.length,
+                (i) => child[i] == segments[i],
+              ).contains(false)) {
+            throw AppException.config('BDMV 目录包含无效路径');
+          }
+          final relative = child.skip(segments.length).join('/');
+          final parent = p.posix.dirname(relative);
+          final expected = directory == rootPath
+              ? '.'
+              : p.posix.relative(
+                  directory,
+                  from: rootPath.isEmpty ? '.' : rootPath,
+                );
+          if (parent != expected) throw AppException.config('BDMV 目录包含无效路径');
+          if (depth == 0 &&
+              file.isDirectory &&
+              {'aacs', 'bdsvm'}.contains(relative.toLowerCase())) {
+            throw AppException.config('暂不支持 AACS 或 BD+ 加密的 Blu-ray ISO');
+          }
+          if (depth == 0 &&
+              (!file.isDirectory ||
+                  !{'bdmv', 'certificate'}.contains(relative.toLowerCase()))) {
+            continue;
+          }
+          if (child.any(
+                (part) =>
+                    part.isEmpty ||
+                    part == '.' ||
+                    part == '..' ||
+                    part.contains(RegExp(r'[\\:\x00-\x1f<>"|?*]')) ||
+                    part.endsWith('.') ||
+                    part.endsWith(' ') ||
+                    utf8.encode(part).length > 255,
+              ) ||
+              !seen.add(relative.toLowerCase()) ||
+              file.size < 0) {
+            throw AppException.config('BDMV 目录包含无效路径');
+          }
+          final item = <String, Object>{
+            'type': 'disc_file',
+            'path': relative,
+            'url': url,
+            'size': file.isDirectory ? 0 : file.size,
+            'directory': file.isDirectory,
+            if (_strongEtag(file.etag)) 'etag': file.etag!,
+            if (_httpDate(file.lastModifiedHeader))
+              'lastModified': file.lastModifiedHeader!,
+          };
+          manifestBytes += utf8.encode(jsonEncode(item)).length;
+          if (manifest.length >= 32768 ||
+              manifestBytes > 16 * 1024 * 1024 ||
+              depth > 16) {
+            throw AppException.config('BDMV 目录超出读取限制');
+          }
+          manifest.add(item);
+          if (file.isDirectory) {
+            pending.add((
+              child
+                  .skip(
+                    Uri.parse(
+                      service.baseUrl,
+                    ).pathSegments.where((s) => s.isNotEmpty).length,
+                  )
+                  .join('/'),
+              depth + 1,
+            ));
+          }
         }
       }
     }

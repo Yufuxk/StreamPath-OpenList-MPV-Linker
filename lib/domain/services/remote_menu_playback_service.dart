@@ -12,6 +12,13 @@ import 'local_disc_playback_service.dart';
 import 'mpv_scripts.dart';
 import 'iso_player_arguments.dart';
 
+class RemoteMenuAvailability {
+  const RemoteMenuAvailability({this.executable, this.reason});
+
+  final String? executable;
+  final String? reason;
+}
+
 /// 只管理受控菜单播放器能力和启动参数，会话收尾复用 IsoPlaybackService。
 class RemoteMenuPlaybackService {
   RemoteMenuPlaybackService({
@@ -30,14 +37,13 @@ class RemoteMenuPlaybackService {
   final String helperExecutable;
   static const runtimeMissing = '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单';
 
-  Future<String?> unavailableReason() => _checkAvailability();
+  Future<String?> unavailableReason() async => (await checkAvailability()).reason;
 
-  Future<String?> _checkAvailability() async {
+  Future<RemoteMenuAvailability> checkAvailability() async {
     try {
-      await requireCapability();
-      return null;
+      return RemoteMenuAvailability(executable: await requireCapability());
     } on AppException catch (error) {
-      return error.message;
+      return RemoteMenuAvailability(reason: error.message);
     }
   }
 

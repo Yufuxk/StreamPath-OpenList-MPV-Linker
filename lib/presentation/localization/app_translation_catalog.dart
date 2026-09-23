@@ -26,12 +26,18 @@ const Map<String, String> englishTranslations = <String, String>{
   'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i to close',
   '正在准备外挂字幕…': 'Preparing external subtitles…',
   'ISO 外挂字幕': 'ISO external subtitles',
+  '蓝光外挂字幕': 'Blu-ray external subtitles',
+  '自动建议按现有规则匹配；手动选择会覆盖建议。':
+      'Automatic suggestions use the existing matching rules; manual choices take priority.',
+  '返回标题选择': 'Back to title selection',
   '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
       'Score by duration, episode, name, language and format; explicit MPLS and manual bindings take priority.',
   '当前节目尚不可识别或正在菜单中，自动外挂暂停。':
       'The program is not identified or a menu is visible. Automatic subtitles are suspended.',
   'ISO 信息已变化，旧绑定暂停应用；请重新确认。':
       'The ISO has changed. Previous bindings are suspended; please confirm them again.',
+  '蓝光内容已变化，旧绑定暂停应用；请重新确认。':
+      'The Blu-ray has changed. Previous bindings are suspended; please confirm them again.',
   '部分字幕或字体资源不可用，视频播放不受影响。':
       'Some subtitle or font resources are unavailable. Video playback is unaffected.',
   '字幕绑定文件不可用，原文件未覆盖':
@@ -50,6 +56,8 @@ const Map<String, String> englishTranslations = <String, String>{
   '不使用外挂字幕': 'No external subtitles',
   '此会话未启用 ISO 外挂字幕，请重新打开 ISO':
       'ISO external subtitles are not enabled for this session. Reopen the ISO.',
+  '此会话未启用蓝光外挂字幕，请重新打开蓝光':
+      'Blu-ray external subtitles are not enabled for this session. Reopen the Blu-ray.',
   "WebDAV 蓝光菜单进度": "WebDAV Blu-ray menu progress",
   "独立（不记录进度）": "Independent (do not record progress)",
   "共享（供标题模式续播）": "Shared (resume in title mode)",
@@ -655,10 +663,14 @@ const Map<String, String> japaneseTranslations = <String, String>{
   'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i で閉じる',
   '正在准备外挂字幕…': '外部字幕を準備しています…',
   'ISO 外挂字幕': 'ISO 外部字幕',
+  '蓝光外挂字幕': 'Blu-ray 外部字幕',
+  '自动建议按现有规则匹配；手动选择会覆盖建议。': '自動候補は既存の照合ルールに従います。手動選択が優先されます。',
+  '返回标题选择': 'タイトル選択に戻る',
   '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
       '長さ・話数・名前・言語・形式で総合評価します。明示的な MPLS と手動設定を優先します。',
   '当前节目尚不可识别或正在菜单中，自动外挂暂停。': '番組を識別できないか、メニュー表示中のため、外部字幕を一時停止しています。',
   'ISO 信息已变化，旧绑定暂停应用；请重新确认。': 'ISO が変更されています。以前の割り当ては適用されません。再確認してください。',
+  '蓝光内容已变化，旧绑定暂停应用；请重新确认。': 'Blu-ray が変更されています。以前の割り当ては適用されません。再確認してください。',
   '部分字幕或字体资源不可用，视频播放不受影响。': '一部の字幕やフォントを利用できません。映像の再生には影響しません。',
   '字幕绑定文件不可用，原文件未覆盖': '字幕の割り当てファイルを利用できません。元のファイルは上書きしていません。',
   '等待播放器提供节目列表。': 'プレーヤーから番組一覧を取得しています。',
@@ -673,6 +685,7 @@ const Map<String, String> japaneseTranslations = <String, String>{
   '未绑定': '未割り当て',
   '不使用外挂字幕': '外部字幕を使用しない',
   '此会话未启用 ISO 外挂字幕，请重新打开 ISO': 'このセッションでは ISO 外部字幕が有効ではありません。ISO を開き直してください。',
+  '此会话未启用蓝光外挂字幕，请重新打开蓝光': 'このセッションでは Blu-ray 外部字幕が有効ではありません。Blu-ray を開き直してください。',
   "WebDAV 蓝光菜单进度": "WebDAV Blu-ray メニューの再生履歴",
   "独立（不记录进度）": "独立（再生位置を記録しない）",
   "共享（供标题模式续播）": "共有（タイトルモードで再開）",
@@ -1203,10 +1216,14 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   'Ctrl+Alt+i 关闭': 'Ctrl+Alt+i 關閉',
   '正在准备外挂字幕…': '正在準備外掛字幕…',
   'ISO 外挂字幕': 'ISO 外掛字幕',
+  '蓝光外挂字幕': 'Blu-ray 外掛字幕',
+  '自动建议按现有规则匹配；手动选择会覆盖建议。': '自動建議依現有規則比對；手動選擇優先。',
+  '返回标题选择': '返回標題選擇',
   '按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。':
       '按時長、集數、名稱、語言和格式綜合評分；明確 MPLS 和手動綁定優先。',
   '当前节目尚不可识别或正在菜单中，自动外挂暂停。': '目前節目尚無法識別或正在選單中，自動外掛暫停。',
   'ISO 信息已变化，旧绑定暂停应用；请重新确认。': 'ISO 資訊已變更，舊綁定暫停套用；請重新確認。',
+  '蓝光内容已变化，旧绑定暂停应用；请重新确认。': 'Blu-ray 內容已變更，舊綁定暫停套用；請重新確認。',
   '部分字幕或字体资源不可用，视频播放不受影响。': '部分字幕或字型資源無法使用，影片播放不受影響。',
   '字幕绑定文件不可用，原文件未覆盖': '字幕綁定檔案無法使用，原檔案未覆寫',
   '等待播放器提供节目列表。': '等待播放器提供節目清單。',
@@ -1221,6 +1238,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   '未绑定': '未綁定',
   '不使用外挂字幕': '不使用外掛字幕',
   '此会话未启用 ISO 外挂字幕，请重新打开 ISO': '此工作階段未啟用 ISO 外掛字幕，請重新開啟 ISO',
+  '此会话未启用蓝光外挂字幕，请重新打开蓝光': '此工作階段未啟用 Blu-ray 外掛字幕，請重新開啟 Blu-ray',
   "WebDAV 蓝光菜单进度": "WebDAV 藍光選單進度",
   "独立（不记录进度）": "獨立（不記錄進度）",
   "共享（供标题模式续播）": "共用（供標題模式續播）",

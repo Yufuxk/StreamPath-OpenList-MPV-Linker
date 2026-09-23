@@ -8,6 +8,7 @@ import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/data/models/webdav_bdmv.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/iso_access_provider.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
@@ -122,15 +123,19 @@ class _FakeRemoteHandle extends _FakeIsoHandle
 }
 
 class _FakeMenuService extends RemoteMenuPlaybackService {
-  _FakeMenuService({this.onReady})
+  _FakeMenuService({this.onReady, this.capabilityExecutable})
     : super(
         configLoader: () async =>
             const PlayerConfig(name: 'MPV', executable: 'mpv'),
       );
   final void Function()? onReady;
+  final String? capabilityExecutable;
+  int capabilityChecks = 0;
   @override
-  Future<String> requireCapability({PlayerConfig? config}) async =>
-      r'C:\Menu\mpv.exe';
+  Future<String> requireCapability({PlayerConfig? config}) async {
+    capabilityChecks++;
+    return capabilityExecutable ?? r'C:\Menu\mpv.exe';
+  }
   @override
   Future<void> waitUntilReady({
     required Directory sessionDirectory,
@@ -331,6 +336,37 @@ void main() {
     expect(timing['modeToProcessStartedMs'], greaterThanOrEqualTo(timing['processingMs']));
     await service.terminateSession(result.sessionDirectoryPath);
     service.dispose();
+  });
+
+  test('BDMV 菜单复用本次能力检查，直接入口仍重新检查', () async {
+    final provider = _FakeIsoAccessProvider(handleFactory: _FakeRemoteHandle.new);
+    final menu = _FakeMenuService(capabilityExecutable: r'C:\Tools\mpv.exe');
+    final service = buildService(provider, remoteProvider: provider,
+        menuService: menu);
+    addTearDown(service.dispose);
+    final disc = WebDavBdmv(name: 'DISC', href: 'https://dav.example/media/DISC/',
+        rootPath: 'DISC', files: const []);
+    final trace = DiscStartupTrace();
+    final first = (await service.startRemoteMenu(webDavService: webDavService,
+        file: disc, precheckedMenuExecutable: r'C:\Tools\mpv.exe',
+        startupClock: Stopwatch()..start(), startupTrace: trace))!;
+    expect(menu.capabilityChecks, 0);
+    final timing = jsonDecode(await File(p.join(first.sessionDirectoryPath,
+        'disc-startup.json')).readAsString()) as Map<String, dynamic>;
+    expect(timing['pid'], playerIdentity.pid);
+    expect(timing['eventsMs'], containsPair('bridgeReady', isA<int>()));
+    expect(timing['clickToProcessStartedMs'], isA<int>());
+    await service.terminateSession(first.sessionDirectoryPath);
+    alive[playerIdentity.pid] = true;
+    alive[_helperIdentity.pid] = true;
+    final directProvider = _FakeIsoAccessProvider(handleFactory: _FakeRemoteHandle.new);
+    final directService = buildService(directProvider,
+        remoteProvider: directProvider, menuService: menu);
+    addTearDown(directService.dispose);
+    final second = (await directService.startRemoteMenu(webDavService: webDavService,
+        file: disc))!;
+    expect(menu.capabilityChecks, 1);
+    await directService.terminateSession(second.sessionDirectoryPath);
   });
 
   for (final menu in [false, true]) {

@@ -107,6 +107,10 @@ class _WidgetMenuService extends RemoteMenuPlaybackService {
   @override
   Future<String?> unavailableReason() async => provider.remoteMenu ? null : 'unavailable';
   @override
+  Future<RemoteMenuAvailability> checkAvailability() async => provider.remoteMenu
+      ? const RemoteMenuAvailability(executable: r'C:\Tools\mpv.exe')
+      : const RemoteMenuAvailability(reason: 'unavailable');
+  @override
   Future<String> requireCapability({PlayerConfig? config}) async => r'C:\Tools\mpv.exe';
   @override
   Future<void> waitUntilReady({required Directory sessionDirectory,
@@ -307,11 +311,12 @@ void main() {
     }
   }
 
-  Widget buildBrowser({AppLanguage language = AppLanguage.simplifiedChinese}) =>
+  Widget buildBrowser({AppLanguage language = AppLanguage.simplifiedChinese,
+      bool glass = false}) =>
       ChangeNotifierProvider<AppState>.value(
         value: appState,
         child: MaterialApp(
-          theme: AppTheme.light(),
+          theme: glass ? AppTheme.dark(glass: true) : AppTheme.light(),
           locale: language.locale,
           supportedLocales: AppLanguage.values
               .map((item) => item.locale)
@@ -442,7 +447,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(buildBrowser());
+    await tester.pumpWidget(buildBrowser(glass: true));
     await settleBrowser(tester);
     isoProvider.completeImmediately = true;
     await tester.tap(find.text('DISC.iso'));
@@ -464,6 +469,28 @@ void main() {
     expect(
       tester.getTopLeft(find.text('Title 1')).dy,
       lessThan(tester.getTopLeft(find.text('Title 0')).dy),
+    );
+    final selectedBefore = tester.widget<CheckboxListTile>(
+      find.byKey(const Key('iso-title-00002')),
+    ).value;
+    await tester.tap(find.byKey(const Key('iso-title-00002')));
+    await tester.pump();
+
+    await tester.tap(find.widgetWithText(TextButton, '蓝光外挂字幕'));
+    await tester.pump();
+    expect(find.byKey(const Key('iso-title-selection-dialog')), findsOneWidget);
+    expect(find.text('Title 0'), findsNothing);
+    expect(find.byKey(const ValueKey('iso-subtitle-00001')), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '返回标题选择'));
+    await tester.pump();
+    expect(find.text('Title 0'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Title 1')).dy,
+      lessThan(tester.getTopLeft(find.text('Title 0')).dy),
+    );
+    expect(
+      tester.widget<CheckboxListTile>(find.byKey(const Key('iso-title-00002'))).value,
+      isNot(selectedBefore),
     );
 
     await tester.tap(find.widgetWithText(TextButton, '取消播放'));

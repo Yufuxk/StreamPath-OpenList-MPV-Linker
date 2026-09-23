@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
 import '../../domain/services/iso_subtitle_service.dart';
@@ -13,10 +14,14 @@ class IsoSubtitleDialog extends StatefulWidget {
     required this.subtitles,
     this.session,
     this.titles = const [],
+    this.embedded = false,
+    this.onSavingChanged,
   });
   final IsoSubtitleContext subtitles;
   final IsoSubtitleSession? session;
   final List<Map<String, dynamic>> titles;
+  final bool embedded;
+  final ValueChanged<bool>? onSavingChanged;
   @override
   State<IsoSubtitleDialog> createState() => _IsoSubtitleDialogState();
 }
@@ -78,6 +83,7 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
       _saving = true;
       _message = null;
     });
+    widget.onSavingChanged?.call(true);
     final snapshot = _snapshot;
     try {
       await widget.subtitles.bind(
@@ -109,7 +115,10 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
     } on TimeoutException {
       if (mounted) setState(() => _message = '字幕绑定已保存；播放器暂不可用');
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+        widget.onSavingChanged?.call(false);
+      }
     }
     await _refresh();
   }
@@ -139,37 +148,11 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final subtitles = widget.subtitles;
+    final content = _content();
+    if (widget.embedded) return content;
     return AlertDialog(
-      title: const AppText('ISO 外挂字幕'),
-      content: SizedBox(
-        width: 680,
-        height: 430,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const AppText('按时长、集数、名称、语言和格式综合评分；明确 MPLS 和手动绑定优先。'),
-            if (widget.session != null &&
-                (_snapshot == null || _snapshot!['current'] == ''))
-              const AppText('当前节目尚不可识别或正在菜单中，自动外挂暂停。'),
-            if (subtitles.changed) const AppText('ISO 信息已变化，旧绑定暂停应用；请重新确认。'),
-            if (subtitles.issues.isNotEmpty || _snapshot?['status'] == 'failed')
-              const AppText('部分字幕或字体资源不可用，视频播放不受影响。'),
-            if (!subtitles.writable) const AppText('字幕绑定文件不可用，原文件未覆盖'),
-            if (_message != null) AppText(_message!),
-            if (_titles.isEmpty)
-              const Padding(
-                padding: EdgeInsets.only(top: 16),
-                child: AppText('等待播放器提供节目列表。'),
-              ),
-            Expanded(
-              child: ListView(
-                children: [for (final title in _titles) _row(title)],
-              ),
-            ),
-          ],
-        ),
-      ),
+      title: const AppText('蓝光外挂字幕'),
+      content: SizedBox(width: 680, height: 430, child: content),
       actions: [
         if (widget.session != null)
           TextButton(
@@ -184,7 +167,79 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
     );
   }
 
-  Widget _row(Map<String, dynamic> title) {
+  Widget _content() {
+    final subtitles = widget.subtitles;
+    final labels = _candidateLabels();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const AppText('自动建议按现有规则匹配；手动选择会覆盖建议。'),
+        const SizedBox(height: 12),
+        if (widget.session != null &&
+            (_snapshot == null || _snapshot!['current'] == ''))
+          const AppText('当前节目尚不可识别或正在菜单中，自动外挂暂停。'),
+        if (subtitles.changed) const AppText('蓝光内容已变化，旧绑定暂停应用；请重新确认。'),
+        if (subtitles.issues.isNotEmpty || _snapshot?['status'] == 'failed')
+          const AppText('部分字幕或字体资源不可用，视频播放不受影响。'),
+        if (!subtitles.writable) const AppText('字幕绑定文件不可用，原文件未覆盖'),
+        if (_message != null) AppText(_message!),
+        if (_titles.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 16),
+            child: AppText('等待播放器提供节目列表。'),
+          ),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.only(right: 20),
+            itemCount: _titles.length,
+            itemBuilder: (_, index) => _row(_titles[index], labels),
+            separatorBuilder: (_, _) => const Divider(height: 1),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Map<String, String> _candidateLabels() {
+    final candidates = {
+      for (final candidate in widget.subtitles.candidates)
+        candidate.path: candidate,
+    }.values;
+    final counts = <String, int>{};
+    for (final candidate in candidates) {
+      counts.update(candidate.name, (count) => count + 1, ifAbsent: () => 1);
+    }
+    final baseLabels = <String, String>{};
+    final labelCounts = <String, int>{};
+    for (final candidate in candidates) {
+      final folder = p.posix.basename(p.posix.dirname(candidate.path));
+      final label = counts[candidate.name] == 1
+          ? candidate.name
+          : '${candidate.name} · ${folder == '.' ? context.l10n.text('根目录') : folder}';
+      baseLabels[candidate.path] = label;
+      labelCounts.update(label, (count) => count + 1, ifAbsent: () => 1);
+    }
+    final positions = <String, int>{};
+    return {
+      for (final entry in baseLabels.entries)
+        entry.key: labelCounts[entry.value] == 1
+            ? entry.value
+            : '${entry.value} (${positions.update(entry.value, (index) => index + 1, ifAbsent: () => 1)})',
+    };
+  }
+
+  static String _duration(int seconds) {
+    final duration = Duration(seconds: seconds);
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final remaining = duration.inSeconds
+        .remainder(60)
+        .toString()
+        .padLeft(2, '0');
+    return hours > 0 ? '$hours:$minutes:$remaining' : '$minutes:$remaining';
+  }
+
+  Widget _row(Map<String, dynamic> title, Map<String, String> labels) {
     final id = title['id'] as String;
     final subtitles = widget.subtitles;
     final binding = subtitles.changed
@@ -192,36 +247,86 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
         : subtitles.bindings.containsKey(id)
         ? (subtitles.bindings[id] ?? '-')
         : '';
-    final paths = subtitles.candidates.map((c) => c.path).toSet();
-    final selected = binding == '-' || paths.contains(binding) ? binding : '';
+    final selected = binding == '-' || labels.containsKey(binding)
+        ? binding
+        : '';
     final seconds = (title['duration'] as num?)?.toInt() ?? 0;
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      title: Text(
-        '${_snapshot?['current'] == id ? '▶ ' : ''}$id.mpls · ${Duration(seconds: seconds)}',
-      ),
-      subtitle: DropdownButton<String>(
-        key: ValueKey('iso-subtitle-$id'),
-        isExpanded: true,
-        value: selected,
-        onChanged: _saving || !subtitles.writable
-            ? null
-            : (value) {
-                if (value != null) unawaited(_bind(id, value));
-              },
-        items: [
-          DropdownMenuItem(
-            value: '',
-            child: Text(
-              '${context.l10n.text('自动建议')}：${subtitles.suggestionFor(id, subtitles.titleCatalog.isEmpty ? _titles : subtitles.titleCatalog) ?? context.l10n.text('未绑定')}',
+    final suggestion = subtitles.suggestionFor(
+      id,
+      subtitles.titleCatalog.isEmpty ? _titles : subtitles.titleCatalog,
+    );
+    final automaticLabel =
+        '${context.l10n.text('自动建议')}：${suggestion == null ? context.l10n.text('未绑定') : labels[suggestion] ?? p.posix.basename(suggestion)}';
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (_snapshot?['current'] == id) ...[
+                Icon(Icons.play_arrow, size: 18, color: scheme.primary),
+                const SizedBox(width: 4),
+              ],
+              Text('$id.mpls', style: Theme.of(context).textTheme.titleSmall),
+              const Spacer(),
+              Text(
+                _duration(seconds),
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerLow,
+              border: Border.all(color: scheme.outlineVariant),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: ValueKey('iso-subtitle-$id'),
+                  isExpanded: true,
+                  dropdownColor: scheme.surface.withValues(alpha: 1),
+                  menuMaxHeight: 320,
+                  value: selected,
+                  onChanged: _saving || !subtitles.writable
+                      ? null
+                      : (value) {
+                          if (value != null) unawaited(_bind(id, value));
+                        },
+                  items: [
+                    DropdownMenuItem(
+                      value: '',
+                      child: Text(
+                        automaticLabel,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const DropdownMenuItem(
+                      value: '-',
+                      child: AppText('不使用外挂字幕'),
+                    ),
+                    for (final entry in labels.entries)
+                      DropdownMenuItem(
+                        value: entry.key,
+                        child: Text(
+                          entry.value,
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
-          const DropdownMenuItem(value: '-', child: AppText('不使用外挂字幕')),
-          for (final path in paths)
-            DropdownMenuItem(
-              value: path,
-              child: Text(path, overflow: TextOverflow.ellipsis),
-            ),
         ],
       ),
     );

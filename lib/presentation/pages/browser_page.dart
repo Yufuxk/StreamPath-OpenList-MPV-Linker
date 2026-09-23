@@ -145,6 +145,8 @@ class _IsoTitleSelectionDialog extends StatefulWidget {
 class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
   late final List<IsoDiscTitle> _titles = List.of(widget.request.titles);
   late final Set<String> _selected = Set.of(widget.request.selectedMplsIds);
+  bool _showSubtitles = false;
+  bool _subtitleSaving = false;
 
   void _move(int index, int offset) {
     final target = index + offset;
@@ -165,11 +167,23 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
   @override
   Widget build(BuildContext context) => AlertDialog(
     key: const Key('iso-title-selection-dialog'),
-    title: const AppText('选择 Blu-ray 标题'),
+    title: AppText(_showSubtitles ? '蓝光外挂字幕' : '选择 Blu-ray 标题'),
     content: SizedBox(
-      width: 620,
+      width: 680,
       height: 430,
-      child: Column(
+      child: _showSubtitles
+          ? IsoSubtitleDialog(
+              subtitles: widget.subtitles!,
+              titles: _titles
+                  .map((title) => <String, dynamic>{
+                        'id': title.mplsId,
+                        'duration': title.duration.inMilliseconds / 1000,
+                      })
+                  .toList(),
+              embedded: true,
+              onSavingChanged: (saving) => setState(() => _subtitleSaving = saving),
+            )
+          : Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
@@ -238,31 +252,39 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
       ),
     ),
     actions: [
-      if (widget.subtitles != null)
-        TextButton(onPressed: () => showDialog<void>(context: context,
-          builder: (_) => IsoSubtitleDialog(subtitles: widget.subtitles!,
-            titles: _titles.map((t) => <String,dynamic>{'id':t.mplsId,
-              'duration':t.duration.inMilliseconds/1000}).toList())),
-          child: const AppText('ISO 外挂字幕')),
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const AppText('取消播放'),
-      ),
-      FilledButton(
-        key: const Key('iso-title-play'),
-        onPressed: _selected.isEmpty
-            ? null
-            : () => Navigator.of(context).pop(
-                IsoTitleSelection(
-                  orderedTitles: List<IsoDiscTitle>.unmodifiable(_titles),
-                  selectedMplsIds: Set<String>.unmodifiable(_selected),
+      if (_showSubtitles)
+        TextButton(
+          onPressed: _subtitleSaving
+              ? null
+              : () => setState(() => _showSubtitles = false),
+          child: const AppText('返回标题选择'),
+        )
+      else ...[
+        if (widget.subtitles != null)
+          TextButton(
+            onPressed: () => setState(() => _showSubtitles = true),
+            child: const AppText('蓝光外挂字幕'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const AppText('取消播放'),
+        ),
+        FilledButton(
+          key: const Key('iso-title-play'),
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.of(context).pop(
+                  IsoTitleSelection(
+                    orderedTitles: List<IsoDiscTitle>.unmodifiable(_titles),
+                    selectedMplsIds: Set<String>.unmodifiable(_selected),
+                  ),
                 ),
-              ),
-        child: const AppText('播放所选标题'),
-      ),
-      if (widget.menuUnavailableReason != null)
-        const OutlinedButton(onPressed: null,
-          child: AppText('蓝光菜单播放')),
+          child: const AppText('播放所选标题'),
+        ),
+        if (widget.menuUnavailableReason != null)
+          const OutlinedButton(onPressed: null,
+            child: AppText('蓝光菜单播放')),
+      ],
     ],
   );
 }
@@ -276,6 +298,8 @@ class _IsoStreamingDialog extends StatefulWidget {
     this.menuUnavailableReason,
     this.subtitles,
     this.startupClock,
+    this.startupTrace,
+    this.precheckedMenuExecutable,
     this.cancelPreparation,
   });
 
@@ -284,6 +308,8 @@ class _IsoStreamingDialog extends StatefulWidget {
   final WebDavFile file;
   final Future<IsoSubtitleContext?>? subtitles;
   final Stopwatch? startupClock;
+  final DiscStartupTrace? startupTrace;
+  final String? precheckedMenuExecutable;
   final VoidCallback? cancelPreparation;
   final bool remoteMenu;
   final String? menuUnavailableReason;
@@ -330,6 +356,8 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               subtitles: _subtitles,
               subtitlePreparation: preparation,
               startupClock: widget.startupClock,
+              startupTrace: widget.startupTrace,
+              precheckedMenuExecutable: widget.precheckedMenuExecutable,
               onProgress: (progress) {
                 if (mounted) setState(() => _progress = progress);
               },
@@ -341,6 +369,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
         subtitles: _subtitles,
         subtitlePreparation: preparation,
         startupClock: widget.startupClock,
+        startupTrace: widget.startupTrace,
         onProgress: (progress) {
           if (mounted) setState(() => _progress = progress);
         },
@@ -1295,8 +1324,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (!mounted || selection == null) return;
     try {
       final discRelativePath = _localSource!.discRelativePath(devicePath);
-      final subtitles = devicePath.toLowerCase().endsWith('.iso')
-          ? await _isoSubtitlesForPath(_source, discRelativePath) : null;
+      final subtitles = await _isoSubtitlesForPath(_source, discRelativePath);
       if (!mounted) return;
       final result = await _localDiscPlaybackService.launch(
         rootId: root.rootId,
@@ -1359,11 +1387,21 @@ class _BrowserPageState extends State<BrowserPage> {
     if (_preparingBdmv) return;
     final service = context.read<AppState>().webDavService;
     if (service == null) return;
+    final startupTrace = DiscStartupTrace();
+    startupTrace.mark('menuCapabilityStarted');
+    final menuAvailability = context.read<AppState>()
+        .isoPlaybackService?.remoteMenu.checkAvailability().then((value) {
+          startupTrace.mark('menuCapabilityReady');
+          return value;
+        });
+    menuAvailability?.ignore();
     setState(() => _preparingBdmv = true);
     try {
       final disc = await WebDavBdmvService.discover(service, path);
+      startupTrace.mark('manifestReady');
       if (!mounted || service != context.read<AppState>().webDavService) return;
-      await _playIso(disc, sessionId: sessionId);
+      await _playIso(disc, sessionId: sessionId,
+          startupTrace: startupTrace, menuAvailability: menuAvailability);
     } on AppException catch (error) {
       if (mounted) _showLibraryError(error.message);
     } on TimeoutException {
@@ -1374,7 +1412,9 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _playIso(WebDavFile file, {String? sessionId,
-    bool titleOnly = false}) async {
+    bool titleOnly = false, DiscStartupTrace? startupTrace,
+    Future<RemoteMenuAvailability>? menuAvailability}) async {
+    final trace = startupTrace ?? DiscStartupTrace();
     final appState = context.read<AppState>();
     final isoService = appState.isoPlaybackService;
     final webDavService = appState.webDavService;
@@ -1424,7 +1464,20 @@ class _BrowserPageState extends State<BrowserPage> {
 
     Stopwatch? startupClock;
     var remoteMenu = false;
-    var menuReason = titleOnly ? 'disabled' : await isoService.remoteMenu.unavailableReason();
+    RemoteMenuAvailability? availability;
+    final String? menuReasonInitial;
+    if (titleOnly) {
+      menuReasonInitial = 'disabled';
+    } else if (menuAvailability != null) {
+      availability = await menuAvailability;
+      menuReasonInitial = availability.reason;
+    } else {
+      menuReasonInitial = await isoService.remoteMenu.unavailableReason();
+    }
+    var menuReason = menuReasonInitial;
+    if (!trace.eventsMs.containsKey('menuCapabilityReady')) {
+      trace.mark('menuCapabilityReady');
+    }
     if (!mounted) return;
     while (!titleOnly && (menuReason == null || menuReason == RemoteMenuPlaybackService.runtimeMissing)) {
       final mode = await showGlassDialog<Object>(
@@ -1459,7 +1512,8 @@ class _BrowserPageState extends State<BrowserPage> {
       if (mode == 'install') {
         try {
           await isoService.remoteMenu.installRuntime();
-          menuReason = await isoService.remoteMenu.unavailableReason();
+          availability = await isoService.remoteMenu.checkAvailability();
+          menuReason = availability.reason;
         } on AppException catch (error) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: AppText(error.message)));
           return;
@@ -1468,13 +1522,17 @@ class _BrowserPageState extends State<BrowserPage> {
         continue;
       }
       startupClock = Stopwatch()..start();
+      trace.mark('modeSelected');
       remoteMenu = mode == PlaybackMode.webdavHdmvMenu;
       break;
     }
     startupClock ??= Stopwatch()..start();
+    if (!trace.eventsMs.containsKey('modeSelected')) trace.mark('modeSelected');
     var preparationCancelled = false;
+    trace.mark('subtitleDiscoveryStarted');
     final subtitlePreparation = _createIsoSubtitles(_source, file,
-        cancelled: file is WebDavBdmv ? () => preparationCancelled : null);
+        cancelled: file is WebDavBdmv ? () => preparationCancelled : null)
+        .then((value) { trace.mark('subtitleDiscoveryReady'); return value; });
     if (!mounted) return;
     final result = await showGlassDialog<_IsoDialogResult>(
       context: context,
@@ -1482,6 +1540,9 @@ class _BrowserPageState extends State<BrowserPage> {
       builder: (_) => _IsoStreamingDialog(
         service: isoService,
         startupClock: startupClock,
+        startupTrace: trace,
+        precheckedMenuExecutable: file is WebDavBdmv && remoteMenu
+            ? availability?.executable : null,
         cancelPreparation: () => preparationCancelled = true,
         webDavService: webDavService,
         file: file,
@@ -1604,6 +1665,20 @@ class _BrowserPageState extends State<BrowserPage> {
       MediaDirectorySource source, String path) async {
     if (!context.read<AppState>().configStore.current.subtitleInjectionEnabled) return null;
     try {
+      if (source is LocalMediaSource) {
+        final devicePath = await source.resolveDiscDevice(path);
+        if (await Directory(devicePath).exists()) {
+          final index = await File(p.join(devicePath, 'BDMV', 'index.bdmv')).stat();
+          return _createIsoSubtitles(source, LocalMediaEntry(
+            name: path.isEmpty ? source.root.displayName : p.posix.basename(path),
+            relativePath: path,
+            absolutePath: devicePath,
+            isDirectory: true,
+            size: index.size,
+            modified: index.modified,
+          ));
+        }
+      }
       final parent = p.posix.dirname(path);
       final files = await source.fetchDirectory(parent == '.' ? '' : parent);
       final file = files.where((e) => (e.isIso || e.isDirectory) && e.name == p.posix.basename(path)).firstOrNull;
@@ -1615,7 +1690,8 @@ class _BrowserPageState extends State<BrowserPage> {
           return _createIsoSubtitles(source, file);
         }
       }
-    } on AppException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放'); }
+    } on AppException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放');
+    } on FileSystemException { if (mounted) _showLibraryError('字幕资源准备失败，视频继续播放'); }
     return null;
   }
 
@@ -1627,7 +1703,7 @@ class _BrowserPageState extends State<BrowserPage> {
       final session = await IsoSubtitleSession.restore(subtitles, directory);
       if (!mounted) return;
       if (session == null) {
-        _showLibraryError('此会话未启用 ISO 外挂字幕，请重新打开 ISO');
+        _showLibraryError('此会话未启用蓝光外挂字幕，请重新打开蓝光');
         return;
       }
       await showDialog<void>(context:context,
@@ -1642,7 +1718,11 @@ class _BrowserPageState extends State<BrowserPage> {
     if (source == null || id == null) return;
     final base = await AppPaths.cacheDirectory();
     if (!mounted) return;
-    await _showIsoSubtitleSession(source, entry.record.item.targetPath,
+    final path = entry.record.localDiscSession?.relativePath ??
+        (_isRootLocalDiscItem(entry.record.item)
+            ? ''
+            : entry.record.item.targetPath);
+    await _showIsoSubtitleSession(source, path,
       Directory(p.join(base.path,'local_iso_subtitles',id)));
   }
 
@@ -3622,7 +3702,7 @@ class _BrowserPageState extends State<BrowserPage> {
     ];
     return PlaybackBar(
       key: ValueKey<String>('local-disc-playback-bar-${record.recordKey}'),
-      onSubtitles: entry.running && record.item.name.toLowerCase().endsWith('.iso') &&
+      onSubtitles: entry.running &&
           context.read<AppState>().configStore.current.subtitleInjectionEnabled
           ? () => _showLocalIsoSubtitles(entry) : null,
       title: title,

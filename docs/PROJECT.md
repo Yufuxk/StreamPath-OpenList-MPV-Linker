@@ -572,10 +572,10 @@ ISO Title 顺序、选择结果和最后 MPLS 只写入 `iso_catalog.json`；各
 保护，清理不得与 helper 读写并发。缓存命中判定只在 helper 启动枚举阶段执行，不进入播放或 Seek
 热路径。
 
-ISO 外挂字幕由 `IsoSubtitleContext` 共用 `MediaDirectorySource` 发现资源，持久绑定位于
-`library/iso_subtitles/<匿名 ISO 键>.json`，不进入普通视频字幕或进度状态。使用 `IsoSubtitleMatcher` 综合时长、集数、名称、语言和格式选择最高分候选，明确 MPLS 优先于推测，用户绑定与禁用优先；来源、ISO 路径及大小/修改时间共同约束复用。目录发现复用
-当前完整目录缓存，字幕目录只读取一层；缓存元数据不能等同于远端内容强校验。
-WebDAV 原始字幕字节写入 ISO 会话目录，本地字幕直接引用经过来源解析的路径；字幕最多 64 个、
+蓝光外挂字幕由 `IsoSubtitleContext` 共用 `MediaDirectorySource` 发现资源，支持本地/WebDAV 的 ISO 与 BDMV 文件夹，持久绑定位于
+`library/iso_subtitles/<匿名光盘键>.json`，不进入普通视频字幕或进度状态。使用 `IsoSubtitleMatcher` 综合时长、集数、名称、语言和格式选择最高分候选，明确 MPLS 优先于推测，用户绑定与禁用优先；来源及光盘路径隔离绑定。ISO 使用文件大小/修改时间，WebDAV BDMV 使用结构 revision，本地 BDMV 使用 `BDMV/index.bdmv` 的大小/修改时间约束复用。目录发现复用
+当前完整目录缓存；ISO 搜索其父目录，BDMV 搜索光盘根目录及盘名限定的父目录文件，字幕子目录只读取一层；缓存元数据不能等同于远端内容强校验。
+WebDAV 原始字幕字节写入光盘会话目录，本地字幕直接引用经过来源解析的路径；字幕最多 64 个、
 单文件 16 MiB、会话副本总量 64 MiB，字幕/字体共享 10 秒准备预算，目录发现另有 10 秒预算。
 字体复用既有局部字体目录与下载器。本地会话副本位于 `cache/local_iso_subtitles`，通用清缓存
 保留该目录；播放退出和后续浏览/启动检查只回收进程身份明确失效的会话。

@@ -25,12 +25,19 @@ class _Dav extends WebDAVService {
       );
   final tree = <String, List<WebDavFile>>{};
   final reads = <String>[];
+  Duration delay = Duration.zero;
+  int active = 0;
+  int maxActive = 0;
   @override
   Future<List<WebDavFile>> fetchDirectory(
     String path, {
     bool forceRefresh = false,
   }) async {
     reads.add(path);
+    active++;
+    if (active > maxActive) maxActive = active;
+    if (delay > Duration.zero) await Future<void>.delayed(delay);
+    active--;
     return tree[path] ?? [];
   }
 
@@ -111,6 +118,18 @@ void main() {
     expect(root.href, contains('%E7%9B%98%20%E7%89%87/'));
     expect(dav.reads, isNot(contains('盘 片/Subs')));
     expect(dav.reads, isNot(contains('')));
+  });
+  test('同层目录有界并发且每个目录只请求一次', () async {
+    dav.delay = const Duration(milliseconds: 20);
+    for (final name in ['BACKUP', 'META', 'AUX1', 'AUX2']) {
+      dav.tree['盘 片/BDMV']!.add(entry('盘 片/BDMV/$name', directory: true));
+      dav.tree['盘 片/BDMV/$name'] = [];
+    }
+    final disc = await WebDavBdmvService.discover(dav, '盘 片');
+    expect(disc.files.where((f) => f['directory'] == true).length, 8);
+    expect(dav.reads.length, 9);
+    expect(dav.reads.toSet().length, dav.reads.length);
+    expect(dav.maxActive, inInclusiveRange(2, 4));
   });
   test('拒绝跨源、子目录越界及大小写冲突', () async {
     for (final invalid in [
