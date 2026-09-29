@@ -462,6 +462,26 @@ void main() {
     expect(await store.playbackHistory('source-b', audio: false), hasLength(1));
   });
 
+  test('视频完整播完只隐藏对应会话的媒体中心续播入口', () async {
+    await store.recordPlayback(item('第一集.mkv'), playbackSessionId: 'session-1');
+    await store.recordPlayback(item('第二集.mkv'), playbackSessionId: 'session-2');
+    await store.dismissVideoContinueSession('source-a', 'session-1');
+    final history = await store.playbackHistory('source-a', audio: false);
+    expect(history, hasLength(2));
+    expect(
+      history
+          .singleWhere((record) => record.playbackSessionId == 'session-1')
+          .continueDismissed,
+      isTrue,
+    );
+    expect(
+      history
+          .singleWhere((record) => record.playbackSessionId == 'session-2')
+          .continueDismissed,
+      isFalse,
+    );
+  });
+
   test('损坏文件不阻止加载且不在读取阶段被删除', () async {
     libraryFile.writeAsStringSync('{broken');
     await store.load();

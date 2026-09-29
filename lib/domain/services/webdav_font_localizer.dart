@@ -15,14 +15,43 @@ typedef WebDavFontBytesLoader =
       required Duration timeout,
     });
 
+typedef WebDavFontFileLoader =
+    Future<int> Function(
+      String url,
+      File destination, {
+      required int maxBytes,
+      required Duration timeout,
+      void Function(int received)? onProgress,
+    });
+
+class WebDavFontLocalizationProgress {
+  const WebDavFontLocalizationProgress({
+    required this.completedFiles,
+    required this.totalFiles,
+    required this.receivedBytes,
+    required this.expectedBytes,
+    required this.fileName,
+    this.fromCache = false,
+  });
+
+  final int completedFiles;
+  final int totalFiles;
+  final int receivedBytes;
+  final int expectedBytes;
+  final String fileName;
+  final bool fromCache;
+}
+
 class WebDavFontLocalizationResult {
   const WebDavFontLocalizationResult({
     required this.directory,
     required this.files,
+    this.persistent = false,
   });
 
   final Directory directory;
   final List<File> files;
+  final bool persistent;
 }
 
 /// 把单个 WebDAV 字体目录转换为本次播放专属的本地字体目录。
@@ -43,6 +72,11 @@ class WebDavFontLocalizer {
     required Directory base,
     required String sessionId,
     required WebDavFontBytesLoader loader,
+    WebDavFontFileLoader? fileLoader,
+    int maxFiles = maxFontFiles,
+    int maxBytes = maxSessionBytes,
+    Duration? timeout,
+    void Function(WebDavFontLocalizationProgress progress)? onProgress,
   }) async {
     if (source.files.isEmpty) return null;
     if (!await base.exists()) await base.create(recursive: true);
@@ -57,8 +91,37 @@ class WebDavFontLocalizer {
     final output = <File>[];
     var localizedBytes = 0;
     var nextIndex = 0;
-    final candidates = source.files.take(maxFontFiles).toList(growable: false);
-    final deadline = DateTime.now().add(preparationTimeout);
+    final candidates = source.files.take(maxFiles).toList(growable: false);
+    final deadline = DateTime.now().add(timeout ?? preparationTimeout);
+    final receivedByFile = List<int>.filled(candidates.length, 0);
+    final expectedBytes = candidates.fold<int>(
+      0,
+      (sum, file) => sum + file.size,
+    );
+    var completedFiles = 0;
+    var lastReport = DateTime.fromMillisecondsSinceEpoch(0);
+
+    void report(String fileName, {bool force = false}) {
+      if (onProgress == null) return;
+      final now = DateTime.now();
+      if (!force &&
+          now.difference(lastReport) < const Duration(milliseconds: 100)) {
+        return;
+      }
+      lastReport = now;
+      onProgress(
+        WebDavFontLocalizationProgress(
+          completedFiles: completedFiles,
+          totalFiles: candidates.length,
+          receivedBytes: receivedByFile.fold<int>(
+            0,
+            (sum, bytes) => sum + bytes,
+          ),
+          expectedBytes: expectedBytes,
+          fileName: fileName,
+        ),
+      );
+    }
 
     Future<void> worker() async {
       while (nextIndex < candidates.length) {
@@ -66,26 +129,61 @@ class WebDavFontLocalizer {
         if (remaining <= Duration.zero) return;
         final index = nextIndex++;
         final font = candidates[index];
-        if (font.size > maxFontBytes) continue;
+        if (font.size > maxFontBytes) {
+          completedFiles++;
+          report(font.name, force: true);
+          continue;
+        }
         final extension = font.extension;
-        if (!AppConstants.fontExtensions.contains(extension)) continue;
+        if (!AppConstants.fontExtensions.contains(extension)) {
+          completedFiles++;
+          report(font.name, force: true);
+          continue;
+        }
         final file = File(p.join(directory.path, '$index$extension'));
         var reservedBytes = 0;
         try {
-          final bytes = await loader(
-            font.url,
-            maxBytes: maxFontBytes,
-            timeout: remaining,
-          ).timeout(remaining);
-          if (bytes.isEmpty || bytes.length > maxFontBytes) continue;
-          if (localizedBytes + bytes.length > maxSessionBytes) continue;
-          localizedBytes += bytes.length;
-          reservedBytes = bytes.length;
-          await file.writeAsBytes(bytes, flush: true);
+          final int fileBytes;
+          if (fileLoader != null) {
+            fileBytes = await fileLoader(
+              font.url,
+              file,
+              maxBytes: maxFontBytes,
+              timeout: remaining,
+              onProgress: (received) {
+                receivedByFile[index] = received;
+                report(font.name);
+              },
+            );
+          } else {
+            final bytes = await loader(
+              font.url,
+              maxBytes: maxFontBytes,
+              timeout: remaining,
+            ).timeout(remaining);
+            fileBytes = bytes.length;
+            receivedByFile[index] = fileBytes;
+            if (fileBytes > 0 && fileBytes <= maxFontBytes) {
+              await file.writeAsBytes(bytes, flush: true);
+            }
+          }
+          if (fileBytes <= 0 || fileBytes > maxFontBytes) {
+            await _deleteFile(file);
+            continue;
+          }
+          if (localizedBytes + fileBytes > maxBytes) {
+            await _deleteFile(file);
+            continue;
+          }
+          localizedBytes += fileBytes;
+          reservedBytes = fileBytes;
           output.add(file);
         } catch (_) {
           localizedBytes -= reservedBytes;
           await _deleteFile(file);
+        } finally {
+          completedFiles++;
+          report(font.name, force: true);
         }
       }
     }

@@ -55,6 +55,72 @@ void main() {
     expect(context.candidates.map((c) => c.path), ['01.ass', 'Subs/02.srt']);
     expect(context.effective, isEmpty);
   });
+  test('本地 BDMV 根目录复用字幕发现与 MPLS 绑定', () async {
+    await write('BDMV/index.bdmv');
+    await write('BDMV/PLAYLIST/00003.mpls');
+    await write('BDMV/STREAM/00003.m2ts');
+    await write('mpls00003.ass');
+    await write('Subs/02.srt');
+    await write('BDMV/STREAM/hidden.ass');
+    Future<IsoSubtitleContext> context() async {
+      final index = await File(p.join(root.path, 'BDMV', 'index.bdmv')).stat();
+      return IsoSubtitleContext(
+        source: source,
+        iso: LocalMediaEntry(
+          name: source.root.displayName,
+          relativePath: '',
+          absolutePath: root.path,
+          isDirectory: true,
+          size: index.size,
+          modified: index.modified,
+        ),
+        isoPath: '',
+        store: store,
+      );
+    }
+    final first = await context();
+    await first.discover();
+    expect(first.candidates.map((c) => c.path), ['Subs/02.srt', 'mpls00003.ass']);
+    expect(first.effective['00003'], 'mpls00003.ass');
+    await first.bind('00003', 'Subs/02.srt');
+    final second = await context();
+    await second.discover();
+    expect(second.effective['00003'], 'Subs/02.srt');
+    await write('BDMV/index.bdmv', [1, 2, 3, 4]);
+    final changed = await context();
+    await changed.discover();
+    expect(changed.changed, isTrue);
+    expect(changed.effective['00003'], 'mpls00003.ass');
+  });
+  test('本地 BDMV 子目录读取盘内与盘名限定的父目录字幕', () async {
+    await write('Disc/BDMV/index.bdmv');
+    await write('Disc/BDMV/PLAYLIST/00003.mpls');
+    await write('Disc/BDMV/STREAM/00003.m2ts');
+    await write('Disc/Subs/mpls00003.ass');
+    await write('Disc.mpls00004.ass');
+    await write('Other.mpls00005.ass');
+    final index = await File(p.join(root.path, 'Disc', 'BDMV', 'index.bdmv')).stat();
+    final context = IsoSubtitleContext(
+      source: source,
+      iso: LocalMediaEntry(
+        name: 'Disc',
+        relativePath: 'Disc',
+        absolutePath: p.join(root.path, 'Disc'),
+        isDirectory: true,
+        size: index.size,
+        modified: index.modified,
+      ),
+      isoPath: 'Disc',
+      store: store,
+    );
+    await context.discover();
+    expect(context.candidates.map((c) => c.path),
+        ['Disc.mpls00004.ass', 'Disc/Subs/mpls00003.ass']);
+    expect(context.effective, {
+      '00003': 'Disc/Subs/mpls00003.ass',
+      '00004': 'Disc.mpls00004.ass',
+    });
+  });
   test('单 ISO 显式 MPLS 自动匹配；多个格式选最高分', () async {
     await write('Subs/mpls00003.chs.ass');
     await write('Anime.mpls00004.ass');

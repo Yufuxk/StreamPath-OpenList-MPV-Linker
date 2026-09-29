@@ -151,6 +151,55 @@ void main() {
       expect(files.single.name, 'lost');
     });
 
+    test('服务器规范化自身 href 后仍显示返回上级，同名子目录保持普通目录', () {
+      const xml = '''
+<d:multistatus xmlns:d="DAV:">
+  <d:response><d:href>/dav/canonical/</d:href><d:propstat><d:prop>
+    <d:getdisplayname>Season One</d:getdisplayname><d:resourcetype><d:collection/></d:resourcetype>
+  </d:prop></d:propstat></d:response>
+  <d:response><d:href>/dav/canonical/Season%20One/</d:href><d:propstat><d:prop>
+    <d:getdisplayname>Season One</d:getdisplayname><d:resourcetype><d:collection/></d:resourcetype>
+  </d:prop></d:propstat></d:response>
+</d:multistatus>''';
+      final files = parser.parse(
+        xml,
+        requestUrl: 'http://host/dav/Season%20One',
+      );
+      expect(files, hasLength(2));
+      expect(files[0].isSelfEntry, isTrue);
+      expect(files[1].isSelfEntry, isFalse);
+      final cached = [
+        WebDavFile(name: files[0].name, href: files[0].href, isDirectory: true),
+        files[1],
+      ];
+      expect(
+        parser
+            .reclassifyCachedSelfEntries(
+              cached,
+              requestUrl: 'http://host/dav/Season%20One',
+            )
+            .first
+            .isSelfEntry,
+        isTrue,
+      );
+    });
+
+    test('日文长目录名不影响自身条目的识别', () {
+      const name = '[2025] 失恋ソング沢山聴いて 泣いてばかりの私はもう。（acoustic ver.）[FLAC]';
+      final xml =
+          '''
+<d:multistatus xmlns:d="DAV:">
+  <d:response><d:href>/dav/canonical/</d:href><d:propstat><d:prop>
+    <d:getdisplayname>$name</d:getdisplayname><d:resourcetype><d:collection/></d:resourcetype>
+  </d:prop></d:propstat></d:response>
+</d:multistatus>''';
+      final files = parser.parse(
+        xml,
+        requestUrl: 'http://host/dav/${Uri.encodeComponent(name)}',
+      );
+      expect(files.single.isSelfEntry, isTrue);
+    });
+
     test('ISO8601 日期兼容', () {
       const xml = '''
 <d:multistatus xmlns:d="DAV:">

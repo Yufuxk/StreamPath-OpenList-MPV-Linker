@@ -5,6 +5,7 @@ import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/file_tile.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 
 void main() {
   testWidgets('音频使用独立图标而非视频图标', (tester) async {
@@ -20,8 +21,79 @@ void main() {
       ),
     );
 
-    expect(find.byIcon(Icons.audiotrack_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.movie_outlined), findsNothing);
+    expect(find.byIcon(SPIcons.music), findsOneWidget);
+    expect(find.byIcon(SPIcons.video), findsNothing);
+  });
+
+  testWidgets('文件类型图标沿用原有主题配色', (tester) async {
+    final scheme = AppTheme.dark().colorScheme;
+    final cases = <({String name, bool directory, IconData icon, Color color})>[
+      (
+        name: 'folder',
+        directory: true,
+        icon: SPIcons.folder,
+        color: scheme.primary,
+      ),
+      (
+        name: 'movie.mkv',
+        directory: false,
+        icon: SPIcons.video,
+        color: scheme.tertiary,
+      ),
+      (
+        name: 'song.flac',
+        directory: false,
+        icon: SPIcons.music,
+        color: scheme.secondary,
+      ),
+      (
+        name: 'disc.iso',
+        directory: false,
+        icon: SPIcons.disc,
+        color: scheme.tertiary,
+      ),
+      (
+        name: 'song.lrc',
+        directory: false,
+        icon: SPIcons.lyrics,
+        color: scheme.secondary,
+      ),
+      (
+        name: 'movie.ass',
+        directory: false,
+        icon: SPIcons.subtitles,
+        color: scheme.primary,
+      ),
+      (
+        name: 'notes.txt',
+        directory: false,
+        icon: SPIcons.document,
+        color: scheme.outline,
+      ),
+    ];
+
+    for (final entry in cases) {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.dark(),
+          home: Scaffold(
+            body: SizedBox(
+              width: 500,
+              child: FileTile(
+                file: WebDavFile(
+                  name: entry.name,
+                  href: '/${entry.name}',
+                  isDirectory: entry.directory,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final icon = tester.widget<Icon>(find.byIcon(entry.icon));
+      expect(icon.color, entry.color, reason: entry.name);
+      expect(icon.size, 32, reason: entry.name);
+    }
   });
 
   Widget wrap(Widget child) => MaterialApp(
@@ -78,7 +150,8 @@ void main() {
           matching: find.byType(GlassSurface),
         ),
       );
-      expect(surface.level, GlassSurfaceLevel.content);
+      expect(surface.level, GlassSurfaceLevel.raised);
+      expect(surface.showShadow, isFalse);
       final material = tester.widget<Material>(
         find.descendant(
           of: find.byType(GlassSurface),
@@ -123,7 +196,7 @@ void main() {
       expect(find.text('2024-01-02 03:04:05'), findsOneWidget);
       expect(
         tester.getTopLeft(find.text('名称')).dx,
-        tester.getTopLeft(find.byIcon(Icons.movie_outlined)).dx,
+        tester.getTopLeft(find.byIcon(SPIcons.video)).dx,
       );
       expect(
         tester.getTopRight(find.text('修改时间')).dx,

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
 
 import '../localization/app_text.dart';
 
 import '../../data/models/media_directory_entry.dart';
 import '../theme/glass_tokens.dart';
 import 'glass_surface.dart';
+import 'sp_controls.dart';
 
 const double _metadataBreakpoint = 680;
 const double _sizeColumnWidth = 96;
@@ -24,8 +26,9 @@ class FileListSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassSurface(
-      level: GlassSurfaceLevel.content,
+      level: GlassSurfaceLevel.raised,
       automaticBorder: false,
+      showShadow: false,
       child: child,
     );
   }
@@ -100,6 +103,8 @@ class FileTile extends StatelessWidget {
     this.trailing,
     this.subtitle,
     this.metadataColumnText,
+    this.folderSize,
+    this.selected = false,
   });
 
   final MediaDirectoryEntry file;
@@ -114,6 +119,8 @@ class FileTile extends StatelessWidget {
 
   /// 宽窗口右侧元数据列的替代文本；未提供时显示修改时间。
   final String? metadataColumnText;
+  final Future<int>? folderSize;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -123,40 +130,51 @@ class FileTile extends StatelessWidget {
         if (showColumns) return _buildWideTile(context);
 
         final scheme = Theme.of(context).colorScheme;
-        if (file.isSelfEntry) {
-          // 窄窗口保留原来的两行「返回上级」布局。
-          return ListTile(
-            onTap: onTap,
-            hoverColor: Theme.of(context).hoverColor,
-            leading: Icon(Icons.arrow_upward, color: scheme.primary, size: 28),
-            title: AppText(
-              file.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15),
-            ),
-            subtitle: const AppText('返回上级目录'),
-            trailing: trailing,
-            dense: true,
-          );
-        }
-        return ListTile(
+        final compactMetadata = _buildCompactMetadata();
+        return SPTile(
           onTap: onTap,
-          hoverColor: Theme.of(context).hoverColor,
-          leading: Icon(
-            _iconFor(file),
-            color: _colorFor(file, scheme),
-            size: 28,
+          selected: selected,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 40,
+                  child: Icon(
+                    file.isSelfEntry ? SPIcons.up : iconFor(file),
+                    color: file.isSelfEntry
+                        ? scheme.primary
+                        : colorFor(file, scheme),
+                    size: 32,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AppText(
+                        file.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: file.isSelfEntry
+                              ? FontWeight.normal
+                              : FontWeight.w500,
+                        ),
+                      ),
+                      if (file.isSelfEntry)
+                        const AppText('返回上级目录')
+                      else
+                        ?compactMetadata,
+                    ],
+                  ),
+                ),
+                if (trailing != null) ...[const SizedBox(width: 16), trailing!],
+              ],
+            ),
           ),
-          title: AppText(
-            file.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
-          ),
-          subtitle: _buildCompactMetadata(),
-          trailing: trailing,
-          dense: true,
         );
       },
     );
@@ -168,14 +186,14 @@ class FileTile extends StatelessWidget {
       context,
     ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
     final leading = file.isSelfEntry
-        ? Icon(Icons.arrow_upward, color: scheme.primary, size: 28)
-        : Icon(_iconFor(file), color: _colorFor(file, scheme), size: 28);
+        ? Icon(SPIcons.up, color: scheme.primary, size: 32)
+        : Icon(iconFor(file), color: colorFor(file, scheme), size: 32);
     return SizedBox(
       key: ValueKey<String>('wide-file-tile-${file.entryKey}'),
       height: _wideTileHeight,
-      child: InkWell(
+      child: SPTile(
         onTap: onTap,
-        hoverColor: Theme.of(context).hoverColor,
+        selected: selected,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
@@ -189,13 +207,26 @@ class FileTile extends StatelessWidget {
               Expanded(child: _buildWideName(context)),
               SizedBox(
                 width: _sizeColumnWidth,
-                child: AppText(
-                  file.isDirectory ? '-' : file.sizeLabel,
-                  maxLines: 1,
-                  textAlign: TextAlign.right,
-                  overflow: TextOverflow.ellipsis,
-                  style: metadataStyle,
-                ),
+                child: folderSize == null
+                    ? AppText(
+                        file.isDirectory ? '-' : file.sizeLabel,
+                        maxLines: 1,
+                        textAlign: TextAlign.right,
+                        overflow: TextOverflow.ellipsis,
+                        style: metadataStyle,
+                      )
+                    : FutureBuilder<int>(
+                        future: folderSize,
+                        builder: (context, snapshot) => AppText(
+                          snapshot.hasError
+                              ? '—'
+                              : snapshot.hasData
+                              ? formatBytes(snapshot.data!)
+                              : '…',
+                          textAlign: TextAlign.right,
+                          style: metadataStyle,
+                        ),
+                      ),
               ),
               const SizedBox(width: 24),
               SizedBox(
@@ -204,7 +235,7 @@ class FileTile extends StatelessWidget {
                   metadataColumnText ??
                       (file.isSelfEntry || file.modified == null
                           ? ''
-                          : _formatDate(file.modified!)),
+                          : formatDate(file.modified!)),
                   maxLines: 1,
                   textAlign: TextAlign.right,
                   overflow: TextOverflow.ellipsis,
@@ -257,24 +288,41 @@ class FileTile extends StatelessWidget {
     final parts = <String>[
       ?subtitle,
       if (!file.isDirectory) file.sizeLabel,
-      if (file.modified != null) _formatDate(file.modified!),
+      if (file.modified != null) formatDate(file.modified!),
     ];
-    return parts.isEmpty
-        ? null
-        : AppText(parts.join(' · '), style: const TextStyle(fontSize: 12));
+    if (folderSize == null) {
+      return parts.isEmpty
+          ? null
+          : AppText(parts.join(' · '), style: const TextStyle(fontSize: 12));
+    }
+    return FutureBuilder<int>(
+      future: folderSize,
+      builder: (context, snapshot) => AppText(
+        [
+          if (snapshot.hasError)
+            '—'
+          else if (snapshot.hasData)
+            formatBytes(snapshot.data!)
+          else
+            '…',
+          ...parts,
+        ].join(' · '),
+        style: const TextStyle(fontSize: 12),
+      ),
+    );
   }
 
-  static IconData _iconFor(MediaDirectoryEntry f) {
-    if (f.isDirectory) return Icons.folder_outlined;
-    if (f.isIso) return Icons.album_outlined;
-    if (f.isAudio) return Icons.audiotrack_outlined;
-    if (f.isPlayable) return Icons.movie_outlined;
-    if (f.isLyrics) return Icons.lyrics_outlined;
-    if (f.isSubtitle) return Icons.subtitles_outlined;
-    return Icons.insert_drive_file_outlined;
+  static IconData iconFor(MediaDirectoryEntry f) {
+    if (f.isDirectory) return SPIcons.folder;
+    if (f.isIso) return SPIcons.disc;
+    if (f.isAudio) return SPIcons.music;
+    if (f.isPlayable) return SPIcons.video;
+    if (f.isLyrics) return SPIcons.lyrics;
+    if (f.isSubtitle) return SPIcons.subtitles;
+    return SPIcons.document;
   }
 
-  static Color _colorFor(MediaDirectoryEntry f, ColorScheme scheme) {
+  static Color colorFor(MediaDirectoryEntry f, ColorScheme scheme) {
     if (f.isDirectory) return scheme.primary;
     if (f.isIso) return scheme.tertiary;
     if (f.isAudio || f.isLyrics) return scheme.secondary;
@@ -283,10 +331,19 @@ class FileTile extends StatelessWidget {
     return scheme.outline;
   }
 
-  static String _formatDate(DateTime d) {
+  static String formatDate(DateTime d) {
     final local = d.toLocal();
     String two(int v) => v.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} '
         '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+  }
+
+  static String formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KiB';
+    if (bytes < 1073741824) {
+      return '${(bytes / 1048576).toStringAsFixed(1)} MiB';
+    }
+    return '${(bytes / 1073741824).toStringAsFixed(2)} GiB';
   }
 }

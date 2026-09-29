@@ -15,6 +15,7 @@ import 'package:streampath/data/models/playback_progress.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/presentation/pages/media_library_page.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 
 void main() {
@@ -72,6 +73,7 @@ void main() {
     IsoLibraryProgressReader? isoProgressReader,
     Set<String>? sourceIds,
     String? Function(MediaLibraryItem)? resolveDirectTarget,
+    Widget? sourceFilter,
   }) => MaterialApp(
     theme: AppTheme.light(
       glass: appearance.isGlass,
@@ -88,6 +90,7 @@ void main() {
       audioProgressService: audioProgressReader ?? audioProgress,
       isoProgressService: isoProgressReader,
       resolveUrl: (href) => 'https://example.test$href',
+      sourceFilter: sourceFilter,
     ),
   );
 
@@ -132,6 +135,15 @@ void main() {
 
       expect(find.text('媒体中心'), findsOneWidget);
       expect(find.byKey(const Key('favorite-media-lane')), findsOneWidget);
+      if (widths[index] < 900) {
+        expect(
+          find.ancestor(
+            of: find.byKey(const Key('media-library-global-search')),
+            matching: find.byType(AppBar),
+          ),
+          findsNothing,
+        );
+      }
       expect(tester.takeException(), isNull);
     }
     addTearDown(tester.view.resetPhysicalSize);
@@ -147,6 +159,42 @@ void main() {
     expect(appBar.toolbarHeight, 48);
     expect(tabs, hasLength(4));
     expect(tabs.map((tab) => tab.height), everyElement(40));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('来源筛选与媒体标题共用页头和单层页面背景', (tester) async {
+    tester.view.physicalSize = const Size(1180, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      buildPage(
+        appearance: const AppearanceConfig(style: InterfaceStyle.glass),
+        sourceFilter: const SizedBox(
+          key: Key('source-filter-probe'),
+          width: 280,
+          child: Text('全部已挂载来源'),
+        ),
+      ),
+    );
+    await settleLibraryPage(tester);
+
+    expect(find.byType(Scaffold), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('source-filter-probe')),
+        matching: find.byType(AppBar),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(
+        of: find.byKey(const Key('media-library-global-search')),
+        matching: find.byType(AppBar),
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -253,7 +301,7 @@ void main() {
 
     expect(find.text('收藏影片.mkv'), findsOneWidget);
     final removeButton = tester.widget<IconButton>(
-      find.widgetWithIcon(IconButton, Icons.star),
+      find.widgetWithIcon(IconButton, SPIcons.favoriteFill),
     );
     late List<MediaLibraryRecord> favorites;
     await tester.runAsync(() async {
@@ -315,62 +363,68 @@ void main() {
   });
 
   for (final mode in [PlaybackMode.legacyTitle, PlaybackMode.webdavHdmvMenu]) {
-  testWidgets('ISO ${mode.name} 在收藏、继续播放和最近播放中独立显示多集进度', (tester) async {
-    final iso = MediaLibraryItem(
-      sourceId: sourceId, parentPath: '媒体', name: '演唱会.iso',
-      kind: MediaLibraryKind.iso, playbackMode: mode,
-    );
-    final isoFile = file(iso.name);
-    final isoUrl = 'https://example.test${isoFile.href}';
-    final isoProgress = _FakeIsoProgressReader(expectedMode: mode);
-    if (mode == PlaybackMode.legacyTitle) {
-      isoProgress.values[isoUrl] = const IsoLibraryProgress(
-        episodeNumber: 2,
-        episodeCount: 4,
-        position: Duration(minutes: 2, seconds: 3),
-        duration: Duration(minutes: 24),
+    testWidgets('ISO ${mode.name} 在收藏、继续播放和最近播放中独立显示多集进度', (tester) async {
+      final iso = MediaLibraryItem(
+        sourceId: sourceId,
+        parentPath: '媒体',
+        name: '演唱会.iso',
+        kind: MediaLibraryKind.iso,
+        playbackMode: mode,
       );
-    }
-    await tester.runAsync(() async {
-      await store.toggleFavorite(iso);
-      await store.recordPlayback(iso, playbackSessionId: 'iso-session');
+      final isoFile = file(iso.name);
+      final isoUrl = 'https://example.test${isoFile.href}';
+      final isoProgress = _FakeIsoProgressReader(expectedMode: mode);
+      if (mode == PlaybackMode.legacyTitle) {
+        isoProgress.values[isoUrl] = const IsoLibraryProgress(
+          episodeNumber: 2,
+          episodeCount: 4,
+          position: Duration(minutes: 2, seconds: 3),
+          duration: Duration(minutes: 24),
+        );
+      }
+      await tester.runAsync(() async {
+        await store.toggleFavorite(iso);
+        await store.recordPlayback(iso, playbackSessionId: 'iso-session');
+      });
+
+      await tester.pumpWidget(
+        buildPage(
+          snapshots: [
+            VisitedDirectorySnapshot(
+              path: '媒体',
+              entries: [isoFile],
+              lastAccessedAt: DateTime.utc(2026, 8, 27),
+            ),
+          ],
+          isoProgressReader: isoProgress,
+        ),
+      );
+      await settleLibraryPage(tester);
+
+      await tester.tap(find.text('ISO'));
+      await tester.pumpAndSettle();
+      expect(find.text(iso.name), findsOneWidget);
+
+      await tester.tap(find.text('继续播放').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('ISO'));
+      await tester.pumpAndSettle();
+      expect(find.text(iso.name), findsOneWidget);
+      expect(
+        find.textContaining('第 2/4 集'),
+        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget,
+      );
+      expect(
+        find.textContaining('已播放 02:03'),
+        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget,
+      );
+
+      await tester.tap(find.text('最近播放').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('ISO'));
+      await tester.pumpAndSettle();
+      expect(find.text(iso.name), findsOneWidget);
     });
-
-    await tester.pumpWidget(
-      buildPage(
-        snapshots: [
-          VisitedDirectorySnapshot(
-            path: '媒体',
-            entries: [isoFile],
-            lastAccessedAt: DateTime.utc(2026, 8, 27),
-          ),
-        ],
-        isoProgressReader: isoProgress,
-      ),
-    );
-    await settleLibraryPage(tester);
-
-    await tester.tap(find.text('ISO'));
-    await tester.pumpAndSettle();
-    expect(find.text(iso.name), findsOneWidget);
-
-    await tester.tap(find.text('继续播放').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('ISO'));
-    await tester.pumpAndSettle();
-    expect(find.text(iso.name), findsOneWidget);
-    expect(find.textContaining('第 2/4 集'),
-        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget);
-    expect(find.textContaining('已播放 02:03'),
-        mode == PlaybackMode.webdavHdmvMenu ? findsNothing : findsOneWidget);
-
-    await tester.tap(find.text('最近播放').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('ISO'));
-    await tester.pumpAndSettle();
-    expect(find.text(iso.name), findsOneWidget);
-  });
-
   }
 
   testWidgets('页面保持打开时实时更新历史、播放时间和完成状态', (tester) async {

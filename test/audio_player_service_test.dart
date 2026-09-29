@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
@@ -50,6 +51,10 @@ void main() {
   Future<(AudioPlayerService, Directory, PlaybackProgressService)>
   makeEpochService({
     String? executablePath,
+    bool audioDynamicLyricsEnabled = false,
+    String audioLyricsFontFamily = 'Arial',
+    double audioLyricsOutlineWidth = 2,
+    double audioLyricsTransparency = 0,
     PlayerProcessTreeTerminator? processTreeTerminator,
     PlayerProcessController? processController,
   }) async {
@@ -70,6 +75,10 @@ void main() {
           name: 'mpv',
           executable: executable.path,
           args: const ['{url}'],
+          audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
+          audioLyricsFontFamily: audioLyricsFontFamily,
+          audioLyricsOutlineWidth: audioLyricsOutlineWidth,
+          audioLyricsTransparency: audioLyricsTransparency,
         ),
         const ConnectionConfig(baseUrl: 'http://h/dav'),
       ),
@@ -182,6 +191,60 @@ void main() {
     expect(companion, contains(cover.path.replaceAll('\\', r'\\')));
     expect(companion, isNot(contains('http://')));
     expect(companion, isNot(contains('https://')));
+  });
+
+  test('动态歌词使用会话 ASS、无封面窗口，并在结束时清理', () async {
+    final (service, directory, progress) = await makeEpochService(
+      audioDynamicLyricsEnabled: true,
+      audioLyricsFontFamily: 'Noto Sans CJK JP',
+      audioLyricsOutlineWidth: 3.5,
+      audioLyricsTransparency: 0.4,
+    );
+    const sessionId = 'dynamic-audio';
+    addTearDown(() async {
+      await service.terminateSession(sessionId);
+      await progress.close();
+      if (directory.existsSync()) directory.deleteSync(recursive: true);
+    });
+    final audio = File(p.join(directory.path, 'song.flac'))
+      ..writeAsBytesSync([1]);
+    final lyrics = File(p.join(directory.path, 'song.lrc'))
+      ..writeAsStringSync('[00:01.00]<00:01.00>你<00:01.30>好');
+    final result = await service.launchLocal(
+      sessionId: sessionId,
+      sourceId: 'local:root-1',
+      entries: [
+        AudioMediaEntry(
+          url: audio.path,
+          title: 'Song',
+          lyrics: AudioCompanionFile(name: 'song.lrc', url: lyrics.path),
+        ),
+      ],
+    );
+    expect(result.args, contains('--force-window=yes'));
+    final companionPath = result.args
+        .where((arg) => arg.contains('audio-companions'))
+        .single
+        .substring('--script='.length);
+    final companion = await File(companionPath).readAsString();
+    final ass = File(
+      p.join(
+        p.dirname(companionPath),
+        'streampath-audio-lyrics-dynamic-audio__e${result.launchEpoch}-0.ass',
+      ),
+    );
+    expect(companion, contains(ass.path.replaceAll('\\', r'\\')));
+    expect(await ass.readAsString(), contains(r'{\kf30}你'));
+    expect(
+      await ass.readAsString(),
+      contains('Style: Current,Noto Sans CJK JP,48,&H66FFFFFF'),
+    );
+    expect(
+      await service.terminateSession(sessionId),
+      PlayerTerminationOutcome.terminated,
+    );
+    expect(await ass.exists(), isFalse);
+    expect(await lyrics.exists(), isTrue);
   });
 
   test('缓存参数过滤覆盖应用缓存控制使用的 MPV 参数族', () {

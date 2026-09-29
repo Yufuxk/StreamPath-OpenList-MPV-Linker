@@ -47,6 +47,36 @@ end)
     );
   }
 
+  static Future<String> ensurePlaylistFontDirectories(
+    List<String?> directories,
+    Directory base, {
+    required String sessionId,
+  }) async {
+    final values = directories
+        .map((path) => path == null ? 'nil' : _luaQuote(path))
+        .join(', ');
+    final script =
+        '''
+local FONT_DIRS = {$values}
+local OPTION = "sub-fonts-dir"
+local _, option_error = mp.get_property(OPTION)
+if option_error then return end
+
+mp.add_hook("on_load", 5, function()
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local directory = FONT_DIRS[pos + 1]
+    if directory then
+        mp.set_property("file-local-options/" .. OPTION, directory)
+    end
+end)
+''';
+    return _write(
+      base,
+      _sessionFileName('streampath-font-directory', 'lua', sessionId),
+      script,
+    );
+  }
+
   // ── 单集外挂字幕注入 ───────────────────────────────────────
 
   /// 写入单集外挂字幕注入脚本。
@@ -174,6 +204,136 @@ end)
     return file.path;
   }
 
+  /// 自动切季会重置 playlist-pos；按当前 M3U 身份约束每季资源脚本。
+  static Future<String> ensureSeasonResources(
+    List<MediaEntry> entries,
+    List<String?> fontDirectories,
+    String Function(String) authUrl,
+    String playlistPath,
+    Directory base, {
+    required bool subtitleInjectionEnabled,
+    required bool autoSelect,
+    required String sessionId,
+  }) async {
+    final titles = <String>[];
+    final subs = <String>[];
+    final subTitles = <String>[];
+    final langs = <String>[];
+    final fonts = <String>[];
+    for (var i = 0; i < entries.length; i++) {
+      final title = entries[i].title ?? fallbackTitleFromUrl(entries[i].url);
+      titles.add('TITLES[$i] = ${_luaQuote(title)}');
+      final subtitle = entries[i].subtitle;
+      if (subtitleInjectionEnabled && subtitle != null) {
+        subs.add('SUBS[$i] = ${_luaQuote(authUrl(subtitle.url))}');
+        subTitles.add('SUB_TITLES[$i] = ${_luaQuote(subtitle.name)}');
+        langs.add(
+          'LANGS[$i] = "${subtitle.language == SubtitleLanguage.chinese ? 'chi' : 'und'}"',
+        );
+      }
+      if (i < fontDirectories.length && fontDirectories[i] != null) {
+        fonts.add('FONT_DIRS[$i] = ${_luaQuote(fontDirectories[i]!)}');
+      }
+    }
+    final script =
+        '''
+local PLAYLIST = ${_luaQuote(playlistPath)}
+local TITLES = {}
+local SUBS = {}
+local SUB_TITLES = {}
+local LANGS = {}
+local FONT_DIRS = {}
+local MODE = "${autoSelect ? 'select' : 'auto'}"
+${titles.join('\n')}
+${subs.join('\n')}
+${subTitles.join('\n')}
+${langs.join('\n')}
+${fonts.join('\n')}
+local function owns_playlist()
+    local actual = mp.get_property("playlist-path", "")
+    return actual:gsub("\\\\", "/"):lower() == PLAYLIST:gsub("\\\\", "/"):lower()
+end
+mp.add_hook("on_load", 5, function()
+    if not owns_playlist() then return end
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local directory = FONT_DIRS[pos]
+    if directory and mp.get_property("sub-fonts-dir", nil) ~= nil then
+        mp.set_property("file-local-options/sub-fonts-dir", directory)
+    end
+end)
+mp.register_event("file-loaded", function()
+    if not owns_playlist() then return end
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local title = TITLES[pos]
+    if title then mp.set_property("force-media-title", title) end
+    local subtitle = SUBS[pos]
+    if not subtitle then return end
+    local previous_sid = mp.get_property("sid", "no")
+    mp.commandv("sub-add", subtitle, MODE, SUB_TITLES[pos], LANGS[pos])
+    if MODE == "auto" then
+        mp.add_timeout(0, function() mp.set_property("sid", previous_sid) end)
+    end
+end)
+''';
+    return _write(
+      base,
+      _sessionFileName('streampath-season-resources', 'lua', sessionId),
+      script,
+    );
+  }
+
+  static Future<String> ensureSeasonTransition(
+    String planFile,
+    String markerFile,
+    Directory base, {
+    required String sessionId,
+  }) {
+    final script =
+        '''
+local utils = require "mp.utils"
+local PLAN = ${_luaQuote(planFile)}
+local MARKER = ${_luaQuote(markerFile)}
+local last_pos = -1
+local last_playlist = ""
+local function normalized(value)
+    return (value or ""):gsub("\\\\", "/"):lower()
+end
+mp.register_event("start-file", function()
+    last_pos = mp.get_property_number("playlist-pos", -1)
+    last_playlist = mp.get_property("playlist-path", "")
+end)
+mp.register_event("end-file", function(event)
+    if not event or event.reason ~= "eof" then return end
+    local count = mp.get_property_number("playlist-count", 0)
+    if last_pos < 0 or last_pos ~= count - 1 then return end
+    local f = io.open(PLAN, "r")
+    local plan = nil
+    if f then
+        plan = utils.parse_json(f:read("*a") or "")
+        f:close()
+    end
+    if plan and normalized(plan.from) == normalized(last_playlist) and
+        type(plan.to) == "string" and plan.to ~= "" then
+        local ok = mp.commandv("loadlist", plan.to, "replace")
+        if ok then
+            local marker = io.open(MARKER, "w")
+            if marker then
+                marker:write(plan.to)
+                marker:close()
+            end
+            return
+        end
+    end
+    mp.commandv("quit")
+end)
+''';
+    return _write(
+      base,
+      _sessionFileName('streampath-season-transition', 'lua', sessionId),
+      script,
+    );
+  }
+
   // ── 播放列表标题兜底脚本 ────────────────────────────────────
 
   /// 写入播放列表标题兜底脚本：每集 `file-loaded` 时按 `playlist-pos`
@@ -235,7 +395,7 @@ end)
     final script =
         '''
 -- StreamPath: 当前播放状态上报 + 命令执行。
--- OUT 二十一行：playlist-pos / path / paused(1|0) / time-pos / duration
+-- OUT 前二十一行保持不变，末两行附已加载的 playlist-path/位置。
 --           / buffering(0-100) / net-speed(B/s)
 --           / cache-idle(1|0|-1) / 诊断行（speed_src|speed|idle_src|idle_raw）
 --           / paused-for-cache / bof-cached / eof-cached / resolution
@@ -251,6 +411,7 @@ local REPORTED_PATH = ${_luaQuote(reportedPath ?? '')}
 
 local has_loaded = false
 local last_playlist_pos = -1
+local last_loaded_playlist = ""
 local last_path = ""
 local last_time_pos = -1
 local last_duration = -1
@@ -470,7 +631,9 @@ local function write_status(use_cached_progress, skip_diagnostics)
             "\\n" .. tostring(total_cache_bytes) ..
             "\\n" .. tostring(disc_menu_active) ..
             "\\n" .. tostring(current_edition) ..
-            "\\n" .. tostring(editions))
+            "\\n" .. tostring(editions) ..
+            "\\n" .. last_loaded_playlist ..
+            "\\n" .. tostring(last_playlist_pos))
         f:close()
     end
 end
@@ -498,6 +661,7 @@ end)
 mp.register_event("file-loaded", function()
     has_loaded = true
     entry_started = true
+    last_loaded_playlist = mp.get_property("playlist-path", "")
     -- 起播阶段的瞬时缓冲不建立临时播放点；稳定窗口结束后才启用。
     checkpoint_armed_at = mp.get_time() + 5
     write_status(false, false)
@@ -638,6 +802,10 @@ end)
       'streampath-playlist-$id.m3u',
       'streampath-titles-$id.lua',
       'streampath-current-$id.lua',
+      'streampath-season-transition-$id.lua',
+      'streampath-season-resources-${id}_current.lua',
+      'streampath-season-resources-${id}_next.lua',
+      'streampath-playlist-${id}_next.m3u',
     ];
   }
 

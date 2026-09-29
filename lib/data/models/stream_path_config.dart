@@ -9,6 +9,7 @@ import 'media_library_config.dart';
 import 'openlist_recovery_config.dart';
 import 'player_config.dart';
 import 'server_profile.dart';
+import 'special_playlist_mode.dart';
 
 /// StreamPath 统一用户配置（平铺结构，集中存放，用户可自行编辑）。
 ///
@@ -46,11 +47,12 @@ import 'server_profile.dart';
 /// 由 [StreamPathConfigStore] 读写；兼容旧的 player_config.json 与
 /// connection_config.json（首次启动自动迁移合并）。
 class StreamPathConfig {
-  static const int currentSchemaVersion = 5;
+  static const int currentSchemaVersion = 6;
 
   const StreamPathConfig({
     this.schemaVersion = currentSchemaVersion,
     this.profiles = const [],
+    this.mountedProfileIds = const [],
     this.localRoots = const [],
     this.activeProfileId = '',
     this.credentialStorageMode = CredentialStorageMode.windowsCredential,
@@ -67,9 +69,20 @@ class StreamPathConfig {
     ],
     bool subtitleInjectionEnabled = true,
     bool subtitleAutoSelectEnabled = true,
+    this.audioDynamicLyricsEnabled = true,
+    this.audioLyricsFontFamily = PlayerConfig.defaultAudioLyricsFontFamily,
+    this.audioLyricsOutlineWidth = PlayerConfig.defaultAudioLyricsOutlineWidth,
+    this.audioLyricsTransparency = PlayerConfig.defaultAudioLyricsTransparency,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
     this.menuProgressSharingEnabled = false,
+    this.specialPlaylistMode = SpecialPlaylistMode.ovaOnly,
+    this.scanSpecialChildFolders = true,
+    this.scanSpecialSiblingFolders = false,
+    this.sharePlaylistFonts = false,
+    this.webDavFontCacheEnabled = true,
+    this.autoSeasonTransitionEnabled = true,
+    this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
@@ -87,6 +100,7 @@ class StreamPathConfig {
   // ── 连接信息 ─────────────────────────────────────────────────
   final int schemaVersion;
   final List<ServerProfile> profiles;
+  final List<String> mountedProfileIds;
   final List<LocalRootConfig> localRoots;
   final String activeProfileId;
   final CredentialStorageMode credentialStorageMode;
@@ -106,6 +120,12 @@ class StreamPathConfig {
   /// 注入后自动选择外挂字幕；依赖 [subtitleInjectionEnabled]。
   final bool subtitleAutoSelectEnabled;
 
+  /// 仅音频会话使用的 MPV 内动态歌词。
+  final bool audioDynamicLyricsEnabled;
+  final String audioLyricsFontFamily;
+  final double audioLyricsOutlineWidth;
+  final double audioLyricsTransparency;
+
   /// 旧代码兼容访问器；旧总开关语义等于“注入并自动选择”。
   @Deprecated('请分别使用 subtitleInjectionEnabled 与 subtitleAutoSelectEnabled')
   bool get subtitleEnabled =>
@@ -114,6 +134,13 @@ class StreamPathConfig {
 
   /// 菜单播放记录正片进度，供 WebDAV Title/MPLS 模式使用。
   final bool menuProgressSharingEnabled;
+  final SpecialPlaylistMode specialPlaylistMode;
+  final bool scanSpecialChildFolders;
+  final bool scanSpecialSiblingFolders;
+  final bool sharePlaylistFonts;
+  final bool webDavFontCacheEnabled;
+  final bool autoSeasonTransitionEnabled;
+  final bool allowSeasonGap;
 
   // ── 文件浏览 ─────────────────────────────────────────────────
   final bool hiddenExtensionsEnabled;
@@ -165,8 +192,19 @@ class StreamPathConfig {
     args: playerArgs,
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
+    audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
+    audioLyricsFontFamily: audioLyricsFontFamily,
+    audioLyricsOutlineWidth: audioLyricsOutlineWidth,
+    audioLyricsTransparency: audioLyricsTransparency,
     resumeEnabled: resumeEnabled,
     menuProgressSharingEnabled: menuProgressSharingEnabled,
+    specialPlaylistMode: specialPlaylistMode,
+    scanSpecialChildFolders: scanSpecialChildFolders,
+    scanSpecialSiblingFolders: scanSpecialSiblingFolders,
+    sharePlaylistFonts: sharePlaylistFonts,
+    webDavFontCacheEnabled: webDavFontCacheEnabled,
+    autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
+    allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: hiddenExtensions,
     defaultSortMode: defaultSortMode,
@@ -182,6 +220,7 @@ class StreamPathConfig {
     AppearanceConfig appearance = const AppearanceConfig(),
     MediaLibraryConfig mediaLibrary = const MediaLibraryConfig(),
     List<ServerProfile> profiles = const [],
+    List<String> mountedProfileIds = const [],
     List<LocalRootConfig> localRoots = const [],
     String activeProfileId = '',
     CredentialStorageMode credentialStorageMode =
@@ -197,8 +236,19 @@ class StreamPathConfig {
       playerArgs: player.args,
       subtitleInjectionEnabled: player.subtitleInjectionEnabled,
       subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
+      audioDynamicLyricsEnabled: player.audioDynamicLyricsEnabled,
+      audioLyricsFontFamily: player.audioLyricsFontFamily,
+      audioLyricsOutlineWidth: player.audioLyricsOutlineWidth,
+      audioLyricsTransparency: player.audioLyricsTransparency,
       resumeEnabled: player.resumeEnabled,
       menuProgressSharingEnabled: player.menuProgressSharingEnabled,
+      specialPlaylistMode: player.specialPlaylistMode,
+      scanSpecialChildFolders: player.scanSpecialChildFolders,
+      scanSpecialSiblingFolders: player.scanSpecialSiblingFolders,
+      sharePlaylistFonts: player.sharePlaylistFonts,
+      webDavFontCacheEnabled: player.webDavFontCacheEnabled,
+      autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
+      allowSeasonGap: player.allowSeasonGap,
       hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
       hiddenExtensions: player.hiddenExtensions,
       defaultSortMode: player.defaultSortMode,
@@ -208,6 +258,7 @@ class StreamPathConfig {
       openListRecovery: openListRecovery,
       appearance: appearance,
       profiles: profiles,
+      mountedProfileIds: mountedProfileIds,
       localRoots: localRoots,
       activeProfileId: activeProfileId,
       credentialStorageMode: credentialStorageMode,
@@ -244,6 +295,7 @@ class StreamPathConfig {
       appearance: appearance,
       mediaLibrary: mediaLibrary,
       profiles: nextProfiles,
+      mountedProfileIds: mountedProfileIds,
       localRoots: localRoots,
       activeProfileId: activeProfileId,
       credentialStorageMode: credentialStorageMode,
@@ -282,13 +334,33 @@ class StreamPathConfig {
 
   StreamPathConfig removeProfile(String id) {
     final next = profiles.where((item) => item.profileId != id).toList();
-    if (next.isEmpty) return _copyWithProfileState(const [], '', null);
+    if (next.isEmpty) {
+      return _copyWithProfileState(
+        const [],
+        '',
+        null,
+        mountedProfileIds: const [],
+      );
+    }
     final active = next.firstWhere(
       (item) => item.profileId == activeProfileId,
       orElse: () => next.first,
     );
-    return _copyWithProfileState(next, active.profileId, active);
+    return _copyWithProfileState(
+      next,
+      active.profileId,
+      active,
+      mountedProfileIds: mountedProfileIds.where((item) => item != id).toList(),
+    );
   }
+
+  StreamPathConfig withMountedProfileIds(List<String> ids) =>
+      _copyWithProfileState(
+        profiles,
+        activeProfileId,
+        activeProfile,
+        mountedProfileIds: List.unmodifiable(ids),
+      );
 
   StreamPathConfig withCredentialStorageMode(CredentialStorageMode mode) =>
       _copyWithProfileState(
@@ -306,6 +378,7 @@ class StreamPathConfig {
   }) => StreamPathConfig(
     schemaVersion: currentSchemaVersion,
     profiles: profiles,
+    mountedProfileIds: mountedProfileIds,
     localRoots: localRoots,
     activeProfileId: activeProfileId,
     credentialStorageMode: credentialStorageMode,
@@ -318,8 +391,19 @@ class StreamPathConfig {
     playerArgs: player.args,
     subtitleInjectionEnabled: player.subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
+    audioDynamicLyricsEnabled: player.audioDynamicLyricsEnabled,
+    audioLyricsFontFamily: player.audioLyricsFontFamily,
+    audioLyricsOutlineWidth: player.audioLyricsOutlineWidth,
+    audioLyricsTransparency: player.audioLyricsTransparency,
     resumeEnabled: player.resumeEnabled,
     menuProgressSharingEnabled: player.menuProgressSharingEnabled,
+    specialPlaylistMode: player.specialPlaylistMode,
+    scanSpecialChildFolders: player.scanSpecialChildFolders,
+    scanSpecialSiblingFolders: player.scanSpecialSiblingFolders,
+    sharePlaylistFonts: player.sharePlaylistFonts,
+    webDavFontCacheEnabled: player.webDavFontCacheEnabled,
+    autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
+    allowSeasonGap: player.allowSeasonGap,
     hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
     hiddenExtensions: player.hiddenExtensions,
     defaultSortMode: player.defaultSortMode,
@@ -335,9 +419,11 @@ class StreamPathConfig {
     String nextActiveId,
     ServerProfile? nextActive, {
     CredentialStorageMode? credentialStorageMode,
+    List<String>? mountedProfileIds,
   }) => StreamPathConfig(
     schemaVersion: currentSchemaVersion,
     profiles: List.unmodifiable(nextProfiles),
+    mountedProfileIds: mountedProfileIds ?? this.mountedProfileIds,
     localRoots: localRoots,
     activeProfileId: nextActiveId,
     credentialStorageMode: credentialStorageMode ?? this.credentialStorageMode,
@@ -350,8 +436,19 @@ class StreamPathConfig {
     playerArgs: playerArgs,
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
+    audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
+    audioLyricsFontFamily: audioLyricsFontFamily,
+    audioLyricsOutlineWidth: audioLyricsOutlineWidth,
+    audioLyricsTransparency: audioLyricsTransparency,
     resumeEnabled: resumeEnabled,
     menuProgressSharingEnabled: menuProgressSharingEnabled,
+    specialPlaylistMode: specialPlaylistMode,
+    scanSpecialChildFolders: scanSpecialChildFolders,
+    scanSpecialSiblingFolders: scanSpecialSiblingFolders,
+    sharePlaylistFonts: sharePlaylistFonts,
+    webDavFontCacheEnabled: webDavFontCacheEnabled,
+    autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
+    allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: hiddenExtensions,
     defaultSortMode: defaultSortMode,
@@ -369,6 +466,7 @@ class StreamPathConfig {
   Map<String, dynamic> toJson() => <String, dynamic>{
     'schemaVersion': currentSchemaVersion,
     'profiles': profiles.map((profile) => profile.toJson()).toList(),
+    'mountedProfileIds': mountedProfileIds,
     'localRoots': localRoots.map((root) => root.toJson()).toList(),
     'activeProfileId': activeProfileId,
     'credentialStorageMode': credentialStorageMode.jsonValue,
@@ -381,8 +479,19 @@ class StreamPathConfig {
     'playerArgs': playerArgs,
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
+    'audioDynamicLyricsEnabled': audioDynamicLyricsEnabled,
+    'audioLyricsFontFamily': audioLyricsFontFamily,
+    'audioLyricsOutlineWidth': audioLyricsOutlineWidth,
+    'audioLyricsTransparency': audioLyricsTransparency,
     'resumeEnabled': resumeEnabled,
     'menuProgressSharingEnabled': menuProgressSharingEnabled,
+    'specialPlaylistMode': specialPlaylistMode.name,
+    'scanSpecialChildFolders': scanSpecialChildFolders,
+    'scanSpecialSiblingFolders': scanSpecialSiblingFolders,
+    'sharePlaylistFonts': sharePlaylistFonts,
+    'webDavFontCacheEnabled': webDavFontCacheEnabled,
+    'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
+    'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
@@ -432,6 +541,13 @@ class StreamPathConfig {
     return StreamPathConfig(
       schemaVersion: schemaVersion == 0 ? currentSchemaVersion : schemaVersion,
       profiles: profiles,
+      mountedProfileIds:
+          (json['mountedProfileIds'] as List?)
+              ?.whereType<String>()
+              .where((id) => profiles.any((profile) => profile.profileId == id))
+              .toSet()
+              .toList(growable: false) ??
+          const [],
       localRoots: localRoots,
       activeProfileId: selectedProfile?.profileId ?? '',
       credentialStorageMode: CredentialStorageModeJson.fromJson(
@@ -451,8 +567,34 @@ class StreamPathConfig {
           const [],
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
+      audioDynamicLyricsEnabled:
+          (json['audioDynamicLyricsEnabled'] as bool?) ?? true,
+      audioLyricsFontFamily:
+          (json['audioLyricsFontFamily'] as String?) ??
+          PlayerConfig.defaultAudioLyricsFontFamily,
+      audioLyricsOutlineWidth:
+          ((json['audioLyricsOutlineWidth'] as num?)?.toDouble() ??
+                  PlayerConfig.defaultAudioLyricsOutlineWidth)
+              .clamp(0.0, PlayerConfig.maxAudioLyricsOutlineWidth),
+      audioLyricsTransparency:
+          ((json['audioLyricsTransparency'] as num?)?.toDouble() ??
+                  PlayerConfig.defaultAudioLyricsTransparency)
+              .clamp(0.0, 1.0),
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
-      menuProgressSharingEnabled: (json['menuProgressSharingEnabled'] as bool?) ?? false,
+      menuProgressSharingEnabled:
+          (json['menuProgressSharingEnabled'] as bool?) ?? false,
+      specialPlaylistMode: SpecialPlaylistMode.fromJson(
+        json['specialPlaylistMode'],
+      ),
+      scanSpecialChildFolders:
+          (json['scanSpecialChildFolders'] as bool?) ?? true,
+      scanSpecialSiblingFolders:
+          (json['scanSpecialSiblingFolders'] as bool?) ?? false,
+      sharePlaylistFonts: (json['sharePlaylistFonts'] as bool?) ?? false,
+      webDavFontCacheEnabled: (json['webDavFontCacheEnabled'] as bool?) ?? true,
+      autoSeasonTransitionEnabled:
+          (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
+      allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,
       hiddenExtensionsEnabled:
           (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:
@@ -493,6 +635,7 @@ class StreamPathConfig {
       StreamPathConfig(
         schemaVersion: currentSchemaVersion,
         profiles: profiles,
+        mountedProfileIds: mountedProfileIds,
         localRoots: List.unmodifiable(roots),
         activeProfileId: activeProfileId,
         credentialStorageMode: credentialStorageMode,
@@ -505,8 +648,19 @@ class StreamPathConfig {
         playerArgs: playerArgs,
         subtitleInjectionEnabled: subtitleInjectionEnabled,
         subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
+        audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
+        audioLyricsFontFamily: audioLyricsFontFamily,
+        audioLyricsOutlineWidth: audioLyricsOutlineWidth,
+        audioLyricsTransparency: audioLyricsTransparency,
         resumeEnabled: resumeEnabled,
         menuProgressSharingEnabled: menuProgressSharingEnabled,
+        specialPlaylistMode: specialPlaylistMode,
+        scanSpecialChildFolders: scanSpecialChildFolders,
+        scanSpecialSiblingFolders: scanSpecialSiblingFolders,
+        sharePlaylistFonts: sharePlaylistFonts,
+        webDavFontCacheEnabled: webDavFontCacheEnabled,
+        autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
+        allowSeasonGap: allowSeasonGap,
         hiddenExtensionsEnabled: hiddenExtensionsEnabled,
         hiddenExtensions: hiddenExtensions,
         defaultSortMode: defaultSortMode,

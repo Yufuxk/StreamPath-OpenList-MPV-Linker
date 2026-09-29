@@ -1,7 +1,9 @@
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:win32/win32.dart';
 import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/data/models/media_directory_entry.dart';
@@ -53,6 +55,37 @@ void main() {
     );
     expect(source.supportsRemoteSearch, isFalse);
     expect(source.descriptor.sourceId, 'local:root-test');
+  });
+
+  test('Windows 隐藏和系统属性的条目不出现在本地列表中', () async {
+    if (!Platform.isWindows) return;
+    final hidden = Directory(p.join(root.path, r'$RECYCLE.BIN'))..createSync();
+    final system = Directory(p.join(root.path, 'System Volume Information'))
+      ..createSync();
+    final visible = Directory(p.join(root.path, 'Visible'))..createSync();
+    final nativeHidden = hidden.path.toNativeUtf16();
+    final nativeSystem = system.path.toNativeUtf16();
+    try {
+      expect(SetFileAttributes(nativeHidden, FILE_ATTRIBUTE_HIDDEN), 1);
+      expect(SetFileAttributes(nativeSystem, FILE_ATTRIBUTE_SYSTEM), 1);
+    } finally {
+      calloc.free(nativeHidden);
+      calloc.free(nativeSystem);
+    }
+
+    final entries = await LocalMediaSource(root).fetchDirectory('');
+    expect(
+      entries.map((entry) => entry.name),
+      contains(visible.path.split(p.separator).last),
+    );
+    expect(
+      entries.map((entry) => entry.name),
+      isNot(contains(hidden.path.split(p.separator).last)),
+    );
+    expect(
+      entries.map((entry) => entry.name),
+      isNot(contains(system.path.split(p.separator).last)),
+    );
   });
 
   test('进入子目录时使用相对路径并提供返回上级条目', () async {

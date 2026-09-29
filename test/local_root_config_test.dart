@@ -41,7 +41,7 @@ void main() {
     expect(restored.displayName, '本地影视');
   });
 
-  test('schema 4 迁移到 5 时先备份并补充空 localRoots', () async {
+  test('schema 4 迁移到当前版本时先备份并补充空 localRoots', () async {
     final path = p.join(temporaryDirectory.path, 'config.json');
     await File(path).writeAsString(
       jsonEncode(<String, Object?>{
@@ -61,7 +61,7 @@ void main() {
 
     expect(config.schemaVersion, StreamPathConfig.currentSchemaVersion);
     expect(config.localRoots, isEmpty);
-    expect(persisted['schemaVersion'], 5);
+    expect(persisted['schemaVersion'], StreamPathConfig.currentSchemaVersion);
     expect(persisted['localRoots'], isEmpty);
     expect(migrationBackups, hasLength(1));
   });

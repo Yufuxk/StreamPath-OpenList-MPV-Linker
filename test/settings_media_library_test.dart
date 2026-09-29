@@ -189,6 +189,37 @@ void main() {
     expect(favorites, hasLength(2));
   });
 
+  testWidgets('共享按钮允许网络与本地同时开启，独立模式关闭冲突项', (tester) async {
+    await openMediaLibrarySettings(tester);
+    expect(find.byKey(const Key('sharing-network')), findsOneWidget);
+    expect(find.byKey(const Key('sharing-local')), findsOneWidget);
+    expect(
+      configStore.current.mediaLibrary.sharingMode,
+      MediaLibrarySharingMode.networkAndLocalShared,
+    );
+
+    await tester.tap(find.byKey(const Key('sharing-independent')));
+    await tester.pump();
+    expect(
+      tester.widget<OutlinedButton>(find.byKey(const Key('sharing-network'))),
+      isA<OutlinedButton>(),
+    );
+    await tester.tap(find.byKey(const Key('sharing-network')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('sharing-local')));
+    await tester.pump();
+    expect(find.byKey(const Key('sharing-network')), findsOneWidget);
+    expect(find.byKey(const Key('sharing-local')), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byKey(const Key('sharing-network'))),
+      isA<FilledButton>(),
+    );
+    expect(
+      tester.widget<FilledButton>(find.byKey(const Key('sharing-local'))),
+      isA<FilledButton>(),
+    );
+  });
+
   testWidgets('设置页展示四个分项清理入口', (tester) async {
     final favorite = item('收藏.mkv', kind: MediaLibraryKind.video);
     final directory = item(

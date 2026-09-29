@@ -30,6 +30,7 @@ import 'openlist_recovery_service.dart';
 import 'player_process_controller.dart';
 import 'session_progress_sync_coordinator.dart';
 import 'webdav_font_localizer.dart';
+import 'webdav_font_cache.dart';
 import 'webdav_font_matcher.dart';
 
 /// 测试或平台适配可注入的 mpv 缓存属性更新器。
@@ -54,6 +55,8 @@ class PlayerLaunchResult {
     this.statusFilePath,
     this.commandFilePath,
     this.progressFilePath,
+    this.nextSeasonPlaylistPath,
+    this.seasonPlaylistPath,
     this.artifactPaths = const [],
   });
 
@@ -66,7 +69,21 @@ class PlayerLaunchResult {
   final String? statusFilePath;
   final String? commandFilePath;
   final String? progressFilePath;
+  final String? nextSeasonPlaylistPath;
+  final String? seasonPlaylistPath;
   final List<String> artifactPaths;
+}
+
+class SeasonPlaybackEntries {
+  const SeasonPlaybackEntries({
+    required this.entries,
+    this.localFontDirectories = const [],
+    this.webDavFontsByEntry = const [],
+  });
+
+  final List<MediaEntry> entries;
+  final List<String?> localFontDirectories;
+  final List<WebDavFontDirectory?> webDavFontsByEntry;
 }
 
 /// 一次播放从启动到自动恢复共用的不可变配置快照。
@@ -98,6 +115,13 @@ class _PlaybackLaunchContext {
         subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
         resumeEnabled: player.resumeEnabled,
         menuProgressSharingEnabled: player.menuProgressSharingEnabled,
+        specialPlaylistMode: player.specialPlaylistMode,
+        scanSpecialChildFolders: player.scanSpecialChildFolders,
+        scanSpecialSiblingFolders: player.scanSpecialSiblingFolders,
+        sharePlaylistFonts: player.sharePlaylistFonts,
+        webDavFontCacheEnabled: player.webDavFontCacheEnabled,
+        autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
+        allowSeasonGap: player.allowSeasonGap,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
         hiddenExtensions: List<String>.unmodifiable(player.hiddenExtensions),
         defaultSortMode: player.defaultSortMode,
@@ -193,7 +217,10 @@ class _PlayerSessionRuntime {
     this.profileId = '',
     this.launchContext,
     this.webDavFonts,
+    this.webDavFontsByEntry,
+    this.localFontDirectories,
     this.webDavFontLoader,
+    this.webDavFontFileLoader,
     this.artifactPaths = const [],
   });
 
@@ -224,8 +251,16 @@ class _PlayerSessionRuntime {
   final String profileId;
   final _PlaybackLaunchContext? launchContext;
   final WebDavFontDirectory? webDavFonts;
+  final List<WebDavFontDirectory?>? webDavFontsByEntry;
+  final List<String?>? localFontDirectories;
   final WebDavFontBytesLoader? webDavFontLoader;
+  final WebDavFontFileLoader? webDavFontFileLoader;
   final List<String> artifactPaths;
+  String? seasonPlanFilePath;
+  String? seasonMarkerFilePath;
+  String? currentSeasonPlaylistPath;
+  int? currentStageLength;
+  int seasonStageNumber = 1;
   int trackGeneration = 0;
   int failureJournalByteOffset = 0;
   int temporaryProgressJournalByteOffset = 0;
@@ -277,13 +312,16 @@ class ExternalPlayerService {
     PlaybackServerRestarter? serverRestarter,
     PlayerProcessController? processController,
     WebDavFontLocalizer? fontLocalizer,
+    WebDavFontCache? fontCache,
   }) : _configStore = configStore, // ignore: prefer_initializing_formals
        _cacheLogger = cacheLogger ?? _defaultCacheLogger,
        _linkRecoveryProvider =
            linkRecoveryProvider ?? OpenListRecoveryService(),
        _serverRestarter = serverRestarter ?? OpenListProcessRestartService(),
        _processController = processController ?? PlayerProcessController(),
-       _fontLocalizer = fontLocalizer ?? const WebDavFontLocalizer();
+       _fontLocalizer = fontLocalizer ?? const WebDavFontLocalizer() {
+    _fontCache = fontCache ?? WebDavFontCache(localizer: _fontLocalizer);
+  }
 
   final StreamPathConfigStore _configStore;
 
@@ -304,6 +342,11 @@ class ExternalPlayerService {
   final PlaybackServerRestarter _serverRestarter;
   final PlayerProcessController _processController;
   final WebDavFontLocalizer _fontLocalizer;
+  late final WebDavFontCache _fontCache;
+
+  Future<void> pruneWebDavFontCache(
+    Future<Set<String>> Function() loadActiveSessionKeys,
+  ) => _fontCache.prune(loadActiveSessionKeys);
 
   /// 缓存系统集成层诊断日志；默认输出到 flutter run 控制台。
   final void Function(String message) _cacheLogger;
@@ -381,9 +424,17 @@ class ExternalPlayerService {
     int? resumeSeconds,
     String? username,
     String? password,
+    String? webDavSourceUrl,
+    String? webDavSourceId,
     bool automaticRecovery = false,
     WebDavFontDirectory? webDavFonts,
+    List<WebDavFontDirectory?>? webDavFontsByEntry,
+    List<String?>? localFontDirectories,
     WebDavFontBytesLoader? webDavFontLoader,
+    WebDavFontFileLoader? webDavFontFileLoader,
+    void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
+    void Function(String stage)? onPreparationStage,
+    SeasonPlaybackEntries? nextSeason,
   }) => _launch(
     entries: entries,
     sessionId: sessionId,
@@ -391,9 +442,17 @@ class ExternalPlayerService {
     resumeSeconds: resumeSeconds,
     username: username,
     password: password,
+    webDavSourceUrl: webDavSourceUrl,
+    webDavSourceId: webDavSourceId,
     automaticRecovery: automaticRecovery,
     webDavFonts: webDavFonts,
+    webDavFontsByEntry: webDavFontsByEntry,
+    localFontDirectories: localFontDirectories,
     webDavFontLoader: webDavFontLoader,
+    webDavFontFileLoader: webDavFontFileLoader,
+    onFontProgress: onFontProgress,
+    onPreparationStage: onPreparationStage,
+    nextSeason: nextSeason,
   );
 
   /// 播放本地视频；不接入 WebDAV 认证、OpenList 恢复或网络缓存。
@@ -403,12 +462,16 @@ class ExternalPlayerService {
     String? sessionId,
     int playlistStart = 0,
     int? resumeSeconds,
+    List<String?>? localFontDirectories,
+    SeasonPlaybackEntries? nextSeason,
   }) => _launch(
     entries: entries,
     sessionId: sessionId,
     playlistStart: playlistStart,
     resumeSeconds: resumeSeconds,
     localSourceId: sourceId,
+    localFontDirectories: localFontDirectories,
+    nextSeason: nextSeason,
   );
 
   Future<PlayerLaunchResult> _launch({
@@ -418,10 +481,18 @@ class ExternalPlayerService {
     int? resumeSeconds,
     String? username,
     String? password,
+    String? webDavSourceUrl,
+    String? webDavSourceId,
     bool automaticRecovery = false,
     String? localSourceId,
     WebDavFontDirectory? webDavFonts,
+    List<WebDavFontDirectory?>? webDavFontsByEntry,
+    List<String?>? localFontDirectories,
     WebDavFontBytesLoader? webDavFontLoader,
+    WebDavFontFileLoader? webDavFontFileLoader,
+    void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
+    void Function(String stage)? onPreparationStage,
+    SeasonPlaybackEntries? nextSeason,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -459,9 +530,9 @@ class ExternalPlayerService {
       final launchContext = localSourceId == null
           ? _PlaybackLaunchContext.capture(
               player: fullConfig.toPlayerConfig(),
-              serverUrl: fullConfig.serverUrl,
+              serverUrl: webDavSourceUrl ?? fullConfig.serverUrl,
               recovery: fullConfig.openListRecovery,
-              profileId: fullConfig.profileId,
+              profileId: webDavSourceId ?? fullConfig.profileId,
               username: username,
               password: password,
             )
@@ -478,7 +549,13 @@ class ExternalPlayerService {
         launchContext: launchContext,
         ownershipGeneration: ownershipGeneration,
         webDavFonts: webDavFonts,
+        webDavFontsByEntry: webDavFontsByEntry,
+        localFontDirectories: localFontDirectories,
         webDavFontLoader: webDavFontLoader,
+        webDavFontFileLoader: webDavFontFileLoader,
+        onFontProgress: onFontProgress,
+        onPreparationStage: onPreparationStage,
+        nextSeason: nextSeason,
       );
     } catch (_) {
       if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
@@ -502,7 +579,13 @@ class ExternalPlayerService {
     bool automaticRecovery = false,
     required int ownershipGeneration,
     WebDavFontDirectory? webDavFonts,
+    List<WebDavFontDirectory?>? webDavFontsByEntry,
+    List<String?>? localFontDirectories,
     WebDavFontBytesLoader? webDavFontLoader,
+    WebDavFontFileLoader? webDavFontFileLoader,
+    void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
+    void Function(String stage)? onPreparationStage,
+    SeasonPlaybackEntries? nextSeason,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -568,11 +651,16 @@ class ExternalPlayerService {
     await ensureOwned();
 
     // ── 3. 组装参数 ───────────────────────────────────────────
-    final listMode = isMpv && entries.length > 1;
+    final seasonTransition = isMpv && config.autoSeasonTransitionEnabled;
+    final hasNextSeason =
+        seasonTransition && nextSeason != null && nextSeason.entries.isNotEmpty;
+    final listMode = isMpv && (entries.length > 1 || seasonTransition);
     // 每次启动使用唯一 named pipe，作为会话身份与未来 IPC 扩展入口。
     final pipeToken = launchEpoch;
     final ipcPipe = isMpv ? '${r'\\.\pipe\mpvsocket_'}$pipeToken' : null;
     String? progressFilePath;
+    String? seasonPlanFilePath;
+    String? seasonMarkerFilePath;
     Directory? sessionDataDir;
     // 多集模式：生成 m3u 播放列表（EXTINF 标题 + EXTVLCOPT 窗口标题
     // + 直链 URL），由 mpv 原生绑定标题。
@@ -585,6 +673,15 @@ class ExternalPlayerService {
           )
         : null;
     if (playlistPath != null) artifactPaths.add(playlistPath);
+    final nextPlaylistPath = hasNextSeason
+        ? await MpvScripts.ensurePlaylistM3u(
+            nextSeason.entries,
+            authUrl,
+            scriptBase!,
+            sessionId: '${artifactSessionId}_next',
+          )
+        : null;
+    if (nextPlaylistPath != null) artifactPaths.add(nextPlaylistPath);
     await ensureOwned();
     final args = listMode
         ? _buildListArgs(
@@ -606,34 +703,123 @@ class ExternalPlayerService {
     // MPV 使用 URL userinfo 完成源站 Basic 认证。四个实测版本均会在
     // 跨来源重定向时移除该凭据，而全局 http-header-fields 会继续转发。
     if (isMpv) {
-      // WebDAV 字体只从浏览页已经锁定的同级字体目录取直属文件，并
-      // 下载到本次 launch 独占目录。MPV/libass 只接收这个目录，既不
-      // 递归扫描，也不复用其他播放会话的字体。
-      if (subtitleInjectionEnabled &&
-          webDavFonts?.files.isNotEmpty == true &&
-          webDavFontLoader != null) {
-        try {
-          final localized = await _fontLocalizer.localize(
-            source: webDavFonts!,
-            base: scriptBase!,
-            sessionId: artifactSessionId,
-            loader: webDavFontLoader,
-          );
-          if (localized != null) {
-            artifactPaths.addAll(localized.files.map((file) => file.path));
-            artifactPaths.add(localized.directory.path);
-            await ensureOwned();
-            final fontScript = await MpvScripts.ensureFontDirectory(
-              localized.directory.path,
-              scriptBase,
-              sessionId: artifactSessionId,
-            );
-            await ensureOwned();
-            artifactPaths.add(fontScript);
-            args.add('--script=$fontScript');
+      final resourceEntries = hasNextSeason
+          ? [...entries, ...nextSeason.entries]
+          : entries;
+      List<String?> seasonFontPaths = List.filled(resourceEntries.length, null);
+      if (subtitleInjectionEnabled) {
+        final fontPaths = List<String?>.filled(resourceEntries.length, null);
+        if (localFontDirectories != null) {
+          for (
+            var i = 0;
+            i < entries.length && i < localFontDirectories.length;
+            i++
+          ) {
+            fontPaths[i] = localFontDirectories[i];
           }
-        } catch (_) {
-          // 字体目录是播放增强项，单次网络或本地写入失败不阻断播放。
+        }
+        if (hasNextSeason) {
+          for (
+            var i = 0;
+            i < nextSeason.localFontDirectories.length &&
+                i < nextSeason.entries.length;
+            i++
+          ) {
+            fontPaths[entries.length + i] = nextSeason.localFontDirectories[i];
+          }
+        }
+        final sources = <WebDavFontDirectory?>[
+          ...(webDavFontsByEntry ??
+              List<WebDavFontDirectory?>.filled(entries.length, webDavFonts)),
+          if (hasNextSeason) ...nextSeason.webDavFontsByEntry,
+        ];
+        final localizedByKey = <String, String>{};
+        var remainingFiles = WebDavFontLocalizer.maxFontFiles;
+        var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
+        final deadline = DateTime.now().add(const Duration(seconds: 30));
+        if (webDavFontLoader != null) {
+          for (
+            var i = 0;
+            i < resourceEntries.length && i < sources.length;
+            i++
+          ) {
+            final source = sources[i];
+            if (source == null || source.files.isEmpty) continue;
+            if (localizedByKey[source.entryKey] case final String path) {
+              fontPaths[i] = path;
+              continue;
+            }
+            final remaining = deadline.difference(DateTime.now());
+            if (remaining <= Duration.zero ||
+                remainingFiles <= 0 ||
+                remainingBytes <= 0) {
+              break;
+            }
+            try {
+              final localized = await _fontCache.localize(
+                source: source,
+                sourceId: launchContext.profileId,
+                retentionSessionId: resolvedSessionId,
+                sessionBase: scriptBase!,
+                sessionId: '${artifactSessionId}_$i',
+                loader: webDavFontLoader,
+                fileLoader: webDavFontFileLoader,
+                maxFiles: remainingFiles,
+                maxBytes: remainingBytes,
+                timeout: remaining,
+                enabled: config.webDavFontCacheEnabled,
+                onProgress: onFontProgress,
+              );
+              if (localized == null) continue;
+              if (!localized.persistent) {
+                artifactPaths.addAll(localized.files.map((file) => file.path));
+                artifactPaths.add(localized.directory.path);
+              }
+              remainingFiles -= localized.files.length;
+              for (final file in localized.files) {
+                remainingBytes -= await file.length();
+              }
+              localizedByKey[source.entryKey] = localized.directory.path;
+              fontPaths[i] = localized.directory.path;
+              await ensureOwned();
+            } catch (_) {
+              // 字体准备失败不阻断视频播放。
+            }
+          }
+          for (
+            var i = 0;
+            i < resourceEntries.length && i < sources.length;
+            i++
+          ) {
+            final key = sources[i]?.entryKey;
+            if (key != null) fontPaths[i] ??= localizedByKey[key];
+          }
+          final sharedFontPath =
+              webDavFontsByEntry != null && webDavFonts != null
+              ? localizedByKey[webDavFonts.entryKey]
+              : null;
+          if (sharedFontPath != null) {
+            for (var i = 0; i < entries.length; i++) {
+              fontPaths[i] ??= sharedFontPath;
+            }
+          }
+        }
+        seasonFontPaths = fontPaths;
+        if (!seasonTransition && fontPaths.any((path) => path != null)) {
+          final fontScript = fontPaths.length == 1 && fontPaths.first != null
+              ? await MpvScripts.ensureFontDirectory(
+                  fontPaths.first!,
+                  scriptBase!,
+                  sessionId: artifactSessionId,
+                )
+              : await MpvScripts.ensurePlaylistFontDirectories(
+                  fontPaths,
+                  scriptBase!,
+                  sessionId: artifactSessionId,
+                );
+          await ensureOwned();
+          artifactPaths.add(fontScript);
+          args.add('--script=$fontScript');
         }
       }
       // 自动字幕由 StreamPath 严格按同目录候选注入；关闭 mpv 自身的
@@ -687,7 +873,9 @@ class ExternalPlayerService {
       // StreamPath 只注入明确匹配的同级目录字幕。自动选择开启时使用
       // sub-add select；关闭时使用 auto 并恢复原 sid，仅加入轨道且
       // 保留当前内封字幕。
-      if (subtitleInjectionEnabled && entries.any((e) => e.subtitle != null)) {
+      if (!seasonTransition &&
+          subtitleInjectionEnabled &&
+          entries.any((e) => e.subtitle != null)) {
         final subtitleScript = listMode
             ? await MpvScripts.ensurePlaylistSubtitles(
                 entries,
@@ -708,7 +896,7 @@ class ExternalPlayerService {
         args.add('--script=$subtitleScript');
       }
       // 多集标题兜底脚本（与字幕脚本独立，始终注入）。
-      if (listMode) {
+      if (listMode && !seasonTransition) {
         final titlesScript = await MpvScripts.ensureTitles(
           entries,
           scriptBase!,
@@ -717,6 +905,34 @@ class ExternalPlayerService {
         await ensureOwned();
         artifactPaths.add(titlesScript);
         args.add('--script=$titlesScript');
+      }
+      if (seasonTransition) {
+        final currentResources = await MpvScripts.ensureSeasonResources(
+          entries,
+          seasonFontPaths.sublist(0, entries.length),
+          authUrl,
+          playlistPath!,
+          scriptBase!,
+          subtitleInjectionEnabled: subtitleInjectionEnabled,
+          autoSelect: subtitleAutoSelectEnabled,
+          sessionId: '${artifactSessionId}_current',
+        );
+        artifactPaths.add(currentResources);
+        args.add('--script=$currentResources');
+        if (hasNextSeason) {
+          final nextResources = await MpvScripts.ensureSeasonResources(
+            nextSeason.entries,
+            seasonFontPaths.sublist(entries.length),
+            authUrl,
+            nextPlaylistPath!,
+            scriptBase,
+            subtitleInjectionEnabled: subtitleInjectionEnabled,
+            autoSelect: subtitleAutoSelectEnabled,
+            sessionId: '${artifactSessionId}_next',
+          );
+          artifactPaths.add(nextResources);
+          args.add('--script=$nextResources');
+        }
       }
       // 当前播放状态上报脚本：file-loaded（含自动切集）与暂停变化时
       // 写 mpv-current.txt，供软件同步「继续播放」条（单集同样注入）。
@@ -737,6 +953,29 @@ class ExternalPlayerService {
           sessionProgressFileName(resolvedSessionId, launchEpoch: launchEpoch),
         );
         artifactPaths.addAll([currentPath, commandPath, progressFilePath]);
+        if (seasonTransition) {
+          seasonPlanFilePath = p.join(
+            dataDir.path,
+            'mpv-season-plan-$artifactSessionId.json',
+          );
+          seasonMarkerFilePath = p.join(
+            dataDir.path,
+            'mpv-season-marker-$artifactSessionId.txt',
+          );
+          await File(seasonPlanFilePath).writeAsString(
+            jsonEncode({'from': playlistPath, 'to': nextPlaylistPath ?? ''}),
+            flush: true,
+          );
+          artifactPaths.addAll([seasonPlanFilePath, seasonMarkerFilePath]);
+          final transitionScript = await MpvScripts.ensureSeasonTransition(
+            seasonPlanFilePath,
+            seasonMarkerFilePath,
+            scriptBase!,
+            sessionId: artifactSessionId,
+          );
+          artifactPaths.add(transitionScript);
+          args.addAll(['--idle=yes', '--script=$transitionScript']);
+        }
         try {
           final progressFile = File(progressFilePath);
           if (await progressFile.exists()) await progressFile.delete();
@@ -815,6 +1054,7 @@ class ExternalPlayerService {
     }
 
     // ── 4. 启动进程 ───────────────────────────────────────────
+    onPreparationStage?.call('正在启动播放器…');
     await ensureOwned();
     final Process process;
     try {
@@ -924,16 +1164,37 @@ class ExternalPlayerService {
       ownershipGeneration: ownershipGeneration,
       currentTrackUrl: entries[playlistStart].url,
       currentPlaylistPos: playlistStart,
-      entries: List<MediaEntry>.unmodifiable(entries),
-      watchLaterUrls: List<String>.unmodifiable(watchLaterUrls),
+      entries: seasonTransition
+          ? <MediaEntry>[...entries, if (hasNextSeason) ...nextSeason.entries]
+          : List<MediaEntry>.unmodifiable(entries),
+      watchLaterUrls: seasonTransition
+          ? <String>[
+              ...watchLaterUrls,
+              if (hasNextSeason)
+                ...nextSeason.entries.map((entry) => authUrl(entry.url)),
+            ]
+          : List<String>.unmodifiable(watchLaterUrls),
       username: username,
       password: password,
       profileId: launchContext.profileId,
       launchContext: launchContext,
       webDavFonts: webDavFonts,
+      webDavFontsByEntry: webDavFontsByEntry,
+      localFontDirectories: localFontDirectories,
       webDavFontLoader: webDavFontLoader,
-      artifactPaths: List<String>.unmodifiable(artifactPaths),
+      webDavFontFileLoader: webDavFontFileLoader,
+      artifactPaths: seasonTransition
+          ? List<String>.of(artifactPaths)
+          : List<String>.unmodifiable(artifactPaths),
     );
+    if (seasonTransition) {
+      runtime
+        ..seasonPlanFilePath = seasonPlanFilePath
+        ..seasonMarkerFilePath = seasonMarkerFilePath
+        ..currentSeasonPlaylistPath = playlistPath
+        ..currentStageLength = entries.length;
+      await _writeSeasonEntries(runtime);
+    }
     _sessions[resolvedSessionId] = runtime;
     _lastSessionId = resolvedSessionId;
     // 第二阶段：播放中动态监控（内存压力/网络异常/卡顿记录）。
@@ -999,6 +1260,8 @@ class ExternalPlayerService {
       statusFilePath: runtime.statusFilePath,
       commandFilePath: runtime.commandFilePath,
       progressFilePath: runtime.progressFilePath,
+      nextSeasonPlaylistPath: nextPlaylistPath,
+      seasonPlaylistPath: seasonTransition ? playlistPath : null,
       artifactPaths: runtime.artifactPaths,
     );
   }
@@ -1771,7 +2034,7 @@ class ExternalPlayerService {
     _cleanupCacheRuntime(runtime);
     if (syncProgress) {
       try {
-        await _syncProgress(runtime, entries);
+        await _syncProgress(runtime, runtime.entries);
       } catch (e) {
         // ignore: avoid_print
         print(
@@ -1794,7 +2057,8 @@ class ExternalPlayerService {
         await File(path).readAsLines(),
       );
       return marker?.matches(
-            expectedLastPlaylistPos: runtime.entries.length - 1,
+            expectedLastPlaylistPos:
+                (runtime.currentStageLength ?? runtime.entries.length) - 1,
             expectedLaunchEpoch: runtime.launchEpoch,
           ) ??
           false;
@@ -1968,7 +2232,10 @@ class ExternalPlayerService {
           automaticRecovery: true,
           ownershipGeneration: runtime.ownershipGeneration,
           webDavFonts: runtime.webDavFonts,
+          webDavFontsByEntry: runtime.webDavFontsByEntry,
+          localFontDirectories: runtime.localFontDirectories,
           webDavFontLoader: runtime.webDavFontLoader,
+          webDavFontFileLoader: runtime.webDavFontFileLoader,
         );
         if (!_isRecoveryCurrent(runtime, state)) {
           await terminateLaunch(result);
@@ -2052,13 +2319,13 @@ class ExternalPlayerService {
     _PlayerSessionRuntime runtime,
     MpvPlaybackFailureRecord failure,
   ) {
-    final pos = failure.playlistPos ?? runtime.currentPlaylistPos ?? 0;
-    if (pos >= 0 && pos < runtime.entries.length) return pos;
     if (failure.path.isNotEmpty) {
       for (var index = 0; index < runtime.entries.length; index++) {
         if (_sameTrack(failure.path, runtime.entries[index].url)) return index;
       }
     }
+    final pos = failure.playlistPos ?? runtime.currentPlaylistPos ?? 0;
+    if (pos >= 0 && pos < runtime.entries.length) return pos;
     return 0;
   }
 
@@ -2208,6 +2475,243 @@ class ExternalPlayerService {
   Future<Directory> _scriptBase() async =>
       _watchLaterDir ?? await AppPaths.cacheDirectory(); // 脚本/播放列表产物
 
+  Future<void> _writeSeasonEntries(_PlayerSessionRuntime runtime) async {
+    final base = await AppPaths.cacheDirectory();
+    final file = File(
+      p.join(base.path, 'mpv-season-entries-${runtime.artifactSessionId}.json'),
+    );
+    if (!runtime.artifactPaths.contains(file.path)) {
+      runtime.artifactPaths.add(file.path);
+    }
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(
+      jsonEncode({
+        'entries': [
+          for (final entry in runtime.entries)
+            {'url': entry.url, 'title': entry.title},
+        ],
+        'artifacts': runtime.artifactPaths,
+        'stageNumber': runtime.seasonStageNumber,
+      }),
+      flush: true,
+    );
+    if (await file.exists()) await file.delete();
+    await temporary.rename(file.path);
+  }
+
+  Future<void> _restoreSeasonEntries(_PlayerSessionRuntime runtime) async {
+    final base = await AppPaths.cacheDirectory();
+    final file = File(
+      p.join(base.path, 'mpv-season-entries-${runtime.artifactSessionId}.json'),
+    );
+    if (!await file.exists()) return;
+    final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    for (final value in (json['entries'] as List? ?? const [])) {
+      if (value is! Map || value['url'] is! String) continue;
+      final entry = MediaEntry(
+        url: value['url'] as String,
+        title: value['title'] as String?,
+      );
+      runtime.entries.add(entry);
+      runtime.watchLaterUrls.add(entry.url);
+    }
+    runtime.artifactPaths.addAll(
+      (json['artifacts'] as List? ?? const []).whereType<String>(),
+    );
+    runtime.seasonStageNumber = (json['stageNumber'] as num?)?.toInt() ?? 1;
+  }
+
+  /// 为已运行的 MPV 会话准备下一个季列表，并在资源脚本加载成功后提交切换计划。
+  Future<String?> stageNextSeason(
+    String sessionId, {
+    required SeasonPlaybackEntries season,
+    required String currentPlaylistPath,
+    String? username,
+    String? password,
+    String? serverUrl,
+    WebDavFontBytesLoader? webDavFontLoader,
+    WebDavFontFileLoader? webDavFontFileLoader,
+  }) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null ||
+        !runtime.isMpv ||
+        runtime.ipcPipeName == null ||
+        runtime.seasonPlanFilePath == null ||
+        runtime.currentSeasonPlaylistPath != currentPlaylistPath ||
+        season.entries.isEmpty) {
+      return null;
+    }
+    final base = await _scriptBase();
+    final origin = serverUrl ?? runtime.launchContext?.serverUrl ?? '';
+    final user = username ?? runtime.username;
+    final secret = password ?? runtime.password;
+    String authUrl(String url) =>
+        user != null && user.isNotEmpty && isSameOrigin(origin, url)
+        ? embedCredentials(url, user, secret ?? '')
+        : url;
+    final stage = runtime.seasonStageNumber + 1;
+    final stageId = '${runtime.artifactSessionId}_stage$stage';
+    final playlist = await MpvScripts.ensurePlaylistM3u(
+      season.entries,
+      authUrl,
+      base,
+      sessionId: stageId,
+    );
+    final fontPaths = List<String?>.generate(
+      season.entries.length,
+      (index) => index < season.localFontDirectories.length
+          ? season.localFontDirectories[index]
+          : null,
+    );
+    final loader = webDavFontLoader ?? runtime.webDavFontLoader;
+    final fileLoader = webDavFontFileLoader ?? runtime.webDavFontFileLoader;
+    final localized = <String, String>{};
+    if (loader != null) {
+      var remainingFiles = WebDavFontLocalizer.maxFontFiles;
+      var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      for (var i = 0; i < season.entries.length; i++) {
+        if (i >= season.webDavFontsByEntry.length) break;
+        final source = season.webDavFontsByEntry[i];
+        if (source == null || source.files.isEmpty) continue;
+        if (localized[source.entryKey] case final path?) {
+          fontPaths[i] = path;
+          continue;
+        }
+        final remaining = deadline.difference(DateTime.now());
+        if (remaining <= Duration.zero ||
+            remainingFiles <= 0 ||
+            remainingBytes <= 0) {
+          break;
+        }
+        final result = await _fontCache.localize(
+          source: source,
+          sourceId: runtime.profileId,
+          retentionSessionId: sessionId,
+          sessionBase: base,
+          sessionId: '${stageId}_$i',
+          loader: loader,
+          fileLoader: fileLoader,
+          maxFiles: remainingFiles,
+          maxBytes: remainingBytes,
+          timeout: remaining,
+          enabled: _configStore.current.webDavFontCacheEnabled,
+        );
+        if (result == null) continue;
+        if (!result.persistent) {
+          runtime.artifactPaths.addAll(result.files.map((file) => file.path));
+          runtime.artifactPaths.add(result.directory.path);
+        }
+        remainingFiles -= result.files.length;
+        for (final file in result.files) {
+          remainingBytes -= await file.length();
+        }
+        localized[source.entryKey] = result.directory.path;
+        fontPaths[i] = result.directory.path;
+      }
+    }
+    final config = _configStore.current;
+    final resources = await MpvScripts.ensureSeasonResources(
+      season.entries,
+      fontPaths,
+      authUrl,
+      playlist,
+      base,
+      subtitleInjectionEnabled: config.subtitleInjectionEnabled,
+      autoSelect: config.subtitleAutoSelectEnabled,
+      sessionId: stageId,
+    );
+    runtime.artifactPaths.addAll([playlist, resources]);
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+        return null;
+      }
+      await controller.command(['load-script', resources]);
+    } finally {
+      await controller.disconnect();
+    }
+    if (!identical(_sessions[sessionId], runtime) ||
+        runtime.currentSeasonPlaylistPath != currentPlaylistPath) {
+      return null;
+    }
+    runtime.entries.addAll(season.entries);
+    runtime.watchLaterUrls.addAll(
+      season.entries.map((entry) => authUrl(entry.url)),
+    );
+    runtime.seasonStageNumber = stage;
+    await _writeSeasonEntries(runtime);
+    final plan = File(runtime.seasonPlanFilePath!);
+    final temporary = File('${plan.path}.tmp');
+    await temporary.writeAsString(
+      jsonEncode({'from': currentPlaylistPath, 'to': playlist}),
+      flush: true,
+    );
+    if (await plan.exists()) await plan.delete();
+    await temporary.rename(plan.path);
+    return playlist;
+  }
+
+  void commitSeasonTransition(
+    String sessionId, {
+    required String playlistPath,
+    required int playlistLength,
+  }) {
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return;
+    runtime
+      ..currentSeasonPlaylistPath = playlistPath
+      ..currentStageLength = playlistLength;
+  }
+
+  /// 手动切季只对已准备好的当前会话列表执行换表。
+  Future<bool> skipToNextSeason(
+    String sessionId, {
+    required String currentPlaylistPath,
+    required String nextPlaylistPath,
+  }) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null ||
+        !runtime.isMpv ||
+        runtime.ipcPipeName == null ||
+        runtime.seasonPlanFilePath == null ||
+        runtime.currentSeasonPlaylistPath != currentPlaylistPath ||
+        !await File(nextPlaylistPath).exists() ||
+        !await isPlayerRunning(sessionId)) {
+      return false;
+    }
+    final plan = jsonDecode(
+      await File(runtime.seasonPlanFilePath!).readAsString(),
+    );
+    if (plan is! Map ||
+        plan['from'] != currentPlaylistPath ||
+        plan['to'] != nextPlaylistPath) {
+      return false;
+    }
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+        return false;
+      }
+      final loaded = await controller.getProperty('playlist-path');
+      if (loaded is! String ||
+          loaded.replaceAll('\\', '/').toLowerCase() !=
+              currentPlaylistPath.replaceAll('\\', '/').toLowerCase()) {
+        return false;
+      }
+      await syncActiveProgress(sessionId);
+      await controller.command(['loadlist', nextPlaylistPath, 'replace']);
+      try {
+        await controller.setProperty('pause', false);
+      } on StateError {
+        // 换表已成功时不把恢复播放命令失败当作换表失败。
+      }
+      return true;
+    } finally {
+      await controller.disconnect();
+    }
+  }
+
   /// 恢复持久化会话的 PID/pipe 身份；应用重启后可继续独立探活和控制。
   Future<void> restoreSession({
     required String sessionId,
@@ -2217,6 +2721,8 @@ class ExternalPlayerService {
     int? creationTime,
     String? ipcPipeName,
     String? launchEpoch,
+    String? currentSeasonPlaylistPath,
+    int? currentStageLength,
   }) async {
     if (_sessions.containsKey(sessionId)) return;
     final dataDir = await AppPaths.cacheDirectory(); // mpv 会话产物
@@ -2255,7 +2761,25 @@ class ExternalPlayerService {
       progressGeneration: _progressSyncCoordinator.claim(sessionId),
       ownershipGeneration: ++_ownershipSequence,
       profileId: profileId ?? _configStore.current.profileId,
+      entries: <MediaEntry>[],
+      watchLaterUrls: <String>[],
+      artifactPaths: <String>[],
     );
+    final planPath = p.join(
+      dataDir.path,
+      'mpv-season-plan-${runtime.artifactSessionId}.json',
+    );
+    if (await File(planPath).exists()) {
+      runtime
+        ..seasonPlanFilePath = planPath
+        ..seasonMarkerFilePath = p.join(
+          dataDir.path,
+          'mpv-season-marker-${runtime.artifactSessionId}.txt',
+        )
+        ..currentSeasonPlaylistPath = currentSeasonPlaylistPath
+        ..currentStageLength = currentStageLength;
+      await _restoreSeasonEntries(runtime);
+    }
     _sessions[sessionId] = runtime;
     _launchOwnership[sessionId] = runtime.ownershipGeneration;
     _lastSessionId = sessionId;
@@ -2500,6 +3024,9 @@ class ExternalPlayerService {
           dataDir.path,
           sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
         ),
+        p.join(dataDir.path, 'mpv-season-plan-$artifactSessionId.json'),
+        p.join(dataDir.path, 'mpv-season-marker-$artifactSessionId.txt'),
+        p.join(dataDir.path, 'mpv-season-entries-$artifactSessionId.json'),
         ...MpvScripts.sessionArtifactNames(
           artifactSessionId,
         ).map((name) => p.join(base.path, name)),

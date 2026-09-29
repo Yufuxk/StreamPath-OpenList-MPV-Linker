@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/data/local/iso_subtitle_store.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/data/models/webdav_bdmv.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/iso_subtitle_service.dart';
 import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
@@ -139,5 +140,43 @@ void main() {
       store: first.store,
     );
     expect(first.key, isNot(second.key));
+  });
+  test('WebDAV 根目录 BDMV 使用同一字幕发现与注入路径', () async {
+    service.directories[''] = [
+      const WebDavFile(
+        name: 'mpls00003.ass',
+        href: '/dav/mpls00003.ass',
+        isDirectory: false,
+        size: 4,
+      ),
+      const WebDavFile(
+        name: 'BDMV',
+        href: '/dav/BDMV/',
+        isDirectory: true,
+      ),
+    ];
+    final disc = WebDavBdmv(
+      name: 'BDMV',
+      href: '/dav/',
+      rootPath: '',
+      files: const [],
+    )..structureRevision = 'test-revision';
+    final context = IsoSubtitleContext(
+      source: WebDavMediaSourceAdapter(service),
+      iso: disc,
+      isoPath: '',
+      store: IsoSubtitleStore(Directory('${root.path}/maps')),
+    );
+    await context.discover();
+    expect(context.candidates.map((c) => c.path), ['mpls00003.ass']);
+    expect(context.effective, {'00003': 'mpls00003.ass'});
+    final args = await context.prepareArgs(
+      Directory('${root.path}/bdmv-session'),
+      sessionId: 'bdmv',
+      pipeName: 'pipe',
+      menu: false,
+      autoSelect: true,
+    );
+    expect(args.any((arg) => arg.startsWith('--script=')), isTrue);
   });
 }

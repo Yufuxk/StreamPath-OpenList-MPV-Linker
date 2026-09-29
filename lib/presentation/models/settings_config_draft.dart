@@ -9,6 +9,7 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
+import '../../data/models/special_playlist_mode.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
 import '../../features/cache_control/models/cache_intelligence_config.dart';
@@ -50,13 +51,24 @@ class SettingsConfigDraft {
   final mediaLibraryContinueController = TextEditingController();
   final mediaLibraryRecentPlaybackController = TextEditingController();
   final mediaLibraryRecentDirectoriesController = TextEditingController();
+  final audioLyricsFontFamilyController = TextEditingController();
 
   bool subtitleInjectionEnabled = true;
   bool subtitleAutoSelectEnabled = true;
+  bool audioDynamicLyricsEnabled = true;
+  double audioLyricsOutlineWidth = PlayerConfig.defaultAudioLyricsOutlineWidth;
+  double audioLyricsTransparency = PlayerConfig.defaultAudioLyricsTransparency;
   bool resumeEnabled = true;
   bool menuProgressSharingEnabled = false;
+  SpecialPlaylistMode specialPlaylistMode = SpecialPlaylistMode.ovaOnly;
+  bool scanSpecialChildFolders = true;
+  bool scanSpecialSiblingFolders = false;
+  bool sharePlaylistFonts = false;
+  bool webDavFontCacheEnabled = true;
+  bool autoSeasonTransitionEnabled = true;
+  bool allowSeasonGap = false;
   MediaLibrarySharingMode mediaLibrarySharingMode =
-      MediaLibrarySharingMode.independent;
+      MediaLibrarySharingMode.networkAndLocalShared;
   bool hiddenExtensionsEnabled = true;
   FileSortMode defaultSortMode = FileSortMode.name;
   FileSortDirection defaultSortDirection = FileSortDirection.ascending;
@@ -81,6 +93,8 @@ class SettingsConfigDraft {
   InterfaceStyle interfaceStyle = InterfaceStyle.classic;
   WindowMaterialPreference windowMaterial = WindowMaterialPreference.automatic;
   double glassOpacity = AppearanceConfig.defaultGlassOpacity;
+  String? interfaceFontFamily;
+  DirectoryMemoryMode directoryMemoryMode = DirectoryMemoryMode.temporary;
   AppLanguage language = AppLanguage.simplifiedChinese;
 
   void loadFrom({
@@ -124,8 +138,19 @@ class SettingsConfigDraft {
         .toString();
     subtitleInjectionEnabled = player.subtitleInjectionEnabled;
     subtitleAutoSelectEnabled = player.subtitleAutoSelectEnabled;
+    audioDynamicLyricsEnabled = player.audioDynamicLyricsEnabled;
+    audioLyricsFontFamilyController.text = player.audioLyricsFontFamily;
+    audioLyricsOutlineWidth = player.audioLyricsOutlineWidth;
+    audioLyricsTransparency = player.audioLyricsTransparency;
     resumeEnabled = player.resumeEnabled;
     menuProgressSharingEnabled = player.menuProgressSharingEnabled;
+    specialPlaylistMode = player.specialPlaylistMode;
+    scanSpecialChildFolders = player.scanSpecialChildFolders;
+    scanSpecialSiblingFolders = player.scanSpecialSiblingFolders;
+    sharePlaylistFonts = player.sharePlaylistFonts;
+    webDavFontCacheEnabled = player.webDavFontCacheEnabled;
+    autoSeasonTransitionEnabled = player.autoSeasonTransitionEnabled;
+    allowSeasonGap = player.allowSeasonGap;
     hiddenExtensionsEnabled = player.hiddenExtensionsEnabled;
     defaultSortMode = player.defaultSortMode;
     defaultSortDirection = player.defaultSortDirection;
@@ -167,6 +192,8 @@ class SettingsConfigDraft {
     interfaceStyle = appearance.style;
     windowMaterial = appearance.material;
     glassOpacity = appearance.glassOpacity;
+    interfaceFontFamily = appearance.fontFamily;
+    directoryMemoryMode = appearance.directoryMemoryMode;
     language = fullConfig.language;
     directoryFreshnessController.text = expirationConfig
         .directoryFreshnessMinutes
@@ -196,8 +223,21 @@ class SettingsConfigDraft {
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled:
         subtitleInjectionEnabled && subtitleAutoSelectEnabled,
+    audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
+    audioLyricsFontFamily: audioLyricsFontFamilyController.text.trim().isEmpty
+        ? PlayerConfig.defaultAudioLyricsFontFamily
+        : audioLyricsFontFamilyController.text.trim(),
+    audioLyricsOutlineWidth: audioLyricsOutlineWidth,
+    audioLyricsTransparency: audioLyricsTransparency,
     resumeEnabled: resumeEnabled,
     menuProgressSharingEnabled: menuProgressSharingEnabled,
+    specialPlaylistMode: specialPlaylistMode,
+    scanSpecialChildFolders: scanSpecialChildFolders,
+    scanSpecialSiblingFolders: scanSpecialSiblingFolders,
+    sharePlaylistFonts: sharePlaylistFonts,
+    webDavFontCacheEnabled: webDavFontCacheEnabled,
+    autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
+    allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
     hiddenExtensions: parseHiddenExtensions(hiddenExtensionsController.text),
     defaultSortMode: defaultSortMode,
@@ -266,6 +306,8 @@ class SettingsConfigDraft {
     style: interfaceStyle,
     material: windowMaterial,
     glassOpacity: glassOpacity,
+    fontFamily: interfaceFontFamily,
+    directoryMemoryMode: directoryMemoryMode,
   );
 
   MediaLibraryConfig buildMediaLibraryConfig() => MediaLibraryConfig(
@@ -325,6 +367,7 @@ class SettingsConfigDraft {
       mediaLibraryContinueController,
       mediaLibraryRecentPlaybackController,
       mediaLibraryRecentDirectoriesController,
+      audioLyricsFontFamilyController,
     ]) {
       controller.dispose();
     }

@@ -1,10 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+
+import '../../data/models/appearance_config.dart';
+import '../theme/appearance_controller.dart';
+import '../theme/glass_tokens.dart';
 
 /// 无系统标题栏时的自绘窗口标题栏。
 ///
@@ -12,13 +19,31 @@ import 'package:flutter/services.dart';
 /// 关闭按钮。拖动与双击最大化由原生标题栏命中测试处理，其余窗口控制通过
 /// `streampath/appearance` 通道转发给原生 runner。
 ///
-/// 背景使用页面 AppBar 与 Scaffold 的等价合成色，因此磨砂模式下两者
-/// 具有相同的透明度与最终观感。
+/// 主内容区匹配页面 AppBar，左侧表面随侧边栏同步滑动。
 class WindowTitleBar extends StatefulWidget {
-  const WindowTitleBar({super.key});
+  const WindowTitleBar({
+    super.key,
+    this.sidebarMode = SidebarDisplayMode.pinned,
+    this.sidebarRevealProgress,
+  });
+
+  final SidebarDisplayMode sidebarMode;
+  final ValueListenable<double>? sidebarRevealProgress;
 
   /// 标题栏高度，与 Windows 11 系统标题栏高度一致。
   static const double height = 32;
+  static const double sidebarWidth = 220;
+  static const double sidebarTriggerWidth = 12;
+  static const sidebarSlideDuration = Duration(milliseconds: 180);
+
+  @visibleForTesting
+  static const sidebarSurfaceKey = Key('window-titlebar-sidebar-surface');
+
+  @visibleForTesting
+  static const sidebarEdgeKey = Key('window-titlebar-sidebar-edge');
+
+  @visibleForTesting
+  static const mainSurfaceKey = Key('window-titlebar-main-surface');
 
   @visibleForTesting
   static const minimizeButtonKey = Key('window-minimize-button');
@@ -107,6 +132,10 @@ class _WindowTitleBarState extends State<WindowTitleBar>
 
   /// 原生窗口大小变化时同步最大化状态。
   Future<void> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'accentChanged') {
+      await context.read<AppearanceController>().refreshSystemAccent();
+      return;
+    }
     if (call.method != 'maximizeChanged') return;
     final maximized = call.arguments == true;
     if (mounted && maximized != _maximized) {
@@ -153,59 +182,112 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     final backgroundColor = _titleBarColor(theme);
-    // 页面 AppBar、自绘标题栏与原生圆角填充只使用这一处顶栏色源。
+    // 主内容区与原生圆角填充沿用 AppBar 的合成色。
     _syncFrameColor(backgroundColor);
-    return Material(
-      color: backgroundColor,
-      child: SizedBox(
-        height: WindowTitleBar.height,
-        child: Row(
-          children: [
-            Expanded(
+    final progress = widget.sidebarRevealProgress;
+    if (progress == null) return _buildChrome(theme, backgroundColor, 0);
+    return ValueListenableBuilder<double>(
+      valueListenable: progress,
+      builder: (context, value, _) =>
+          _buildChrome(theme, backgroundColor, value),
+    );
+  }
+
+  Widget _buildChrome(ThemeData theme, Color backgroundColor, double progress) {
+    final scheme = theme.colorScheme;
+    final reveal = widget.sidebarMode == SidebarDisplayMode.pinned
+        ? 1.0
+        : progress;
+    final visibleWidth =
+        WindowTitleBar.sidebarTriggerWidth +
+        (WindowTitleBar.sidebarWidth - WindowTitleBar.sidebarTriggerWidth) *
+            reveal;
+    return SizedBox(
+      height: WindowTitleBar.height,
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [
+          Positioned(
+            left: visibleWidth,
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: Material(
+              key: WindowTitleBar.mainSurfaceKey,
+              color: backgroundColor,
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  const SizedBox(width: 20),
-                  _TitleBarMark(color: scheme.primary),
-                  const SizedBox(width: 8),
-                  AppText(
-                    'StreamPath',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.1,
-                    ),
+                  _WindowButton(
+                    key: WindowTitleBar.minimizeButtonKey,
+                    icon: _WindowControlIconType.minimize,
+                    iconKey: WindowTitleBar.minimizeIconKey,
+                    tooltip: context.l10n.text('最小化'),
+                    onPressed: () => _invoke('minimize'),
+                  ),
+                  _WindowButton(
+                    key: WindowTitleBar.maximizeButtonKey,
+                    icon: _maximized
+                        ? _WindowControlIconType.restore
+                        : _WindowControlIconType.maximize,
+                    iconKey: WindowTitleBar.maximizeIconKey,
+                    tooltip: context.l10n.text(_maximized ? '还原' : '最大化'),
+                    onPressed: _toggleMaximize,
+                  ),
+                  _WindowButton(
+                    key: WindowTitleBar.closeButtonKey,
+                    icon: _WindowControlIconType.close,
+                    iconKey: WindowTitleBar.closeIconKey,
+                    tooltip: context.l10n.text('关闭'),
+                    onPressed: () => _invoke('close'),
+                    close: true,
                   ),
                 ],
               ),
             ),
-            _WindowButton(
-              key: WindowTitleBar.minimizeButtonKey,
-              icon: _WindowControlIconType.minimize,
-              iconKey: WindowTitleBar.minimizeIconKey,
-              tooltip: context.l10n.text('最小化'),
-              onPressed: () => _invoke('minimize'),
+          ),
+          Positioned(
+            left: visibleWidth - WindowTitleBar.sidebarWidth,
+            top: 0,
+            bottom: 0,
+            width: WindowTitleBar.sidebarWidth,
+            child: Material(
+              key: WindowTitleBar.sidebarSurfaceKey,
+              color: theme.sidebarSurfaceColor,
+              child: DecoratedBox(
+                key: WindowTitleBar.sidebarEdgeKey,
+                position: DecorationPosition.foreground,
+                decoration: BoxDecoration(
+                  border: Border(
+                    right: BorderSide(color: theme.glass.borderColor),
+                  ),
+                ),
+                child: const SizedBox.expand(),
+              ),
             ),
-            _WindowButton(
-              key: WindowTitleBar.maximizeButtonKey,
-              icon: _maximized
-                  ? _WindowControlIconType.restore
-                  : _WindowControlIconType.maximize,
-              iconKey: WindowTitleBar.maximizeIconKey,
-              tooltip: context.l10n.text(_maximized ? '还原' : '最大化'),
-              onPressed: _toggleMaximize,
+          ),
+          Positioned(
+            left: 20,
+            top: 0,
+            bottom: 0,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _TitleBarMark(color: scheme.primary),
+                const SizedBox(width: 8),
+                AppText(
+                  'StreamPath',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.1,
+                  ),
+                ),
+              ],
             ),
-            _WindowButton(
-              key: WindowTitleBar.closeButtonKey,
-              icon: _WindowControlIconType.close,
-              iconKey: WindowTitleBar.closeIconKey,
-              tooltip: context.l10n.text('关闭'),
-              onPressed: () => _invoke('close'),
-              close: true,
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -231,8 +313,8 @@ class _TitleBarMark extends StatelessWidget {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            Icon(Icons.folder_outlined, size: 16, color: color),
-            Icon(Icons.play_arrow_rounded, size: 10, color: color),
+            Icon(SPIcons.folder, size: 16, color: color),
+            Icon(SPIcons.play, size: 10, color: color),
           ],
         ),
       ),

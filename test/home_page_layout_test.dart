@@ -17,6 +17,7 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
@@ -50,8 +51,8 @@ void main() {
       '',
     ]);
     expect(find.byIcon(Icons.route_outlined), findsNothing);
-    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    expect(find.byIcon(SPIcons.folder), findsOneWidget);
+    expect(find.byIcon(SPIcons.play), findsOneWidget);
 
     final labelFinders = [
       find.text('服务器地址'),

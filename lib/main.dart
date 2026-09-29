@@ -29,7 +29,7 @@ import 'features/cache_control/store/cache_policy_config_store.dart';
 import 'features/cache_control/store/media_metadata_store.dart';
 import 'features/cache_expiration/store/cache_expiration_config_store.dart';
 import 'presentation/pages/auto_connect_gate.dart';
-import 'presentation/pages/storage_root_page.dart';
+import 'presentation/pages/app_shell_page.dart';
 import 'presentation/localization/app_localizations.dart';
 import 'presentation/state/app_state.dart';
 import 'presentation/theme/app_theme.dart';
@@ -210,14 +210,29 @@ Future<void> main() async {
     learningDataCleaner: learningDataCleaner,
     isoPlaybackService: isoPlaybackService,
   );
+  try {
+    await appState.navigationLocations.load();
+  } on FileSystemException catch (error) {
+    // ignore: avoid_print
+    print('Navigation location restore failed: $error');
+  } on FormatException catch (error) {
+    // ignore: avoid_print
+    print('Navigation location restore failed: $error');
+  }
+  appState.scheduleWebDavFontCachePrune();
 
   // 地址与用户名完整时直接尝试自动连接，密码允许为空。
-  final autoConnect = configStore.current.isConnectionComplete;
+  final autoConnect =
+      configStore.current.isConnectionComplete &&
+      configStore.current.mountedProfileIds.contains(
+        configStore.current.profileId,
+      );
   final appearanceController = AppearanceController(
     initialConfig: configStore.current.appearance,
   );
   // 持久化为磨砂样式时先完成窗口合成，再绘制首帧，避免窗口先黑后亮。
   await appearanceController.restoreForStartup();
+  await appearanceController.refreshSystemAccent();
   runApp(
     StreamPathApp(
       appState: appState,
@@ -276,17 +291,21 @@ class StreamPathApp extends StatelessWidget {
               glass: glass,
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
+              fontFamily: appearance.fontFamily,
+              systemAccent: appearanceController.systemAccent,
             ),
             darkTheme: AppTheme.dark(
               glass: glass,
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
+              fontFamily: appearance.fontFamily,
+              systemAccent: appearanceController.systemAccent,
             ),
             builder: (context, navigator) => _buildWindowChrome(navigator),
             home: child,
           );
         },
-        child: autoConnect ? const AutoConnectGate() : const StorageRootPage(),
+        child: autoConnect ? const AutoConnectGate() : const AppShellPage(),
       ),
     );
   }
@@ -308,7 +327,11 @@ class StreamPathApp extends StatelessWidget {
         OverlayEntry(
           builder: (context) => Column(
             children: [
-              const WindowTitleBar(),
+              WindowTitleBar(
+                sidebarMode:
+                    appState.configStore.current.appearance.sidebarMode,
+                sidebarRevealProgress: appState.sidebarRevealProgress,
+              ),
               Expanded(child: content),
             ],
           ),

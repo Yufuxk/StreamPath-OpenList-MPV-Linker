@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/strm_parser.dart';
@@ -70,7 +71,12 @@ class WebDAVService implements DirectoryRepository {
     final snapshot = _cache.read(key);
 
     if (snapshot != null) {
-      if (_cache.isFresh(snapshot)) return snapshot.entries;
+      if (_cache.isFresh(snapshot)) {
+        return _parser.reclassifyCachedSelfEntries(
+          snapshot.entries,
+          requestUrl: fullUrl(path),
+        );
+      }
       // 过期：立即渲染旧数据 + 后台刷新（不阻塞 UI）。
       unawaited(
         _loadAndCache(key, path).then<void>((_) {}).catchError((Object e) {
@@ -84,7 +90,10 @@ class WebDAVService implements DirectoryRepository {
           }
         }),
       );
-      return snapshot.entries;
+      return _parser.reclassifyCachedSelfEntries(
+        snapshot.entries,
+        requestUrl: fullUrl(path),
+      );
     }
     return _loadAndCache(key, path);
   }
@@ -107,8 +116,15 @@ class WebDAVService implements DirectoryRepository {
 
   /// 同步读取缓存内容（UI 首帧秒开用，不检查新鲜度）。
   @override
-  List<WebDavFile>? cachedDirectory(String path) =>
-      _cache.read(_key(path))?.entries;
+  List<WebDavFile>? cachedDirectory(String path) {
+    final entries = _cache.read(_key(path))?.entries;
+    return entries == null
+        ? null
+        : _parser.reclassifyCachedSelfEntries(
+            entries,
+            requestUrl: fullUrl(path),
+          );
+  }
 
   /// 将服务器返回的 href 解析为可播放的完整 URL。
   @override
@@ -143,6 +159,21 @@ class WebDAVService implements DirectoryRepository {
     required int maxBytes,
     required Duration timeout,
   }) => _client.getFileBytes(url, maxBytes: maxBytes, timeout: timeout);
+
+  /// 将字体等较大的伴随文件流式写入播放会话目录。
+  Future<int> downloadFile(
+    String url,
+    File destination, {
+    required int maxBytes,
+    required Duration timeout,
+    void Function(int received)? onProgress,
+  }) => _client.downloadFile(
+    url,
+    destination,
+    maxBytes: maxBytes,
+    timeout: timeout,
+    onProgress: onProgress,
+  );
 
   /// STRM 指针文件内容读取上限（字节）。
   static const int maxContentBytes = 8192;

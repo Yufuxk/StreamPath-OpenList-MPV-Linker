@@ -19,6 +19,7 @@ import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/presentation/pages/local_browser_page.dart';
+import 'package:streampath/presentation/pages/app_shell_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 
 void main() {
@@ -325,7 +326,7 @@ void main() {
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: state,
-          child: MaterialApp(home: LocalBrowserPage(root: rootA)),
+          child: const MaterialApp(home: AppShellPage()),
         ),
       );
       Future<void> settle() async {
@@ -338,12 +339,16 @@ void main() {
       }
 
       await settle();
+      await tester.tap(find.byKey(const ValueKey('local-root-a')));
+      await settle();
       expect(find.text('继续播放：local:a.mp4'), findsOneWidget);
       expect(
         find.text('继续播放：local:b.mp4'),
-        mode == MediaLibrarySharingMode.independent
-            ? findsNothing
-            : findsOneWidget,
+        mode == MediaLibrarySharingMode.localShared ||
+                mode == MediaLibrarySharingMode.networkAndLocalShared ||
+                mode == MediaLibrarySharingMode.allShared
+            ? findsOneWidget
+            : findsNothing,
       );
       expect(
         find.text('继续播放：server-a.mp4'),
@@ -351,8 +356,10 @@ void main() {
             ? findsOneWidget
             : findsNothing,
       );
-      if (mode != MediaLibrarySharingMode.independent) {
-        await tester.tap(find.byTooltip('媒体中心'));
+      if (mode == MediaLibrarySharingMode.localShared ||
+          mode == MediaLibrarySharingMode.networkAndLocalShared ||
+          mode == MediaLibrarySharingMode.allShared) {
+        await tester.tap(find.byKey(const Key('sidebar-library')));
         await settle();
         await tester.tap(find.text('目录').first);
         await tester.pumpAndSettle();
@@ -483,7 +490,7 @@ void main() {
     expect(find.text('Series'), findsWidgets);
   });
 
-  testWidgets('嵌套BDMV从媒体中心继续播放直接恢复且不导航', (tester) async {
+  testWidgets('嵌套BDMV从侧边栏媒体中心继续播放并定位来源', (tester) async {
     final temporaryDirectory = Directory.systemTemp.createTempSync(
       'streampath_nested_bdmv_',
     );
@@ -494,12 +501,12 @@ void main() {
     )..createSync();
     final discDirectory = Directory(p.join(seriesDirectory.path, 'DISC_01'))
       ..createSync();
-    Directory(p.join(discDirectory.path, 'BDMV', 'PLAYLIST')).createSync(
-      recursive: true,
-    );
-    Directory(p.join(discDirectory.path, 'BDMV', 'STREAM')).createSync(
-      recursive: true,
-    );
+    Directory(
+      p.join(discDirectory.path, 'BDMV', 'PLAYLIST'),
+    ).createSync(recursive: true);
+    Directory(
+      p.join(discDirectory.path, 'BDMV', 'STREAM'),
+    ).createSync(recursive: true);
     final indexFile = File(p.join(discDirectory.path, 'BDMV', 'index.bdmv'))
       ..writeAsBytesSync([1, 2, 3, 4]);
     final indexStat = indexFile.statSync();
@@ -581,7 +588,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider<AppState>.value(
         value: appState,
-        child: MaterialApp(home: LocalBrowserPage(root: root)),
+        child: const MaterialApp(home: AppShellPage()),
       ),
     );
     Future<void> settle() async {
@@ -594,9 +601,9 @@ void main() {
     }
 
     await settle();
-    expect(find.textContaining('继续播放本地蓝光：DISC_01'), findsOneWidget);
-
-    await tester.tap(find.byTooltip('媒体中心'));
+    await tester.tap(find.byKey(const ValueKey('local-root-root-nested')));
+    await settle();
+    await tester.tap(find.byKey(const Key('sidebar-library')));
     await settle();
     await tester.tap(find.text('继续播放').first);
     await tester.pumpAndSettle();
@@ -628,8 +635,7 @@ void main() {
 
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
-    // 未发生目录导航：仍停留在本地根目录，未进入父目录 [BDMV] Series。
-    expect(find.text('[BDMV] Series'), findsOneWidget);
-    expect(find.text('DISC_01'), findsNothing);
+    expect(find.text('[BDMV] Series'), findsWidgets);
+    expect(find.text('DISC_01'), findsOneWidget);
   });
 }

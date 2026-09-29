@@ -73,9 +73,9 @@ class AdaptiveWindowAppearanceDriver implements WindowAppearanceDriver {
       await acrylic.Window.initialize();
       _initialized = true;
     }
-    final alpha = (config.glassOpacity * 255).round();
+    final alpha = (config.glassOpacity * 0.8 * 255).round();
     final tint = isDark
-        ? Color.fromARGB(alpha, 18, 25, 34)
+        ? Color.fromARGB(alpha, 16, 23, 34)
         : Color.fromARGB(alpha, 246, 248, 252);
     final resolvedMaterial = resolveWindowMaterial(
       config.material,
@@ -147,12 +147,31 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
   bool _checkingCapabilities = false;
   String? _capabilityError;
   Future<void>? _operationTail;
+  Color? _systemAccent;
 
   AppearanceConfig get config => _config;
   WindowAppearanceCapabilities get capabilities => _capabilities;
   WindowAppearanceResult? get lastResult => _lastResult;
   bool get checkingCapabilities => _checkingCapabilities;
   String? get capabilityError => _capabilityError;
+  Color? get systemAccent => _systemAccent;
+
+  Future<void> refreshSystemAccent() async {
+    if (!Platform.isWindows) return;
+    try {
+      const channel = MethodChannel('streampath/appearance');
+      final value = await channel.invokeMethod<int>('getSystemAccent');
+      final color = value == null ? null : Color(value);
+      if (color != _systemAccent) {
+        _systemAccent = color;
+        notifyListeners();
+      }
+    } on PlatformException catch (error) {
+      debugPrint('Failed to read system accent (code=${error.code})');
+    } on MissingPluginException {
+      debugPrint('System accent channel is unavailable');
+    }
+  }
 
   /// 原生效果成功后才允许主题进入半透明状态。
   bool get glassActive =>
@@ -216,6 +235,7 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
       _config = AppearanceConfig(
         material: _config.material,
         glassOpacity: _config.glassOpacity,
+        fontFamily: _config.fontFamily,
       );
       _lastResult = WindowAppearanceResult.classic(
         _capabilities,
@@ -229,7 +249,12 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
   /// 应用并切换界面外观；失败时保留当前有效样式。
   Future<bool> apply(AppearanceConfig next) =>
       _serializeAppearanceOperation(() async {
-        if (_sameAppearance(next, _config) && (!next.isGlass || glassActive)) {
+        if (_sameWindowAppearance(next, _config) &&
+            (!next.isGlass || glassActive)) {
+          if (next.fontFamily != _config.fontFamily) {
+            _config = next;
+            notifyListeners();
+          }
           return true;
         }
         final previous = _config;
@@ -312,7 +337,7 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
   Brightness get _platformBrightness =>
       WidgetsBinding.instance.platformDispatcher.platformBrightness;
 
-  bool _sameAppearance(AppearanceConfig first, AppearanceConfig second) =>
+  bool _sameWindowAppearance(AppearanceConfig first, AppearanceConfig second) =>
       first.style == second.style &&
       first.material == second.material &&
       first.glassOpacity == second.glassOpacity;

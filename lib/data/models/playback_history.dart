@@ -12,6 +12,12 @@ class PlaybackHistory {
     this.sessionId = 'legacy',
     DateTime? createdAt,
     this.playlistFileNames = const [],
+    this.playlistRelativePaths = const [],
+    this.seasonPlaylistPath,
+    this.nextSeasonRootPath,
+    this.nextSeasonFileNames = const [],
+    this.nextSeasonRelativePaths = const [],
+    this.nextSeasonPlaylistPath,
     this.playerPid,
     this.playerExecutablePath,
     this.playerCreationTime,
@@ -44,6 +50,18 @@ class PlaybackHistory {
 
   /// 本会话播放列表文件名（与 mpv playlist-pos 一一对应）。
   final List<String> playlistFileNames;
+
+  /// 与 playlistFileNames 同序；缺失时沿用旧版同目录记录。
+  final List<String> playlistRelativePaths;
+
+  /// 当前季在运行中的 MPV 内对应的临时 M3U。
+  final String? seasonPlaylistPath;
+
+  /// 已准备的下一季，仅在 MPV 实际加载其首项后替换当前列表历史。
+  final String? nextSeasonRootPath;
+  final List<String> nextSeasonFileNames;
+  final List<String> nextSeasonRelativePaths;
+  final String? nextSeasonPlaylistPath;
 
   /// 对应外部播放器 PID；应用重启后用于恢复存活检测和定向关闭。
   final int? playerPid;
@@ -81,6 +99,14 @@ class PlaybackHistory {
     DateTime? updatedAt,
     DateTime? createdAt,
     List<String>? playlistFileNames,
+    List<String>? playlistRelativePaths,
+    String? seasonPlaylistPath,
+    bool clearSeasonPlaylistPath = false,
+    String? nextSeasonRootPath,
+    bool clearNextSeason = false,
+    List<String>? nextSeasonFileNames,
+    List<String>? nextSeasonRelativePaths,
+    String? nextSeasonPlaylistPath,
     int? playerPid,
     bool clearPlayerPid = false,
     String? playerExecutablePath,
@@ -105,6 +131,22 @@ class PlaybackHistory {
     updatedAt: updatedAt ?? this.updatedAt,
     createdAt: createdAt ?? this.createdAt,
     playlistFileNames: playlistFileNames ?? this.playlistFileNames,
+    playlistRelativePaths: playlistRelativePaths ?? this.playlistRelativePaths,
+    seasonPlaylistPath: clearSeasonPlaylistPath
+        ? null
+        : (seasonPlaylistPath ?? this.seasonPlaylistPath),
+    nextSeasonRootPath: clearNextSeason
+        ? null
+        : (nextSeasonRootPath ?? this.nextSeasonRootPath),
+    nextSeasonFileNames: clearNextSeason
+        ? const []
+        : (nextSeasonFileNames ?? this.nextSeasonFileNames),
+    nextSeasonRelativePaths: clearNextSeason
+        ? const []
+        : (nextSeasonRelativePaths ?? this.nextSeasonRelativePaths),
+    nextSeasonPlaylistPath: clearNextSeason
+        ? null
+        : (nextSeasonPlaylistPath ?? this.nextSeasonPlaylistPath),
     playerPid: clearPlayerPid ? null : (playerPid ?? this.playerPid),
     playerExecutablePath: clearPlayerPid || clearPlayerExecutablePath
         ? null
@@ -131,6 +173,16 @@ class PlaybackHistory {
     'updatedAt': updatedAt.millisecondsSinceEpoch,
     'createdAt': createdAt.millisecondsSinceEpoch,
     'playlistFileNames': playlistFileNames,
+    if (playlistRelativePaths.isNotEmpty)
+      'playlistRelativePaths': playlistRelativePaths,
+    if (seasonPlaylistPath != null) 'seasonPlaylistPath': seasonPlaylistPath,
+    if (nextSeasonRootPath != null) 'nextSeasonRootPath': nextSeasonRootPath,
+    if (nextSeasonFileNames.isNotEmpty)
+      'nextSeasonFileNames': nextSeasonFileNames,
+    if (nextSeasonRelativePaths.isNotEmpty)
+      'nextSeasonRelativePaths': nextSeasonRelativePaths,
+    if (nextSeasonPlaylistPath != null)
+      'nextSeasonPlaylistPath': nextSeasonPlaylistPath,
     'playerPid': playerPid,
     'playerExecutablePath': playerExecutablePath,
     'playerCreationTime': playerCreationTime,
@@ -138,7 +190,8 @@ class PlaybackHistory {
     'launchEpoch': launchEpoch,
     if (kind != PlaybackHistoryKind.video) 'kind': kind.name,
     if (isoKey != null) 'isoKey': isoKey,
-    if (playbackMode != PlaybackMode.legacyTitle) 'playbackMode': playbackMode.name,
+    if (playbackMode != PlaybackMode.legacyTitle)
+      'playbackMode': playbackMode.name,
     if (isoSessionDirectoryPath != null)
       'isoSessionDirectoryPath': isoSessionDirectoryPath,
     if (sourceId != null) 'sourceId': sourceId,
@@ -161,6 +214,22 @@ class PlaybackHistory {
     playlistFileNames:
         (json['playlistFileNames'] as List?)?.whereType<String>().toList() ??
         const [],
+    playlistRelativePaths:
+        (json['playlistRelativePaths'] as List?)
+            ?.whereType<String>()
+            .toList() ??
+        const [],
+    seasonPlaylistPath: json['seasonPlaylistPath'] as String?,
+    nextSeasonRootPath: json['nextSeasonRootPath'] as String?,
+    nextSeasonFileNames:
+        (json['nextSeasonFileNames'] as List?)?.whereType<String>().toList() ??
+        const [],
+    nextSeasonRelativePaths:
+        (json['nextSeasonRelativePaths'] as List?)
+            ?.whereType<String>()
+            .toList() ??
+        const [],
+    nextSeasonPlaylistPath: json['nextSeasonPlaylistPath'] as String?,
     playerPid: (json['playerPid'] as num?)?.toInt(),
     playerExecutablePath: json['playerExecutablePath'] as String?,
     playerCreationTime: (json['playerCreationTime'] as num?)?.toInt(),

@@ -98,6 +98,42 @@ void main() {
     expect(p.extension(result!.files.single.path), '.otf');
   });
 
+  test('流式字体写入不再调用整文件字节读取', () async {
+    const source = WebDavFontDirectory(
+      name: 'Fonts',
+      requestPath: 'Fonts',
+      entryKey: 'https://example.test/dav/Fonts/',
+      files: [
+        WebDavFontFile(
+          name: 'large.ttf',
+          url: 'https://example.test/dav/Fonts/large.ttf',
+          size: 4,
+        ),
+      ],
+    );
+    final result = await const WebDavFontLocalizer().localize(
+      source: source,
+      base: base,
+      sessionId: 'streamed',
+      loader: (url, {required maxBytes, required timeout}) =>
+          throw StateError('Byte loader must not run'),
+      fileLoader:
+          (
+            url,
+            destination, {
+            required maxBytes,
+            required timeout,
+            onProgress,
+          }) async {
+            await destination.writeAsBytes([0, 1, 2, 3]);
+            return 4;
+          },
+    );
+
+    expect(result?.files, hasLength(1));
+    expect(await result!.files.single.readAsBytes(), [0, 1, 2, 3]);
+  });
+
   test('没有任何可用字体时不留空目录', () async {
     const source = WebDavFontDirectory(
       name: 'Fonts',

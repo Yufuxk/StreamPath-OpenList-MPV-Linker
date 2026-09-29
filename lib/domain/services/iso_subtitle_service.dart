@@ -27,7 +27,7 @@ class IsoSubtitleCandidate {
   String get name => p.posix.basename(path);
 }
 
-/// 单个来源、单张 ISO 的资源与用户选择，不持有播放器进度。
+/// 单个来源、单张蓝光的资源与用户选择，不持有播放器进度。
 class IsoSubtitleContext {
   IsoSubtitleContext({
     required this.source,
@@ -69,7 +69,7 @@ class IsoSubtitleContext {
     return sha256
         .convert(
           utf8.encode(
-            '${source.descriptor.sourceId}\n${iso is WebDavBdmv ? 'bdmv\n' : ''}$identity',
+            '${source.descriptor.sourceId}\n${iso.isDirectory ? 'bdmv\n' : ''}$identity',
           ),
         )
         .toString();
@@ -112,7 +112,11 @@ class IsoSubtitleContext {
     final context = IsoSubtitleContext(
       source: source,
       iso: iso,
-      isoPath: iso is WebDavBdmv ? iso.rootPath : relativePath(source, iso),
+      isoPath: iso is WebDavBdmv
+          ? iso.rootPath
+          : iso.isDirectory
+              ? iso.relativePath
+              : relativePath(source, iso),
       store: IsoSubtitleStore(Directory(p.join(root.path, 'iso_subtitles'))),
       cancelled: cancelled,
     );
@@ -178,8 +182,8 @@ class IsoSubtitleContext {
       issues.add('map');
     }
     if (cancelled?.call() == true) return;
-    final parent = iso is WebDavBdmv
-        ? (iso as WebDavBdmv).rootPath
+    final parent = iso.isDirectory
+        ? isoPath
         : p.posix.dirname(isoPath);
     final clock = Stopwatch()..start();
     Duration budget() {
@@ -196,7 +200,7 @@ class IsoSubtitleContext {
           .timeout(budget());
       if (cancelled?.call() == true) return;
       final valid = _children(siblings, parent);
-      _currentIso = iso is WebDavBdmv
+      _currentIso = iso.isDirectory
           ? iso
           : valid.where((e) => e.path == isoPath).firstOrNull?.entry;
       if (_currentIso == null) {
@@ -209,7 +213,7 @@ class IsoSubtitleContext {
         changed = saved.changed;
         if (changed && !issues.contains('changed')) issues.add('changed');
       }
-      final isoCount = iso is WebDavBdmv
+      final isoCount = iso.isDirectory
           ? 1
           : valid.where((e) => e.entry.isIso).length;
       candidates.addAll(
@@ -247,7 +251,7 @@ class IsoSubtitleContext {
         }
       }
       if (cancelled?.call() == true) return;
-      if (iso is WebDavBdmv && parent.isNotEmpty) {
+      if (iso.isDirectory && parent.isNotEmpty) {
         final outer = p.posix.dirname(parent);
         final outerPath = outer == '.' ? '' : outer;
         final entries = await source
@@ -264,7 +268,10 @@ class IsoSubtitleContext {
         );
       }
       candidates.sort((a, b) => a.path.compareTo(b.path));
-      final stem = p.posix.basenameWithoutExtension(isoPath).toLowerCase();
+      final stem = (isoPath.isEmpty
+              ? iso.name
+              : p.posix.basenameWithoutExtension(isoPath))
+          .toLowerCase();
       var scannedBytes = 0;
       for (final candidate in candidates.take(64)) {
         if (cancelled?.call() == true) return;
@@ -360,7 +367,7 @@ class IsoSubtitleContext {
       if (entry.isSelfEntry) continue;
       try {
         final path = relativePath(source, entry);
-        if (p.posix.dirname(path) == parent) {
+        if (p.posix.dirname(path) == (parent.isEmpty ? '.' : parent)) {
           output.add(IsoSubtitleCandidate(path, entry));
         }
       } on FormatException {

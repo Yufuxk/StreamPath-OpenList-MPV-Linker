@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
 
 import 'package:flutter/foundation.dart';
 
@@ -9,12 +12,19 @@ import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/directory_cache.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/local/media_library_store.dart';
+import '../../data/local/navigation_location_store.dart';
+import '../../data/local/global_search_index.dart';
+import '../../core/utils/app_paths.dart';
 import '../../data/remote/webdav_client.dart';
 import '../../data/models/local_root_config.dart';
+import '../../data/models/appearance_config.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/stream_path_config.dart';
+import '../../data/models/media_library_item.dart';
+import '../../data/models/playback_history.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/webdav_font_cache.dart';
 import '../../domain/services/audio_companion_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/cache_cleanup_service.dart';
@@ -59,6 +69,7 @@ class AppState extends ChangeNotifier {
     LocalDiscPlaybackService? localDiscPlaybackService,
     OpenListIndexService? openListIndexService,
     OpenListIndexUpdateScheduler? openListIndexScheduler,
+    NavigationLocationStore? navigationLocationStore,
   }) : _configStore = configStore,
        // ignore: prefer_initializing_formals
        _cachePolicyConfigStore = cachePolicyConfigStore,
@@ -75,6 +86,17 @@ class AppState extends ChangeNotifier {
        // ignore: prefer_initializing_formals
        _mediaLibraryStore = mediaLibraryStore,
        _directoryCache = directoryCache ?? DirectoryCache(),
+       navigationLocations =
+           navigationLocationStore ??
+           NavigationLocationStore(
+             File(
+               p.join(
+                 p.dirname(configStore.configFilePath),
+                 'navigation_locations.json',
+               ),
+             ),
+             mode: configStore.current.appearance.directoryMemoryMode,
+           ),
        // ignore: prefer_initializing_formals
        _cacheCleaner = cacheCleaner,
        // ignore: prefer_initializing_formals
@@ -130,6 +152,14 @@ class AppState extends ChangeNotifier {
   final PlaybackProgressService? _audioProgressService;
   final MediaLibraryStore? _mediaLibraryStore;
   final DirectoryCache _directoryCache;
+  final NavigationLocationStore navigationLocations;
+  Future<GlobalSearchIndex>? _globalSearchIndex;
+
+  Future<GlobalSearchIndex> getGlobalSearchIndex() =>
+      _globalSearchIndex ??= () async {
+        final dir = await AppPaths.cacheDirectory();
+        return GlobalSearchIndex.open(p.join(dir.path, 'global_search.db'));
+      }();
   final CacheCleaner? _cacheCleaner;
   final CacheCleaner? _learningDataCleaner;
   final IsoPlaybackService? _isoPlaybackService;
@@ -149,6 +179,45 @@ class AppState extends ChangeNotifier {
   late final StreamController<String> _cacheWarnings;
   late final StreamController<PlaybackRecoveryEvent> _playbackRecoveryEvents;
 
+  Future<void> pruneWebDavFontCache() =>
+      _playerService.pruneWebDavFontCache(() async {
+        final active = <String>{};
+        for (final history in await _playbackHistoryStore.loadAll()) {
+          if (history.kind != PlaybackHistoryKind.video) continue;
+          final sourceId = history.sourceId;
+          if (sourceId == null || sourceId.isEmpty) continue;
+          active.add(WebDavFontCache.sessionKey(sourceId, history.sessionId));
+        }
+        final library = _mediaLibraryStore;
+        if (library != null) {
+          for (final profile in _configStore.current.profiles) {
+            final records = await library.playbackHistory(
+              profile.profileId,
+              audio: false,
+            );
+            for (final record in records) {
+              if (record.continueDismissed || !record.item.kind.isVideoLane) {
+                continue;
+              }
+              final sessionId = record.playbackSessionId;
+              if (sessionId == null) continue;
+              active.add(
+                WebDavFontCache.sessionKey(record.item.sourceId, sessionId),
+              );
+            }
+          }
+        }
+        return active;
+      });
+
+  void scheduleWebDavFontCachePrune() {
+    unawaited(
+      pruneWebDavFontCache().catchError((Object error) {
+        debugPrint('WebDAV font cache prune failed: $error');
+      }),
+    );
+  }
+
   /// 播放中动态保护警告流（如「网络带宽不足以流畅播放」）。
   Stream<String> get cacheWarnings => _cacheWarnings.stream;
 
@@ -157,6 +226,9 @@ class AppState extends ChangeNotifier {
       _playbackRecoveryEvents.stream;
 
   WebDAVService? _webDavService;
+  final ValueNotifier<double> sidebarRevealProgress = ValueNotifier(0);
+  final Map<String, WebDAVService> _mountedServices = {};
+  final Map<String, String> _mountErrors = {};
   String? _username;
   String? _password;
 
@@ -164,6 +236,11 @@ class AppState extends ChangeNotifier {
 
   /// 当前 WebDAV 服务；未连接时为 null。
   WebDAVService? get webDavService => _webDavService;
+  WebDAVService? mountedService(String profileId) =>
+      _mountedServices[profileId];
+  String? mountError(String profileId) => _mountErrors[profileId];
+  bool isProfileConnected(String profileId) =>
+      _mountedServices.containsKey(profileId);
 
   /// 已连接的用户名（显示用）。
   String? get username => _username;
@@ -173,6 +250,7 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    sidebarRevealProgress.dispose();
     _isoPlaybackService?.dispose();
     _localDiscPlaybackService.dispose();
     _openListIndexScheduler.dispose();
@@ -248,6 +326,10 @@ class AppState extends ChangeNotifier {
   Future<void> removeLocalRoot(String rootId) async {
     final current = await _configStore.load();
     await _configStore.save(current.removeLocalRoot(rootId));
+    await navigationLocations.forget('local:$rootId');
+    if (_globalSearchIndex != null) {
+      await (await _globalSearchIndex!).removeSource('local:$rootId');
+    }
     notifyListeners();
   }
 
@@ -275,6 +357,28 @@ class AppState extends ChangeNotifier {
     if (profile == null) return Future.value(const []);
     return _openListIndexService.search(profile: profile, query: query);
   }
+
+  Future<List<OpenListIndexEntry>> searchOpenListIndexForProfile(
+    ServerProfile profile,
+    String query,
+  ) => _openListIndexService.search(profile: profile, query: query);
+
+  Future<void> setSidebarMode(SidebarDisplayMode mode) async {
+    final current = _configStore.current;
+    if (current.appearance.sidebarMode == mode) return;
+    await _configStore.save(
+      current.copyWithGlobalSettings(
+        player: current.toPlayerConfig(),
+        appearance: current.appearance.copyWith(sidebarMode: mode),
+        mediaLibrary: current.mediaLibrary,
+      ),
+    );
+    notifyListeners();
+  }
+
+  Future<void> applyDirectoryMemoryMode() => navigationLocations.setMode(
+    _configStore.current.appearance.directoryMemoryMode,
+  );
 
   Future<OpenListIndexUpdateResult> updateOpenListIndex({
     ServerProfile? profile,
@@ -440,6 +544,99 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  Future<void> mountProfile(String profileId) async {
+    final config = _configStore.current;
+    final profile = config.profiles
+        .where((item) => item.profileId == profileId)
+        .firstOrNull;
+    if (profile == null || !profile.isConnectionComplete) {
+      throw AppException.config('服务器档案缺少地址或用户名');
+    }
+    if (!config.mountedProfileIds.contains(profileId)) {
+      await _configStore.save(
+        config.withMountedProfileIds([...config.mountedProfileIds, profileId]),
+      );
+      notifyListeners();
+    }
+    try {
+      final service = await _verifyConnection(
+        baseUrl: profile.serverUrl,
+        username: profile.username,
+        password: profile.password,
+        profileId: profileId,
+      );
+      if (!_configStore.current.mountedProfileIds.contains(profileId)) return;
+      _mountedServices[profileId] = service;
+      _mountErrors.remove(profileId);
+      notifyListeners();
+    } on AppException catch (error) {
+      _mountErrors[profileId] = error.message;
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> restoreMountedProfiles() async {
+    final config = _configStore.current;
+    await Future.wait([
+      for (final profileId in config.mountedProfileIds)
+        if (!_mountedServices.containsKey(profileId))
+          mountProfile(profileId).onError((AppException error, _) {
+            // 离线档案留在挂载列表，用户可以手动重试。
+          }),
+    ]);
+  }
+
+  Future<void> activateMountedProfile(String profileId) async {
+    final config = _configStore.current;
+    if (!config.mountedProfileIds.contains(profileId)) {
+      throw AppException.config('该服务器未挂载');
+    }
+    final profile = config.profiles
+        .where((item) => item.profileId == profileId)
+        .firstOrNull;
+    if (profile == null) throw AppException.config('服务器档案不存在');
+    var service = _mountedServices[profileId];
+    final credentials = service?.credentialSnapshot;
+    if (service == null ||
+        credentials!.baseUrl != profile.serverUrl ||
+        credentials.username != profile.username ||
+        credentials.password != profile.password) {
+      await mountProfile(profileId);
+      service = _mountedServices[profileId];
+      if (service == null) throw AppException.config('服务器挂载已移除');
+    }
+    if (config.profileId != profileId) {
+      await _configStore.save(config.activateProfile(profileId));
+    }
+    _commitConnection(
+      service: service,
+      username: profile.username,
+      password: profile.password,
+      profileId: profileId,
+    );
+  }
+
+  Future<void> unmountProfile(String profileId) async {
+    final config = _configStore.current;
+    await _configStore.save(
+      config.withMountedProfileIds(
+        config.mountedProfileIds.where((id) => id != profileId).toList(),
+      ),
+    );
+    _mountedServices.remove(profileId);
+    await navigationLocations.forget(profileId);
+    if (_globalSearchIndex != null) {
+      await (await _globalSearchIndex!).removeSource(profileId);
+    }
+    _mountErrors.remove(profileId);
+    if (_webDavService?.sourceId == profileId) {
+      disconnect();
+    } else {
+      notifyListeners();
+    }
+  }
+
   /// 验证候选档案后同时提交活动配置与内存连接。
   Future<StreamPathConfig> connectAndActivateProfile({
     required ServerProfile profile,
@@ -504,6 +701,8 @@ class AppState extends ChangeNotifier {
     required String profileId,
   }) {
     _webDavService = service;
+    _mountedServices[profileId] = service;
+    _mountErrors.remove(profileId);
     _username = username;
     _password = password;
     _progressService.useProfile(profileId);
@@ -514,6 +713,8 @@ class AppState extends ChangeNotifier {
 
   /// 断开连接并清空状态。
   void disconnect() {
+    final profileId = _webDavService?.sourceId;
+    if (profileId != null) _mountedServices.remove(profileId);
     _webDavService = null;
     _username = null;
     _password = null;

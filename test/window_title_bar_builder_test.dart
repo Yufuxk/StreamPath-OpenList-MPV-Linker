@@ -65,12 +65,7 @@ void main() {
     expect(appBarRect.top, WindowTitleBar.height);
 
     final titleBarMaterial = tester.widget<Material>(
-      find
-          .descendant(
-            of: find.byType(WindowTitleBar),
-            matching: find.byType(Material),
-          )
-          .first,
+      find.byKey(WindowTitleBar.mainSurfaceKey),
     );
     final theme = Theme.of(tester.element(find.byType(WindowTitleBar)));
     expect(
@@ -92,12 +87,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final glassTitleBarMaterial = tester.widget<Material>(
-      find
-          .descendant(
-            of: find.byType(WindowTitleBar),
-            matching: find.byType(Material),
-          )
-          .first,
+      find.byKey(WindowTitleBar.mainSurfaceKey),
     );
     final glassTheme = Theme.of(tester.element(find.byType(WindowTitleBar)));
     final glassAppBarMaterial = tester.widget<Material>(

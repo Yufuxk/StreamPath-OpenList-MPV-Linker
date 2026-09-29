@@ -12,6 +12,7 @@ import '../../data/local/playback_progress_db.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/models/audio_media_entry.dart';
 import 'audio_lyrics_localizer.dart';
+import 'audio_lyrics_ass_renderer.dart';
 import 'audio_mpv_scripts.dart';
 import 'mpv_idle_completion_marker.dart';
 import 'mpv_playback_progress_sync.dart';
@@ -119,6 +120,8 @@ class AudioPlayerService {
   final SessionProgressSyncCoordinator _progressSyncCoordinator =
       SessionProgressSyncCoordinator();
   final AudioLyricsLocalizer _lyricsLocalizer = const AudioLyricsLocalizer();
+  final AudioLyricsAssRenderer _lyricsAssRenderer =
+      const AudioLyricsAssRenderer();
   int _launchSequence = 0;
   int _ownershipSequence = 0;
 
@@ -262,7 +265,7 @@ class AudioPlayerService {
         sessionProgressFileName(sessionId, launchEpoch: launchEpoch),
       );
 
-      final lyricsLocalization = subtitleInjectionEnabled
+      var lyricsLocalization = subtitleInjectionEnabled
           ? await _lyricsLocalizer.localize(
               entries: entries,
               base: base,
@@ -274,6 +277,19 @@ class AudioPlayerService {
               sessionFiles: const [],
             );
       await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      if (subtitleInjectionEnabled && config.audioDynamicLyricsEnabled) {
+        lyricsLocalization = await _lyricsAssRenderer.prepare(
+          localized: lyricsLocalization,
+          base: base,
+          sessionId: artifactSessionId,
+          startIndex: playlistStart,
+          deadline: DateTime.now().add(const Duration(seconds: 3)),
+          fontFamily: config.audioLyricsFontFamily,
+          outlineWidth: config.audioLyricsOutlineWidth,
+          transparency: config.audioLyricsTransparency,
+        );
+        await ensureOwned(localizedFiles: lyricsLocalization.sessionFiles);
+      }
 
       final playlistFilePath = await AudioMpvScripts.ensurePlaylistM3u8(
         entries,
@@ -307,6 +323,10 @@ class AudioPlayerService {
           if (playlistStart > 0) '--playlist-start=$playlistStart',
           '--input-ipc-server=${_newPipeName(launchEpoch)}',
           '--audio-display=embedded-first',
+          if (subtitleInjectionEnabled &&
+              config.audioDynamicLyricsEnabled &&
+              lyricsLocalization.entries.any((entry) => entry.lyrics != null))
+            '--force-window=yes',
           '--cover-art-auto=no',
           if (subtitleInjectionEnabled) '--sub-auto=no',
           '--script=$companionScript',

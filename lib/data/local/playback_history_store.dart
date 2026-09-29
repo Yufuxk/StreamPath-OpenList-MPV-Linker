@@ -137,6 +137,12 @@ class PlaybackHistoryStore {
       updatedAt: _now(),
       createdAt: history.createdAt,
       playlistFileNames: history.playlistFileNames,
+      playlistRelativePaths: history.playlistRelativePaths,
+      seasonPlaylistPath: history.seasonPlaylistPath,
+      nextSeasonRootPath: history.nextSeasonRootPath,
+      nextSeasonFileNames: history.nextSeasonFileNames,
+      nextSeasonRelativePaths: history.nextSeasonRelativePaths,
+      nextSeasonPlaylistPath: history.nextSeasonPlaylistPath,
       playerPid: history.playerPid,
       playerExecutablePath: history.playerExecutablePath,
       playerCreationTime: history.playerCreationTime,
@@ -146,6 +152,7 @@ class PlaybackHistoryStore {
       isoKey: history.isoKey,
       isoSessionDirectoryPath: history.isoSessionDirectoryPath,
       sourceId: history.sourceId,
+      playbackMode: history.playbackMode,
     );
     final records = [..._cached];
     final index = records.indexWhere((e) => e.sessionId == record.sessionId);

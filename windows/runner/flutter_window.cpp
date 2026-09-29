@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <optional>
+#include <set>
 #include <shobjidl.h>
 #include <winternl.h>
 #include <wrl/client.h>
@@ -11,6 +12,32 @@
 #include "utils.h"
 
 namespace {
+
+std::vector<std::string> ReadInstalledFontFamilies(HWND window) {
+  HDC device = ::GetDC(window);
+  if (device == nullptr) return {};
+  std::set<std::wstring> families;
+  LOGFONTW query = {};
+  query.lfCharSet = DEFAULT_CHARSET;
+  ::EnumFontFamiliesExW(
+      device, &query,
+      [](const LOGFONTW* font, const TEXTMETRICW*, DWORD,
+         LPARAM value) -> int {
+        if (font->lfFaceName[0] != L'@') {
+          auto* names = reinterpret_cast<std::set<std::wstring>*>(value);
+          names->insert(font->lfFaceName);
+        }
+        return 1;
+      },
+      reinterpret_cast<LPARAM>(&families), 0);
+  ::ReleaseDC(window, device);
+  std::vector<std::string> result;
+  result.reserve(families.size());
+  for (const auto& family : families) {
+    result.push_back(Utf8FromUtf16(family.c_str()));
+  }
+  return result;
+}
 
 struct WindowsVersion {
   DWORD major = 0;
@@ -310,6 +337,27 @@ bool FlutterWindow::OnCreate() {
           return;
         }
 
+        if (method == "getInstalledFonts") {
+          flutter::EncodableList fonts;
+          for (const auto& family : ReadInstalledFontFamilies(GetHandle())) {
+            fonts.emplace_back(family);
+          }
+          result->Success(flutter::EncodableValue(fonts));
+          return;
+        }
+
+        if (method == "getSystemAccent") {
+          DWORD color = 0;
+          BOOL opaque = FALSE;
+          if (SUCCEEDED(::DwmGetColorizationColor(&color, &opaque))) {
+            result->Success(flutter::EncodableValue(static_cast<int64_t>(
+                0xFF000000u | (color & 0x00FFFFFFu))));
+          } else {
+            result->Success();
+          }
+          return;
+        }
+
         if (method != "resetWindowEffect") {
           result->NotImplemented();
           return;
@@ -396,6 +444,11 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   switch (message) {
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
+      break;
+    case WM_DWMCOLORIZATIONCOLORCHANGED:
+      if (appearance_channel_) {
+        appearance_channel_->InvokeMethod("accentChanged", nullptr);
+      }
       break;
     case WM_SIZE: {
       // Keep the Dart-side title bar in sync with the maximize state

@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/errors/app_exception.dart';
 import '../state/app_state.dart';
-import 'storage_root_page.dart';
+import 'app_shell_page.dart';
 
 /// 自动连接中转页：已保存完整登录信息时，启动直接连接服务器。
 ///
@@ -37,7 +37,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
       );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const StorageRootPage()),
+        MaterialPageRoute<void>(builder: (_) => const AppShellPage()),
       );
     } on AppException catch (e) {
       _openLoginWithError(e.message);
@@ -50,7 +50,7 @@ class _AutoConnectGateState extends State<AutoConnectGate> {
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => StorageRootPage(initialError: message),
+        builder: (_) => AppShellPage(initialError: message),
       ),
     );
   }

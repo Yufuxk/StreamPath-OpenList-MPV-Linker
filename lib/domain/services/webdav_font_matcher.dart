@@ -3,17 +3,22 @@ import 'package:path/path.dart' as p;
 import '../../core/constants.dart';
 import '../../core/utils/url_utils.dart';
 import '../../data/models/media_directory_entry.dart';
+import '../../data/models/web_dav_file.dart';
 
 class WebDavFontFile {
   const WebDavFontFile({
     required this.name,
     required this.url,
     required this.size,
+    this.etag,
+    this.lastModified,
   });
 
   final String name;
   final String url;
   final int size;
+  final String? etag;
+  final String? lastModified;
 
   String get extension {
     final nameExtension = p.extension(name).toLowerCase();
@@ -105,7 +110,16 @@ class WebDavFontMatcher {
       }
       final url = resolveHref(baseUrl, entry.entryKey);
       if (!isSameOrigin(baseUrl, url)) continue;
-      files.add(WebDavFontFile(name: entry.name, url: url, size: entry.size));
+      final webDavFile = entry is WebDavFile ? entry : null;
+      files.add(
+        WebDavFontFile(
+          name: entry.name,
+          url: url,
+          size: entry.size,
+          etag: webDavFile?.etag,
+          lastModified: webDavFile?.lastModifiedHeader,
+        ),
+      );
     }
     return directory.withFiles(files);
   }

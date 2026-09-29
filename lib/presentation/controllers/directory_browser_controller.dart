@@ -51,6 +51,7 @@ class DirectoryBrowserController extends ChangeNotifier {
   int _indexSearchId = 0;
   int _loadId = 0;
   bool _disposed = false;
+  bool _hasExplicitPath = false;
 
   List<MediaDirectoryEntry>? _visibleFilesCache;
   List<MediaDirectoryEntry>? _visibleFilesSource;
@@ -95,9 +96,13 @@ class DirectoryBrowserController extends ChangeNotifier {
     if (_disposed) return;
 
     final config = configStore.current;
-    final defaultDirectory = config.activeProfile?.defaultDirectory;
+    final defaultDirectory = config.profiles
+        .where((profile) => profile.profileId == service.descriptor.sourceId)
+        .firstOrNull
+        ?.defaultDirectory;
     var changed = false;
     if (service.descriptor.kind == MediaSourceKind.webdav &&
+        !_hasExplicitPath &&
         _crumbs.isEmpty &&
         defaultDirectory?.trim().isNotEmpty == true) {
       _crumbs.addAll(_splitPath(defaultDirectory!));
@@ -190,6 +195,7 @@ class DirectoryBrowserController extends ChangeNotifier {
   }
 
   void navigateToPath(String path) {
+    _hasExplicitPath = true;
     _resetSearch();
     _crumbs
       ..clear()
@@ -203,7 +209,13 @@ class DirectoryBrowserController extends ChangeNotifier {
   void openSearch() {
     if (_searchOpen) return;
     _searchOpen = true;
+    _searchScope = service.supportsRemoteSearch
+        ? DirectorySearchScope.openListIndex
+        : DirectorySearchScope.currentDirectory;
     notifyListeners();
+    if (_searchScope == DirectorySearchScope.openListIndex) {
+      _scheduleIndexSearch();
+    }
   }
 
   void closeSearch() {

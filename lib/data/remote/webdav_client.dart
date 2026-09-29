@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -109,6 +110,65 @@ class WebDavClient {
       return bytes;
     } on DioException catch (e) {
       throw _translateDioError(e);
+    }
+  }
+
+  /// 将较大的伴随文件边接收边写入会话文件，并保持原有的认证与重定向规则。
+  Future<int> downloadFile(
+    String href,
+    File destination, {
+    required int maxBytes,
+    required Duration timeout,
+    void Function(int received)? onProgress,
+  }) async {
+    final url = resolveHref(baseUrl, href);
+    final cancelToken = CancelToken();
+    final deadline = Timer(
+      timeout,
+      () => cancelToken.cancel('Download deadline exceeded'),
+    );
+    try {
+      final response = await _requestFollowingRedirects<ResponseBody>(
+        url: url,
+        method: 'GET',
+        responseType: ResponseType.stream,
+        requestTimeout: timeout,
+        cancelToken: cancelToken,
+      );
+      final body = response.data;
+      if (body == null) return 0;
+      if (body.contentLength > maxBytes) {
+        throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+      }
+
+      var received = 0;
+      final sink = destination.openWrite();
+      try {
+        await sink.addStream(
+          body.stream.map((chunk) {
+            received += chunk.length;
+            if (received > maxBytes) {
+              throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+            }
+            onProgress?.call(received);
+            return chunk;
+          }),
+        );
+        await sink.flush();
+        await sink.close();
+      } catch (_) {
+        try {
+          await sink.close();
+        } catch (_) {
+          // 保留下载或大小校验产生的原始错误。
+        }
+        rethrow;
+      }
+      return received;
+    } on DioException catch (e) {
+      throw _translateDioError(e);
+    } finally {
+      deadline.cancel();
     }
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -18,6 +19,7 @@ class PlaybackBar extends StatefulWidget {
     required this.onDelete,
     required this.onSecondaryTapDown,
     this.onSubtitles,
+    this.onSkipSeason,
   });
 
   final String title;
@@ -29,6 +31,7 @@ class PlaybackBar extends StatefulWidget {
   final VoidCallback onDelete;
   final GestureTapDownCallback onSecondaryTapDown;
   final VoidCallback? onSubtitles;
+  final VoidCallback? onSkipSeason;
 
   @override
   State<PlaybackBar> createState() => _PlaybackBarState();
@@ -82,19 +85,34 @@ class _PlaybackBarState extends State<PlaybackBar> {
               ),
               const SizedBox(width: 8),
               if (widget.onSubtitles != null)
-                IconButton(icon: const Icon(Icons.subtitles_outlined),
-                  tooltip: context.l10n.text('ISO 外挂字幕'),
-                  onPressed: widget.deleting ? null : widget.onSubtitles),
-              IconButton.filled(
-                icon: Icon(widget.icon),
-                tooltip: widget.tooltip,
-                onPressed: widget.deleting ? null : widget.onPressed,
+                _actionSlot(
+                  IconButton(
+                    icon: const Icon(SPIcons.subtitles),
+                    tooltip: context.l10n.text('蓝光外挂字幕'),
+                    onPressed: widget.deleting ? null : widget.onSubtitles,
+                  ),
+                ),
+              if (widget.onSkipSeason != null)
+                _actionSlot(
+                  IconButton(
+                    icon: const Icon(SPIcons.next),
+                    tooltip: context.l10n.text('跳过本季'),
+                    onPressed: widget.deleting ? null : widget.onSkipSeason,
+                  ),
+                ),
+              _actionSlot(
+                IconButton.filled(
+                  icon: Icon(widget.icon),
+                  tooltip: widget.tooltip,
+                  onPressed: widget.deleting ? null : widget.onPressed,
+                ),
               ),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: context.l10n.text('删除并关闭对应播放器'),
-                onPressed: widget.deleting ? null : widget.onDelete,
+              _actionSlot(
+                IconButton(
+                  icon: const Icon(SPIcons.delete),
+                  tooltip: context.l10n.text('删除并关闭对应播放器'),
+                  onPressed: widget.deleting ? null : widget.onDelete,
+                ),
               ),
             ],
           ),
@@ -102,6 +120,9 @@ class _PlaybackBarState extends State<PlaybackBar> {
       ),
     );
   }
+
+  Widget _actionSlot(Widget button) =>
+      SizedBox.square(dimension: 48, child: Center(child: button));
 }
 
 /// 多个播放下边栏共用的玻璃表面和分隔线。

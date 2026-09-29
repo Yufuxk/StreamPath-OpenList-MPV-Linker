@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -34,6 +35,8 @@ import 'package:streampath/presentation/theme/appearance_controller.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
+import 'package:streampath/presentation/widgets/sp_controls.dart';
+import 'package:streampath/presentation/widgets/sp_font_picker.dart';
 
 void main() {
   late Directory tempDir;
@@ -107,6 +110,7 @@ void main() {
     ValueChanged<SettingsSection>? onSectionBuilt,
     AppLanguage language = AppLanguage.simplifiedChinese,
     ThemeData? theme,
+    double textScale = 1,
   }) {
     return MultiProvider(
       providers: [
@@ -117,6 +121,12 @@ void main() {
       ],
       child: MaterialApp(
         theme: theme,
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!,
+        ),
         locale: language.locale,
         supportedLocales: AppLanguage.values
             .map((candidate) => candidate.locale)
@@ -131,6 +141,160 @@ void main() {
       ),
     );
   }
+
+  testWidgets('设置固定标签在四语言、明暗主题和 1280×720 文字缩放下正常布局', (tester) async {
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    for (final language in AppLanguage.values) {
+      for (final textScale in [1.0, 1.25, 1.5]) {
+        for (final brightness in Brightness.values) {
+          await tester.pumpWidget(const SizedBox.shrink());
+          SettingsPageMemory.reset();
+          await tester.pumpWidget(
+            buildSettings(
+              language: language,
+              theme: brightness == Brightness.light
+                  ? AppTheme.light()
+                  : AppTheme.dark(),
+              textScale: textScale,
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: '${language.name}, $brightness, $textScale, general',
+          );
+          await tester.tap(
+            find.byKey(const Key('settings-section-appearance')),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: '${language.name}, $brightness, $textScale, appearance',
+          );
+        }
+      }
+    }
+  });
+
+  testWidgets('播放页显示默认开启的 WebDAV 字体缓存开关', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('webdav-font-cache'));
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+  });
+
+  testWidgets('深色设置按钮与导航图标沿用旧版配色', (tester) async {
+    await tester.pumpWidget(
+      buildSettings(
+        theme: AppTheme.dark(systemAccent: const Color(0xFFAA5500)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final saveFinder = find.byKey(const Key('save-settings-button'));
+    final saveButton = tester.widget<FilledButton>(saveFinder);
+    expect(
+      saveButton.style!.backgroundColor!.resolve({}),
+      const Color(0xFF6EA8FE),
+    );
+    expect(
+      saveButton.style!.foregroundColor!.resolve({}),
+      const Color(0xFF071B34),
+    );
+    final saveLabel = find.descendant(
+      of: saveFinder,
+      matching: find.text('保存全部配置'),
+    );
+    expect(
+      DefaultTextStyle.of(tester.element(saveLabel)).style.color,
+      const Color(0xFF071B34),
+    );
+    expect(
+      tester
+          .widget<SPGlyph>(
+            find.descendant(of: saveFinder, matching: find.byType(SPGlyph)),
+          )
+          .color,
+      const Color(0xFF071B34),
+    );
+    expect(
+      tester
+          .widget<SPGlyph>(
+            find.descendant(
+              of: find.byKey(const Key('settings-section-playback')),
+              matching: find.byType(SPGlyph),
+            ),
+          )
+          .color,
+      const Color(0xFFAEB9C7),
+    );
+  });
+
+  testWidgets('界面页从系统字体列表选择字体并保存', (tester) async {
+    const channel = MethodChannel('streampath/appearance');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'getInstalledFonts');
+      return ['Segoe UI', 'Microsoft YaHei UI'];
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const Key('server-url-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .decoration
+          ?.labelText,
+      isNull,
+    );
+    expect(find.text('服务器地址'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('interface-font-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Microsoft YaHei UI').last);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<SPFontPicker>(find.byType(SPFontPicker)).selectedFamily,
+      'Microsoft YaHei UI',
+    );
+    final saveButton = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(() async {
+      saveButton.onPressed!();
+      for (var i = 0; i < 200; i++) {
+        if (configStore.current.appearance.fontFamily == 'Microsoft YaHei UI') {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    expect(configStore.current.appearance.fontFamily, 'Microsoft YaHei UI');
+    expect(appearanceController.config.fontFamily, 'Microsoft YaHei UI');
+    expect(appearanceDriver.applied, isEmpty);
+  });
 
   testWidgets('各语言在窄屏与宽屏均可访问全部分类且无溢出', (tester) async {
     tester.view.devicePixelRatio = 1;
@@ -304,6 +468,43 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('只挂载当前表单且保存会定位其他分类的无效草稿', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const Key('profile-name-field')),
+      '未保存的名称',
+    );
+    await tester.tap(find.byKey(const Key('settings-section-cache')));
+    await tester.pumpAndSettle();
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('cache-memory-ratio-field')),
+      '500',
+    );
+    await tester.tap(find.byKey(const Key('settings-section-server')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextFormField>(find.byKey(const Key('profile-name-field')))
+          .controller!
+          .text,
+      '未保存的名称',
+    );
+
+    await tester.tap(find.byKey(const Key('save-settings-button')));
+    await tester.pumpAndSettle();
+
+    expect(SettingsPageMemory.selectedSection, SettingsSection.cache);
+    expect(find.text('请输入 5.0～50.0 %'), findsOneWidget);
+    expect(configStore.current.playerName, 'mpv');
+  });
+
   testWidgets('菜单进度默认独立，可保存共享并切回独立', (tester) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
@@ -352,6 +553,57 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('播放页将歌词开关与样式集中在独立设置卡片', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final card = find.byKey(const Key('audio-lyrics-settings'));
+    expect(card, findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.text('MPV 动态歌词')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: card,
+        matching: find.byKey(const Key('audio-lyrics-font-family')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: card,
+        matching: find.byKey(const Key('audio-lyrics-outline-width')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: card,
+        matching: find.byKey(const Key('audio-lyrics-transparency')),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<Slider>(find.byKey(const Key('audio-lyrics-outline-width')))
+          .value,
+      2,
+    );
+    expect(
+      tester
+          .widget<Slider>(find.byKey(const Key('audio-lyrics-transparency')))
+          .value,
+      0,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('媒体中心共享模式可选择并保存', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -361,11 +613,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('settings-section-mediaLibrary')));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byType(DropdownButtonFormField<MediaLibrarySharingMode>),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('本地与网络存储共享').last);
+    await tester.tap(find.byKey(const Key('sharing-all')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('save-settings-button')));
     for (
@@ -621,7 +869,7 @@ void main() {
     expect(find.textContaining('重新连接失败'), findsOneWidget);
   });
 
-  testWidgets('磨砂设置分组使用无阴影的扁平内容层', (tester) async {
+  testWidgets('磨砂设置分组使用无阴影的稳定内容层', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -632,7 +880,11 @@ void main() {
 
     final flatCards = tester
         .widgetList<GlassSurface>(find.byType(GlassSurface))
-        .where((surface) => surface.level == GlassSurfaceLevel.content)
+        .where(
+          (surface) =>
+              surface.level == GlassSurfaceLevel.raised &&
+              surface.border != null,
+        )
         .toList(growable: false);
     expect(flatCards, isNotEmpty);
     for (final card in flatCards) {
@@ -742,7 +994,7 @@ void main() {
     );
   });
 
-  testWidgets('索引轮询只重建服务器分类并保留全部表单', (tester) async {
+  testWidgets('索引轮询只重建当前服务器分类', (tester) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -822,10 +1074,7 @@ void main() {
       }
     }
     expect(progressRequests, 1);
-    expect(
-      find.byType(Form, skipOffstage: false),
-      findsNWidgets(SettingsSection.values.length),
-    );
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
     builds.clear();
 
     await tester.pump(const Duration(seconds: 2));
@@ -854,10 +1103,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(
-      find.byType(Form, skipOffstage: false),
-      findsNWidgets(SettingsSection.values.length),
-    );
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     tester
@@ -882,7 +1128,7 @@ void main() {
     }
   });
 
-  testWidgets('外观能力刷新只重建界面分类并保留全部表单', (tester) async {
+  testWidgets('外观能力刷新只重建当前界面分类', (tester) async {
     tester.view.physicalSize = const Size(1200, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -895,10 +1141,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(
-      find.byType(Form, skipOffstage: false),
-      findsNWidgets(SettingsSection.values.length),
-    );
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     builds.clear();
@@ -921,10 +1164,7 @@ void main() {
       if (section == SettingsSection.appearance) continue;
       expect(builds[section] ?? 0, 0, reason: '能力刷新不应重建 ${section.name} 分类');
     }
-    expect(
-      find.byType(Form, skipOffstage: false),
-      findsNWidgets(SettingsSection.values.length),
-    );
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
   });
 
   testWidgets('诊断页提供检查、脱敏导出和非破坏性数据库维护入口', (tester) async {

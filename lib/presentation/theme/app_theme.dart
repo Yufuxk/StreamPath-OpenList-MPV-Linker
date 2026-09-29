@@ -8,27 +8,47 @@ import 'window_appearance_status.dart';
 /// StreamPath 的轻量桌面主题。
 abstract final class AppTheme {
   static const Color _seedColor = Color(0xFF3B6FE8);
+  static const dropdownBorderRadius = BorderRadius.all(Radius.circular(8));
+
+  static Color dropdownMenuColor(ThemeData theme) {
+    final surface = theme.colorScheme.surfaceContainerLow;
+    final glass = theme.glass;
+    if (!glass.enabled) return surface.withValues(alpha: 1);
+    // 下拉菜单没有背景模糊，浮层底色需遮住后面的文字。
+    return Color.alphaBlend(
+      surface.withValues(alpha: 0.96),
+      glass.floatingSurface,
+    );
+  }
 
   static ThemeData light({
     bool glass = false,
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
+    String? fontFamily,
+    Color? systemAccent,
   }) => _build(
     Brightness.light,
     glass: glass,
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
+    fontFamily: fontFamily,
+    systemAccent: systemAccent,
   );
 
   static ThemeData dark({
     bool glass = false,
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
+    String? fontFamily,
+    Color? systemAccent,
   }) => _build(
     Brightness.dark,
     glass: glass,
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
+    fontFamily: fontFamily,
+    systemAccent: systemAccent,
   );
 
   static ThemeData _build(
@@ -36,10 +56,12 @@ abstract final class AppTheme {
     required bool glass,
     required double glassOpacity,
     required WindowBackdropType windowBackdrop,
+    required String? fontFamily,
+    required Color? systemAccent,
   }) {
     final isDark = brightness == Brightness.dark;
     final generated = ColorScheme.fromSeed(
-      seedColor: _seedColor,
+      seedColor: systemAccent ?? _seedColor,
       brightness: brightness,
     );
     final opaqueScheme = generated.copyWith(
@@ -92,6 +114,16 @@ abstract final class AppTheme {
           ? const Color(0xFF2B3949)
           : const Color(0xFFD8E0EA),
     );
+    final glassSurfaceScheme = glass && isDark
+        ? opaqueScheme.copyWith(
+            surface: const Color(0xFF171D27),
+            surfaceContainerLowest: const Color(0xFF0D131D),
+            surfaceContainerLow: const Color(0xFF1B2430),
+            surfaceContainer: const Color(0xFF202B38),
+            surfaceContainerHigh: const Color(0xFF293544),
+            surfaceContainerHighest: const Color(0xFF304052),
+          )
+        : opaqueScheme;
     final opacity = glassOpacity
         .clamp(
           AppearanceConfig.minGlassOpacity,
@@ -103,7 +135,7 @@ abstract final class AppTheme {
         (AppearanceConfig.maxGlassOpacity - AppearanceConfig.minGlassOpacity);
     // 先定义最终视觉层级，再反推覆盖层透明度，避免嵌套半透明表面趋同。
     final glassTokens = GlassTokens.fromScheme(
-      opaqueScheme,
+      glassSurfaceScheme,
       enabled: glass,
       opacityProgress: opacityProgress,
       material:
@@ -113,34 +145,69 @@ abstract final class AppTheme {
           : GlassMaterial.acrylic,
     );
     final scheme = glass
-        ? opaqueScheme.copyWith(
+        ? glassSurfaceScheme.copyWith(
             surface: glassTokens.raisedSurface,
             surfaceContainerLowest: glassTokens.baseSurface,
             surfaceContainerLow: glassTokens.contentSurface,
             surfaceContainer: glassTokens.contentSurface,
             surfaceContainerHigh: glassTokens.raisedSurface,
             surfaceContainerHighest: glassTokens.floatingSurface,
+            primaryContainer: isDark
+                ? const Color(0xFF1E4D84)
+                : opaqueScheme.primaryContainer,
           )
         : opaqueScheme;
     final base = ThemeData(
       useMaterial3: true,
       brightness: brightness,
       colorScheme: scheme,
+      fontFamily: fontFamily ?? 'Segoe UI',
       visualDensity: VisualDensity.standard,
+      splashFactory: NoSplash.splashFactory,
       extensions: [glassTokens],
     );
+    final desktopTextTheme = base.textTheme.copyWith(
+      titleLarge: base.textTheme.titleLarge?.copyWith(
+        fontSize: 24,
+        height: 32 / 24,
+        fontWeight: FontWeight.w600,
+      ),
+      titleMedium: base.textTheme.titleMedium?.copyWith(
+        fontSize: 16,
+        height: 22 / 16,
+        fontWeight: FontWeight.w600,
+      ),
+      titleSmall: base.textTheme.titleSmall?.copyWith(
+        fontSize: 14,
+        height: 20 / 14,
+        fontWeight: FontWeight.w600,
+      ),
+      bodyMedium: base.textTheme.bodyMedium?.copyWith(
+        fontSize: 14,
+        height: 20 / 14,
+        fontWeight: FontWeight.w400,
+      ),
+      bodySmall: base.textTheme.bodySmall?.copyWith(
+        fontSize: 12,
+        height: 16 / 12,
+        fontWeight: FontWeight.w400,
+      ),
+    );
     final controlBorder = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide(color: scheme.outlineVariant),
+      borderRadius: BorderRadius.circular(8),
+      borderSide: BorderSide(
+        color: glass ? glassTokens.borderColor : scheme.outlineVariant,
+      ),
     );
 
     return base.copyWith(
+      textTheme: desktopTextTheme,
       scaffoldBackgroundColor: glassTokens.baseSurface,
       canvasColor: scheme.surface,
       hoverColor: scheme.primary.withValues(alpha: isDark ? 0.12 : 0.08),
       focusColor: scheme.primary.withValues(alpha: isDark ? 0.14 : 0.10),
       highlightColor: scheme.primary.withValues(alpha: isDark ? 0.10 : 0.07),
-      splashColor: scheme.primary.withValues(alpha: isDark ? 0.16 : 0.12),
+      splashColor: Colors.transparent,
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: {TargetPlatform.windows: StreamPathPageTransitionsBuilder()},
       ),
@@ -154,7 +221,7 @@ abstract final class AppTheme {
         toolbarHeight: 64,
         titleSpacing: 20,
         shape: Border(bottom: BorderSide(color: glassTokens.dividerColor)),
-        titleTextStyle: base.textTheme.titleLarge?.copyWith(
+        titleTextStyle: desktopTextTheme.titleLarge?.copyWith(
           color: scheme.onSurface,
           fontWeight: FontWeight.w600,
           letterSpacing: -0.2,
@@ -173,10 +240,12 @@ abstract final class AppTheme {
       ),
       inputDecorationTheme: InputDecorationThemeData(
         filled: true,
-        fillColor: glassTokens.contentSurface,
+        fillColor: glass
+            ? glassTokens.raisedSurface
+            : glassTokens.contentSurface,
         contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 15,
+          horizontal: 12,
+          vertical: 12,
         ),
         border: controlBorder,
         enabledBorder: controlBorder,
@@ -191,42 +260,61 @@ abstract final class AppTheme {
         ),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
-        style: SegmentedButton.styleFrom(
-          selectedBackgroundColor: scheme.primaryContainer,
-          selectedForegroundColor: scheme.onPrimaryContainer,
+        style:
+            SegmentedButton.styleFrom(
+              selectedBackgroundColor: scheme.primaryContainer,
+              selectedForegroundColor: scheme.onPrimaryContainer,
+            ).copyWith(
+              side: WidgetStateProperty.resolveWith(
+                (states) => BorderSide(
+                  color: states.contains(WidgetState.selected) && glass
+                      ? scheme.primary.withValues(alpha: 0.34)
+                      : glassTokens.borderColor,
+                ),
+              ),
+            ),
+      ),
+      switchTheme: SwitchThemeData(
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        splashRadius: 0,
+        thumbColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? scheme.onPrimary
+              : scheme.onSurfaceVariant,
         ),
+        trackColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.surfaceContainerHighest,
+        ),
+        trackOutlineColor: WidgetStatePropertyAll(scheme.outlineVariant),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          minimumSize: const Size(0, 44),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
+          minimumSize: const Size(0, 36),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          minimumSize: const Size(0, 44),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          minimumSize: const Size(0, 36),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           side: BorderSide(color: scheme.outlineVariant),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          minimumSize: const Size(0, 36),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(
-          minimumSize: const Size(40, 40),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
+          minimumSize: const Size(36, 36),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ).copyWith(animationDuration: const Duration(milliseconds: 120)),
       ),
       popupMenuTheme: PopupMenuThemeData(
         color: glassTokens.floatingSurface,
@@ -234,8 +322,24 @@ abstract final class AppTheme {
         shadowColor: glassTokens.shadowColor,
         elevation: glass ? 6 : 4,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
           side: BorderSide(color: glassTokens.borderColor),
+        ),
+      ),
+      scrollbarTheme: ScrollbarThemeData(
+        interactive: true,
+        radius: const Radius.circular(4),
+        thickness: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.hovered) ? 8 : 6,
+        ),
+        thumbColor: WidgetStateProperty.resolveWith(
+          (states) => scheme.onSurface.withValues(
+            alpha:
+                states.contains(WidgetState.hovered) ||
+                    states.contains(WidgetState.dragged)
+                ? 0.55
+                : 0.35,
+          ),
         ),
       ),
       dividerTheme: DividerThemeData(
@@ -255,9 +359,21 @@ abstract final class AppTheme {
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: scheme.inverseSurface,
-        contentTextStyle: TextStyle(color: scheme.onInverseSurface),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        backgroundColor: glass
+            ? opaqueScheme.surfaceContainerHigh.withValues(
+                alpha: isDark ? 0.94 : 0.96,
+              )
+            : scheme.surfaceContainerHigh,
+        contentTextStyle: TextStyle(color: scheme.onSurface),
+        elevation: glass ? 8 : 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: glass
+                ? glassTokens.borderColor.withValues(alpha: 0.26)
+                : scheme.outlineVariant,
+          ),
+        ),
       ),
       tooltipTheme: TooltipThemeData(
         waitDuration: const Duration(milliseconds: 450),

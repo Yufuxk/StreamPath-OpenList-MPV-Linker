@@ -304,6 +304,15 @@ class StreamPathConfigStore {
     if (version < 5) {
       migrated.putIfAbsent('localRoots', () => const []);
     }
+    if (version < 6) {
+      final activeId = migrated['activeProfileId'];
+      migrated.putIfAbsent(
+        'mountedProfileIds',
+        () => activeId is String && activeId.isNotEmpty
+            ? [activeId]
+            : const <String>[],
+      );
+    }
     migrated['schemaVersion'] = StreamPathConfig.currentSchemaVersion;
     return migrated;
   }

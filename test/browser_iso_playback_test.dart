@@ -24,6 +24,7 @@ import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/domain/services/webdav_service.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 
@@ -547,7 +548,7 @@ void main() {
     expect(bar, findsOneWidget);
     final saved = (await tester.runAsync(() => appState.playbackHistoryStore.loadAll()))!;
     expect(saved.single.isoSessionDirectoryPath, isNull);
-    await tester.tap(find.descendant(of: bar, matching: find.byIcon(Icons.play_arrow)));
+    await tester.tap(find.descendant(of: bar, matching: find.byIcon(SPIcons.play)));
     await waitForWidget(tester, find.text('蓝光菜单播放'));
     expect(find.text('蓝光菜单播放'), findsOneWidget);
     await tester.tap(find.text('取消').last);
@@ -597,7 +598,7 @@ void main() {
     );
     final resumeButton = tester.widget<IconButton>(
       find.ancestor(
-        of: find.descendant(of: bar, matching: find.byIcon(Icons.play_arrow)),
+        of: find.descendant(of: bar, matching: find.byIcon(SPIcons.play)),
         matching: find.byType(IconButton),
       ),
     );

@@ -186,4 +186,64 @@ void main() {
       bytes,
     );
   });
+
+  test('流式下载保持 GET 认证与文件原始字节', () async {
+    const bytes = <int>[0, 1, 2, 255, 4, 5];
+    String? authorization;
+    final server = await serve((request) async {
+      authorization = request.headers.value(HttpHeaders.authorizationHeader);
+      request.response
+        ..headers.contentLength = bytes.length
+        ..add(bytes.sublist(0, 3));
+      await request.response.flush();
+      request.response.add(bytes.sublist(3));
+      await request.response.close();
+    });
+    final client = WebDavClient(
+      baseUrl: '${origin(server)}/dav',
+      username: 'user',
+      password: 'secret',
+    );
+    final directory = await Directory.systemTemp.createTemp('font_download_');
+    addTearDown(() => directory.delete(recursive: true));
+    final destination = File('${directory.path}/font.ttf');
+    final reports = <int>[];
+
+    final received = await client.downloadFile(
+      '${origin(server)}/font.ttf',
+      destination,
+      maxBytes: 64,
+      timeout: const Duration(seconds: 2),
+      onProgress: reports.add,
+    );
+
+    expect(received, bytes.length);
+    expect(reports, isNotEmpty);
+    expect(reports.last, bytes.length);
+    expect(await destination.readAsBytes(), bytes);
+    expect(authorization, 'Basic ${base64Encode(utf8.encode('user:secret'))}');
+  });
+
+  test('流式下载在无长度响应中仍执行字节上限', () async {
+    final server = await serve((request) async {
+      request.response.write(List.filled(5000, 'a').join());
+      await request.response.flush();
+      request.response.write(List.filled(5000, 'b').join());
+      await request.response.close();
+    });
+    final client = WebDavClient(baseUrl: '${origin(server)}/dav');
+    final directory = await Directory.systemTemp.createTemp('font_limit_');
+    addTearDown(() => directory.delete(recursive: true));
+    final destination = File('${directory.path}/oversize.ttf');
+
+    await expectLater(
+      client.downloadFile(
+        '${origin(server)}/oversize.ttf',
+        destination,
+        maxBytes: 8192,
+        timeout: const Duration(seconds: 2),
+      ),
+      throwsA(isA<ParseException>()),
+    );
+  });
 }

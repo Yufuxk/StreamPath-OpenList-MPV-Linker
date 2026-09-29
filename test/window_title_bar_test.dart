@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/presentation/theme/glass_tokens.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
@@ -17,11 +20,77 @@ void main() {
     await tester.pumpWidget(wrap(const WindowTitleBar()));
 
     expect(find.text('StreamPath'), findsOneWidget);
-    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    expect(find.byIcon(SPIcons.folder), findsOneWidget);
     expect(find.byKey(WindowTitleBar.minimizeButtonKey), findsOneWidget);
     expect(find.byKey(WindowTitleBar.maximizeButtonKey), findsOneWidget);
     expect(find.byKey(WindowTitleBar.closeButtonKey), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('标题栏左侧与侧边栏使用同一表面色和宽度', (tester) async {
+    await tester.pumpWidget(wrap(const WindowTitleBar()));
+
+    final surface = find.byKey(WindowTitleBar.sidebarSurfaceKey);
+    final theme = Theme.of(tester.element(surface));
+    expect(tester.widget<Material>(surface).color, theme.sidebarSurfaceColor);
+    expect(tester.getSize(surface).width, WindowTitleBar.sidebarWidth);
+    expect(tester.getSize(surface).height, WindowTitleBar.height);
+    final edge = tester.widget<DecoratedBox>(
+      find.byKey(WindowTitleBar.sidebarEdgeKey),
+    );
+    final border = (edge.decoration as BoxDecoration).border! as Border;
+    expect(border.right.width, 1);
+    expect(border.right.color, theme.glass.borderColor);
+  });
+
+  testWidgets('深色玻璃标题栏侧块使用轻薄的黑灰表面', (tester) async {
+    await tester.pumpWidget(
+      wrap(const WindowTitleBar(), theme: AppTheme.dark(glass: true)),
+    );
+
+    final surface = find.byKey(WindowTitleBar.sidebarSurfaceKey);
+    final theme = Theme.of(tester.element(surface));
+    final color = tester.widget<Material>(surface).color!;
+    expect(color, theme.sidebarSurfaceColor);
+    expect(color.a, greaterThan(theme.colorScheme.surfaceContainerLow.a));
+    expect(color.a, lessThan(0.25));
+  });
+
+  testWidgets('悬浮侧边栏与标题栏色块使用同一滑动进度', (tester) async {
+    final progress = ValueNotifier(0.0);
+    addTearDown(progress.dispose);
+    await tester.pumpWidget(
+      wrap(
+        WindowTitleBar(
+          sidebarMode: SidebarDisplayMode.autoHide,
+          sidebarRevealProgress: progress,
+        ),
+      ),
+    );
+
+    final surface = find.byKey(WindowTitleBar.sidebarSurfaceKey);
+    final mainSurface = find.byKey(WindowTitleBar.mainSurfaceKey);
+    expect(
+      tester.getTopLeft(surface).dx,
+      WindowTitleBar.sidebarTriggerWidth - WindowTitleBar.sidebarWidth,
+    );
+    expect(
+      tester.getTopLeft(mainSurface).dx,
+      WindowTitleBar.sidebarTriggerWidth,
+    );
+    progress.value = 0.5;
+    await tester.pump();
+    expect(tester.getRect(surface).right, tester.getRect(mainSurface).left);
+    progress.value = 1;
+    await tester.pump();
+    expect(tester.getTopLeft(surface).dx, 0);
+    expect(tester.getTopLeft(mainSurface).dx, WindowTitleBar.sidebarWidth);
+    progress.value = 0;
+    await tester.pump();
+    expect(
+      tester.getTopLeft(surface).dx,
+      WindowTitleBar.sidebarTriggerWidth - WindowTitleBar.sidebarWidth,
+    );
   });
 
   testWidgets('三个窗口控制图标使用 Windows 系统字形并垂直居中', (tester) async {
@@ -41,6 +110,7 @@ void main() {
       );
       expect(glyph.style?.fontFamily, 'Segoe Fluent Icons');
       expect(glyph.style?.fontFamilyFallback, ['Segoe MDL2 Assets']);
+      expect(glyph.style?.color, AppTheme.light().colorScheme.onSurfaceVariant);
     }
     expect(
       iconFinders
@@ -74,12 +144,7 @@ void main() {
     final context = tester.element(find.byType(WindowTitleBar));
     final theme = Theme.of(context);
     final titleBarSurface = tester.widget<Material>(
-      find
-          .descendant(
-            of: find.byType(WindowTitleBar),
-            matching: find.byType(Material),
-          )
-          .first,
+      find.byKey(WindowTitleBar.mainSurfaceKey),
     );
     final appBarSurface = tester.widget<Material>(
       find
@@ -102,12 +167,7 @@ void main() {
 
     final context = tester.element(find.byType(WindowTitleBar));
     final surface = tester.widget<Material>(
-      find
-          .descendant(
-            of: find.byType(WindowTitleBar),
-            matching: find.byType(Material),
-          )
-          .first,
+      find.byKey(WindowTitleBar.mainSurfaceKey),
     );
     final theme = Theme.of(context);
     expect(
@@ -196,14 +256,7 @@ void main() {
     expect(frameCalls, isNotEmpty);
     final args = frameCalls.first.arguments as Map<Object?, Object?>;
     final topBarColor = tester
-        .widget<Material>(
-          find
-              .descendant(
-                of: find.byType(WindowTitleBar),
-                matching: find.byType(Material),
-              )
-              .first,
-        )
+        .widget<Material>(find.byKey(WindowTitleBar.mainSurfaceKey))
         .color!;
     final argb = topBarColor.toARGB32();
     expect(args['r'], (argb >> 16) & 0xFF);
@@ -239,14 +292,7 @@ void main() {
     expect(frameCalls, isNotEmpty);
     final args = frameCalls.first.arguments as Map<Object?, Object?>;
     final topBarColor = tester
-        .widget<Material>(
-          find
-              .descendant(
-                of: find.byType(WindowTitleBar),
-                matching: find.byType(Material),
-              )
-              .first,
-        )
+        .widget<Material>(find.byKey(WindowTitleBar.mainSurfaceKey))
         .color!;
     final argb = topBarColor.toARGB32();
     expect(args['r'], (argb >> 16) & 0xFF);

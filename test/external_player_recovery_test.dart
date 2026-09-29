@@ -192,6 +192,7 @@ void main() {
     subtitleInjectionEnabled: false,
     subtitleAutoSelectEnabled: false,
     resumeEnabled: false,
+    autoSeasonTransitionEnabled: false,
   );
 
   StreamPathConfig configFor({

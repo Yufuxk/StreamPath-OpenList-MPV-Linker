@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import '../widgets/sp_icons.dart';
+import '../widgets/sp_dialog.dart';
+import '../widgets/sp_notice.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -41,6 +44,9 @@ class MediaLibraryPage extends StatefulWidget {
     this.sourceIds,
     this.sourceNames = const {},
     this.localIsoProgressService,
+    this.onVideoPlaybackRecordsChanged,
+    this.onItemSelected,
+    this.sourceFilter,
   });
 
   final String sourceId;
@@ -55,12 +61,24 @@ class MediaLibraryPage extends StatefulWidget {
   final IsoLibraryProgressReader? isoProgressService;
   final String Function(String href) resolveUrl;
   final String? Function(MediaLibraryItem item)? resolveDirectTarget;
+  final VoidCallback? onVideoPlaybackRecordsChanged;
+  final ValueChanged<MediaLibraryItem>? onItemSelected;
+  final Widget? sourceFilter;
 
   @override
   State<MediaLibraryPage> createState() => _MediaLibraryPageState();
 }
 
 class _MediaLibraryPageState extends State<MediaLibraryPage> {
+  void _selectItem(MediaLibraryItem item) {
+    final callback = widget.onItemSelected;
+    if (callback != null) {
+      callback(item);
+    } else {
+      Navigator.of(context).pop(item);
+    }
+  }
+
   Set<String> get _sourceIds => widget.sourceIds ?? {widget.sourceId};
 
   Future<List<MediaLibraryRecord>> _collectRecords(
@@ -626,6 +644,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   Future<void> _removePlayback(MediaLibraryRecord record) async {
     try {
       await widget.store.removePlaybackRecord(record);
+      if (record.item.kind.isVideoLane) {
+        widget.onVideoPlaybackRecordsChanged?.call();
+      }
       await _loadAll();
     } catch (error) {
       _showError('删除最近播放失败：$error');
@@ -658,6 +679,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           iso: lane == _MediaLane.iso,
         );
       }
+      if (lane == _MediaLane.video) {
+        widget.onVideoPlaybackRecordsChanged?.call();
+      }
       await _loadAll();
     } catch (error) {
       _showError('清空最近播放失败：$error');
@@ -679,7 +703,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   Future<bool> _confirmClear(String title) async =>
       await showGlassDialog<bool>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
+        builder: (dialogContext) => SPDialog(
           title: AppText(title),
           content: const AppText('此操作只删除媒体中心的 UI 记录，不删除播放进度。'),
           actions: [
@@ -700,47 +724,78 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: AppText(message)));
+      ..showSnackBar(SPNotice(content: AppText(message)));
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        appBar: AppBar(
-          toolbarHeight: 48,
-          title: const AppText('媒体中心'),
-          bottom: TabBar(
-            labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-            tabs: [
-              _compactNavigationTab(Icons.star_outline, '收藏'),
-              _compactNavigationTab(Icons.play_circle_outline, '继续播放'),
-              _compactNavigationTab(Icons.history, '最近播放'),
-              _compactNavigationTab(Icons.folder_copy_outlined, '目录'),
-            ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final searchInToolbar = constraints.maxWidth >= 900;
+        return DefaultTabController(
+          length: 4,
+          child: Scaffold(
+            appBar: AppBar(
+              toolbarHeight: 48,
+              title: Row(
+                children: [
+                  const Expanded(
+                    child: AppText(
+                      '媒体中心',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (searchInToolbar) ...[
+                    SizedBox(
+                      width: 340,
+                      child: _buildSearchField(inToolbar: true),
+                    ),
+                    if (widget.sourceFilter != null) const SizedBox(width: 12),
+                  ],
+                  if (widget.sourceFilter != null) widget.sourceFilter!,
+                ],
+              ),
+              bottom: TabBar(
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 14),
+                tabs: [
+                  _compactNavigationTab(SPIcons.favorite, '收藏'),
+                  _compactNavigationTab(SPIcons.play, '继续播放'),
+                  _compactNavigationTab(SPIcons.history, '最近播放'),
+                  _compactNavigationTab(SPIcons.folderOpen, '目录'),
+                ],
+              ),
+            ),
+            body: Column(
+              children: [
+                if (!searchInToolbar) _buildSearchField(),
+                Expanded(child: _buildContent()),
+              ],
+            ),
           ),
-        ),
-        body: Column(
-          children: [
-            _buildSearchField(),
-            Expanded(child: _buildContent()),
-          ],
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildSearchField() => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+  Widget _buildSearchField({bool inToolbar = false}) => Padding(
+    padding: inToolbar
+        ? EdgeInsets.zero
+        : const EdgeInsets.fromLTRB(20, 16, 20, 12),
     child: TextField(
       key: const Key('media-library-global-search'),
       controller: _searchController,
       contextMenuBuilder: buildClipboardHistoryMenu,
       onChanged: _scheduleSearch,
       decoration: InputDecoration(
+        isDense: inToolbar,
+        contentPadding: inToolbar
+            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+            : null,
         hintText: context.l10n.text('搜索已访问过的目录'),
-        prefixIcon: const Icon(Icons.travel_explore_outlined),
+        prefixIcon: const Icon(SPIcons.globe),
         suffixIcon: _searchController.text.isEmpty
             ? null
             : IconButton(
@@ -750,7 +805,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
                   _runSearch('');
                   setState(() {});
                 },
-                icon: const Icon(Icons.close),
+                icon: const Icon(SPIcons.close),
               ),
       ),
     ),
@@ -760,11 +815,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) {
       return _EmptyState(
-        icon: Icons.error_outline,
+        icon: SPIcons.error,
         message: _error!,
         action: OutlinedButton.icon(
           onPressed: _loadAll,
-          icon: const Icon(Icons.refresh),
+          icon: const Icon(SPIcons.refresh),
           label: const AppText('重试'),
         ),
       );
@@ -789,6 +844,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       };
     }).toList();
     return _buildLanePage(
+      empty: records.isEmpty,
       selector: _mediaLaneSelector(
         key: const Key('favorite-media-lane'),
         selected: _favoriteLane,
@@ -804,7 +860,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         trailing: (record) => IconButton(
           tooltip: context.l10n.text('取消收藏'),
           onPressed: () => _toggleFavorite(record.item),
-          icon: const Icon(Icons.star),
+          icon: const Icon(SPIcons.favoriteFill),
         ),
       ),
     );
@@ -822,13 +878,16 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       _MediaLane.iso => _isoContinue.keys,
     }).toSet();
     final records = _continueCandidates(source)
-        .where((record) =>
-            progressKeys.contains(record.recordKey) ||
-            (_continueLane == _MediaLane.iso &&
-                record.item.playbackMode == PlaybackMode.webdavHdmvMenu))
+        .where(
+          (record) =>
+              progressKeys.contains(record.recordKey) ||
+              (_continueLane == _MediaLane.iso &&
+                  record.item.playbackMode == PlaybackMode.webdavHdmvMenu),
+        )
         .take(widget.config.normalized.maxContinuePerLane)
         .toList();
     return _buildLanePage(
+      empty: records.isEmpty && !_loadingContinue,
       selector: _mediaLaneSelector(
         key: const Key('continue-media-lane'),
         selected: _continueLane,
@@ -872,7 +931,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               trailing: (record) => IconButton(
                 tooltip: context.l10n.text('从历史中移除'),
                 onPressed: () => _removePlayback(record),
-                icon: const Icon(Icons.close),
+                icon: const Icon(SPIcons.close),
               ),
             ),
     );
@@ -885,6 +944,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       _MediaLane.iso => _isoHistory,
     };
     return _buildLanePage(
+      empty: records.isEmpty,
       selector: Row(
         children: [
           Expanded(
@@ -900,7 +960,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             onPressed: records.isEmpty
                 ? null
                 : () => _clearPlayback(_recentLane),
-            icon: const Icon(Icons.delete_sweep_outlined),
+            icon: const Icon(SPIcons.delete),
           ),
         ],
       ),
@@ -914,7 +974,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         trailing: (record) => IconButton(
           tooltip: context.l10n.text('从历史中移除'),
           onPressed: () => _removePlayback(record),
-          icon: const Icon(Icons.close),
+          icon: const Icon(SPIcons.close),
         ),
       ),
     );
@@ -927,6 +987,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               .toList()
         : _recentDirectories;
     return _buildLanePage(
+      empty: records.isEmpty,
       selector: Row(
         children: [
           Expanded(
@@ -935,12 +996,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               segments: const [
                 ButtonSegment(
                   value: _DirectoryLane.favorites,
-                  icon: Icon(Icons.star_outline),
+                  icon: Icon(SPIcons.favorite),
                   label: AppText('收藏目录'),
                 ),
                 ButtonSegment(
                   value: _DirectoryLane.recent,
-                  icon: Icon(Icons.history),
+                  icon: Icon(SPIcons.history),
                   label: AppText('最近目录'),
                 ),
               ],
@@ -954,7 +1015,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             IconButton(
               tooltip: context.l10n.text('清空最近目录'),
               onPressed: records.isEmpty ? null : _clearRecentDirectories,
-              icon: const Icon(Icons.delete_sweep_outlined),
+              icon: const Icon(SPIcons.delete),
             ),
           ],
         ],
@@ -973,8 +1034,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               : _removeRecentDirectory(record.item),
           icon: Icon(
             _directoryLane == _DirectoryLane.favorites
-                ? Icons.star
-                : Icons.close,
+                ? SPIcons.favoriteFill
+                : SPIcons.close,
           ),
         ),
       ),
@@ -995,7 +1056,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         .where((result) => result.item.kind == MediaLibraryKind.iso)
         .toList();
     if (_searchResults.isEmpty) {
-      return const _EmptyState(icon: Icons.search_off, message: '已访问目录中没有匹配项');
+      return const _EmptyState(icon: SPIcons.search, message: '已访问目录中没有匹配项');
     }
     return GlassSurface(
       level: GlassSurfaceLevel.content,
@@ -1037,29 +1098,34 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     ),
-    trailing: const Icon(Icons.chevron_right),
-    onTap: () => Navigator.of(context).pop(result.item),
+    trailing: const Icon(SPIcons.chevronRight),
+    onTap: () => _selectItem(result.item),
   );
 
-  Widget _buildLanePage({required Widget selector, required Widget child}) =>
-      Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-        child: Column(
-          children: [
-            Align(alignment: Alignment.centerLeft, child: selector),
-            const SizedBox(height: 12),
-            Expanded(
-              child: GlassSurface(
-                level: GlassSurfaceLevel.content,
-                borderRadius: BorderRadius.circular(14),
-                clipBehavior: Clip.antiAlias,
-                automaticBorder: true,
-                child: child,
-              ),
-            ),
-          ],
+  Widget _buildLanePage({
+    required Widget selector,
+    required Widget child,
+    required bool empty,
+  }) => Padding(
+    padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+    child: Column(
+      children: [
+        Align(alignment: Alignment.centerLeft, child: selector),
+        const SizedBox(height: 12),
+        Expanded(
+          child: empty
+              ? child
+              : GlassSurface(
+                  level: GlassSurfaceLevel.raised,
+                  borderRadius: BorderRadius.circular(14),
+                  clipBehavior: Clip.antiAlias,
+                  automaticBorder: true,
+                  child: child,
+                ),
         ),
-      );
+      ],
+    ),
+  );
 
   Widget _mediaLaneSelector({
     required Key key,
@@ -1070,17 +1136,17 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     segments: const [
       ButtonSegment(
         value: _MediaLane.video,
-        icon: Icon(Icons.movie_outlined),
+        icon: Icon(SPIcons.video),
         label: AppText('视频'),
       ),
       ButtonSegment(
         value: _MediaLane.audio,
-        icon: Icon(Icons.audiotrack_outlined),
+        icon: Icon(SPIcons.music),
         label: AppText('音频'),
       ),
       ButtonSegment(
         value: _MediaLane.iso,
-        icon: Icon(Icons.album_outlined),
+        icon: Icon(SPIcons.disc),
         label: AppText('ISO'),
       ),
     ],
@@ -1095,7 +1161,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     Widget Function(MediaLibraryRecord)? trailing,
   }) {
     if (records.isEmpty) {
-      return _EmptyState(icon: Icons.inbox_outlined, message: emptyMessage);
+      return _EmptyState(icon: SPIcons.library, message: emptyMessage);
     }
     return ListView.separated(
       itemCount: records.length,
@@ -1116,17 +1182,17 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             overflow: TextOverflow.ellipsis,
           ),
           trailing: trailing?.call(record),
-          onTap: () => Navigator.of(context).pop(record.item),
+          onTap: () => _selectItem(record.item),
         );
       },
     );
   }
 
   static IconData _iconFor(MediaLibraryKind kind) => switch (kind) {
-    MediaLibraryKind.directory => Icons.folder_outlined,
-    MediaLibraryKind.audio => Icons.audiotrack_outlined,
-    MediaLibraryKind.video || MediaLibraryKind.strm => Icons.movie_outlined,
-    MediaLibraryKind.iso => Icons.album_outlined,
+    MediaLibraryKind.directory => SPIcons.folder,
+    MediaLibraryKind.audio => SPIcons.music,
+    MediaLibraryKind.video || MediaLibraryKind.strm => SPIcons.video,
+    MediaLibraryKind.iso => SPIcons.disc,
   };
 
   static String _formatDate(DateTime date) {
@@ -1174,8 +1240,8 @@ class _SectionHeader extends StatelessWidget {
     child: AppText(
       label,
       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-        color: Theme.of(context).colorScheme.primary,
-        fontWeight: FontWeight.w700,
+        color: Theme.of(context).colorScheme.onSurface,
+        fontWeight: FontWeight.w600,
       ),
     ),
   );
@@ -1191,13 +1257,23 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Center(
     child: Padding(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 44, color: Theme.of(context).colorScheme.outline),
+          Icon(
+            icon,
+            size: 36,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
           const SizedBox(height: 12),
-          AppText(message, textAlign: TextAlign.center),
+          AppText(
+            message,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
           if (action != null) ...[const SizedBox(height: 16), action!],
         ],
       ),

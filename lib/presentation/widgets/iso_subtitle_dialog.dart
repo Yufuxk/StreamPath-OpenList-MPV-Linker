@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
+import 'sp_dialog.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
 import '../../domain/services/iso_subtitle_service.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 
 class IsoSubtitleDialog extends StatefulWidget {
   const IsoSubtitleDialog({
@@ -150,7 +153,7 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
   Widget build(BuildContext context) {
     final content = _content();
     if (widget.embedded) return content;
-    return AlertDialog(
+    return SPDialog(
       title: const AppText('蓝光外挂字幕'),
       content: SizedBox(width: 680, height: 430, child: content),
       actions: [
@@ -266,7 +269,7 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
           Row(
             children: [
               if (_snapshot?['current'] == id) ...[
-                Icon(Icons.play_arrow, size: 18, color: scheme.primary),
+                Icon(SPIcons.play, size: 20, color: scheme.primary),
                 const SizedBox(width: 4),
               ],
               Text('$id.mpls', style: Theme.of(context).textTheme.titleSmall),
@@ -282,7 +285,7 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
             decoration: BoxDecoration(
               color: scheme.surfaceContainerLow,
               border: Border.all(color: scheme.outlineVariant),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: AppTheme.dropdownBorderRadius,
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -290,7 +293,8 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
                 child: DropdownButton<String>(
                   key: ValueKey('iso-subtitle-$id'),
                   isExpanded: true,
-                  dropdownColor: scheme.surface.withValues(alpha: 1),
+                  dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
+                  borderRadius: AppTheme.dropdownBorderRadius,
                   menuMaxHeight: 320,
                   value: selected,
                   onChanged: _saving || !subtitles.writable

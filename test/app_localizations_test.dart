@@ -6,6 +6,38 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_text.dart';
 
 void main() {
+  test('侧边栏、平铺和索引文案覆盖四种语言', () {
+    const sources = [
+      '网络文件夹',
+      '文件夹管理',
+      '在文件夹管理中添加服务器',
+      '在文件夹管理中添加本地文件夹',
+      '切换侧边栏显示模式',
+      '上次浏览目录',
+      '临时缓存',
+      '持久缓存',
+      '平铺浏览',
+      '列表浏览',
+      '搜索全部挂载',
+      '搜索文件和文件夹',
+      '刷新客户端索引',
+      '各来源索引状态',
+      '全部已挂载来源',
+      '返回根目录',
+    ];
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final source in sources) {
+        expect(
+          l10n.text(source),
+          language == AppLanguage.simplifiedChinese ? source : isNot(source),
+          reason: '${language.name}: $source',
+        );
+      }
+      expect(l10n.format('已索引 {count} 项', {'count': 3}), contains('3'));
+    }
+  });
+
   test('四种语言使用稳定 Locale 与原生选项名称', () {
     expect(AppLanguage.simplifiedChinese.locale.toLanguageTag(), 'zh-Hans-CN');
     expect(AppLanguage.traditionalChinese.locale.toLanguageTag(), 'zh-Hant-TW');
@@ -42,6 +74,50 @@ void main() {
   test('动态状态前缀可在保留文件名时翻译', () {
     const english = AppLocalizations(AppLanguage.english);
     expect(english.text('正在播放：movie.mkv'), 'Playing: movie.mkv');
+  });
+
+  test('特典列表与字体串用设置覆盖四种语言', () {
+    const labels = [
+      '特典播放列表',
+      '关闭特典递归',
+      '仅 OVA 与番外',
+      '全部特典视频',
+      '扫描视频文件夹内的特典目录',
+      '扫描与视频文件夹同级的特典目录',
+      '特典字体串用',
+      '当前视频没有同目录字体时，使用播放列表根目录的字体',
+      '部分特典目录未能读取，播放列表可能不完整',
+      '未找到上次播放的视频，请检查文件或特典设置',
+    ];
+    for (final language in AppLanguage.values) {
+      final localization = AppLocalizations(language);
+      for (final label in labels) {
+        expect(localization.text(label), isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(localization.text(label), isNot(label));
+        }
+      }
+    }
+  });
+
+  test('音频歌词设置覆盖四种语言', () {
+    const labels = [
+      '音频歌词',
+      '设置 MPV 窗口内歌词的动态显示和样式。',
+      '歌词字体',
+      '填写 MPV 可用的字体名称；留空使用 Arial。',
+      '歌词描边粗细',
+      '歌词整体透明度',
+    ];
+    for (final language in AppLanguage.values) {
+      final localization = AppLocalizations(language);
+      for (final label in labels) {
+        expect(localization.text(label), isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(localization.text(label), isNot(label));
+        }
+      }
+    }
   });
 
   test('OpenList 动态能力摘要按模板翻译且保留版本与状态', () {
@@ -137,6 +213,31 @@ void main() {
       final rangeError = localizations.text('当前 WebDAV 源不支持 ISO 流式随机读取');
       if (language != AppLanguage.simplifiedChinese) {
         expect(rangeError, isNot('当前 WebDAV 源不支持 ISO 流式随机读取'));
+      }
+    }
+  });
+
+  test('WebDAV 视频准备与字体缓存文案覆盖四种语言', () {
+    const labels = [
+      '普通视频播放准备',
+      '正在读取视频目录…',
+      '正在生成播放列表…',
+      '正在匹配外挂字幕…',
+      '正在查找外挂字体…',
+      '正在准备播放列表…',
+      '正在下载外挂字体…',
+      '已使用缓存字体',
+      '正在启动播放器…',
+      '缓存 WebDAV 外挂字体',
+      '保留续播媒体所需字体，重播时直接使用已下载文件',
+    ];
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final label in labels) {
+        expect(l10n.text(label), isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(l10n.text(label), isNot(label));
+        }
       }
     }
   });

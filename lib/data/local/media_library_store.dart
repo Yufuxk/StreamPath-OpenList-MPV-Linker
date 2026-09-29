@@ -421,6 +421,21 @@ class MediaLibraryStore {
     _notifyChanged();
   });
 
+  Future<void> dismissVideoContinueSession(String sourceId, String sessionId) =>
+      _enqueue(() async {
+        await _load();
+        final records = _videoHistory.map((record) {
+          if (record.item.sourceId != sourceId ||
+              record.playbackSessionId != sessionId) {
+            return record;
+          }
+          return record.copyWith(continueDismissed: true);
+        }).toList();
+        await _write(videoHistory: records);
+        _videoHistory = records;
+        _notifyChanged();
+      });
+
   /// 清空当前来源的全部收藏，不影响最近目录和播放历史。
   Future<void> clearFavorites(String sourceId) => _enqueue(() async {
     await _load();

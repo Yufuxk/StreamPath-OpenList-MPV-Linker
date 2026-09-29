@@ -1,7 +1,9 @@
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
+import 'package:win32/win32.dart';
 
 import '../../core/errors/app_exception.dart';
 import '../../data/models/local_root_config.dart';
@@ -68,6 +70,7 @@ class LocalMediaSource implements MediaDirectorySource {
       await for (final entity in Directory(
         directoryPath,
       ).list(followLinks: false)) {
+        if (_isHiddenOrSystem(entity.path)) continue;
         final type = await FileSystemEntity.type(
           entity.path,
           followLinks: true,
@@ -232,6 +235,18 @@ class LocalMediaSource implements MediaDirectorySource {
 
   static Future<String> _resolveCanonicalPath(String path) =>
       File(path).resolveSymbolicLinks();
+
+  static bool _isHiddenOrSystem(String path) {
+    if (!Platform.isWindows) return false;
+    final nativePath = path.toNativeUtf16();
+    try {
+      final attributes = GetFileAttributes(nativePath);
+      return attributes != 0xffffffff &&
+          attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0;
+    } finally {
+      calloc.free(nativePath);
+    }
+  }
 
   static String _normalizeRelativePath(String value) {
     final raw = value.trim().replaceAll('\\', '/');

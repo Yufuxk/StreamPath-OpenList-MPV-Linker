@@ -112,7 +112,7 @@ class AudioLyricsLocalizer {
     if (!await base.exists()) return;
     final pattern = RegExp(
       '^streampath-audio-lyrics-${RegExp.escape(_safeToken(sessionId))}-'
-      r'\d+\.lrc$',
+      r'\d+\.(?:lrc|ass)$',
     );
     await for (final entity in base.list(followLinks: false)) {
       if (entity is File && pattern.hasMatch(p.basename(entity.path))) {

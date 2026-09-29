@@ -1,9 +1,15 @@
-enum MediaLibrarySharingMode { independent, localShared, allShared }
+enum MediaLibrarySharingMode {
+  independent,
+  localShared,
+  networkShared,
+  networkAndLocalShared,
+  allShared,
+}
 
 /// 媒体中心容量与展示范围，写入统一的 stream_path_config.json。
 class MediaLibraryConfig {
   const MediaLibraryConfig({
-    this.sharingMode = MediaLibrarySharingMode.independent,
+    this.sharingMode = MediaLibrarySharingMode.networkAndLocalShared,
     this.maxFavoritesPerSource = defaultMaxFavoritesPerSource,
     this.maxContinuePerLane = defaultMaxContinuePerLane,
     this.maxRecentPlaybackPerLane = defaultMaxRecentPlaybackPerLane,
@@ -25,12 +31,22 @@ class MediaLibraryConfig {
   final int maxFavoritesPerSource;
   final MediaLibrarySharingMode sharingMode;
 
-  bool includesSource(String current, String candidate) =>
+  bool includesSource(
+    String current,
+    String candidate, {
+    Set<String> mountedProfileIds = const {},
+  }) =>
       current == candidate ||
       sharingMode == MediaLibrarySharingMode.allShared ||
-      (sharingMode == MediaLibrarySharingMode.localShared &&
+      ((sharingMode == MediaLibrarySharingMode.localShared ||
+              sharingMode == MediaLibrarySharingMode.networkAndLocalShared) &&
           current.startsWith('local:') &&
-          candidate.startsWith('local:'));
+          candidate.startsWith('local:')) ||
+      ((sharingMode == MediaLibrarySharingMode.networkShared ||
+              sharingMode == MediaLibrarySharingMode.networkAndLocalShared) &&
+          !current.startsWith('local:') &&
+          mountedProfileIds.contains(current) &&
+          mountedProfileIds.contains(candidate));
   final int maxContinuePerLane;
   final int maxRecentPlaybackPerLane;
   final int maxRecentDirectoriesPerSource;
@@ -82,7 +98,7 @@ class MediaLibraryConfig {
           MediaLibrarySharingMode.values
               .where((mode) => mode.name == json?['sharingMode'])
               .firstOrNull ??
-          MediaLibrarySharingMode.independent,
+          MediaLibrarySharingMode.networkAndLocalShared,
       maxFavoritesPerSource: readLimit(
         'maxFavoritesPerSource',
         defaultMaxFavoritesPerSource,

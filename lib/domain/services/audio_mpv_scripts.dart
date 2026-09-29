@@ -30,7 +30,7 @@ class AudioMpvScripts {
     );
   }
 
-  /// 每首曲目加载后按设置注入 LRC，并注入外挂封面和自定义曲名。
+  /// 每首曲目加载后按设置注入歌词，并注入外挂封面和自定义曲名。
   static Future<String> ensureCompanions(
     List<AudioMediaEntry> entries,
     String Function(String) authUrl,
@@ -83,7 +83,7 @@ ${lyricTitles.join('\n')}
         : '';
     final script =
         '''
--- StreamPath: 音频曲名、外挂封面与可选 LRC 逐曲目注入。
+-- StreamPath: 音频曲名、外挂封面与可选歌词逐曲目注入。
 local TITLES = {}
 local COVERS = {}
 local COVER_TITLES = {}

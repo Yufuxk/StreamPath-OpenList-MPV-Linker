@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../widgets/sp_icons.dart';
+import '../widgets/sp_notice.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -11,10 +13,11 @@ import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
 import '../state/app_state.dart';
+import '../theme/app_theme.dart';
 import '../theme/glass_tokens.dart';
 import '../widgets/glass_surface.dart';
 import 'settings_page.dart';
-import 'storage_root_page.dart';
+import 'app_shell_page.dart';
 import '../widgets/clipboard_history_menu.dart';
 
 /// 连接配置页：服务器地址 / 账号 / 密码。
@@ -136,13 +139,20 @@ class _HomePageState extends State<HomePage> {
         openListIndex: existing?.openListIndex ?? const OpenListIndexConfig(),
       );
       await appState.configStore.save(
-        appState.configStore.current.upsertProfile(profile),
+        appState.configStore.current
+            .upsertProfile(profile)
+            .withMountedProfileIds(
+              {
+                ...appState.configStore.current.mountedProfileIds,
+                profileId,
+              }.toList(),
+            ),
       );
       appState.refreshOpenListIndexSchedule();
       if (!mounted) return;
       // 连接成功：进入存储根目录（替换本页，避免返回后残留表单）。
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => const StorageRootPage()),
+        MaterialPageRoute<void>(builder: (_) => const AppShellPage()),
       );
     } on AppException catch (e) {
       if (connected) appState.disconnect();
@@ -160,7 +170,7 @@ class _HomePageState extends State<HomePage> {
   void _showError(String message) {
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: AppText(message)));
+    ).showSnackBar(SPNotice(content: AppText(message)));
   }
 
   void _selectProfile(String? profileId) {
@@ -205,7 +215,7 @@ class _HomePageState extends State<HomePage> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings_outlined),
+            icon: const Icon(SPIcons.settings),
             tooltip: context.l10n.text('设置'),
             onPressed: () {
               Navigator.of(context).push(
@@ -278,10 +288,12 @@ class _HomePageState extends State<HomePage> {
               DropdownButtonFormField<String>(
                 key: const Key('server-profile-selector'),
                 initialValue: _selectedProfileId,
+                dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
+                borderRadius: AppTheme.dropdownBorderRadius,
                 decoration: InputDecoration(
                   labelText: context.l10n.text('服务器档案'),
                   floatingLabelBehavior: FloatingLabelBehavior.always,
-                  prefixIcon: Icon(Icons.dns_outlined),
+                  prefixIcon: Icon(SPIcons.network),
                   border: OutlineInputBorder(),
                 ),
                 items: [
@@ -297,7 +309,7 @@ class _HomePageState extends State<HomePage> {
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
                   onPressed: _connecting ? null : _newProfile,
-                  icon: const Icon(Icons.add),
+                  icon: const Icon(SPIcons.add),
                   label: const AppText('新建档案'),
                 ),
               ),
@@ -308,7 +320,7 @@ class _HomePageState extends State<HomePage> {
               decoration: InputDecoration(
                 labelText: context.l10n.text('档案名称'),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                prefixIcon: Icon(Icons.label_outline),
+                prefixIcon: Icon(SPIcons.label),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => value == null || value.trim().isEmpty
@@ -322,7 +334,7 @@ class _HomePageState extends State<HomePage> {
                 labelText: context.l10n.text('服务器地址'),
                 hintText: context.l10n.text('https://example.com/dav'),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                prefixIcon: Icon(Icons.link),
+                prefixIcon: Icon(SPIcons.link),
                 border: OutlineInputBorder(),
               ),
               keyboardType: TextInputType.url,
@@ -343,7 +355,7 @@ class _HomePageState extends State<HomePage> {
               decoration: InputDecoration(
                 labelText: context.l10n.text('用户名'),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                prefixIcon: Icon(Icons.person_outline),
+                prefixIcon: Icon(SPIcons.person),
                 border: OutlineInputBorder(),
               ),
               validator: (v) => (v == null || v.trim().isEmpty)
@@ -359,11 +371,11 @@ class _HomePageState extends State<HomePage> {
                 labelText: context.l10n.text('密码'),
                 helperText: context.l10n.text('服务器未设置密码时可留空'),
                 floatingLabelBehavior: FloatingLabelBehavior.always,
-                prefixIcon: const Icon(Icons.lock_outline),
+                prefixIcon: const Icon(SPIcons.lock),
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                    _obscurePassword ? SPIcons.hide : SPIcons.view,
                   ),
                   onPressed: () =>
                       setState(() => _obscurePassword = !_obscurePassword),
@@ -379,7 +391,7 @@ class _HomePageState extends State<HomePage> {
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.login),
+                  : const Icon(SPIcons.signIn),
               label: AppText(_connecting ? '连接中…' : '连接'),
               style: FilledButton.styleFrom(
                 padding: const EdgeInsets.symmetric(vertical: 16),
@@ -407,12 +419,12 @@ class _StreamPathMark extends StatelessWidget {
           alignment: Alignment.center,
           children: [
             Icon(
-              Icons.folder_rounded,
+              SPIcons.folderFill,
               size: 28,
               color: scheme.surfaceContainerHighest,
             ),
-            Icon(Icons.folder_outlined, size: 28, color: scheme.primary),
-            Icon(Icons.play_arrow_rounded, size: 15, color: scheme.primary),
+            Icon(SPIcons.folder, size: 28, color: scheme.primary),
+            Icon(SPIcons.play, size: 15, color: scheme.primary),
           ],
         ),
       ),

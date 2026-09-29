@@ -17,6 +17,7 @@ import 'package:streampath/data/models/subtitle_item.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/audio_lyrics_localizer.dart';
+import 'package:streampath/domain/services/audio_lyrics_ass_renderer.dart';
 import 'package:streampath/domain/services/audio_mpv_scripts.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
@@ -420,6 +421,98 @@ end)
         ? '设置 STREAMPATH_MPV_TEST_ROOT 后运行真实版本兼容测试'
         : false,
     timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    '固定 MPV 版本可加载无封面音频的动态 ASS 歌词',
+    () async {
+      final builds = _fiveBuilds(testRoot!);
+      expect(builds, hasLength(5));
+      final workspace = Directory.systemTemp.createTempSync('sp_ass_compat_');
+      try {
+        final audio = File(p.join(workspace.path, 'song.wav'));
+        final lyrics = File(p.join(workspace.path, 'song.ass'));
+        await audio.writeAsBytes(_silentWave(seconds: 2), flush: true);
+        final ass = const AudioLyricsAssRenderer().render(
+          '[00:00.00]<00:00.00>你<00:00.40>好<00:00.80>\n'
+          '[00:00.00]ni hao\n[00:00.00]Hello\n[00:01.20]Next',
+        );
+        expect(ass, isNotNull);
+        await lyrics.writeAsString(ass!, flush: true);
+        for (var index = 0; index < builds.length; index++) {
+          final build = builds[index];
+          final caseDir = Directory(p.join(workspace.path, 'case_$index'))
+            ..createSync();
+          final entries = [
+            AudioMediaEntry(
+              url: audio.path,
+              title: 'Song',
+              lyrics: AudioCompanionFile(name: 'song.lrc', url: lyrics.path),
+            ),
+          ];
+          final playlist = await AudioMpvScripts.ensurePlaylistM3u8(
+            entries,
+            (value) => value,
+            caseDir,
+            sessionId: 'ass_$index',
+          );
+          final companions = await AudioMpvScripts.ensureCompanions(
+            entries,
+            (value) => value,
+            caseDir,
+            sessionId: 'ass_$index',
+            lyricsInjectionEnabled: true,
+            lyricsAutoSelectEnabled: true,
+          );
+          final process = await Process.start(build.executable.path, [
+            '--no-config',
+            '--terminal=yes',
+            '--msg-level=all=v',
+            '--vo=null',
+            '--ao=null',
+            '--idle=no',
+            '--keep-open=no',
+            '--force-window=yes',
+            '--sub-auto=no',
+            '--script=$companions',
+            '--playlist=$playlist',
+          ]);
+          final stdout = process.stdout.transform(utf8.decoder).join();
+          final stderr = process.stderr.transform(utf8.decoder).join();
+          final exitCodeFuture = _trackOwnedMpv(process);
+          int exitCode;
+          try {
+            exitCode = await exitCodeFuture.timeout(
+              const Duration(seconds: 25),
+              onTimeout: () {
+                process.kill();
+                return -1;
+              },
+            );
+          } finally {
+            await _cleanupOwnedProcess(process, exitCodeFuture);
+          }
+          final output = '${await stdout}\n${await stderr}';
+          expect(exitCode, 0, reason: '${build.executable.path}: $output');
+          expect(
+            output,
+            contains('song.ass'),
+            reason: '${build.executable.path} did not load ASS lyrics',
+          );
+          expect(output, isNot(contains('Failed to open song.ass')));
+        }
+      } finally {
+        try {
+          workspace.deleteSync(recursive: true);
+        } on FileSystemException {
+          /* 临时文件被 MPV 短暂占用时由系统回收。 */
+        }
+      }
+    },
+    skip: testRoot == null || testRoot.trim().isEmpty
+        ? '设置 STREAMPATH_MPV_TEST_ROOT 后运行真实版本兼容测试'
+        : false,
+    timeout: const Timeout(Duration(minutes: 3)),
   );
 
   test(

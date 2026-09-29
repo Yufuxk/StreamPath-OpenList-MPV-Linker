@@ -5,7 +5,7 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/data/models/app_language.dart';
 
 void main() {
-  test('三种共享模式仅改变展示范围，配置往返保留模式', () {
+  test('共享模式仅改变展示范围，配置往返保留模式', () {
     const sources = ['local:a', 'local:b', 'server-a', 'server-b'];
     for (final mode in MediaLibrarySharingMode.values) {
       final config = MediaLibraryConfig(sharingMode: mode);
@@ -13,27 +13,44 @@ void main() {
         StreamPathConfig(mediaLibrary: config).toJson(),
       );
       expect(reloaded.mediaLibrary.sharingMode, mode);
-      final local = sources.where((id) => config.includesSource('local:a', id));
+      final local = sources.where(
+        (id) => config.includesSource(
+          'local:a',
+          id,
+          mountedProfileIds: {'server-a', 'server-b'},
+        ),
+      );
       final remote = sources.where(
-        (id) => config.includesSource('server-a', id),
+        (id) => config.includesSource(
+          'server-a',
+          id,
+          mountedProfileIds: {'server-a', 'server-b'},
+        ),
       );
       expect(local, switch (mode) {
         MediaLibrarySharingMode.independent => ['local:a'],
         MediaLibrarySharingMode.localShared => ['local:a', 'local:b'],
+        MediaLibrarySharingMode.networkShared => ['local:a'],
+        MediaLibrarySharingMode.networkAndLocalShared => ['local:a', 'local:b'],
         MediaLibrarySharingMode.allShared => sources,
       });
-      expect(
-        remote,
-        mode == MediaLibrarySharingMode.allShared ? sources : ['server-a'],
-      );
+      expect(remote, switch (mode) {
+        MediaLibrarySharingMode.networkShared ||
+        MediaLibrarySharingMode.networkAndLocalShared => [
+          'server-a',
+          'server-b',
+        ],
+        MediaLibrarySharingMode.allShared => sources,
+        _ => ['server-a'],
+      });
     }
     expect(
       MediaLibraryConfig.fromJson(null).sharingMode,
-      MediaLibrarySharingMode.independent,
+      MediaLibrarySharingMode.networkAndLocalShared,
     );
     expect(
       MediaLibraryConfig.fromJson({'sharingMode': 'future'}).sharingMode,
-      MediaLibrarySharingMode.independent,
+      MediaLibrarySharingMode.networkAndLocalShared,
     );
   });
 
@@ -43,7 +60,13 @@ void main() {
       AppLanguage.japanese,
       AppLanguage.english,
     ]) {
-      for (final label in ['数据展示模式', '各来源独立', '本地挂载文件夹共享', '本地与网络存储共享']) {
+      for (final label in [
+        '数据展示模式',
+        '各来源独立',
+        '网络存储共享',
+        '本地挂载文件夹共享',
+        '本地与网络存储共享',
+      ]) {
         expect(AppLocalizations(language).text(label), isNot(label));
       }
     }

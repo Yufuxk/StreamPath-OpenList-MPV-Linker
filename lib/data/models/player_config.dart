@@ -4,6 +4,7 @@ library;
 import '../../core/constants.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
+import 'special_playlist_mode.dart';
 
 ///
 /// `args` 为启动参数模板列表，每项支持占位符：
@@ -26,15 +27,31 @@ import '../../core/utils/file_sort.dart';
 /// }
 /// ```
 class PlayerConfig {
+  static const defaultAudioLyricsFontFamily = 'Arial';
+  static const defaultAudioLyricsOutlineWidth = 2.0;
+  static const maxAudioLyricsOutlineWidth = 8.0;
+  static const defaultAudioLyricsTransparency = 0.0;
+
   const PlayerConfig({
     required this.name,
     required this.executable,
     this.args = const [],
     bool subtitleInjectionEnabled = true,
     bool subtitleAutoSelectEnabled = true,
+    this.audioDynamicLyricsEnabled = true,
+    this.audioLyricsFontFamily = defaultAudioLyricsFontFamily,
+    this.audioLyricsOutlineWidth = defaultAudioLyricsOutlineWidth,
+    this.audioLyricsTransparency = defaultAudioLyricsTransparency,
     bool? subtitleEnabled,
     this.resumeEnabled = true,
     this.menuProgressSharingEnabled = false,
+    this.specialPlaylistMode = SpecialPlaylistMode.ovaOnly,
+    this.scanSpecialChildFolders = true,
+    this.scanSpecialSiblingFolders = false,
+    this.sharePlaylistFonts = false,
+    this.webDavFontCacheEnabled = true,
+    this.autoSeasonTransitionEnabled = true,
+    this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
     this.hiddenExtensions = const [],
     this.defaultSortMode = FileSortMode.name,
@@ -64,6 +81,13 @@ class PlayerConfig {
   /// 在注入前已选择的内封字幕或无字幕状态。
   final bool subtitleAutoSelectEnabled;
 
+  /// 音频会话将同名 LRC 转为 MPV 内显示的动态 ASS 歌词。
+  final bool audioDynamicLyricsEnabled;
+
+  final String audioLyricsFontFamily;
+  final double audioLyricsOutlineWidth;
+  final double audioLyricsTransparency;
+
   /// 旧代码兼容访问器；旧总开关语义等于“注入并自动选择”。
   @Deprecated('请分别使用 subtitleInjectionEnabled 与 subtitleAutoSelectEnabled')
   bool get subtitleEnabled =>
@@ -74,6 +98,14 @@ class PlayerConfig {
 
   /// 菜单播放记录正片进度，供 WebDAV Title/MPLS 模式使用。
   final bool menuProgressSharingEnabled;
+
+  final SpecialPlaylistMode specialPlaylistMode;
+  final bool scanSpecialChildFolders;
+  final bool scanSpecialSiblingFolders;
+  final bool sharePlaylistFonts;
+  final bool webDavFontCacheEnabled;
+  final bool autoSeasonTransitionEnabled;
+  final bool allowSeasonGap;
 
   /// 是否在文件浏览页应用 [hiddenExtensions]。
   final bool hiddenExtensionsEnabled;
@@ -115,8 +147,19 @@ class PlayerConfig {
     'args': args,
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
+    'audioDynamicLyricsEnabled': audioDynamicLyricsEnabled,
+    'audioLyricsFontFamily': audioLyricsFontFamily,
+    'audioLyricsOutlineWidth': audioLyricsOutlineWidth,
+    'audioLyricsTransparency': audioLyricsTransparency,
     'resumeEnabled': resumeEnabled,
     'menuProgressSharingEnabled': menuProgressSharingEnabled,
+    'specialPlaylistMode': specialPlaylistMode.name,
+    'scanSpecialChildFolders': scanSpecialChildFolders,
+    'scanSpecialSiblingFolders': scanSpecialSiblingFolders,
+    'sharePlaylistFonts': sharePlaylistFonts,
+    'webDavFontCacheEnabled': webDavFontCacheEnabled,
+    'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
+    'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
     'hiddenExtensions': hiddenExtensions,
     'defaultSortMode': defaultSortMode.jsonValue,
@@ -137,8 +180,34 @@ class PlayerConfig {
       args: (json['args'] as List?)?.whereType<String>().toList() ?? const [],
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
+      audioDynamicLyricsEnabled:
+          (json['audioDynamicLyricsEnabled'] as bool?) ?? true,
+      audioLyricsFontFamily:
+          (json['audioLyricsFontFamily'] as String?) ??
+          defaultAudioLyricsFontFamily,
+      audioLyricsOutlineWidth:
+          ((json['audioLyricsOutlineWidth'] as num?)?.toDouble() ??
+                  defaultAudioLyricsOutlineWidth)
+              .clamp(0.0, maxAudioLyricsOutlineWidth),
+      audioLyricsTransparency:
+          ((json['audioLyricsTransparency'] as num?)?.toDouble() ??
+                  defaultAudioLyricsTransparency)
+              .clamp(0.0, 1.0),
       resumeEnabled: (json['resumeEnabled'] as bool?) ?? true,
-      menuProgressSharingEnabled: (json['menuProgressSharingEnabled'] as bool?) ?? false,
+      menuProgressSharingEnabled:
+          (json['menuProgressSharingEnabled'] as bool?) ?? false,
+      specialPlaylistMode: SpecialPlaylistMode.fromJson(
+        json['specialPlaylistMode'],
+      ),
+      scanSpecialChildFolders:
+          (json['scanSpecialChildFolders'] as bool?) ?? true,
+      scanSpecialSiblingFolders:
+          (json['scanSpecialSiblingFolders'] as bool?) ?? false,
+      sharePlaylistFonts: (json['sharePlaylistFonts'] as bool?) ?? false,
+      webDavFontCacheEnabled: (json['webDavFontCacheEnabled'] as bool?) ?? true,
+      autoSeasonTransitionEnabled:
+          (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
+      allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,
       hiddenExtensionsEnabled:
           (json['hiddenExtensionsEnabled'] as bool?) ?? true,
       hiddenExtensions:

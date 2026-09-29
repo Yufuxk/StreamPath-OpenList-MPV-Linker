@@ -130,7 +130,7 @@ void main() {
     expect(loadedPaths, ['新目录']);
   });
 
-  test('默认仍搜索当前目录，切换后才延迟查询 OpenList 索引', () async {
+  test('网络搜索默认索引，也可切回当前目录', () async {
     var calls = 0;
     final controller = DirectoryBrowserController(
       service: _FakeDirectoryRepository(const {'': []}),
@@ -145,8 +145,9 @@ void main() {
     addTearDown(controller.dispose);
 
     controller.openSearch();
+    expect(controller.searchScope, DirectorySearchScope.openListIndex);
+    controller.updateSearchScope(DirectorySearchScope.currentDirectory);
     controller.updateSearchQuery('目标');
-    expect(controller.searchScope, DirectorySearchScope.currentDirectory);
     await Future<void>.delayed(const Duration(milliseconds: 450));
     expect(calls, 0);
 
@@ -182,7 +183,7 @@ void main() {
 
     controller.openSearch();
     notifications = 0;
-    controller.updateSearchScope(DirectorySearchScope.openListIndex);
+    controller.updateSearchScope(DirectorySearchScope.currentDirectory);
     expect(notifications, 1, reason: '切换范围只发布范围变化');
 
     notifications = 0;

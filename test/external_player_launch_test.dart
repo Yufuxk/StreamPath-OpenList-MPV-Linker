@@ -13,6 +13,7 @@ import 'package:streampath/data/models/subtitle_item.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
+import 'package:streampath/domain/services/webdav_font_cache.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
 
 class _SharedProbeController extends PlayerProcessController {
@@ -86,10 +87,13 @@ void main() {
   Future<(ExternalPlayerService, Directory)> makeService({
     String executable = 'mpv',
     bool subtitleInjectionEnabled = true,
+    bool webDavFontCacheEnabled = false,
     bool subtitleAutoSelectEnabled = true,
     bool resumeEnabled = true,
+    bool autoSeasonTransitionEnabled = false,
     PlayerProcessController? processController,
     bool useDefaultWatchLaterDirectory = false,
+    WebDavFontCache? fontCache,
   }) async {
     final dir = Directory.systemTemp.createTempSync('sp_launch_');
     var resolvedExecutable = executable;
@@ -106,8 +110,10 @@ void main() {
           executable: resolvedExecutable,
           args: const ['--sub-file={subfile}', '{url}', '--start={start}'],
           subtitleInjectionEnabled: subtitleInjectionEnabled,
+          webDavFontCacheEnabled: webDavFontCacheEnabled,
           subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
           resumeEnabled: resumeEnabled,
+          autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
         ),
         const ConnectionConfig(baseUrl: 'http://h/dav'),
       ),
@@ -119,10 +125,57 @@ void main() {
             ? null
             : Directory('${dir.path}${Platform.pathSeparator}wl'),
         processController: processController,
+        fontCache: fontCache,
       ),
       dir,
     );
   }
+
+  test('自动切季开启时单集也保留 MPV 并允许稍后暂存下一季', () async {
+    final (service, dir) = await makeService(autoSeasonTransitionEnabled: true);
+    addTearDown(() async {
+      await service.terminateSession('lazy-season');
+      if (dir.existsSync()) await dir.delete(recursive: true);
+    });
+    final result = await service.launch(
+      sessionId: 'lazy-season',
+      entries: const [MediaEntry(url: 'http://h/dav/Show.S01E01.mkv')],
+    );
+    expect(result.seasonPlaylistPath, isNotNull);
+    expect(result.nextSeasonPlaylistPath, isNull);
+    expect(result.args, contains('--idle=yes'));
+    expect(result.args.any((arg) => arg.startsWith('--playlist=')), isTrue);
+    expect(
+      result.args.any((arg) => arg.contains('streampath-season-transition')),
+      isTrue,
+    );
+  });
+
+  test('显式 WebDAV 来源决定候选季 M3U 的同源凭据范围', () async {
+    final (service, dir) = await makeService();
+    addTearDown(() async {
+      await service.terminateSession('other-profile-season');
+      if (dir.existsSync()) await dir.delete(recursive: true);
+    });
+    final result = await service.launch(
+      sessionId: 'other-profile-season',
+      entries: const [
+        MediaEntry(url: 'http://other.test/dav/Show.S01E01.mkv'),
+        MediaEntry(url: 'http://h/dav/unrelated.mkv'),
+      ],
+      username: 'user',
+      password: 'secret',
+      webDavSourceUrl: 'http://other.test/dav',
+      webDavSourceId: 'profile-other',
+    );
+    final playlist = result.args
+        .firstWhere((arg) => arg.startsWith('--playlist='))
+        .substring('--playlist='.length);
+    final content = await File(playlist).readAsString();
+    expect(content, contains('user:secret@other.test'));
+    expect(content, contains('http://h/dav/unrelated.mkv'));
+    expect(content, isNot(contains('user:secret@h')));
+  });
 
   test('视频 runtime 的 watcher 与 isPlayerRunning 共享同一探活查询', () async {
     final controller = _SharedProbeController();
@@ -182,6 +235,162 @@ void main() {
   }
 
   group('launch 单集：外挂字幕注入与自动选择', () {
+    test('本地播放列表直接按集使用本地字体路径', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        await service.terminateSession('local-playlist-fonts');
+        await dir.delete(recursive: true);
+      });
+      final firstFontDir = Directory(p.join(dir.path, 'root-fonts'))
+        ..createSync();
+      final secondFontDir = Directory(p.join(dir.path, 'ova-fonts'))
+        ..createSync();
+      final result = await service.launchLocal(
+        entries: [
+          MediaEntry(url: p.join(dir.path, 'E01.mkv')),
+          MediaEntry(url: p.join(dir.path, 'OVA.mkv')),
+        ],
+        sourceId: 'local:test',
+        sessionId: 'local-playlist-fonts',
+        localFontDirectories: [firstFontDir.path, secondFontDir.path],
+      );
+      final fontScriptPath = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) => p.basename(path).startsWith('streampath-font-directory-'),
+          );
+      final script = await File(fontScriptPath).readAsString();
+
+      expect(script, contains(firstFontDir.path.replaceAll('\\', '\\\\')));
+      expect(script, contains(secondFontDir.path.replaceAll('\\', '\\\\')));
+      expect(script, contains('get_property_number("playlist-pos", -1)'));
+      expect(
+        result.artifactPaths.where(
+          (path) => p.basename(path).startsWith('streampath-fonts-'),
+        ),
+        isEmpty,
+      );
+    });
+
+    test('播放列表按集绑定 WebDAV 字体目录', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        await service.terminateSession('playlist-fonts');
+        await dir.delete(recursive: true);
+      });
+      const rootFonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Show/Fonts',
+        entryKey: 'http://h/dav/Show/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'root.ttf',
+            url: 'http://h/dav/Show/Fonts/root.ttf',
+            size: 1,
+          ),
+        ],
+      );
+      const ovaFonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Show/Extras/Fonts',
+        entryKey: 'http://h/dav/Show/Extras/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'ova.ttf',
+            url: 'http://h/dav/Show/Extras/Fonts/ova.ttf',
+            size: 1,
+          ),
+        ],
+      );
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/Show/E01.mkv'),
+          MediaEntry(url: 'http://h/dav/Show/Extras/OVA.mkv'),
+        ],
+        sessionId: 'playlist-fonts',
+        webDavFontsByEntry: const [rootFonts, ovaFonts],
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async =>
+            [url.contains('ova.ttf') ? 2 : 1],
+      );
+      final fontScriptPath = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) => p.basename(path).startsWith('streampath-font-directory-'),
+          );
+      final script = await File(fontScriptPath).readAsString();
+      final fontDirs = result.artifactPaths
+          .where((path) => p.basename(path).startsWith('streampath-fonts-'))
+          .toList();
+      expect(fontDirs, hasLength(2));
+      expect(script, contains('get_property_number("playlist-pos", -1)'));
+      expect(script, contains(fontDirs[0].replaceAll('\\', '\\\\')));
+      expect(script, contains(fontDirs[1].replaceAll('\\', '\\\\')));
+      expect(File(p.join(fontDirs[0], '0.ttf')).readAsBytesSync(), [1]);
+      expect(File(p.join(fontDirs[1], '0.ttf')).readAsBytesSync(), [2]);
+    });
+
+    test('子目录字体下载失败时串用已准备的根目录字体', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        await service.terminateSession('shared-playlist-fonts');
+        await dir.delete(recursive: true);
+      });
+      const rootFonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Show/Fonts',
+        entryKey: 'http://h/dav/Show/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'root.ttf',
+            url: 'http://h/dav/Show/Fonts/root.ttf',
+            size: 1,
+          ),
+        ],
+      );
+      const childFonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Show/Extras/Fonts',
+        entryKey: 'http://h/dav/Show/Extras/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'child.ttf',
+            url: 'http://h/dav/Show/Extras/Fonts/child.ttf',
+            size: 1,
+          ),
+        ],
+      );
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/Show/E01.mkv'),
+          MediaEntry(url: 'http://h/dav/Show/Extras/OVA.mkv'),
+        ],
+        sessionId: 'shared-playlist-fonts',
+        webDavFonts: rootFonts,
+        webDavFontsByEntry: const [rootFonts, childFonts],
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          if (url.contains('child.ttf')) {
+            throw const FileSystemException('unavailable');
+          }
+          return [1];
+        },
+      );
+      final scriptPath = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) => p.basename(path).startsWith('streampath-font-directory-'),
+          );
+      final script = await File(scriptPath).readAsString();
+      final dirs = result.artifactPaths
+          .where((path) => p.basename(path).startsWith('streampath-fonts-'))
+          .toList();
+      expect(dirs, hasLength(1));
+      final escaped = dirs.single.replaceAll('\\', '\\\\');
+      expect(RegExp(RegExp.escape(escaped)).allMatches(script), hasLength(2));
+    });
+
     test('WebDAV 字体落入隔离目录并由会话脚本注入', () async {
       final (service, dir) = await makeService();
       addTearDown(() async {
@@ -245,6 +454,134 @@ void main() {
       );
       await service.terminateSession('webdav-fonts');
       expect(await Directory(fontDirectoryPath).exists(), isFalse);
+    });
+
+    test('普通视频启动优先流式写入 WebDAV 字体', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        await service.terminateSession('streamed-fonts');
+        if (await dir.exists()) await dir.delete(recursive: true);
+      });
+      const fonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Series/Fonts',
+        entryKey: 'http://h/dav/Series/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'subtitle.ttf',
+            url: 'http://h/dav/Series/Fonts/subtitle.ttf',
+            size: 4,
+          ),
+        ],
+      );
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
+        sessionId: 'streamed-fonts',
+        webDavFonts: fonts,
+        webDavFontLoader: (url, {required maxBytes, required timeout}) =>
+            throw StateError('Byte loader must not run'),
+        webDavFontFileLoader:
+            (
+              url,
+              destination, {
+              required maxBytes,
+              required timeout,
+              onProgress,
+            }) async {
+              await destination.writeAsBytes([0, 1, 2, 3]);
+              return 4;
+            },
+      );
+
+      final directory = Directory(
+        result.artifactPaths.firstWhere(
+          (path) => p.basename(path).startsWith('streampath-fonts-'),
+        ),
+      );
+      expect(directory.listSync().whereType<File>().single.readAsBytesSync(), [
+        0,
+        1,
+        2,
+        3,
+      ]);
+    });
+
+    test('普通视频重开复用续播字体缓存并保持 MPV 字体注入', () async {
+      final cacheDirectory = Directory.systemTemp.createTempSync(
+        'sp_font_launch_cache_',
+      );
+      final cache = WebDavFontCache(directory: cacheDirectory);
+      final (service, dir) = await makeService(
+        webDavFontCacheEnabled: true,
+        fontCache: cache,
+      );
+      addTearDown(() async {
+        await service.terminateSession('font-cache-first');
+        await service.terminateSession('font-cache-second');
+        await dir.delete(recursive: true);
+        await cacheDirectory.delete(recursive: true);
+      });
+      const fonts = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Series/Fonts',
+        entryKey: 'http://h/dav/Series/Fonts/',
+        files: [
+          WebDavFontFile(
+            name: 'subtitle.ttf',
+            url: 'http://h/dav/Series/Fonts/subtitle.ttf',
+            size: 4,
+          ),
+        ],
+      );
+      var downloads = 0;
+      Future<List<int>> loader(
+        String url, {
+        required int maxBytes,
+        required Duration timeout,
+      }) async {
+        downloads++;
+        return [0, 1, 2, 3];
+      }
+
+      final first = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
+        sessionId: 'font-cache-first',
+        webDavFonts: fonts,
+        webDavFontLoader: loader,
+      );
+      Future<String> fontScript(PlayerLaunchResult result) async {
+        final scriptPath = result.args
+            .where((arg) => arg.startsWith('--script='))
+            .map((arg) => arg.substring('--script='.length))
+            .firstWhere(
+              (path) =>
+                  p.basename(path).startsWith('streampath-font-directory-'),
+            );
+        return File(scriptPath).readAsString();
+      }
+
+      final firstScript = await fontScript(first);
+      await service.terminateSession('font-cache-first');
+      final cachedDirectory = cacheDirectory
+          .listSync()
+          .whereType<Directory>()
+          .single;
+      expect(await cachedDirectory.exists(), isTrue);
+
+      final second = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
+        sessionId: 'font-cache-second',
+        webDavFonts: fonts,
+        webDavFontLoader: loader,
+      );
+      expect(downloads, 1);
+      for (final script in [firstScript, await fontScript(second)]) {
+        expect(script, contains(cachedDirectory.path.replaceAll('\\', '\\\\')));
+      }
+      await service.terminateSession('font-cache-second');
+      await cache.prune(() async => <String>{});
+      expect(await cachedDirectory.exists(), isFalse);
     });
 
     test('自动注入关闭时不读取或注入 WebDAV 字体', () async {

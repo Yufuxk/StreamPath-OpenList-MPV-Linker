@@ -92,12 +92,12 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
         alpha: _overlayAlpha(baseTarget, floatingTarget),
       ),
       borderColor: isDark
-          ? Colors.white.withValues(alpha: 0.12)
+          ? Colors.white.withValues(alpha: 0.15)
           : const Color(0xFF506078).withValues(alpha: 0.18),
       dividerColor: isDark
           ? Colors.white.withValues(alpha: 0.09)
           : const Color(0xFF506078).withValues(alpha: 0.14),
-      innerHighlight: Colors.white.withValues(alpha: isDark ? 0.05 : 0.18),
+      innerHighlight: Colors.white.withValues(alpha: isDark ? 0.08 : 0.18),
       shadowColor: Colors.black.withValues(alpha: isDark ? 0.12 : 0.06),
       material: material,
       modalSurface: modalSurfaceBase.withValues(
@@ -265,4 +265,13 @@ extension GlassThemeData on ThemeData {
   GlassTokens get glass =>
       extension<GlassTokens>() ??
       GlassTokens.fromScheme(colorScheme, enabled: false, opacityProgress: 1);
+
+  Color get sidebarSurfaceColor {
+    final surface = colorScheme.surfaceContainerLow;
+    if (!glass.enabled || brightness != Brightness.dark) return surface;
+    return Color.alphaBlend(
+      const Color(0xFF26262B).withValues(alpha: 0.08),
+      surface,
+    );
+  }
 }

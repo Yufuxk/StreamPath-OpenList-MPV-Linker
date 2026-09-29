@@ -52,7 +52,7 @@ class WebDavXmlParser {
           isDirectory: isDir,
           // 「当前目录自身」条目（href path 与请求 URL 相同）：
           // UI 将其作为「返回上级」入口，排序置顶。
-          isSelfEntry: _isSelfEntry(hrefText, requestUrl),
+          isSelfEntry: isDir && _isSelfEntry(hrefText, requestUrl, name),
           size: _parseSize(response),
           modified: _parseModified(response),
           contentType: _firstText(response, 'getcontenttype'),
@@ -66,10 +66,41 @@ class WebDavXmlParser {
     return sortedWebDavFiles(results);
   }
 
+  List<WebDavFile> reclassifyCachedSelfEntries(
+    List<WebDavFile> entries, {
+    required String requestUrl,
+  }) {
+    var changed = false;
+    final corrected = <WebDavFile>[];
+    for (final file in entries) {
+      if (file.isSelfEntry ||
+          !file.isDirectory ||
+          !_isSelfEntry(file.href, requestUrl, file.name)) {
+        corrected.add(file);
+        continue;
+      }
+      changed = true;
+      corrected.add(
+        WebDavFile(
+          name: file.name,
+          href: file.href,
+          isDirectory: file.isDirectory,
+          isSelfEntry: true,
+          size: file.size,
+          modified: file.modified,
+          contentType: file.contentType,
+          etag: file.etag,
+          lastModifiedHeader: file.lastModifiedHeader,
+        ),
+      );
+    }
+    return changed ? sortedWebDavFiles(corrected) : entries;
+  }
+
   // ── 私有辅助 ──────────────────────────────────────────────
 
   /// 判定条目是否为「当前目录自身」（href path 与请求 path 相同）。
-  bool _isSelfEntry(String href, String requestUrl) {
+  bool _isSelfEntry(String href, String requestUrl, String name) {
     final h = Uri.tryParse(href);
     final r = Uri.tryParse(requestUrl);
     if (h == null || r == null) return false;
@@ -77,7 +108,17 @@ class WebDavXmlParser {
     final hp = strip(h.path);
     final rp = strip(r.path);
     if (hp.isEmpty || rp.isEmpty) return false;
-    return hp == rp;
+    if (hp == rp) return true;
+    final requestSegments = r.pathSegments
+        .where((part) => part.isNotEmpty)
+        .toList();
+    final hrefSegments = h.pathSegments
+        .where((part) => part.isNotEmpty)
+        .toList();
+    // 部分服务器会把请求路径规范化为不同 href；Depth: 1 中同层同名目录仍是自身条目。
+    return hrefSegments.length == requestSegments.length &&
+        requestSegments.isNotEmpty &&
+        name == requestSegments.last;
   }
 
   String? _successfulProperty(XmlElement response, String name) {

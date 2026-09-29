@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
+import 'sp_controls.dart';
+import 'sp_dialog.dart';
+import 'sp_notice.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/models/local_root_config.dart';
@@ -76,7 +80,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: AppText('无法打开 Windows 文件夹选择器')));
+      ).showSnackBar(SPNotice(content: AppText('无法打开 Windows 文件夹选择器')));
     } finally {
       if (mounted) setState(() => _selecting = false);
     }
@@ -94,7 +98,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => SPDialog(
     title: AppText(widget.initial == null ? '添加本地文件夹' : '编辑本地文件夹'),
     content: SizedBox(
       width: 560,
@@ -109,7 +113,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
               contextMenuBuilder: buildClipboardHistoryMenu,
               decoration: InputDecoration(
                 labelText: context.l10n.text('显示名称'),
-                prefixIcon: const Icon(Icons.label_outline),
+                prefixIcon: const Icon(SPIcons.label),
                 border: const OutlineInputBorder(),
               ),
             ),
@@ -121,7 +125,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
               decoration: InputDecoration(
                 labelText: context.l10n.text('本地目录'),
                 helperText: context.l10n.text('可直接输入绝对路径，或使用 Windows 目录选择器。'),
-                prefixIcon: const Icon(Icons.folder_outlined),
+                prefixIcon: const Icon(SPIcons.folder),
                 suffixIcon: IconButton(
                   key: const Key('pick-local-root-button'),
                   tooltip: context.l10n.text('选择文件夹'),
@@ -131,7 +135,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
                           dimension: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.folder_open_outlined),
+                      : const Icon(SPIcons.folderOpen),
                 ),
                 border: const OutlineInputBorder(),
               ),
@@ -145,7 +149,7 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
               },
             ),
             const SizedBox(height: 4),
-            SwitchListTile(
+            SPToggleTile(
               contentPadding: EdgeInsets.zero,
               title: const AppText('启用此本地文件夹'),
               value: _enabled,

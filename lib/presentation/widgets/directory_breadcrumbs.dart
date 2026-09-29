@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'sp_icons.dart';
 
 import '../localization/app_text.dart';
 
@@ -33,7 +34,7 @@ class DirectoryBreadcrumbs extends StatelessWidget {
           child: const Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.home_outlined, size: 18),
+              Icon(SPIcons.home, size: 20),
               SizedBox(width: 6),
               AppText('根目录'),
             ],
@@ -41,8 +42,8 @@ class DirectoryBreadcrumbs extends StatelessWidget {
         ),
         for (var index = 0; index < crumbs.length; index++) ...[
           Icon(
-            Icons.chevron_right,
-            size: 18,
+            SPIcons.chevronRight,
+            size: 20,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
           TextButton(

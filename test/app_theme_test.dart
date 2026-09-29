@@ -38,6 +38,21 @@ void main() {
     );
   });
 
+  test('系统强调色不改变旧版按钮与图标主配色', () {
+    const accent = Color(0xFFAA5500);
+    final light = AppTheme.light(systemAccent: accent).colorScheme;
+    final dark = AppTheme.dark(systemAccent: accent).colorScheme;
+
+    expect(light.primary, const Color(0xFF2F67D8));
+    expect(light.onPrimary, Colors.white);
+    expect(light.primaryContainer, const Color(0xFFDFE9FF));
+    expect(dark.primary, const Color(0xFF6EA8FE));
+    expect(dark.onPrimary, const Color(0xFF071B34));
+    expect(dark.primaryContainer, const Color(0xFF17365F));
+    expect(dark.onPrimaryContainer, const Color(0xFFD8E7FF));
+    expect(dark.onSurfaceVariant, const Color(0xFFAEB9C7));
+  });
+
   test('磨砂主题保持主背景控制并建立可区分的表面层级', () {
     final defaultDark = AppTheme.dark();
     final clearerGlass = AppTheme.dark(glass: true, glassOpacity: 0.60);
@@ -45,6 +60,10 @@ void main() {
 
     expect(defaultDark.scaffoldBackgroundColor.a, 1);
     expect(clearerGlass.scaffoldBackgroundColor.a, closeTo(0.22, 0.01));
+    expect(
+      clearerGlass.scaffoldBackgroundColor.toARGB32() & 0x00FFFFFF,
+      0x000D131D,
+    );
     expect(denserGlass.scaffoldBackgroundColor.a, closeTo(0.72, 0.01));
     expect(
       denserGlass.scaffoldBackgroundColor.a -
@@ -65,6 +84,23 @@ void main() {
     expect(
       clearerGlass.appBarTheme.backgroundColor,
       clearerTokens.chromeSurface,
+    );
+    expect(clearerTokens.borderColor.a, greaterThan(0.12));
+    expect(
+      (clearerGlass.inputDecorationTheme.enabledBorder! as OutlineInputBorder)
+          .borderSide
+          .color,
+      clearerTokens.borderColor,
+    );
+    expect(clearerGlass.colorScheme.primaryContainer, const Color(0xFF1E4D84));
+    expect(clearerGlass.snackBarTheme.backgroundColor!.a, greaterThan(0.9));
+    expect(AppTheme.dropdownMenuColor(clearerGlass).a, greaterThan(0.95));
+    expect(
+      (clearerGlass.snackBarTheme.shape! as RoundedRectangleBorder)
+          .side
+          .color
+          .a,
+      greaterThan(0.2),
     );
   });
 

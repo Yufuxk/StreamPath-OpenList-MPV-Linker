@@ -122,6 +122,7 @@ void main() {
           subtitleInjectionEnabled: false,
           subtitleAutoSelectEnabled: false,
           resumeEnabled: resumeEnabled,
+          autoSeasonTransitionEnabled: false,
         ),
         const ConnectionConfig(),
       ),
