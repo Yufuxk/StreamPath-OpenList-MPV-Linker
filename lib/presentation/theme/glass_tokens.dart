@@ -65,7 +65,7 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     final progress = opacityProgress.clamp(0.0, 1.0).toDouble();
     final baseTarget = _mix(0.22, 0.72, progress);
     final contentTarget = (baseTarget + 0.10).clamp(0.0, 0.78);
-    final chromeTarget = (baseTarget + 0.16).clamp(0.0, 0.84);
+    final chromeTarget = (baseTarget + (isDark ? 0.06 : 0.16)).clamp(0.0, 0.84);
     final raisedTarget = (baseTarget + 0.24).clamp(0.0, 0.88);
     final floatingTarget = (baseTarget + 0.38).clamp(0.0, 0.94);
     final isMica = material == GlassMaterial.mica;
