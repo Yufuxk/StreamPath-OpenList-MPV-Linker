@@ -1,3 +1,4 @@
+import 'directory_scroll_view.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/utils/file_sort.dart';
@@ -196,114 +197,119 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
       content: SizedBox(
         width: 780,
         height: MediaQuery.sizeOf(context).height * 0.62,
-        child: ListView(
-          children: [
-            SelectableText(widget.resource.path),
-            if (_hint.conflicting) const AppText('文件与目录中的 TMDB ID 冲突，请人工确认'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _query,
-              onSubmitted: (_) => _loading ? null : _search(),
-              decoration: const InputDecoration(label: AppText('搜索作品名称')),
-            ),
-            TextButton(
-              onPressed: _loading ? null : _search,
-              child: const AppText('搜索候选'),
-            ),
-            TextField(
-              controller: _id,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(label: AppText('明确 TMDB ID')),
-            ),
-            TextButton(
-              onPressed: _loading ? null : _lookup,
-              child: const AppText('核验 ID'),
-            ),
-            if (_loading) const LinearProgressIndicator(),
-            if (_error != null) AppText(filmCatalogErrorText(_error!)),
-            if (!_loading && _results.isEmpty)
-              const AppText('搜索后选择正确作品，搜索排名不代表匹配结果'),
-            for (final result in _results)
-              ListTile(
-                leading: FilmArtwork(
-                  cache: widget.catalog.images,
-                  path: result.posterPath,
-                  width: 40,
-                ),
-                title: Text('${result.title} (${result.year ?? ''})'),
-                subtitle: Text(
-                  '${result.originalTitle} · TMDB ${result.tmdbId} · ${context.l10n.text(result.type == FilmMediaType.movie ? '电影' : '剧集')}',
-                ),
-                selected: _selected?.tmdbId == result.tmdbId,
-                onTap: _loading
-                    ? null
-                    : () => setState(() => _selected = result),
+        child: DirectoryScrollView(
+          builder: (scrollController) => ListView(
+            controller: scrollController,
+            children: [
+              SelectableText(widget.resource.path),
+              if (_hint.conflicting) const AppText('文件与目录中的 TMDB ID 冲突，请人工确认'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _query,
+                onSubmitted: (_) => _loading ? null : _search(),
+                decoration: const InputDecoration(label: AppText('搜索作品名称')),
               ),
-            if (_more)
               TextButton(
-                onPressed: _loading ? null : () => _search(more: true),
-                child: const AppText('加载更多'),
+                onPressed: _loading ? null : _search,
+                child: const AppText('搜索候选'),
               ),
-            if (widget.resource.type == FilmMediaType.tv) ...[
-              const Divider(),
-              CheckboxListTile(
-                value: _folder,
-                title: const AppText('确认作品目录归属'),
-                subtitle: const AppText('预览并选择本次关联文件；以后新增集数继承目录归属'),
-                onChanged: _loading
-                    ? null
-                    : (value) {
-                        setState(() => _folder = value!);
-                        _scope();
-                      },
+              TextField(
+                controller: _id,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(label: AppText('明确 TMDB ID')),
               ),
-              if (_folder)
-                DropdownButtonFormField<String>(
-                  dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
-                  borderRadius: AppTheme.dropdownBorderRadius,
-                  isExpanded: true,
-                  key: ValueKey(_directory),
-                  initialValue: _directory,
-                  decoration: const InputDecoration(label: AppText('作品目录')),
-                  items: [
-                    for (final ancestor in ancestors)
-                      DropdownMenuItem(
-                        value: ancestor,
-                        child: Text(
-                          ancestor.isEmpty ? '/' : ancestor,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
+              TextButton(
+                onPressed: _loading ? null : _lookup,
+                child: const AppText('核验 ID'),
+              ),
+              if (_loading) const LinearProgressIndicator(),
+              if (_error != null) AppText(filmCatalogErrorText(_error!)),
+              if (!_loading && _results.isEmpty)
+                const AppText('搜索后选择正确作品，搜索排名不代表匹配结果'),
+              for (final result in _results)
+                ListTile(
+                  leading: FilmArtwork(
+                    cache: widget.catalog.images,
+                    path: result.posterPath,
+                    width: 40,
+                  ),
+                  title: Text('${result.title} (${result.year ?? ''})'),
+                  subtitle: Text(
+                    '${result.originalTitle} · TMDB ${result.tmdbId} · ${context.l10n.text(result.type == FilmMediaType.movie ? '电影' : '剧集')}',
+                  ),
+                  selected: _selected?.tmdbId == result.tmdbId,
+                  onTap: _loading
+                      ? null
+                      : () => setState(() => _selected = result),
+                ),
+              if (_more)
+                TextButton(
+                  onPressed: _loading ? null : () => _search(more: true),
+                  child: const AppText('加载更多'),
+                ),
+              if (widget.resource.type == FilmMediaType.tv) ...[
+                const Divider(),
+                CheckboxListTile(
+                  value: _folder,
+                  title: const AppText('确认作品目录归属'),
+                  subtitle: const AppText('预览并选择本次关联文件；以后新增集数继承目录归属'),
                   onChanged: _loading
                       ? null
                       : (value) {
-                          setState(() => _directory = value!);
+                          setState(() => _folder = value!);
                           _scope();
                         },
                 ),
-            ],
-            const SizedBox(height: 12),
-            const AppText('本次关联文件预览'),
-            for (final resource in _resources)
-              CheckboxListTile(
-                value: _selectedFiles.contains(resource.id),
-                title: Text(resource.name),
-                subtitle: Text(
-                  '${resource.path}${resource.bindingOrigin == 'manual' ? ' · ${context.l10n.text('已人工匹配')}' : ''}',
+                if (_folder)
+                  DropdownButtonFormField<String>(
+                    dropdownColor: AppTheme.dropdownMenuColor(
+                      Theme.of(context),
+                    ),
+                    borderRadius: AppTheme.dropdownBorderRadius,
+                    isExpanded: true,
+                    key: ValueKey(_directory),
+                    initialValue: _directory,
+                    decoration: const InputDecoration(label: AppText('作品目录')),
+                    items: [
+                      for (final ancestor in ancestors)
+                        DropdownMenuItem(
+                          value: ancestor,
+                          child: Text(
+                            ancestor.isEmpty ? '/' : ancestor,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: _loading
+                        ? null
+                        : (value) {
+                            setState(() => _directory = value!);
+                            _scope();
+                          },
+                  ),
+              ],
+              const SizedBox(height: 12),
+              const AppText('本次关联文件预览'),
+              for (final resource in _resources)
+                CheckboxListTile(
+                  value: _selectedFiles.contains(resource.id),
+                  title: Text(resource.name),
+                  subtitle: Text(
+                    '${resource.path}${resource.bindingOrigin == 'manual' ? ' · ${context.l10n.text('已人工匹配')}' : ''}',
+                  ),
+                  onChanged: _loading
+                      ? null
+                      : (value) => setState(() {
+                          if (value == true) {
+                            _selectedFiles.add(resource.id);
+                          } else {
+                            _selectedFiles.remove(resource.id);
+                          }
+                        }),
                 ),
-                onChanged: _loading
-                    ? null
-                    : (value) => setState(() {
-                        if (value == true) {
-                          _selectedFiles.add(resource.id);
-                        } else {
-                          _selectedFiles.remove(resource.id);
-                        }
-                      }),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [
@@ -413,48 +419,51 @@ class _FilmEpisodeDialogState extends State<_FilmEpisodeDialog> {
     content: SizedBox(
       width: 680,
       height: MediaQuery.sizeOf(context).height * 0.5,
-      child: ListView(
-        children: [
-          TextField(
-            controller: _season,
-            onChanged: _invalidate,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(label: AppText('季号（0 为特别篇）')),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _episode,
-            onChanged: _invalidate,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(label: AppText('首个集号')),
-          ),
-          TextButton(
-            onPressed: _loading ? null : _makePreview,
-            child: const AppText('生成映射预览'),
-          ),
-          const AppText('逐行确认真实文件与目标集；仅保存已勾选行'),
-          const AppText('TMDB 未收录的集使用作品名称和图片'),
-          if (_loading) const LinearProgressIndicator(),
-          if (_error != null) AppText(filmCatalogErrorText(_error!)),
-          if (_preview != null)
-            for (final entry in _preview!.entries)
-              CheckboxListTile(
-                value: _accepted.contains(entry.key.id),
-                title: Text(entry.key.name),
-                subtitle: Text(
-                  '${entry.key.path}\nS${entry.value.$1}E${entry.value.$2}',
+      child: DirectoryScrollView(
+        builder: (scrollController) => ListView(
+          controller: scrollController,
+          children: [
+            TextField(
+              controller: _season,
+              onChanged: _invalidate,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(label: AppText('季号（0 为特别篇）')),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _episode,
+              onChanged: _invalidate,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(label: AppText('首个集号')),
+            ),
+            TextButton(
+              onPressed: _loading ? null : _makePreview,
+              child: const AppText('生成映射预览'),
+            ),
+            const AppText('逐行确认真实文件与目标集；仅保存已勾选行'),
+            const AppText('TMDB 未收录的集使用作品名称和图片'),
+            if (_loading) const LinearProgressIndicator(),
+            if (_error != null) AppText(filmCatalogErrorText(_error!)),
+            if (_preview != null)
+              for (final entry in _preview!.entries)
+                CheckboxListTile(
+                  value: _accepted.contains(entry.key.id),
+                  title: Text(entry.key.name),
+                  subtitle: Text(
+                    '${entry.key.path}\nS${entry.value.$1}E${entry.value.$2}',
+                  ),
+                  onChanged: _loading
+                      ? null
+                      : (value) => setState(() {
+                          if (value == true) {
+                            _accepted.add(entry.key.id);
+                          } else {
+                            _accepted.remove(entry.key.id);
+                          }
+                        }),
                 ),
-                onChanged: _loading
-                    ? null
-                    : (value) => setState(() {
-                        if (value == true) {
-                          _accepted.add(entry.key.id);
-                        } else {
-                          _accepted.remove(entry.key.id);
-                        }
-                      }),
-              ),
-        ],
+          ],
+        ),
       ),
     ),
     actions: [

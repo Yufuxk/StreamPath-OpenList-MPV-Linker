@@ -1145,6 +1145,11 @@ class FilmCatalogStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> clearProbeMetadata() async {
+    await _db.delete('resource_probes');
+    notifyListeners();
+  }
+
   Future<void> saveProbe(int resourceId, Map<String, dynamic> metadata) async {
     if (await resource(resourceId) == null) return;
     await _db.insert('resource_probes', {

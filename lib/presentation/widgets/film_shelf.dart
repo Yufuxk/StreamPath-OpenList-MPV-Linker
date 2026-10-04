@@ -1,3 +1,4 @@
+import 'directory_scroll_view.dart';
 import '../localization/app_localizations.dart';
 import '../../data/local/film_catalog_store.dart';
 import 'film_watch_overlay.dart';
@@ -90,14 +91,17 @@ class _FilmShelfState extends State<FilmShelf>
                           PointerDeviceKind.trackpad,
                         },
                       ),
-                      child: ListView.separated(
+                      child: DirectoryScrollView(
                         controller: _scroll,
-                        scrollDirection: Axis.horizontal,
-                        itemCount: widget.count,
-                        separatorBuilder: (_, _) => const SizedBox(width: 16),
-                        itemBuilder: (context, i) => SizedBox(
-                          width: widget.itemWidth,
-                          child: widget.builder(context, i),
+                        builder: (scrollController) => ListView.separated(
+                          controller: scrollController,
+                          scrollDirection: Axis.horizontal,
+                          itemCount: widget.count,
+                          separatorBuilder: (_, _) => const SizedBox(width: 16),
+                          itemBuilder: (context, i) => SizedBox(
+                            width: widget.itemWidth,
+                            child: widget.builder(context, i),
+                          ),
                         ),
                       ),
                     ),
@@ -295,24 +299,27 @@ class FilmPosterGrid extends StatelessWidget {
   final void Function(FilmWork, Offset) onMenu;
   final ScrollController? controller;
   @override
-  Widget build(BuildContext context) => GridView.builder(
+  Widget build(BuildContext context) => DirectoryScrollView(
     controller: controller,
-    padding: const EdgeInsets.all(16),
-    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-      maxCrossAxisExtent: 220,
-      mainAxisExtent: 350,
-      crossAxisSpacing: 16,
-      mainAxisSpacing: 16,
-    ),
-    itemCount: works.length,
-    itemBuilder: (_, i) => FilmWorkCard(
-      store: store,
-      rootId: rootId,
-      sourceIds: sourceIds,
-      work: works[i],
-      cache: cache,
-      onTap: () => onOpen(works[i]),
-      onMenu: (position) => onMenu(works[i], position),
+    builder: (scrollController) => GridView.builder(
+      controller: scrollController,
+      padding: const EdgeInsets.all(16),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 220,
+        mainAxisExtent: 350,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+      ),
+      itemCount: works.length,
+      itemBuilder: (_, i) => FilmWorkCard(
+        store: store,
+        rootId: rootId,
+        sourceIds: sourceIds,
+        work: works[i],
+        cache: cache,
+        onTap: () => onOpen(works[i]),
+        onMenu: (position) => onMenu(works[i], position),
+      ),
     ),
   );
 }

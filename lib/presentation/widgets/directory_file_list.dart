@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/media_directory_entry.dart';
 import '../localization/app_text.dart';
-import 'directory_wheel_scroll_region.dart';
+import 'directory_scroll_view.dart';
 import 'file_tile.dart';
 
 typedef DirectoryFileItemBuilder =
@@ -52,23 +52,12 @@ class DirectoryFileList extends StatelessWidget {
         children: [
           const FileListHeader(),
           Expanded(
-            child: DirectoryWheelScrollRegion(
+            child: DirectoryScrollView(
               controller: controller,
-              child: RefreshIndicator(
-                onRefresh: onRefresh,
-                child: ScrollConfiguration(
-                  behavior: ScrollConfiguration.of(
-                    context,
-                  ).copyWith(scrollbars: false),
-                  child: Scrollbar(
-                    key: const ValueKey<String>('directory-scrollbar'),
-                    controller: controller,
-                    thumbVisibility: true,
-                    interactive: true,
-                    child: listView,
-                  ),
-                ),
-              ),
+              thumbVisibility: true,
+              scrollbarKey: const ValueKey<String>('directory-scrollbar'),
+              builder: (_) =>
+                  RefreshIndicator(onRefresh: onRefresh, child: listView),
             ),
           ),
         ],

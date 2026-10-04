@@ -1,3 +1,4 @@
+import 'directory_scroll_view.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:crypto/crypto.dart';
@@ -170,36 +171,39 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
-                : GridView.builder(
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 180,
-                          mainAxisExtent: 140,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 12,
-                        ),
-                    itemCount: _cached.length,
-                    itemBuilder: (_, i) => InkWell(
-                      onTap: _saving ? null : () => _save(_cached[i].$1),
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.file(
-                                _cached[i].$1,
-                                fit: BoxFit.cover,
-                                width: double.infinity,
-                                cacheWidth: 360,
+                : DirectoryScrollView(
+                    builder: (scrollController) => GridView.builder(
+                      controller: scrollController,
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 180,
+                            mainAxisExtent: 140,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 12,
+                          ),
+                      itemCount: _cached.length,
+                      itemBuilder: (_, i) => InkWell(
+                        onTap: _saving ? null : () => _save(_cached[i].$1),
+                        child: Column(
+                          children: [
+                            Expanded(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  _cached[i].$1,
+                                  fit: BoxFit.cover,
+                                  width: double.infinity,
+                                  cacheWidth: 360,
+                                ),
                               ),
                             ),
-                          ),
-                          Text(
-                            _cached[i].$2,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
+                            Text(
+                              _cached[i].$2,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

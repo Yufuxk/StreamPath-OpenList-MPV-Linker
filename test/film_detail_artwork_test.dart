@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
@@ -20,6 +21,8 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
+import 'package:streampath/presentation/widgets/film_library_background.dart';
+import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 
 import 'helpers/shell_test_app_state.dart';
 
@@ -147,6 +150,90 @@ void main() {
     of: find.byKey(const Key('film-detail-backdrop')),
     matching: find.byType(RawImage),
   );
+
+  testWidgets('首页背景缓存被淘汰后返回首帧仍保留原图，切换路径不残留旧图', (tester) async {
+    await prepare(tester);
+    final file = (await tester.runAsync(
+      () => catalog.images.cached(works.first.backdropPath!, 'original'),
+    ))!;
+    late BuildContext homeContext;
+    await tester.pumpWidget(
+      frame(
+        Builder(
+          builder: (context) {
+            homeContext = context;
+            return FilmLibraryBackground(file: file);
+          },
+        ),
+      ),
+    );
+    await settle(tester);
+    final original = tester.widget<RawImage>(find.byType(RawImage)).image;
+    expect(original, isNotNull);
+    for (var i = 0; i < 20; i++) {
+      Navigator.of(homeContext).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Child')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      PaintingBinding.instance.imageCache.clear();
+      Navigator.of(homeContext).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
+      await settle(tester);
+    }
+    await tester.pumpWidget(
+      frame(
+        FilmLibraryBackground(
+          file: File(p.join(temp.path, 'missing-background.png')),
+        ),
+      ),
+    );
+    expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNull);
+    await settle(tester);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('影片详情复用目录滚动条，滚轮在条边和正文只滚动一次', (tester) async {
+    await prepare(tester);
+    tester.view.physicalSize = const Size(1280, 640);
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: works.first.id,
+          initialWork: works.first,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    final list = find.byKey(const Key('film-detail-scroll'));
+    final shared = find.ancestor(
+      of: list,
+      matching: find.byType(DirectoryScrollView),
+    );
+    expect(shared, findsOneWidget);
+    final controller = tester.widget<ListView>(list).controller!;
+    final rect = tester.getRect(shared);
+    for (final x in [rect.right - 2, rect.left + 400]) {
+      final before = controller.offset;
+      final pointer = TestPointer(1, PointerDeviceKind.mouse);
+      final location = Offset(x, rect.top + 80);
+      await tester.sendEventToBinding(pointer.hover(location));
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: location,
+          scrollDelta: const Offset(0, 30),
+        ),
+      );
+      await tester.pump();
+      expect(controller.offset, before + 30);
+    }
+    expect(tester.takeException(), isNull);
+  });
 
   for (final dpr in [1.0, 2.0]) {
     testWidgets('已解码背景在首帧复用同一缓存键 DPR=$dpr', (tester) async {

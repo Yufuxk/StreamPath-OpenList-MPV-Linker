@@ -20,7 +20,7 @@ import '../widgets/film_work_menu.dart';
 import '../widgets/film_artwork_picker.dart';
 import '../widgets/film_section_settings.dart';
 import '../widgets/film_library_background.dart';
-import '../widgets/directory_wheel_scroll_region.dart';
+import '../widgets/directory_scroll_view.dart';
 import 'film_library_manage_page.dart';
 import 'global_media_library_page.dart';
 
@@ -325,34 +325,22 @@ class _FilmLibraryPageState extends State<FilmLibraryPage> {
                           child: IndexedStack(
                             index: _browse ? 1 : 0,
                             children: [
-                              DirectoryWheelScrollRegion(
+                              DirectoryScrollView(
                                 controller: _homeScroll,
-                                child: ScrollConfiguration(
-                                  behavior: ScrollConfiguration.of(
-                                    context,
-                                  ).copyWith(scrollbars: false),
-                                  child: Scrollbar(
-                                    controller: _homeScroll,
-                                    interactive: true,
-                                    child: ListView(
-                                      controller: _homeScroll,
-                                      padding: const EdgeInsets.all(20),
-                                      children: [
-                                        for (final section
-                                            in c.homeSections.where(
-                                              (s) => s.enabled,
-                                            ))
-                                          _homeSection(c, section),
-                                        if (c.works.isEmpty && c.roots.isEmpty)
-                                          const Padding(
-                                            padding: EdgeInsets.all(24),
-                                            child: AppText(
-                                              '暂无已匹配作品，请添加影视目录并整理文件',
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
+                                builder: (_) => ListView(
+                                  controller: _homeScroll,
+                                  padding: const EdgeInsets.all(20),
+                                  children: [
+                                    for (final section in c.homeSections.where(
+                                      (s) => s.enabled,
+                                    ))
+                                      _homeSection(c, section),
+                                    if (c.works.isEmpty && c.roots.isEmpty)
+                                      const Padding(
+                                        padding: EdgeInsets.all(24),
+                                        child: AppText('暂无已匹配作品，请添加影视目录并整理文件'),
+                                      ),
+                                  ],
                                 ),
                               ),
                               !_browse || (c.works.isEmpty && c.loading)

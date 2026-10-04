@@ -24,12 +24,17 @@ void main() {
   });
 
   test('普通缓存清理不删除尚未验证播放器身份的本地 ISO 字幕会话', () async {
-    final session=Directory(p.join(cacheDir.path,'local_iso_subtitles','local_disc_123_1'));
-    await session.create(recursive:true);
-    final resource=File(p.join(session.path,'subtitle.ass'));
+    final session = Directory(
+      p.join(cacheDir.path, 'local_iso_subtitles', 'local_disc_123_1'),
+    );
+    await session.create(recursive: true);
+    final resource = File(p.join(session.path, 'subtitle.ass'));
     await resource.writeAsString('in use');
-    await CacheCleanupService(storeClearers:const [],dataDirectoryProvider:() async => dataDir).clear();
-    expect(await resource.readAsString(),'in use');
+    await CacheCleanupService(
+      storeClearers: const [],
+      dataDirectoryProvider: () async => dataDir,
+    ).clear();
+    expect(await resource.readAsString(), 'in use');
   });
 
   test('清空新布局缓存和旧平铺残留，同时保留配置与打开的存储文件', () async {
@@ -127,4 +132,56 @@ void main() {
 
     await expectLater(service.clear(), throwsA(isA<CacheCleanupException>()));
   });
+
+  for (final scope in CacheCleanupScope.values) {
+    test('分类清理 $scope 只删除对应缓存，媒体中心与学习数据保留', () async {
+      final files = {
+        CacheCleanupScope.directory: 'directory_cache/item.json',
+        CacheCleanupScope.metadata: 'film_artwork/image.img',
+        CacheCleanupScope.playback: 'playback_history.json',
+        CacheCleanupScope.temporary: 'mpv-current-test.txt',
+      };
+      for (final name in files.values) {
+        final file = File(p.join(cacheDir.path, name));
+        await file.parent.create(recursive: true);
+        await file.writeAsString('keep');
+      }
+      final library = File(
+        p.join(dataDir.path, 'library', 'media_library.json'),
+      );
+      await library.parent.create();
+      await library.writeAsString('center');
+      final learning = File(
+        p.join(cacheDir.path, 'cache_intelligence_learning.json'),
+      );
+      await learning.writeAsString('learning');
+      final called = <CacheCleanupScope>[];
+      final service = CacheCleanupService(
+        dataDirectoryProvider: () async => dataDir,
+        storeClearers: const [],
+        preservedCacheNames: const {'cache_intelligence_learning.json'},
+        scopedStoreClearers: {
+          for (final category in files.keys)
+            category: [
+              () async {
+                called.add(category);
+              },
+            ],
+        },
+      );
+      await service.clear(scope: scope);
+      expect(
+        called.toSet(),
+        scope == CacheCleanupScope.all ? files.keys.toSet() : {scope},
+      );
+      for (final entry in files.entries) {
+        expect(
+          await File(p.join(cacheDir.path, entry.value)).exists(),
+          scope != CacheCleanupScope.all && entry.key != scope,
+        );
+      }
+      expect(await library.readAsString(), 'center');
+      expect(await learning.readAsString(), 'learning');
+    });
+  }
 }

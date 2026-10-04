@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'film_artwork.dart';
+
 class FilmLibraryBackground extends StatelessWidget {
   const FilmLibraryBackground({super.key, required this.file});
   final File? file;
@@ -23,8 +25,11 @@ class FilmLibraryBackground extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         ColoredBox(color: base),
-        Image.file(
-          backdrop,
+        Image(
+          key: ValueKey(backdrop.path),
+          image: filmArtworkProvider(backdrop, target: 'original'),
+          // 返回页面时保留当前图片，实际切换背景由路径 key 重建。
+          gaplessPlayback: true,
           fit: BoxFit.cover,
           errorBuilder: (_, _, _) => const SizedBox.shrink(),
         ),

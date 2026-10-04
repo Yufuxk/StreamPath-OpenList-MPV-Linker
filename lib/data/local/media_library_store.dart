@@ -201,6 +201,14 @@ class MediaLibraryStore {
     );
   });
 
+  Future<List<MediaLibraryItem>> playbackProgressItems({required bool audio}) =>
+      _enqueue(() async {
+        await _load();
+        return (audio ? _audioHistory : _videoHistory)
+            .map((r) => r.item)
+            .toList();
+      });
+
   Future<bool> toggleFavorite(MediaLibraryItem item) => _enqueue(() async {
     await _load();
     final records = [..._favorites];

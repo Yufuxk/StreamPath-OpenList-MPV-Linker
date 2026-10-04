@@ -1143,7 +1143,9 @@ class AppState extends ChangeNotifier {
   }
 
   /// 清空缓存前确认没有播放器进程仍在使用会话文件。
-  Future<CacheCleanupResult> clearCache() async {
+  Future<CacheCleanupResult> clearCache({
+    CacheCleanupScope scope = CacheCleanupScope.all,
+  }) async {
     final cleaner = _cacheCleaner;
     if (cleaner == null) {
       throw const CacheCleanupException('缓存清理服务尚未初始化');
@@ -1158,12 +1160,63 @@ class AppState extends ChangeNotifier {
       throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
     }
     await _releaseStoppedPlaybackSessions();
-    final result = await cleaner.clear();
-    await _filmPlaybackHistoryStore.clear();
-    await _filmMediaLibraryStore?.clearStrmProgress();
-    await _filmProgressService?.clearAll();
+    if (scope == CacheCleanupScope.all || scope == CacheCleanupScope.playback) {
+      await _clearUnreferencedProgress(_progressService, _mediaLibraryStore);
+      if (_audioProgressService case final audio?) {
+        await _clearUnreferencedProgress(
+          audio,
+          _mediaLibraryStore,
+          audio: true,
+        );
+      }
+      if (_filmProgressService case final film?) {
+        await _clearUnreferencedProgress(film, _filmMediaLibraryStore);
+      }
+    }
+    if ((scope == CacheCleanupScope.all ||
+            scope == CacheCleanupScope.metadata) &&
+        _filmCatalog != null) {
+      try {
+        final catalog = await _filmCatalog!;
+        await catalog.images.clear();
+        await catalog.store.clearProbeMetadata();
+      } on FilmCatalogException catch (error) {
+        throw CacheCleanupException(filmCatalogErrorText(error.code), error);
+      }
+    }
+    final result = await cleaner.clear(scope: scope);
+    if (scope == CacheCleanupScope.all || scope == CacheCleanupScope.playback) {
+      await _filmPlaybackHistoryStore.clear();
+    }
     notifyListeners();
     return result;
+  }
+
+  Future<void> _clearUnreferencedProgress(
+    PlaybackProgressService service,
+    MediaLibraryStore? store, {
+    bool audio = false,
+  }) async {
+    final preserved = <(String, String)>{};
+    final directories = <String, Map<String, List<WebDavFile>>>{};
+    final snapshot = await service.resumeProgressSnapshot();
+    for (final item
+        in await store?.playbackProgressItems(audio: audio) ??
+            <MediaLibraryItem>[]) {
+      if (item.kind == MediaLibraryKind.strm) continue;
+      final url = _resolveMediaLibraryTarget(
+        item,
+        allowLogicalPath: true,
+        cachedDirectories: directories,
+      );
+      if (url != null) {
+        preserved.add((item.sourceId, url));
+      } else {
+        // 暂时不可用的来源仍保留媒体中心引用的进度。
+        preserved.addAll(snapshot.keys.where((key) => key.$1 == item.sourceId));
+      }
+    }
+    await service.clearAll(preserved: preserved);
   }
 
   /// 只清空本地智能缓存的匿名聚合学习数据。

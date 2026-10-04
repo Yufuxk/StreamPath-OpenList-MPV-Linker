@@ -26,7 +26,9 @@ class DirectoryWheelScrollRegion extends StatelessWidget {
     final position = controller.position;
     if (!position.physics.shouldAcceptUserOffset(position)) return;
 
-    final delta = event.scrollDelta.dy != 0
+    final delta = position.axis == Axis.horizontal
+        ? event.scrollDelta.dx
+        : event.scrollDelta.dy != 0
         ? event.scrollDelta.dy
         : event.scrollDelta.dx;
     final target = math.min(
@@ -43,7 +45,9 @@ class DirectoryWheelScrollRegion extends StatelessWidget {
         return;
       }
       final current = controller.position;
-      final resolvedDelta = resolvedEvent.scrollDelta.dy != 0
+      final resolvedDelta = current.axis == Axis.horizontal
+          ? resolvedEvent.scrollDelta.dx
+          : resolvedEvent.scrollDelta.dy != 0
           ? resolvedEvent.scrollDelta.dy
           : resolvedEvent.scrollDelta.dx;
       final resolvedTarget = math.min(

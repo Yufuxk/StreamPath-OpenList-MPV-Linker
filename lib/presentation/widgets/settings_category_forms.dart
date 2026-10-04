@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'directory_wheel_scroll_region.dart';
+import 'directory_scroll_view.dart';
 
 /// 设置分类的独立表单容器。
 ///
@@ -23,32 +23,25 @@ class SettingsCategoryForm extends StatelessWidget {
   Widget build(BuildContext context) {
     return Form(
       key: formKey,
-      child: DirectoryWheelScrollRegion(
+      child: DirectoryScrollView(
         controller: scrollController,
-        child: ScrollConfiguration(
-          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-          child: Scrollbar(
-            key: ValueKey<String>('settings-scrollbar-$sectionName'),
-            controller: scrollController,
-            thumbVisibility: true,
-            interactive: true,
-            child: SingleChildScrollView(
-              key: PageStorageKey<String>('settings-page-$sectionName'),
-              controller: scrollController,
-              padding: EdgeInsets.fromLTRB(
-                MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
-                16,
-                MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
-                24,
-              ),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1200),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [content],
-                  ),
-                ),
+        thumbVisibility: true,
+        scrollbarKey: ValueKey<String>('settings-scrollbar-$sectionName'),
+        builder: (_) => SingleChildScrollView(
+          key: PageStorageKey<String>('settings-page-$sectionName'),
+          controller: scrollController,
+          padding: EdgeInsets.fromLTRB(
+            MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+            16,
+            MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+            24,
+          ),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1200),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [content],
               ),
             ),
           ),

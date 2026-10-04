@@ -407,11 +407,28 @@ class PlaybackProgressService implements PlaybackProgressReader {
   }
 
   /// 清空全部播放进度，并保持数据库连接可继续使用。
-  Future<void> clearAll() async {
+  Future<void> clearAll({Set<(String, String)> preserved = const {}}) async {
     try {
       await _db.transaction((txn) async {
-        await txn.delete(_table);
-        await txn.delete(_temporaryTable);
+        for (final table in [_table, _temporaryTable]) {
+          if (preserved.isEmpty) {
+            await txn.delete(table);
+          } else {
+            final rows = await txn.query(table, columns: ['profile_id', 'url']);
+            final batch = txn.batch();
+            for (final row in rows) {
+              final key = (row['profile_id'] as String, row['url'] as String);
+              if (!preserved.contains(key)) {
+                batch.delete(
+                  table,
+                  where: 'profile_id = ? AND url = ?',
+                  whereArgs: [key.$1, key.$2],
+                );
+              }
+            }
+            await batch.commit(noResult: true);
+          }
+        }
       });
       _notifyChanged(const PlaybackProgressChange.all());
     } on DatabaseException catch (e) {

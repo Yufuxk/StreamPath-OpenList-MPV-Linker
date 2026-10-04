@@ -6,6 +6,8 @@ import '../../core/utils/app_paths.dart';
 
 typedef CacheStoreClearer = Future<void> Function();
 
+enum CacheCleanupScope { all, directory, metadata, playback, temporary }
+
 /// 缓存清理结果。
 class CacheCleanupResult {
   const CacheCleanupResult({
@@ -37,7 +39,9 @@ class CacheCleanupBlockedException extends CacheCleanupException {
 
 /// 设置页依赖的缓存清理接口，便于隔离界面与文件系统实现。
 abstract interface class CacheCleaner {
-  Future<CacheCleanupResult> clear();
+  Future<CacheCleanupResult> clear({
+    CacheCleanupScope scope = CacheCleanupScope.all,
+  });
 }
 
 /// 清除运行时缓存，并保留 `stream_path_data/config/` 下的全部配置。
@@ -48,10 +52,13 @@ abstract interface class CacheCleaner {
 class CacheCleanupService implements CacheCleaner {
   CacheCleanupService({
     required List<CacheStoreClearer> storeClearers,
+    Map<CacheCleanupScope, List<CacheStoreClearer>> scopedStoreClearers =
+        const {},
     Future<Directory> Function()? dataDirectoryProvider,
     Set<String> preservedCacheNames = const {},
     bool deleteRuntimeFiles = true,
   }) : _storeClearers = List.unmodifiable(storeClearers),
+       _scopedStoreClearers = Map.unmodifiable(scopedStoreClearers),
        _dataDirectoryProvider = dataDirectoryProvider ?? AppPaths.dataDirectory,
        _preservedCacheNames = preservedCacheNames
            .map((name) => name.toLowerCase())
@@ -60,13 +67,16 @@ class CacheCleanupService implements CacheCleaner {
        _deleteRuntimeFiles = deleteRuntimeFiles;
 
   final List<CacheStoreClearer> _storeClearers;
+  final Map<CacheCleanupScope, List<CacheStoreClearer>> _scopedStoreClearers;
   final Future<Directory> Function() _dataDirectoryProvider;
   final Set<String> _preservedCacheNames;
   final bool _deleteRuntimeFiles;
   bool _clearing = false;
 
   @override
-  Future<CacheCleanupResult> clear() async {
+  Future<CacheCleanupResult> clear({
+    CacheCleanupScope scope = CacheCleanupScope.all,
+  }) async {
     if (_clearing) {
       throw const CacheCleanupException('缓存正在清理，请稍候');
     }
@@ -78,15 +88,21 @@ class CacheCleanupService implements CacheCleaner {
       await _validateDirectory(cacheDir, expectedParent: dataDir);
 
       var clearedStores = 0;
-      for (final clearStore in _storeClearers) {
+      for (final clearStore in [
+        ..._storeClearers,
+        if (scope == CacheCleanupScope.all)
+          for (final clearers in _scopedStoreClearers.values) ...clearers
+        else
+          ...?_scopedStoreClearers[scope],
+      ]) {
         await clearStore();
         clearedStores++;
       }
 
       final targets = _deleteRuntimeFiles
           ? [
-              ...await _collectCacheTargets(cacheDir),
-              ...await _collectLegacyTargets(dataDir),
+              ...await _collectCacheTargets(cacheDir, scope),
+              ...await _collectLegacyTargets(dataDir, scope),
             ]
           : <FileSystemEntity>[];
       for (final target in targets) {
@@ -141,6 +157,7 @@ class CacheCleanupService implements CacheCleaner {
 
   Future<List<FileSystemEntity>> _collectCacheTargets(
     Directory cacheDir,
+    CacheCleanupScope scope,
   ) async {
     final targets = <FileSystemEntity>[];
     await for (final entity in cacheDir.list(followLinks: false)) {
@@ -148,6 +165,9 @@ class CacheCleanupService implements CacheCleaner {
       if (_isOpenStoreFile(name) ||
           _preservedCacheNames.contains(name) ||
           name == 'local_iso_subtitles') {
+        continue;
+      }
+      if (scope != CacheCleanupScope.all && _scopeForName(name) != scope) {
         continue;
       }
       await _validateDeleteTarget(entity, cacheDir);
@@ -158,11 +178,17 @@ class CacheCleanupService implements CacheCleaner {
 
   Future<List<FileSystemEntity>> _collectLegacyTargets(
     Directory dataDir,
+    CacheCleanupScope scope,
   ) async {
     final targets = <FileSystemEntity>[];
     await for (final entity in dataDir.list(followLinks: false)) {
       final name = p.basename(entity.path);
       if (!_isLegacyCacheName(name)) continue;
+      if (_preservedCacheNames.contains(name.toLowerCase())) continue;
+      if (scope != CacheCleanupScope.all &&
+          _scopeForName(name.toLowerCase()) != scope) {
+        continue;
+      }
       await _validateDeleteTarget(entity, dataDir);
       targets.add(entity);
     }
@@ -212,6 +238,27 @@ class CacheCleanupService implements CacheCleaner {
       name.startsWith('streampath.db') ||
       name.startsWith('film_streampath.db') ||
       name.startsWith('audio_streampath.db');
+
+  static CacheCleanupScope _scopeForName(String name) {
+    if (name == 'directory_cache' || name.startsWith('directory_cache.')) {
+      return CacheCleanupScope.directory;
+    }
+    if (name == 'media_metadata.json' ||
+        name == 'film_artwork' ||
+        name == 'iso_structure') {
+      return CacheCleanupScope.metadata;
+    }
+    if (name.endsWith('iso_catalog.json') ||
+        name.endsWith('playback_history.json') ||
+        name.contains('watch-later') ||
+        name.contains('watch_later') ||
+        name.startsWith('streampath.db') ||
+        name.startsWith('audio_streampath.db') ||
+        name.startsWith('film_streampath.db')) {
+      return CacheCleanupScope.playback;
+    }
+    return CacheCleanupScope.temporary;
+  }
 
   static bool _isLegacyCacheName(String name) {
     final lower = name.toLowerCase();

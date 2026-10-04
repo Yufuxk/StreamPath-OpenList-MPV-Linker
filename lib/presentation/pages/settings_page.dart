@@ -803,12 +803,22 @@ class SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _confirmAndClearCache() async {
+  Future<void> _confirmAndClearCache(CacheCleanupScope scope) async {
+    final description = switch (scope) {
+      CacheCleanupScope.all =>
+        '清除目录缓存、媒体探测元数据、影视图片、播放进度、底栏继续播放和临时文件。保留媒体中心数据及学习数据。',
+      CacheCleanupScope.directory => '仅清除目录缓存，保留元数据、图片、播放进度及媒体中心数据。',
+      CacheCleanupScope.metadata =>
+        '仅清除媒体探测元数据、影视图片和蓝光结构缓存，保留影视目录、作品匹配、播放进度及媒体中心数据。',
+      CacheCleanupScope.playback =>
+        '仅清除未被媒体中心引用的播放进度和底栏继续播放记录，保留元数据、图片及媒体中心数据。',
+      CacheCleanupScope.temporary => '仅清除播放器临时文件，保留目录缓存、元数据、图片、播放进度及媒体中心数据。',
+    };
     final confirmed = await showGlassDialog<bool>(
       context: context,
       builder: (dialogContext) => SPDialog(
         title: const AppText('清理缓存？'),
-        content: const AppText('将清除目录缓存、播放进度、继续播放记录和 MPV 临时文件。'),
+        content: AppText(description),
         actions: [
           TextButton(
             key: const Key('cancel-clear-cache-button'),
@@ -827,7 +837,7 @@ class SettingsPageState extends State<SettingsPage> {
 
     setState(() => _clearingCache = true);
     try {
-      await context.read<AppState>().clearCache();
+      await context.read<AppState>().clearCache(scope: scope);
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -3234,34 +3244,48 @@ class SettingsPageState extends State<SettingsPage> {
   Widget _buildCacheCleanupSettings() {
     final errorColor = Theme.of(context).colorScheme.error;
     final appState = context.read<AppState>();
+    final enabled =
+        _loaded &&
+        !_saving &&
+        !_resettingSettings &&
+        !_clearingCache &&
+        !_clearingLearningData &&
+        !_clearingMediaLibrary &&
+        appState.canClearCache;
+    const labels = {
+      CacheCleanupScope.all: '全部清理',
+      CacheCleanupScope.directory: '目录缓存清理',
+      CacheCleanupScope.metadata: '元数据与图片清理',
+      CacheCleanupScope.playback: '播放进度清理',
+      CacheCleanupScope.temporary: '临时文件清理',
+    };
     return SettingsGroupCard(
       key: const Key('cache-cleanup-settings-section'),
       icon: SPIcons.delete,
       title: '缓存文件清理',
-      description: '清除目录缓存、播放进度和临时文件。',
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: OutlinedButton.icon(
-          key: const Key('clear-cache-button'),
-          onPressed:
-              !_loaded ||
-                  _saving ||
-                  _resettingSettings ||
-                  _clearingCache ||
-                  _clearingLearningData ||
-                  _clearingMediaLibrary ||
-                  !appState.canClearCache
-              ? null
-              : _confirmAndClearCache,
-          style: OutlinedButton.styleFrom(foregroundColor: errorColor),
-          icon: _clearingCache
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(SPIcons.delete),
-          label: AppText(_clearingCache ? '正在清理…' : '清理缓存'),
-        ),
+      description: '按类别清理；媒体中心数据由媒体中心原有清理按钮管理。',
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          for (final scope in CacheCleanupScope.values)
+            OutlinedButton.icon(
+              key: Key(
+                scope == CacheCleanupScope.all
+                    ? 'clear-cache-button'
+                    : 'clear-${scope.name}-cache-button',
+              ),
+              onPressed: enabled ? () => _confirmAndClearCache(scope) : null,
+              style: OutlinedButton.styleFrom(foregroundColor: errorColor),
+              icon: _clearingCache
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(SPIcons.delete),
+              label: AppText(_clearingCache ? '正在清理…' : labels[scope]!),
+            ),
+        ],
       ),
     );
   }

@@ -152,21 +152,28 @@ Future<void> main() async {
     intelligence: cacheIntelligence,
   );
   final cacheCleaner = CacheCleanupService(
-    preservedCacheNames: {CacheIntelligenceLearningStore.fileName},
-    storeClearers: [
-      () async => cachePolicy.clearRuntimeCache(),
-      directoryCache.clear,
-      progressService.clearAll,
-      if (mediaLibraryStore != null) mediaLibraryStore.clearStrmProgress,
-      if (audioProgressService != null) audioProgressService.clearAll,
-      playbackHistoryStore.clear,
-      if (audioPlaybackHistoryStore != null) audioPlaybackHistoryStore.clear,
-      () async {
-        if (!await metadataStore.clear()) {
-          throw const CacheCleanupException('清空媒体元数据失败');
-        }
-      },
-    ],
+    preservedCacheNames: {
+      CacheIntelligenceLearningStore.fileName,
+      'iso_catalog.json',
+      'iso_watch_later',
+      'film_iso_catalog.json',
+      'film_iso_watch_later',
+    },
+    storeClearers: [() async => cachePolicy.clearRuntimeCache()],
+    scopedStoreClearers: {
+      CacheCleanupScope.directory: [directoryCache.clear],
+      CacheCleanupScope.playback: [
+        playbackHistoryStore.clear,
+        if (audioPlaybackHistoryStore != null) audioPlaybackHistoryStore.clear,
+      ],
+      CacheCleanupScope.metadata: [
+        () async {
+          if (!await metadataStore.clear()) {
+            throw const CacheCleanupException('清空媒体元数据失败');
+          }
+        },
+      ],
+    },
   );
   final learningDataCleaner = CacheCleanupService(
     deleteRuntimeFiles: false,

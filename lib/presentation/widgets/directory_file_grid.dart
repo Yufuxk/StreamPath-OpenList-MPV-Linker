@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/media_directory_entry.dart';
 import '../localization/app_text.dart';
-import 'directory_wheel_scroll_region.dart';
+import 'directory_scroll_view.dart';
 import 'file_tile.dart';
 import 'sp_controls.dart';
 import 'sp_icons.dart';
@@ -41,87 +41,83 @@ class DirectoryFileGrid extends StatelessWidget {
         if (index != parentIndex) (entry: entries[index], index: index),
     ];
     return FileListSurface(
-      child: DirectoryWheelScrollRegion(
+      child: DirectoryScrollView(
         controller: controller,
-        child: RefreshIndicator(
+        thumbVisibility: true,
+        builder: (_) => RefreshIndicator(
           onRefresh: onRefresh,
-          child: Scrollbar(
-            controller: controller,
-            thumbVisibility: true,
-            interactive: true,
-            child: entries.isEmpty
-                ? ListView(
-                    key: scrollKey,
-                    controller: controller,
-                    children: [
-                      const SizedBox(height: 200),
-                      Center(child: AppText(emptyLabel)),
-                    ],
-                  )
-                : CustomScrollView(
-                    key: scrollKey,
-                    controller: controller,
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    slivers: [
-                      if (parentIndex >= 0)
-                        SliverToBoxAdapter(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                            child: SPTile(
-                              onTap: () => onParentTap(entries[parentIndex]),
-                              borderRadius: BorderRadius.circular(8),
-                              child: SizedBox(
-                                height: 48,
-                                child: Row(
-                                  children: [
-                                    const SizedBox(width: 12),
-                                    Icon(
-                                      SPIcons.up,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      size: 24,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    const Expanded(child: AppText('返回上级目录')),
-                                    if (refreshing)
-                                      const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
+          child: entries.isEmpty
+              ? ListView(
+                  key: scrollKey,
+                  controller: controller,
+                  children: [
+                    const SizedBox(height: 200),
+                    Center(child: AppText(emptyLabel)),
+                  ],
+                )
+              : CustomScrollView(
+                  key: scrollKey,
+                  controller: controller,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    if (parentIndex >= 0)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                          child: SPTile(
+                            onTap: () => onParentTap(entries[parentIndex]),
+                            borderRadius: BorderRadius.circular(8),
+                            child: SizedBox(
+                              height: 48,
+                              child: Row(
+                                children: [
+                                  const SizedBox(width: 12),
+                                  Icon(
+                                    SPIcons.up,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                    size: 24,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  const Expanded(child: AppText('返回上级目录')),
+                                  if (refreshing)
+                                    const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
                                       ),
-                                    const SizedBox(width: 12),
-                                  ],
-                                ),
+                                    ),
+                                  const SizedBox(width: 12),
+                                ],
                               ),
                             ),
-                          ),
-                        ),
-                      SliverPadding(
-                        padding: const EdgeInsets.all(12),
-                        sliver: SliverGrid(
-                          gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent: 280,
-                                mainAxisExtent: 104,
-                                mainAxisSpacing: 10,
-                                crossAxisSpacing: 10,
-                              ),
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) => itemBuilder(
-                              context,
-                              files[index].entry,
-                              files[index].index,
-                            ),
-                            childCount: files.length,
                           ),
                         ),
                       ),
-                    ],
-                  ),
-          ),
+                    SliverPadding(
+                      padding: const EdgeInsets.all(12),
+                      sliver: SliverGrid(
+                        gridDelegate:
+                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 280,
+                              mainAxisExtent: 104,
+                              mainAxisSpacing: 10,
+                              crossAxisSpacing: 10,
+                            ),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) => itemBuilder(
+                            context,
+                            files[index].entry,
+                            files[index].index,
+                          ),
+                          childCount: files.length,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
         ),
       ),
     );

@@ -1,3 +1,4 @@
+import '../widgets/directory_scroll_view.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -1040,16 +1041,19 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
 
     if (widget.filmContinueAll || center) {
-      final grid = GridView.builder(
-        padding: const EdgeInsets.all(20),
-        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: center ? 220 : 340,
-          mainAxisExtent: center ? 400 : 220,
-          crossAxisSpacing: 16,
-          mainAxisSpacing: 16,
+      final grid = DirectoryScrollView(
+        builder: (scrollController) => GridView.builder(
+          controller: scrollController,
+          padding: const EdgeInsets.all(20),
+          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: center ? 220 : 340,
+            mainAxisExtent: center ? 400 : 220,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+          ),
+          itemCount: records.length,
+          itemBuilder: (_, i) => card(i),
         ),
-        itemCount: records.length,
-        itemBuilder: (_, i) => card(i),
       );
       if (center) return grid;
       final catalog = widget.filmCatalog!;
@@ -1143,21 +1147,25 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final records =
         [..._videoHistory, ..._isoHistory].where(_matchesFilmQuery).toList()
           ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return GridView.builder(
-      padding: const EdgeInsets.all(20),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 220,
-        mainAxisExtent: 400,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-      ),
-      itemCount: records.length,
-      itemBuilder: (_, i) => FilmContinueCard(
-        catalog: widget.filmCatalog!,
-        record: records[i],
-        poster: true,
-        onTap: () => _selectItem(records[i].item),
-        onMenu: (position) => widget.onContinueMenu?.call(records[i], position),
+    return DirectoryScrollView(
+      builder: (scrollController) => GridView.builder(
+        controller: scrollController,
+        padding: const EdgeInsets.all(20),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 220,
+          mainAxisExtent: 400,
+          crossAxisSpacing: 16,
+          mainAxisSpacing: 16,
+        ),
+        itemCount: records.length,
+        itemBuilder: (_, i) => FilmContinueCard(
+          catalog: widget.filmCatalog!,
+          record: records[i],
+          poster: true,
+          onTap: () => _selectItem(records[i].item),
+          onMenu: (position) =>
+              widget.onContinueMenu?.call(records[i], position),
+        ),
       ),
     );
   }
@@ -1357,27 +1365,30 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     return GlassSurface(
       level: GlassSurfaceLevel.content,
       automaticBorder: false,
-      child: ListView(
-        key: const Key('media-library-search-results'),
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        children: [
-          if (directories.isNotEmpty) ...[
-            const _SectionHeader(label: '目录'),
-            ...directories.map(_searchTile),
+      child: DirectoryScrollView(
+        builder: (scrollController) => ListView(
+          controller: scrollController,
+          key: const Key('media-library-search-results'),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+          children: [
+            if (directories.isNotEmpty) ...[
+              const _SectionHeader(label: '目录'),
+              ...directories.map(_searchTile),
+            ],
+            if (videos.isNotEmpty) ...[
+              const _SectionHeader(label: '视频'),
+              ...videos.map(_searchTile),
+            ],
+            if (audio.isNotEmpty) ...[
+              const _SectionHeader(label: '音频'),
+              ...audio.map(_searchTile),
+            ],
+            if (iso.isNotEmpty) ...[
+              const _SectionHeader(label: 'ISO'),
+              ...iso.map(_searchTile),
+            ],
           ],
-          if (videos.isNotEmpty) ...[
-            const _SectionHeader(label: '视频'),
-            ...videos.map(_searchTile),
-          ],
-          if (audio.isNotEmpty) ...[
-            const _SectionHeader(label: '音频'),
-            ...audio.map(_searchTile),
-          ],
-          if (iso.isNotEmpty) ...[
-            const _SectionHeader(label: 'ISO'),
-            ...iso.map(_searchTile),
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -1459,28 +1470,31 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     if (records.isEmpty) {
       return _EmptyState(icon: SPIcons.library, message: emptyMessage);
     }
-    return ListView.separated(
-      itemCount: records.length,
-      separatorBuilder: (_, _) => const Divider(),
-      itemBuilder: (context, index) {
-        final record = records[index];
-        return ListTile(
-          leading: Icon(_iconFor(record.item.kind)),
-          title: AppText(
-            record.item.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          subtitle: AppText(
-            '${_sourceIds.length > 1 ? '${widget.sourceNames[record.item.sourceId] ?? record.item.sourceId} · ' : ''}'
-            '${subtitle?.call(record) ?? '${record.item.parentPath.isEmpty ? context.l10n.text('根目录') : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}'}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: trailing?.call(record),
-          onTap: () => _selectItem(record.item),
-        );
-      },
+    return DirectoryScrollView(
+      builder: (scrollController) => ListView.separated(
+        controller: scrollController,
+        itemCount: records.length,
+        separatorBuilder: (_, _) => const Divider(),
+        itemBuilder: (context, index) {
+          final record = records[index];
+          return ListTile(
+            leading: Icon(_iconFor(record.item.kind)),
+            title: AppText(
+              record.item.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: AppText(
+              '${_sourceIds.length > 1 ? '${widget.sourceNames[record.item.sourceId] ?? record.item.sourceId} · ' : ''}'
+              '${subtitle?.call(record) ?? '${record.item.parentPath.isEmpty ? context.l10n.text('根目录') : record.item.parentPath}  ·  ${_formatDate(record.updatedAt)}'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: trailing?.call(record),
+            onTap: () => _selectItem(record.item),
+          );
+        },
+      ),
     );
   }
 

@@ -1668,6 +1668,33 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('分类清理按钮分别提交对应范围', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-cache')));
+    await tester.pumpAndSettle();
+    for (final scope in CacheCleanupScope.values.where(
+      (s) => s != CacheCleanupScope.all,
+    )) {
+      final button = find.byKey(Key('clear-${scope.name}-cache-button'));
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('confirm-clear-cache-button')));
+      for (var i = 0; i < 30; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+        if (tester.widget<OutlinedButton>(button).onPressed != null) break;
+      }
+      expect(cacheCleaner.scopes.last, scope);
+    }
+    expect(cacheCleaner.scopes, CacheCleanupScope.values.skip(1));
+    expect(learningDataCleaner.clearCalls, 0);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('缓存清理必须确认，取消不执行、确认后执行', (tester) async {
     tester.view.physicalSize = const Size(1200, 900);
     tester.view.devicePixelRatio = 1;
@@ -1721,6 +1748,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(cacheCleaner.clearCalls, 1);
+    expect(cacheCleaner.scopes, [CacheCleanupScope.all]);
     expect(learningDataCleaner.clearCalls, 0);
     expect(find.text('缓存已清理'), findsOneWidget);
     expect(
@@ -1816,10 +1844,14 @@ class _SettingsFilmApp extends AppState {
 }
 
 class _RecordingCacheCleaner implements CacheCleaner {
+  final scopes = <CacheCleanupScope>[];
   int clearCalls = 0;
 
   @override
-  Future<CacheCleanupResult> clear() async {
+  Future<CacheCleanupResult> clear({
+    CacheCleanupScope scope = CacheCleanupScope.all,
+  }) async {
+    scopes.add(scope);
     clearCalls++;
     return const CacheCleanupResult(
       cacheDirectory: 'test-cache',
