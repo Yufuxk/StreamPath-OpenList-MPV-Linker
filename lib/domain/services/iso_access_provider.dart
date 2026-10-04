@@ -564,6 +564,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
     required this._client,
     required this._helperProcess,
     this.remoteMenu = false,
+    this.probeOnly = false,
     this.discPath,
   });
 
@@ -580,6 +581,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
   final IsoBridgeClient _client;
   final Process _helperProcess;
   final bool remoteMenu;
+  final bool probeOnly;
   final String? discPath;
   bool _attached = false;
   bool _cleaned = false;
@@ -647,6 +649,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
   Future<void> cleanup() async {
     if (_cleaned) return;
     _cleaned = true;
+    if (probeOnly) _helperProcess.kill();
     if (!_attached && _client.isConnected) {
       try {
         await _client.send(const {'type': 'shutdown'});
@@ -655,7 +658,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
       }
     }
     await _client.close();
-    if (remoteMenu) {
+    if (remoteMenu || probeOnly) {
       try {
         await _helperProcess.exitCode.timeout(const Duration(seconds: 5));
       } on TimeoutException {
@@ -686,6 +689,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     IsoBridgeProcessStarter? processStarter,
     IsoBridgeClientConnector? clientConnector,
     this.remoteMenu = false,
+    this.mediaProbe = false,
   }) : _processController = processController ?? PlayerProcessController(),
        _helperPathResolver =
            helperPathResolver ?? IsoBridgeAccessProvider._defaultHelperPath,
@@ -697,6 +701,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
   final IsoBridgeProcessStarter _processStarter;
   final IsoBridgeClientConnector _clientConnector;
   final bool remoteMenu;
+  final bool mediaProbe;
   Process? _activeProcess;
   IsoBridgeClient? _activeClient;
   bool _cancelRequested = false;
@@ -713,7 +718,9 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     if (!Platform.isWindows) {
       throw AppException.config('ISO Bridge 仅支持 Windows x64');
     }
-    if (!file.isIso && file is! WebDavBdmv) throw AppException.config('仅支持 Blu-ray ISO 文件');
+    if (!file.isIso && file is! WebDavBdmv) {
+      throw AppException.config('仅支持 Blu-ray ISO 文件');
+    }
     if (_activeProcess != null) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
@@ -760,6 +767,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         if (remoteMenu) 'mode': 'hdmv',
         if (remoteMenu) 'transport': 'winfsp',
         'version': 1,
+        if (mediaProbe) 'mediaProbe': true,
         if (file is WebDavBdmv) 'sourceKind': 'bdmv',
         'url': webDavService.resolveUrl(file.href),
         'origin': snapshot.baseUrl,
@@ -794,8 +802,11 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
       );
       if (file is WebDavBdmv) {
         final revision = response['structureRevision'];
-        if (revision is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(revision)) {
-          throw const IsoBridgeProtocolException('BDMV structure identity is invalid');
+        if (revision is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(revision)) {
+          throw const IsoBridgeProtocolException(
+            'BDMV structure identity is invalid',
+          );
         }
         file.structureRevision = revision;
       }
@@ -812,6 +823,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         client: client,
         helperProcess: process,
         remoteMenu: remoteMenu,
+        probeOnly: mediaProbe,
         discPath: ready.discPath,
       );
       _activeProcess = null;

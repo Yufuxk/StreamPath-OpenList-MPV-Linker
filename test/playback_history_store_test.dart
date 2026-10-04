@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/core/constants.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/data/models/video_playlist_mode.dart';
+import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
 
 void main() {
@@ -59,6 +61,54 @@ void main() {
     expect(history.playerPid, 456);
     expect(history.playerExecutablePath, isNull);
     expect(history.playerCreationTime, isNull);
+  });
+
+  test('隐式会话更新与关闭后重开保留模式、队列及待播目标', () async {
+    final path = '${tempDir.path}${Platform.pathSeparator}implicit.json';
+    final store = PlaybackHistoryStore.forPath(path);
+    final history = PlaybackHistory(
+      sessionId: 'implicit',
+      dirCrumbs: const ['Show', 'S01'],
+      fileName: 'S01E01.mkv',
+      videoIndex: 0,
+      updatedAt: DateTime.now(),
+      playerPid: 123,
+      videoPlaylistMode: VideoPlaylistMode.implicit,
+      videoQueueRootPath: 'Show',
+      pendingVideoIndex: 1,
+      playlistRelativePaths: const [
+        'Show/S01/S01E01.mkv',
+        'Show/S01/S01E02.mkv',
+      ],
+      queueItems: const [
+        VideoQueueItem(
+          versions: [
+            VideoQueueVersion(path: 'Show/S01/S01E01.mkv', name: 'S01E01.mkv'),
+          ],
+        ),
+        VideoQueueItem(
+          versions: [
+            VideoQueueVersion(path: 'Show/S01/S01E02.mkv', name: 'S01E02.mkv'),
+          ],
+        ),
+      ],
+    );
+    await store.upsert(history);
+    final saved = (await store.loadAll()).single;
+    expect(saved.videoPlaylistMode, VideoPlaylistMode.implicit);
+    expect(saved.queueItems, hasLength(2));
+    await store.upsert(saved.copyWith(clearPlayerPid: true));
+    final reopened = (await PlaybackHistoryStore.forPath(
+      path,
+    ).loadAll()).single;
+    expect(reopened.playerPid, isNull);
+    expect(reopened.videoPlaylistMode, VideoPlaylistMode.implicit);
+    expect(reopened.videoQueueRootPath, 'Show');
+    expect(reopened.pendingVideoIndex, 1);
+    expect(
+      reopened.queueItems.map((i) => i.versions.single.path),
+      history.playlistRelativePaths,
+    );
   });
 
   test('文件不存在时返回 null', () async {

@@ -1,0 +1,14 @@
+# 固定官方 DLL，随程序分发，不依赖用户 PATH。
+set(MEDIAINFO_VERSION "26.05")
+set(MEDIAINFO_DIR "${CMAKE_BINARY_DIR}/mediainfo-${MEDIAINFO_VERSION}")
+set(MEDIAINFO_ARCHIVE "${CMAKE_BINARY_DIR}/mediainfo-${MEDIAINFO_VERSION}.zip")
+if(NOT EXISTS "${MEDIAINFO_DIR}/MediaInfo.dll")
+  file(DOWNLOAD
+    "https://mediaarea.net/download/binary/libmediainfo0/${MEDIAINFO_VERSION}/MediaInfo_DLL_${MEDIAINFO_VERSION}_Windows_x64_WithoutInstaller.zip"
+    "${MEDIAINFO_ARCHIVE}"
+    EXPECTED_HASH SHA256=f8c81699550a3a9425e9bdd1d6621587c463c51c568848ab8d3e36fe5efc222c
+    TLS_VERIFY ON)
+  file(ARCHIVE_EXTRACT INPUT "${MEDIAINFO_ARCHIVE}" DESTINATION "${MEDIAINFO_DIR}")
+endif()
+install(FILES "${MEDIAINFO_DIR}/MediaInfo.dll" DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+install(FILES "${MEDIAINFO_DIR}/Developers/License.html" DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/MediaInfo" COMPONENT Runtime)

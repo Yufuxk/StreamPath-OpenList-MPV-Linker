@@ -35,7 +35,7 @@ class PlaybackProgress {
     return positionMs >= duration - tailGraceMs;
   }
 
-  /// 是否至少播放到指定比例；仅用于播放器进程退出后的完成判定。
+  /// 是否至少播放到指定比例；用于视频续播的完成判定。
   bool hasReachedFraction({double fraction = 0.99}) {
     final duration = durationMs;
     if (duration == null || duration <= 0 || positionMs < 0) return false;

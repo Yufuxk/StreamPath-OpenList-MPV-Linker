@@ -2,6 +2,300 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  '第 {episode}/{total} 集': 'Episode {episode}/{total}',
+  '第 {track}/{total} 首': 'Track {track}/{total}',
+  '已播放 {duration}': 'Played {duration}',
+  "播放列表简洁命名": "Simplify playlist names",
+  "从文件名提取片名、年份和季集信息，按当前语言显示；识别不足时保留原名":
+      "Show titles, years, seasons and episodes from filenames in the current language; keep original names when uncertain",
+  "特别篇": "Specials",
+  "第{season}季": "Season {season}",
+  "第{episode}集": "Episode {episode}",
+  "索引搜索不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "Index search is unavailable: the backend does not have the {endpoint} endpoint (version {version})",
+  "索引状态不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "Index status is unavailable: the backend does not have the {endpoint} endpoint (version {version})",
+  "索引增量更新不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "Incremental index update is unavailable: the backend does not have the {endpoint} endpoint (version {version})",
+  "存储恢复不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "Storage recovery is unavailable: the backend does not have the {endpoint} endpoint (version {version})",
+  "目录缓存尚未初始化": "The folder cache is not initialized",
+  "本地目录路径必须是根目录内的相对路径": "The local folder path must be relative to its root",
+  "本地目录路径不能包含空段、. 或 ..":
+      "The local folder path cannot contain empty segments, . or ..",
+  "搜索": "Search",
+  "当前目录": "Current folder",
+  "本地来源不可用": "The local source is unavailable",
+  "网络来源未连接": "The network source is not connected",
+  "添加 WebDAV 挂载": "Add WebDAV mount",
+  "只移除挂载配置，不删除磁盘文件；媒体中心历史会保留。":
+      "Only the mount configuration is removed. Files on disk and media center history are retained.",
+  "{path} · 已停用": "{path} · Disabled",
+  "服务器档案缺少地址或用户名": "The server profile is missing an address or username",
+  "该服务器未挂载": "This server is not mounted",
+  "服务器挂载已移除": "The server mount has been removed",
+  "无法确认对应播放器进程，未删除播放会话":
+      "The player process could not be verified. The playback session was not removed",
+  "按名称": "By name",
+  "按时间": "By date",
+  "按体积": "By size",
+  "正序": "Ascending",
+  "倒序": "Descending",
+  "自动模式": "Automatic mode",
+  "性能模式": "Performance mode",
+  "节省模式": "Economy mode",
+  "蓝光模式": "Blu-ray mode",
+  "请使用英文逗号「,」分隔文件后缀（示例：.ass, .mkv）":
+      "Separate file extensions with a comma \",\" (example: .ass, .mkv)",
+  "请直接输入文件后缀，不要使用花括号或引号（示例：.ass, .mkv）":
+      "Enter file extensions without braces or quotes (example: .ass, .mkv)",
+  "英文逗号之间必须填写文件后缀（示例：.ass, .mkv）":
+      "Enter a file extension between commas (example: .ass, .mkv)",
+  "播放器": "Player",
+  "播放器路径不能为空": "The player path cannot be empty",
+  "媒体库根节点无效": "The media library root is invalid",
+  "媒体库读取失败，本进程已禁止写入以保护原文件":
+      "The media library could not be read. Writes are disabled in this process to protect the original file",
+  "媒体库尚未加载": "The media library is not loaded",
+  "无法复核损坏媒体库，已禁止写入":
+      "The damaged media library could not be rechecked. Writes are disabled",
+  "媒体库加载后已发生变化，已禁止写入":
+      "The media library changed after loading. Writes are disabled",
+  "损坏媒体库备份校验失败": "Verification of the damaged media library backup failed",
+  "损坏媒体库备份失败": "The damaged media library could not be backed up",
+  "无法分配唯一的损坏媒体库备份名":
+      "A unique backup name for the damaged media library could not be allocated",
+  "数据库已报告损坏，为避免扩大损失，已停止自动修复":
+      "Database corruption was reported. Automatic repair has stopped to prevent further damage",
+  "内存数据库不支持生成维护备份": "In-memory databases do not support maintenance backups",
+  "凭据内容不是 JSON 对象": "The credential content is not a JSON object",
+  "Windows 凭据内容损坏": "The Windows credential content is damaged",
+  "读取 Windows 凭据失败": "Windows credentials could not be read",
+  "当前平台不支持 Windows 凭据管理器":
+      "This platform does not support Windows Credential Manager",
+  "写入 Windows 凭据失败": "Windows credentials could not be written",
+  "删除 Windows 凭据失败": "Windows credentials could not be deleted",
+  "配置文件字段类型错误": "A configuration field has an incorrect type",
+  "配置文件字段值无效": "A configuration field value is invalid",
+  "配置根节点必须是 JSON 对象": "The configuration root must be a JSON object",
+  "配置迁移前备份失败，已停止迁移":
+      "The pre-migration configuration backup failed. Migration has stopped",
+  "当前平台无法读取 Windows 凭据，请使用便携明文模式":
+      "This platform cannot read Windows credentials. Use portable plaintext mode",
+  "检测到更高版本配置；为避免降级覆盖，当前版本禁止保存":
+      "A newer configuration version was detected. Saving is disabled to prevent a downgrade overwrite",
+  "配置字段类型无效": "A configuration field type is invalid",
+  "配置字段值无效": "A configuration field value is invalid",
+  "配置保存失败，且凭据回滚未完整完成":
+      "Configuration saving failed and credential rollback did not fully complete",
+  "本地根目录配置无效": "The local root folder configuration is invalid",
+  "媒体资产类型无效": "The media item type is invalid",
+  "媒体资产字段无效": "A media item field is invalid",
+  "媒体资产时间无效": "The media item timestamp is invalid",
+  "媒体来源类型无效": "The media source type is invalid",
+  "媒体播放模式无效": "The media playback mode is invalid",
+  "服务器档案缺少 profileId": "The server profile is missing profileId",
+  "服务器档案 profileId 格式无效": "The server profile profileId format is invalid",
+  "默认目录不能包含 . 或 .. 路径段":
+      "The default folder cannot contain . or .. path segments",
+  "服务器档案不存在": "The server profile does not exist",
+  "服务器档案 profileId 必须唯一": "Server profile profileId values must be unique",
+  "PROPFIND 返回空响应": "PROPFIND returned an empty response",
+  "服务器重定向缺少 Location": "The server redirect is missing Location",
+  "非 GET 请求拒绝跨来源重定向":
+      "Cross-origin redirects are rejected for non-GET requests",
+  "服务器证书不受信任": "The server certificate is not trusted",
+  "该音频启动已被同会话的新请求取代":
+      "This audio launch was superseded by a new request in the same session",
+  "音频播放列表为空，无法启动播放器": "The audio playlist is empty. The player cannot start",
+  "该音频播放会话仍在运行，请先关闭或删除后再继续":
+      "This audio playback session is still running. Close or remove it before continuing",
+  "音频播放、LRC 与封面功能需要使用 MPV 播放器":
+      "Audio playback, LRC and cover features require MPV",
+  "音频启动已过期，且无法确认旧 MPV 进程归属":
+      "The audio launch expired and ownership of the old MPV process could not be verified",
+  "缓存正在清理，请稍候": "The cache is being cleared. Please wait",
+  "找不到应用数据目录": "The application data folder could not be found",
+  "该播放启动已被同会话的新请求取代":
+      "This playback launch was superseded by a new request in the same session",
+  "播放列表为空，无法启动播放器": "The playlist is empty. The player cannot start",
+  "该播放会话仍在运行，请先关闭或删除后再继续":
+      "This playback session is still running. Close or remove it before continuing",
+  "启动已过期，且无法确认旧播放器进程归属":
+      "The launch expired and ownership of the old player process could not be verified",
+  "无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程":
+      "Ownership of the old MPV process could not be verified. Automatic recovery stopped without terminating the process",
+  "前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…":
+      "The first two recovery attempts did not resolve the playback error. Safely restarting local OpenList/AList (3/3)…",
+  "第三次自动恢复发生异常，已保留继续播放记录":
+      "The third automatic recovery attempt encountered an error. Resume history was retained",
+  "OpenList/AList 已安全重启，播放器已从失败位置恢复":
+      "OpenList/AList was safely restarted. Playback resumed from the failure position",
+  "OpenList/AList 存储已刷新，播放器已从失败位置恢复":
+      "OpenList/AList storage was refreshed. Playback resumed from the failure position",
+  "已重新获取播放链接，播放器已从失败位置恢复":
+      "The playback link was reacquired. Playback resumed from the failure position",
+  "自动恢复过程中出现异常，已保留继续播放记录":
+      "Automatic recovery encountered an error. Resume history was retained",
+  "ISO Bridge ready 响应无效": "The ISO Bridge ready response is invalid",
+  "ISO Bridge Title 响应无效": "The ISO Bridge Title response is invalid",
+  "ISO Bridge 章节响应无效": "The ISO Bridge chapter response is invalid",
+  "远程蓝光菜单能力响应无效": "The remote Blu-ray menu capability response is invalid",
+  "ISO Bridge 未返回可播放 Title": "ISO Bridge did not return a playable Title",
+  "ISO Bridge 缓存配置状态无效": "The ISO Bridge cache configuration state is invalid",
+  "ISO Bridge 未确认缓存配置": "ISO Bridge did not confirm the cache configuration",
+  "ISO Bridge hello 响应无效": "The ISO Bridge hello response is invalid",
+  "无法确认 StreamPath 进程身份":
+      "The StreamPath process identity could not be verified",
+  "无法确认 MPV 播放器身份": "The MPV player identity could not be verified",
+  "请求超过总时间限制": "The request exceeded the total time limit",
+  "无法连接服务器": "Could not connect to the server",
+  "OpenList/AList 请求重定向次数过多":
+      "Too many redirects for the OpenList/AList request",
+  "拒绝将 OpenList/AList 认证请求重定向到其他来源":
+      "Redirecting OpenList/AList authentication requests to another origin was rejected",
+  "仅支持安全重启本机 Windows OpenList/AList 进程":
+      "Safe restarting is supported only for local Windows OpenList/AList processes",
+  "目标本机地址或监听器存在歧义，已取消重启":
+      "The target local address or listener is ambiguous. Restart was cancelled",
+  "OpenList/AList 安全重启发生异常，未执行强制结束":
+      "Safe OpenList/AList restarting encountered an error. No forced termination was performed",
+  "OpenList/AList 监听目标与进程身份不一致，已取消重启":
+      "The OpenList/AList listener and process identity do not match. Restart was cancelled",
+  "未记录到可安全重启的本机 OpenList/AList 进程":
+      "No local OpenList/AList process eligible for safe restarting was recorded",
+  "OpenList/AList 进程身份已变化，为避免误操作已取消重启":
+      "The OpenList/AList process identity changed. Restart was cancelled to prevent an incorrect operation",
+  "无法安全发送优雅关闭信号，已取消重启且未强制结束进程":
+      "A graceful shutdown signal could not be sent safely. Restart was cancelled without forcing termination",
+  "OpenList/AList 未在安全期限内退出，已取消重启且未强制结束进程":
+      "OpenList/AList did not exit within the safe time limit. Restart was cancelled without forcing termination",
+  "OpenList/AList 已安全退出，但重新启动失败":
+      "OpenList/AList exited safely, but restarting failed",
+  "OpenList/AList 已重新启动，但未在等待期限内恢复服务":
+      "OpenList/AList restarted, but the service did not recover within the waiting period",
+  "OpenList/AList 已安全重启并恢复服务":
+      "OpenList/AList safely restarted and the service recovered",
+  "OpenList/AList 自动恢复请求异常，请检查后台地址和网络连接":
+      "The OpenList/AList automatic recovery request failed. Check the backend address and network connection",
+  "OpenList/AList 自动恢复未启用": "OpenList/AList automatic recovery is disabled",
+  "未配置 OpenList/AList 管理员账号、密码或 Token":
+      "The OpenList/AList administrator account, password or Token is not configured",
+  "OpenList/AList 后台地址或媒体地址无效":
+      "The OpenList/AList backend or media address is invalid",
+  "媒体地址可正常读取，当前错误不属于链接失效，停止自动恢复":
+      "The media address is readable. The error is not a broken link. Automatic recovery has stopped",
+  "原 WebDAV 地址已可重新取链，无需刷新全部存储":
+      "The original WebDAV address can provide a new link. Refreshing all storage is unnecessary",
+  "OpenList/AList 安全重启后媒体地址已恢复":
+      "The media address recovered after safely restarting OpenList/AList",
+  "后台近期已刷新，媒体地址现已恢复":
+      "The backend was recently refreshed and the media address has recovered",
+  "后台近期已刷新但媒体仍不可用，为避免频繁重载已停止自动重试":
+      "The backend was recently refreshed but media remains unavailable. Automatic retries stopped to avoid frequent reloads",
+  "共享的后台刷新流程结束，媒体地址恢复":
+      "The shared backend refresh completed and the media address recovered",
+  "共享的后台刷新流程结束，但媒体地址仍不可用":
+      "The shared backend refresh completed, but the media address remains unavailable",
+  "后台存储刷新流程结束，媒体地址已恢复":
+      "The backend storage refresh completed and the media address recovered",
+  "后台存储刷新流程结束，但媒体地址在等待期限内仍不可用":
+      "The backend storage refresh completed, but the media address remained unavailable within the waiting period",
+  "OpenList/AList 存储刷新流程结束，等待目标媒体恢复":
+      "The OpenList/AList storage refresh completed. Waiting for the target media to recover",
+  "后台接受了刷新请求，但刷新流程未在等待期限内结束":
+      "The backend accepted the refresh request, but it did not complete within the waiting period",
+  "IPC 未连接": "IPC is not connected",
+  "IPC 已断开": "IPC disconnected",
+  "无法识别的文件后缀：「{extension}」（请使用英文逗号分隔，例如：.ass, .mkv）":
+      "Unrecognized file extension: \"{extension}\" (separate extensions with commas, for example: .ass, .mkv)",
+  "媒体库版本 {version} 高于当前支持版本 {supported}，已禁止降级写入":
+      "Media library version {version} is newer than the supported version {supported}. Downgrade writes are disabled",
+  "初始化播放进度数据库失败：{error}":
+      "Failed to initialize the playback progress database: {error}",
+  "保存播放进度失败：{error}": "Failed to save playback progress: {error}",
+  "读取播放进度失败：{error}": "Failed to read playback progress: {error}",
+  "保存临时播放点失败：{error}":
+      "Failed to save the temporary playback position: {error}",
+  "读取临时播放点失败：{error}":
+      "Failed to read the temporary playback position: {error}",
+  "删除播放进度失败：{error}": "Failed to delete playback progress: {error}",
+  "删除临时播放点失败：{error}":
+      "Failed to delete the temporary playback position: {error}",
+  "清空播放进度失败：{error}": "Failed to clear playback progress: {error}",
+  "清理过期播放进度失败：{error}": "Failed to clear expired playback progress: {error}",
+  "SQLite 完整性检查失败：{error}": "SQLite integrity check failed: {error}",
+  "SQLite 非破坏性维护失败：{error}":
+      "SQLite non-destructive maintenance failed: {error}",
+  "{error}；恢复备份也不可用：{backupError}":
+      "{error}; the recovery backup is also unavailable: {backupError}",
+  "配置版本 {version} 高于当前支持版本 {supported}":
+      "Configuration version {version} is newer than the supported version {supported}",
+  "配置版本 {version} 高于当前支持版本":
+      "Configuration version {version} is newer than the supported version",
+  "配置文件损坏：{error}": "The configuration file is damaged: {error}",
+  "读取配置文件失败：{error}": "Failed to read the configuration file: {error}",
+  "配置字段值无效：{error}": "Invalid configuration field value: {error}",
+  "保存配置文件失败：{error}": "Failed to save the configuration file: {error}",
+  "重置配置文件失败：{error}": "Failed to reset the configuration file: {error}",
+  "文件内容超过 {limit} 字节限制": "File content exceeds the limit of {limit} bytes",
+  "不支持的网络协议：{scheme}": "Unsupported network protocol: {scheme}",
+  "服务器重定向次数超过 {count} 次":
+      "Server redirects exceed the limit of {count} redirects",
+  "连接服务器超时（{timeout}）": "Server connection timed out ({timeout})",
+  "无法连接到服务器：{error}": "Could not connect to the server: {error}",
+  "认证失败：请检查账号与密码（HTTP {code}）":
+      "Authentication failed. Check the account and password (HTTP {code})",
+  "服务器返回错误（HTTP {code}）": "The server returned an error (HTTP {code})",
+  "网络请求失败：{error}": "Network request failed: {error}",
+  "服务器响应不是有效的 XML：{error}": "The server response is not valid XML: {error}",
+  "拒绝清理非应用数据目录：{path}":
+      "Refused to clear a folder outside the application data folder: {path}",
+  "拒绝清理无效目录：{path}": "Refused to clear an invalid folder: {path}",
+  "缓存目录不在应用数据目录内：{path}":
+      "The cache folder is outside the application data folder: {path}",
+  "拒绝删除缓存目录外的目标：{path}":
+      "Refused to delete a target outside the cache folder: {path}",
+  "拒绝删除重解析点：{path}": "Refused to delete a reparse point: {path}",
+  "拒绝删除包含重解析点的目录：{path}":
+      "Refused to delete a folder containing a reparse point: {path}",
+  "播放器启动失败：{error}（请检查可执行文件与系统 PATH）":
+      "Player failed to start: {error} (check the executable and system PATH)",
+  "文件不存在：{path}": "File not found: {path}",
+  "[会话 {sessionId}] {message}": "[Session {sessionId}] {message}",
+  "检测到 MPV 播放失败，正在恢复链接（{attempt}/3）…":
+      "MPV playback failed. Recovering the link ({attempt}/3)…",
+  "第三次自动恢复失败：{message}，已保留继续播放记录":
+      "The third automatic recovery attempt failed: {message}. Resume history was retained",
+  "{message}，已停止自动恢复并保留继续播放记录":
+      "{message}. Automatic recovery stopped and resume history was retained",
+  "链接已恢复，但重新启动播放器失败：{message}":
+      "The link recovered, but restarting the player failed: {message}",
+  "mpv IPC 请求超时: {command}": "mpv IPC request timed out: {command}",
+  "mpv IPC 写入失败: {error}": "mpv IPC write failed: {error}",
+  "{command} 失败: Windows error {code}":
+      "{command} failed: Windows error {code}",
+  "mpv IPC 响应缺少 request_id={requestId}":
+      "mpv IPC response is missing request_id={requestId}",
+  "mpv 错误: {error}": "mpv error: {error}",
+  "OpenList/AList 存储刷新失败：{error}":
+      "OpenList/AList storage refresh failed: {error}",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "Network bandwidth is insufficient for smooth playback (persistent buffering: the cache cannot keep up with playback). The buffering target was increased. If playback still stutters, lower the quality or check the network.",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度，实时速度 {speed}KB/s）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "Network bandwidth is insufficient for smooth playback (persistent buffering: the cache cannot keep up with playback, current speed {speed}KB/s). The buffering target was increased. If playback still stutters, lower the quality or check the network.",
+  "网络带宽不足以流畅播放（实时速度 {speed}KB/s，需要 {required}KB/s 以上）。已加大缓冲，若持续卡顿请降低画质或检查网络。":
+      "Network bandwidth is insufficient for smooth playback (current speed {speed}KB/s, required speed {required}KB/s or more). Buffering was increased. If playback still stutters, lower the quality or check the network.",
+  "FormatException: {message}": "FormatException: {message}",
+  "NetworkException: {message}": "NetworkException: {message}",
+  "ParseException: {message}": "ParseException: {message}",
+  "ConfigException: {message}": "ConfigException: {message}",
+  "PlayerLaunchException: {message}": "PlayerLaunchException: {message}",
+  "StorageException: {message}": "StorageException: {message}",
+  '自动加载 WebDAV 外挂音轨': 'Auto-load WebDAV external audio',
+  '流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV':
+      'Stream matching audio from the same directory, keep the current audio selection; MPV only',
+  '外挂音轨加载失败：{name}': 'External audio failed to load: {name}',
   '网络文件夹': 'Network folders',
   '挂载文件夹管理': 'Manage mounted folders',
   '文件夹管理': 'Folder management',
@@ -9,6 +303,8 @@ const Map<String, String> englishTranslations = <String, String>{
   '在文件夹管理中添加本地文件夹': 'Add a local folder in Folder management',
   '切换侧边栏显示模式': 'Toggle sidebar mode',
   '显示侧边栏': 'Show sidebar',
+  '简略模式': 'Compact mode',
+  '展开侧边栏': 'Expand sidebar',
   '上次浏览目录': 'Last browsed folder',
   '临时缓存': 'Session only',
   '持久缓存': 'Keep after restart',
@@ -708,6 +1004,245 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  '第 {episode}/{total} 集': '第 {episode}/{total} 話',
+  '第 {track}/{total} 首': '第 {track}/{total} 曲',
+  '已播放 {duration}': '再生済み {duration}',
+  "播放列表简洁命名": "プレイリスト名を簡潔に表示",
+  "从文件名提取片名、年份和季集信息，按当前语言显示；识别不足时保留原名":
+      "ファイル名から作品名・年・シーズン・話数を抽出して現在の言語で表示し、判別できない場合は元の名前を使用します",
+  "特别篇": "特別編",
+  "第{season}季": "シーズン{season}",
+  "第{episode}集": "第{episode}話",
+  "索引搜索不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "インデックス検索を利用できません。バックエンドに {endpoint} エンドポイントがありません（バージョン {version}）",
+  "索引状态不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "インデックス状態を利用できません。バックエンドに {endpoint} エンドポイントがありません（バージョン {version}）",
+  "索引增量更新不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "差分インデックス更新を利用できません。バックエンドに {endpoint} エンドポイントがありません（バージョン {version}）",
+  "存储恢复不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "ストレージ復旧を利用できません。バックエンドに {endpoint} エンドポイントがありません（バージョン {version}）",
+  "目录缓存尚未初始化": "フォルダーキャッシュが初期化されていません",
+  "本地目录路径必须是根目录内的相对路径": "ローカルフォルダーのパスはルート内の相対パスである必要があります",
+  "本地目录路径不能包含空段、. 或 ..": "ローカルフォルダーのパスに空の区間、. または .. を含めることはできません",
+  "搜索": "検索",
+  "当前目录": "現在のフォルダー",
+  "本地来源不可用": "ローカルソースを利用できません",
+  "网络来源未连接": "ネットワークソースに接続されていません",
+  "添加 WebDAV 挂载": "WebDAV マウントを追加",
+  "只移除挂载配置，不删除磁盘文件；媒体中心历史会保留。": "マウント設定のみ削除します。ディスク上のファイルとメディアセンターの履歴は保持されます。",
+  "{path} · 已停用": "{path} · 無効",
+  "服务器档案缺少地址或用户名": "サーバープロファイルにアドレスまたはユーザー名がありません",
+  "该服务器未挂载": "このサーバーはマウントされていません",
+  "服务器挂载已移除": "サーバーのマウントは削除されました",
+  "无法确认对应播放器进程，未删除播放会话": "対象のプレーヤープロセスを確認できないため、再生セッションを削除していません",
+  "按名称": "名前順",
+  "按时间": "日時順",
+  "按体积": "サイズ順",
+  "正序": "昇順",
+  "倒序": "降順",
+  "自动模式": "自動モード",
+  "性能模式": "パフォーマンスモード",
+  "节省模式": "省リソースモード",
+  "蓝光模式": "Blu-ray モード",
+  "请使用英文逗号「,」分隔文件后缀（示例：.ass, .mkv）": "拡張子は半角カンマ「,」で区切ってください（例：.ass, .mkv）",
+  "请直接输入文件后缀，不要使用花括号或引号（示例：.ass, .mkv）":
+      "波括弧や引用符を使わずに拡張子を入力してください（例：.ass, .mkv）",
+  "英文逗号之间必须填写文件后缀（示例：.ass, .mkv）": "半角カンマの間に拡張子を入力してください（例：.ass, .mkv）",
+  "播放器": "プレーヤー",
+  "播放器路径不能为空": "プレーヤーのパスを入力してください",
+  "媒体库根节点无效": "メディアライブラリーのルートが無効です",
+  "媒体库读取失败，本进程已禁止写入以保护原文件":
+      "メディアライブラリーを読み込めません。元のファイルを保護するため、このプロセスでの書き込みを無効にしました",
+  "媒体库尚未加载": "メディアライブラリーが読み込まれていません",
+  "无法复核损坏媒体库，已禁止写入": "破損したメディアライブラリーを再確認できないため、書き込みを無効にしました",
+  "媒体库加载后已发生变化，已禁止写入": "読み込み後にメディアライブラリーが変更されたため、書き込みを無効にしました",
+  "损坏媒体库备份校验失败": "破損したメディアライブラリーのバックアップ検証に失敗しました",
+  "损坏媒体库备份失败": "破損したメディアライブラリーをバックアップできません",
+  "无法分配唯一的损坏媒体库备份名": "破損したメディアライブラリーの一意なバックアップ名を作成できません",
+  "数据库已报告损坏，为避免扩大损失，已停止自动修复": "データベースの破損が報告されたため、さらなる損失を防ぐために自動修復を停止しました",
+  "内存数据库不支持生成维护备份": "メモリ内データベースはメンテナンス用バックアップに対応していません",
+  "凭据内容不是 JSON 对象": "認証情報が JSON オブジェクトではありません",
+  "Windows 凭据内容损坏": "Windows の認証情報が破損しています",
+  "读取 Windows 凭据失败": "Windows の認証情報を読み取れません",
+  "当前平台不支持 Windows 凭据管理器": "このプラットフォームは Windows 資格情報マネージャーに対応していません",
+  "写入 Windows 凭据失败": "Windows の認証情報を書き込めません",
+  "删除 Windows 凭据失败": "Windows の認証情報を削除できません",
+  "配置文件字段类型错误": "設定ファイルのフィールド型が正しくありません",
+  "配置文件字段值无效": "設定ファイルのフィールド値が無効です",
+  "配置根节点必须是 JSON 对象": "設定のルートは JSON オブジェクトである必要があります",
+  "配置迁移前备份失败，已停止迁移": "設定移行前のバックアップに失敗したため、移行を停止しました",
+  "当前平台无法读取 Windows 凭据，请使用便携明文模式":
+      "このプラットフォームでは Windows の認証情報を読み取れません。ポータブル平文モードを使用してください",
+  "检测到更高版本配置；为避免降级覆盖，当前版本禁止保存":
+      "新しいバージョンの設定を検出しました。ダウングレードによる上書きを防ぐため、保存を無効にしました",
+  "配置字段类型无效": "設定フィールドの型が無効です",
+  "配置字段值无效": "設定フィールドの値が無効です",
+  "配置保存失败，且凭据回滚未完整完成": "設定の保存に失敗し、認証情報のロールバックも完了していません",
+  "本地根目录配置无效": "ローカルルートフォルダーの設定が無効です",
+  "媒体资产类型无效": "メディア項目の種類が無効です",
+  "媒体资产字段无效": "メディア項目のフィールドが無効です",
+  "媒体资产时间无效": "メディア項目の日時が無効です",
+  "媒体来源类型无效": "メディアソースの種類が無効です",
+  "媒体播放模式无效": "メディアの再生モードが無効です",
+  "服务器档案缺少 profileId": "サーバープロファイルに profileId がありません",
+  "服务器档案 profileId 格式无效": "サーバープロファイルの profileId 形式が無効です",
+  "默认目录不能包含 . 或 .. 路径段": "既定のフォルダーに . または .. を含めることはできません",
+  "服务器档案不存在": "サーバープロファイルが見つかりません",
+  "服务器档案 profileId 必须唯一": "サーバープロファイルの profileId は一意である必要があります",
+  "PROPFIND 返回空响应": "PROPFIND の応答が空です",
+  "服务器重定向缺少 Location": "サーバーのリダイレクトに Location がありません",
+  "非 GET 请求拒绝跨来源重定向": "GET 以外のリクエストで異なるオリジンへのリダイレクトを拒否しました",
+  "服务器证书不受信任": "サーバー証明書を信頼できません",
+  "该音频启动已被同会话的新请求取代": "この音声起動は同じセッションの新しいリクエストに置き換えられました",
+  "音频播放列表为空，无法启动播放器": "音声プレイリストが空のため、プレーヤーを起動できません",
+  "该音频播放会话仍在运行，请先关闭或删除后再继续": "この音声再生セッションは実行中です。閉じるか削除してから続行してください",
+  "音频播放、LRC 与封面功能需要使用 MPV 播放器": "音声再生、LRC とカバー表示には MPV が必要です",
+  "音频启动已过期，且无法确认旧 MPV 进程归属": "音声起動の有効期限が切れ、以前の MPV プロセスの所属を確認できません",
+  "缓存正在清理，请稍候": "キャッシュを削除しています。しばらくお待ちください",
+  "找不到应用数据目录": "アプリのデータフォルダーが見つかりません",
+  "该播放启动已被同会话的新请求取代": "この再生起動は同じセッションの新しいリクエストに置き換えられました",
+  "播放列表为空，无法启动播放器": "プレイリストが空のため、プレーヤーを起動できません",
+  "该播放会话仍在运行，请先关闭或删除后再继续": "この再生セッションは実行中です。閉じるか削除してから続行してください",
+  "启动已过期，且无法确认旧播放器进程归属": "起動の有効期限が切れ、以前のプレーヤープロセスの所属を確認できません",
+  "无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程":
+      "以前の MPV が現在の再生セッションに属するか確認できないため、自動復旧を停止しました。プロセスは終了していません",
+  "前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…":
+      "前の2回の復旧で再生エラーを解決できなかったため、ローカルの OpenList/AList を安全に再起動しています（3/3）…",
+  "第三次自动恢复发生异常，已保留继续播放记录": "3回目の自動復旧でエラーが発生しました。再開用の履歴は保持されています",
+  "OpenList/AList 已安全重启，播放器已从失败位置恢复":
+      "OpenList/AList を安全に再起動し、エラーが発生した位置から再生を再開しました",
+  "OpenList/AList 存储已刷新，播放器已从失败位置恢复":
+      "OpenList/AList のストレージを更新し、エラーが発生した位置から再生を再開しました",
+  "已重新获取播放链接，播放器已从失败位置恢复": "再生リンクを再取得し、エラーが発生した位置から再生を再開しました",
+  "自动恢复过程中出现异常，已保留继续播放记录": "自動復旧中にエラーが発生しました。再開用の履歴は保持されています",
+  "ISO Bridge ready 响应无效": "ISO Bridge の ready 応答が無効です",
+  "ISO Bridge Title 响应无效": "ISO Bridge の Title 応答が無効です",
+  "ISO Bridge 章节响应无效": "ISO Bridge のチャプター応答が無効です",
+  "远程蓝光菜单能力响应无效": "リモート Blu-ray メニュー機能の応答が無効です",
+  "ISO Bridge 未返回可播放 Title": "ISO Bridge から再生可能な Title が返されませんでした",
+  "ISO Bridge 缓存配置状态无效": "ISO Bridge のキャッシュ設定状態が無効です",
+  "ISO Bridge 未确认缓存配置": "ISO Bridge がキャッシュ設定を確認しませんでした",
+  "ISO Bridge hello 响应无效": "ISO Bridge の hello 応答が無効です",
+  "无法确认 StreamPath 进程身份": "StreamPath プロセスの識別情報を確認できません",
+  "无法确认 MPV 播放器身份": "MPV プレーヤーの識別情報を確認できません",
+  "请求超过总时间限制": "リクエストが全体の制限時間を超えました",
+  "无法连接服务器": "サーバーに接続できません",
+  "OpenList/AList 请求重定向次数过多": "OpenList/AList リクエストのリダイレクトが多すぎます",
+  "拒绝将 OpenList/AList 认证请求重定向到其他来源":
+      "OpenList/AList の認証リクエストを異なるオリジンへリダイレクトすることを拒否しました",
+  "仅支持安全重启本机 Windows OpenList/AList 进程":
+      "安全な再起動はローカルの Windows OpenList/AList プロセスのみ対応しています",
+  "目标本机地址或监听器存在歧义，已取消重启": "対象のローカルアドレスまたはリスナーが不明確なため、再起動を中止しました",
+  "OpenList/AList 安全重启发生异常，未执行强制结束":
+      "OpenList/AList の安全な再起動でエラーが発生しました。強制終了は行っていません",
+  "OpenList/AList 监听目标与进程身份不一致，已取消重启":
+      "OpenList/AList のリスナーとプロセスの識別情報が一致しないため、再起動を中止しました",
+  "未记录到可安全重启的本机 OpenList/AList 进程":
+      "安全に再起動できるローカルの OpenList/AList プロセスが記録されていません",
+  "OpenList/AList 进程身份已变化，为避免误操作已取消重启":
+      "OpenList/AList プロセスの識別情報が変わったため、誤操作を防ぐために再起動を中止しました",
+  "无法安全发送优雅关闭信号，已取消重启且未强制结束进程": "安全に終了シグナルを送信できないため、再起動を中止しました。プロセスは強制終了していません",
+  "OpenList/AList 未在安全期限内退出，已取消重启且未强制结束进程":
+      "OpenList/AList が制限時間内に終了しなかったため、再起動を中止しました。プロセスは強制終了していません",
+  "OpenList/AList 已安全退出，但重新启动失败": "OpenList/AList は安全に終了しましたが、再起動に失敗しました",
+  "OpenList/AList 已重新启动，但未在等待期限内恢复服务":
+      "OpenList/AList は再起動しましたが、待機時間内にサービスが復旧しませんでした",
+  "OpenList/AList 已安全重启并恢复服务": "OpenList/AList を安全に再起動し、サービスが復旧しました",
+  "OpenList/AList 自动恢复请求异常，请检查后台地址和网络连接":
+      "OpenList/AList の自動復旧リクエストでエラーが発生しました。管理画面のアドレスとネットワーク接続を確認してください",
+  "OpenList/AList 自动恢复未启用": "OpenList/AList の自動復旧は無効です",
+  "未配置 OpenList/AList 管理员账号、密码或 Token":
+      "OpenList/AList の管理者アカウント、パスワードまたは Token が設定されていません",
+  "OpenList/AList 后台地址或媒体地址无效": "OpenList/AList の管理画面またはメディアのアドレスが無効です",
+  "媒体地址可正常读取，当前错误不属于链接失效，停止自动恢复":
+      "メディアアドレスは読み取り可能です。リンク切れによるエラーではないため、自動復旧を停止します",
+  "原 WebDAV 地址已可重新取链，无需刷新全部存储": "元の WebDAV アドレスからリンクを再取得できるため、ストレージ全体の更新は不要です",
+  "OpenList/AList 安全重启后媒体地址已恢复": "OpenList/AList の安全な再起動後、メディアアドレスが復旧しました",
+  "后台近期已刷新，媒体地址现已恢复": "管理サーバーは最近更新されており、メディアアドレスが復旧しました",
+  "后台近期已刷新但媒体仍不可用，为避免频繁重载已停止自动重试":
+      "管理サーバーは最近更新されましたが、メディアは利用できません。頻繁な再読み込みを避けるため自動再試行を停止しました",
+  "共享的后台刷新流程结束，媒体地址恢复": "共有の管理サーバー更新が完了し、メディアアドレスが復旧しました",
+  "共享的后台刷新流程结束，但媒体地址仍不可用": "共有の管理サーバー更新は完了しましたが、メディアアドレスは利用できません",
+  "后台存储刷新流程结束，媒体地址已恢复": "管理サーバーのストレージ更新が完了し、メディアアドレスが復旧しました",
+  "后台存储刷新流程结束，但媒体地址在等待期限内仍不可用":
+      "管理サーバーのストレージ更新は完了しましたが、待機時間内にメディアアドレスが復旧しませんでした",
+  "OpenList/AList 存储刷新流程结束，等待目标媒体恢复":
+      "OpenList/AList のストレージ更新が完了しました。対象のメディアの復旧を待っています",
+  "后台接受了刷新请求，但刷新流程未在等待期限内结束": "管理サーバーは更新リクエストを受け付けましたが、待機時間内に完了しませんでした",
+  "IPC 未连接": "IPC に接続されていません",
+  "IPC 已断开": "IPC 接続が切断されました",
+  "无法识别的文件后缀：「{extension}」（请使用英文逗号分隔，例如：.ass, .mkv）":
+      "認識できない拡張子：「{extension}」（半角カンマで区切ってください。例：.ass, .mkv）",
+  "媒体库版本 {version} 高于当前支持版本 {supported}，已禁止降级写入":
+      "メディアライブラリーのバージョン {version} は現在対応しているバージョンより新しいです：{supported}。ダウングレードによる書き込みは無効です",
+  "初始化播放进度数据库失败：{error}": "再生履歴データベースを初期化できません：{error}",
+  "保存播放进度失败：{error}": "再生位置を保存できません：{error}",
+  "读取播放进度失败：{error}": "再生位置を読み取れません：{error}",
+  "保存临时播放点失败：{error}": "一時的な再生位置を保存できません：{error}",
+  "读取临时播放点失败：{error}": "一時的な再生位置を読み取れません：{error}",
+  "删除播放进度失败：{error}": "再生位置を削除できません：{error}",
+  "删除临时播放点失败：{error}": "一時的な再生位置を削除できません：{error}",
+  "清空播放进度失败：{error}": "再生履歴を消去できません：{error}",
+  "清理过期播放进度失败：{error}": "期限切れの再生履歴を削除できません：{error}",
+  "SQLite 完整性检查失败：{error}": "SQLite の整合性チェックに失敗しました：{error}",
+  "SQLite 非破坏性维护失败：{error}": "SQLite の非破壊的メンテナンスに失敗しました：{error}",
+  "{error}；恢复备份也不可用：{backupError}": "{error}。復元用バックアップも利用できません：{backupError}",
+  "配置版本 {version} 高于当前支持版本 {supported}":
+      "設定バージョン {version} は現在対応しているバージョンより新しいです：{supported}",
+  "配置版本 {version} 高于当前支持版本": "設定バージョン {version} は現在対応しているバージョンより新しいです",
+  "配置文件损坏：{error}": "設定ファイルが破損しています：{error}",
+  "读取配置文件失败：{error}": "設定ファイルを読み取れません：{error}",
+  "配置字段值无效：{error}": "設定フィールドの値が無効です：{error}",
+  "保存配置文件失败：{error}": "設定ファイルを保存できません：{error}",
+  "重置配置文件失败：{error}": "設定ファイルをリセットできません：{error}",
+  "文件内容超过 {limit} 字节限制": "ファイルの内容が上限を超えました：{limit} バイト",
+  "不支持的网络协议：{scheme}": "対応していないネットワークプロトコル：{scheme}",
+  "服务器重定向次数超过 {count} 次": "サーバーのリダイレクト数が上限を超えました：{count} 回",
+  "连接服务器超时（{timeout}）": "サーバー接続がタイムアウトしました（{timeout}）",
+  "无法连接到服务器：{error}": "サーバーに接続できません：{error}",
+  "认证失败：请检查账号与密码（HTTP {code}）": "認証に失敗しました。アカウントとパスワードを確認してください（HTTP {code}）",
+  "服务器返回错误（HTTP {code}）": "サーバーがエラーを返しました（HTTP {code}）",
+  "网络请求失败：{error}": "ネットワークリクエストに失敗しました：{error}",
+  "服务器响应不是有效的 XML：{error}": "サーバー応答が有効な XML ではありません：{error}",
+  "拒绝清理非应用数据目录：{path}": "アプリのデータフォルダー以外の削除を拒否しました：{path}",
+  "拒绝清理无效目录：{path}": "無効なフォルダーの削除を拒否しました：{path}",
+  "缓存目录不在应用数据目录内：{path}": "キャッシュフォルダーがアプリのデータフォルダー内にありません：{path}",
+  "拒绝删除缓存目录外的目标：{path}": "キャッシュフォルダー外の対象の削除を拒否しました：{path}",
+  "拒绝删除重解析点：{path}": "再解析ポイントの削除を拒否しました：{path}",
+  "拒绝删除包含重解析点的目录：{path}": "再解析ポイントを含むフォルダーの削除を拒否しました：{path}",
+  "播放器启动失败：{error}（请检查可执行文件与系统 PATH）":
+      "プレーヤーを起動できません：{error}（実行ファイルとシステム PATH を確認してください）",
+  "文件不存在：{path}": "ファイルが見つかりません：{path}",
+  "[会话 {sessionId}] {message}": "[セッション {sessionId}] {message}",
+  "检测到 MPV 播放失败，正在恢复链接（{attempt}/3）…":
+      "MPV の再生エラーを検出しました。リンクを復旧しています（{attempt}/3）…",
+  "第三次自动恢复失败：{message}，已保留继续播放记录": "3回目の自動復旧に失敗しました：{message}。再開用の履歴は保持されています",
+  "{message}，已停止自动恢复并保留继续播放记录": "{message}。自動復旧を停止しました。再開用の履歴は保持されています",
+  "链接已恢复，但重新启动播放器失败：{message}": "リンクは復旧しましたが、プレーヤーの再起動に失敗しました：{message}",
+  "mpv IPC 请求超时: {command}": "mpv IPC リクエストがタイムアウトしました: {command}",
+  "mpv IPC 写入失败: {error}": "mpv IPC の書き込みに失敗しました: {error}",
+  "{command} 失败: Windows error {code}":
+      "{command} に失敗しました: Windows error {code}",
+  "mpv IPC 响应缺少 request_id={requestId}":
+      "mpv IPC 応答に request_id がありません: {requestId}",
+  "mpv 错误: {error}": "mpv エラー: {error}",
+  "OpenList/AList 存储刷新失败：{error}": "OpenList/AList のストレージ更新に失敗しました：{error}",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "ネットワーク帯域が不足しています（継続的なバッファリング：キャッシュが再生速度に追いつきません）。バッファ目標を増やしました。途切れる場合は画質を下げるか、ネットワークを確認してください。",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度，实时速度 {speed}KB/s）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "ネットワーク帯域が不足しています（継続的なバッファリング：キャッシュが再生速度に追いつきません、現在の速度 {speed}KB/s）。バッファ目標を増やしました。途切れる場合は画質を下げるか、ネットワークを確認してください。",
+  "网络带宽不足以流畅播放（实时速度 {speed}KB/s，需要 {required}KB/s 以上）。已加大缓冲，若持续卡顿请降低画质或检查网络。":
+      "ネットワーク帯域が不足しています（現在の速度 {speed}KB/s、必要な速度 {required}KB/s 以上）。バッファを増やしました。途切れる場合は画質を下げるか、ネットワークを確認してください。",
+  "FormatException: {message}": "FormatException: {message}",
+  "NetworkException: {message}": "NetworkException: {message}",
+  "ParseException: {message}": "ParseException: {message}",
+  "ConfigException: {message}": "ConfigException: {message}",
+  "PlayerLaunchException: {message}": "PlayerLaunchException: {message}",
+  "StorageException: {message}": "StorageException: {message}",
+  '自动加载 WebDAV 外挂音轨': 'WebDAV の外部音声を自動読み込み',
+  '流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV':
+      '同じフォルダーの同名プレフィックスの音声をストリーミングで読み込み、現在の音声選択を保持（MPV のみ）',
+  '外挂音轨加载失败：{name}': '外部音声の読み込みに失敗しました：{name}',
   '网络文件夹': 'ネットワークフォルダー',
   '挂载文件夹管理': 'マウント済みフォルダーの管理',
   '文件夹管理': 'フォルダー管理',
@@ -715,6 +1250,8 @@ const Map<String, String> japaneseTranslations = <String, String>{
   '在文件夹管理中添加本地文件夹': 'フォルダー管理でローカルフォルダーを追加',
   '切换侧边栏显示模式': 'サイドバー表示モードを切り替え',
   '显示侧边栏': 'サイドバーを表示',
+  '简略模式': 'コンパクトモード',
+  '展开侧边栏': 'サイドバーを展開',
   '上次浏览目录': '最後に閲覧したフォルダー',
   '临时缓存': 'セッション中のみ',
   '持久缓存': '再起動後も保持',
@@ -1325,6 +1862,221 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  '第 {episode}/{total} 集': '第 {episode}/{total} 集',
+  '第 {track}/{total} 首': '第 {track}/{total} 首',
+  '已播放 {duration}': '已播放 {duration}',
+  "播放列表简洁命名": "播放清單簡潔命名",
+  "从文件名提取片名、年份和季集信息，按当前语言显示；识别不足时保留原名": "從檔名擷取片名、年份和季集資訊，依目前語言顯示；識別不足時保留原名",
+  "特别篇": "特別篇",
+  "第{season}季": "第{season}季",
+  "第{episode}集": "第{episode}集",
+  "索引搜索不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "索引搜尋不可用：目前後台缺少 {endpoint} 端點（版本 {version}）",
+  "索引状态不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "索引狀態不可用：目前後台缺少 {endpoint} 端點（版本 {version}）",
+  "索引增量更新不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "索引增量更新不可用：目前後台缺少 {endpoint} 端點（版本 {version}）",
+  "存储恢复不可用：当前后台缺少 {endpoint} 端点（版本 {version}）":
+      "儲存空間復原不可用：目前後台缺少 {endpoint} 端點（版本 {version}）",
+  "目录缓存尚未初始化": "目錄快取尚未初始化",
+  "本地目录路径必须是根目录内的相对路径": "本機目錄路徑必須是根目錄內的相對路徑",
+  "本地目录路径不能包含空段、. 或 ..": "本機目錄路徑不能包含空片段、. 或 ..",
+  "搜索": "搜尋",
+  "当前目录": "目前目錄",
+  "本地来源不可用": "本機來源無法使用",
+  "网络来源未连接": "網路來源未連線",
+  "添加 WebDAV 挂载": "新增 WebDAV 掛載",
+  "只移除挂载配置，不删除磁盘文件；媒体中心历史会保留。": "僅移除掛載設定，不刪除磁碟檔案；媒體中心歷史紀錄會保留。",
+  "{path} · 已停用": "{path} · 已停用",
+  "服务器档案缺少地址或用户名": "伺服器設定檔缺少位址或使用者名稱",
+  "该服务器未挂载": "此伺服器尚未掛載",
+  "服务器挂载已移除": "伺服器掛載已移除",
+  "无法确认对应播放器进程，未删除播放会话": "無法確認對應的播放器處理程序，未刪除播放工作階段",
+  "按名称": "依名稱",
+  "按时间": "依時間",
+  "按体积": "依大小",
+  "正序": "升冪",
+  "倒序": "降冪",
+  "自动模式": "自動模式",
+  "性能模式": "效能模式",
+  "节省模式": "節省模式",
+  "蓝光模式": "藍光模式",
+  "请使用英文逗号「,」分隔文件后缀（示例：.ass, .mkv）": "請使用半形逗號「,」分隔檔案副檔名（範例：.ass, .mkv）",
+  "请直接输入文件后缀，不要使用花括号或引号（示例：.ass, .mkv）": "請直接輸入檔案副檔名，不要使用大括號或引號（範例：.ass, .mkv）",
+  "英文逗号之间必须填写文件后缀（示例：.ass, .mkv）": "半形逗號之間必須填寫檔案副檔名（範例：.ass, .mkv）",
+  "播放器": "播放器",
+  "播放器路径不能为空": "播放器路徑不能為空",
+  "媒体库根节点无效": "媒體庫根節點無效",
+  "媒体库读取失败，本进程已禁止写入以保护原文件": "媒體庫讀取失敗，本處理程序已禁止寫入以保護原檔案",
+  "媒体库尚未加载": "媒體庫尚未載入",
+  "无法复核损坏媒体库，已禁止写入": "無法複核損壞的媒體庫，已禁止寫入",
+  "媒体库加载后已发生变化，已禁止写入": "媒體庫載入後已發生變更，已禁止寫入",
+  "损坏媒体库备份校验失败": "損壞媒體庫的備份驗證失敗",
+  "损坏媒体库备份失败": "損壞媒體庫備份失敗",
+  "无法分配唯一的损坏媒体库备份名": "無法分配唯一的損壞媒體庫備份名稱",
+  "数据库已报告损坏，为避免扩大损失，已停止自动修复": "資料庫已回報損壞，為避免擴大損失，已停止自動修復",
+  "内存数据库不支持生成维护备份": "記憶體資料庫不支援建立維護備份",
+  "凭据内容不是 JSON 对象": "認證資訊內容不是 JSON 物件",
+  "Windows 凭据内容损坏": "Windows 認證資訊內容損壞",
+  "读取 Windows 凭据失败": "讀取 Windows 認證資訊失敗",
+  "当前平台不支持 Windows 凭据管理器": "目前平台不支援 Windows 認證管理員",
+  "写入 Windows 凭据失败": "寫入 Windows 認證資訊失敗",
+  "删除 Windows 凭据失败": "刪除 Windows 認證資訊失敗",
+  "配置文件字段类型错误": "設定檔欄位類型錯誤",
+  "配置文件字段值无效": "設定檔欄位值無效",
+  "配置根节点必须是 JSON 对象": "設定根節點必須是 JSON 物件",
+  "配置迁移前备份失败，已停止迁移": "設定遷移前備份失敗，已停止遷移",
+  "当前平台无法读取 Windows 凭据，请使用便携明文模式": "目前平台無法讀取 Windows 認證資訊，請使用可攜明文模式",
+  "检测到更高版本配置；为避免降级覆盖，当前版本禁止保存": "偵測到較新版本設定；為避免降級覆寫，目前版本禁止儲存",
+  "配置字段类型无效": "設定欄位類型無效",
+  "配置字段值无效": "設定欄位值無效",
+  "配置保存失败，且凭据回滚未完整完成": "設定儲存失敗，且認證資訊回復未完整完成",
+  "本地根目录配置无效": "本機根目錄設定無效",
+  "媒体资产类型无效": "媒體資產類型無效",
+  "媒体资产字段无效": "媒體資產欄位無效",
+  "媒体资产时间无效": "媒體資產時間無效",
+  "媒体来源类型无效": "媒體來源類型無效",
+  "媒体播放模式无效": "媒體播放模式無效",
+  "服务器档案缺少 profileId": "伺服器設定檔缺少 profileId",
+  "服务器档案 profileId 格式无效": "伺服器設定檔 profileId 格式無效",
+  "默认目录不能包含 . 或 .. 路径段": "預設目錄不能包含 . 或 .. 路徑片段",
+  "服务器档案不存在": "伺服器設定檔不存在",
+  "服务器档案 profileId 必须唯一": "伺服器設定檔 profileId 必須唯一",
+  "PROPFIND 返回空响应": "PROPFIND 傳回空回應",
+  "服务器重定向缺少 Location": "伺服器重新導向缺少 Location",
+  "非 GET 请求拒绝跨来源重定向": "非 GET 請求拒絕跨來源重新導向",
+  "服务器证书不受信任": "伺服器憑證不受信任",
+  "该音频启动已被同会话的新请求取代": "此音訊啟動已被同工作階段的新請求取代",
+  "音频播放列表为空，无法启动播放器": "音訊播放清單為空，無法啟動播放器",
+  "该音频播放会话仍在运行，请先关闭或删除后再继续": "此音訊播放工作階段仍在執行，請先關閉或刪除後再繼續",
+  "音频播放、LRC 与封面功能需要使用 MPV 播放器": "音訊播放、LRC 與封面功能需要使用 MPV 播放器",
+  "音频启动已过期，且无法确认旧 MPV 进程归属": "音訊啟動已過期，且無法確認舊 MPV 處理程序歸屬",
+  "缓存正在清理，请稍候": "快取正在清理，請稍候",
+  "找不到应用数据目录": "找不到應用程式資料目錄",
+  "该播放启动已被同会话的新请求取代": "此播放啟動已被同工作階段的新請求取代",
+  "播放列表为空，无法启动播放器": "播放清單為空，無法啟動播放器",
+  "该播放会话仍在运行，请先关闭或删除后再继续": "此播放工作階段仍在執行，請先關閉或刪除後再繼續",
+  "启动已过期，且无法确认旧播放器进程归属": "啟動已過期，且無法確認舊播放器處理程序歸屬",
+  "无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程": "無法確認舊 MPV 仍屬於目前播放工作階段，已停止自動恢復且未終止處理程序",
+  "前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…":
+      "前兩次恢復未解決播放錯誤，正在安全重新啟動本機 OpenList/AList（3/3）…",
+  "第三次自动恢复发生异常，已保留继续播放记录": "第三次自動恢復發生異常，已保留繼續播放紀錄",
+  "OpenList/AList 已安全重启，播放器已从失败位置恢复": "OpenList/AList 已安全重新啟動，播放器已從失敗位置恢復",
+  "OpenList/AList 存储已刷新，播放器已从失败位置恢复": "OpenList/AList 儲存空間已重新整理，播放器已從失敗位置恢復",
+  "已重新获取播放链接，播放器已从失败位置恢复": "已重新取得播放連結，播放器已從失敗位置恢復",
+  "自动恢复过程中出现异常，已保留继续播放记录": "自動恢復過程中發生異常，已保留繼續播放紀錄",
+  "ISO Bridge ready 响应无效": "ISO Bridge ready 回應無效",
+  "ISO Bridge Title 响应无效": "ISO Bridge Title 回應無效",
+  "ISO Bridge 章节响应无效": "ISO Bridge 章節回應無效",
+  "远程蓝光菜单能力响应无效": "遠端藍光選單能力回應無效",
+  "ISO Bridge 未返回可播放 Title": "ISO Bridge 未傳回可播放的 Title",
+  "ISO Bridge 缓存配置状态无效": "ISO Bridge 快取設定狀態無效",
+  "ISO Bridge 未确认缓存配置": "ISO Bridge 未確認快取設定",
+  "ISO Bridge hello 响应无效": "ISO Bridge hello 回應無效",
+  "无法确认 StreamPath 进程身份": "無法確認 StreamPath 處理程序身分",
+  "无法确认 MPV 播放器身份": "無法確認 MPV 播放器身分",
+  "请求超过总时间限制": "請求超過總時間限制",
+  "无法连接服务器": "無法連線至伺服器",
+  "OpenList/AList 请求重定向次数过多": "OpenList/AList 請求重新導向次數過多",
+  "拒绝将 OpenList/AList 认证请求重定向到其他来源": "拒絕將 OpenList/AList 認證請求重新導向至其他來源",
+  "仅支持安全重启本机 Windows OpenList/AList 进程":
+      "僅支援安全重新啟動本機 Windows OpenList/AList 處理程序",
+  "目标本机地址或监听器存在歧义，已取消重启": "目標本機位址或監聽器不明確，已取消重新啟動",
+  "OpenList/AList 安全重启发生异常，未执行强制结束": "OpenList/AList 安全重新啟動發生異常，未執行強制結束",
+  "OpenList/AList 监听目标与进程身份不一致，已取消重启": "OpenList/AList 監聽目標與處理程序身分不一致，已取消重新啟動",
+  "未记录到可安全重启的本机 OpenList/AList 进程": "未記錄到可安全重新啟動的本機 OpenList/AList 處理程序",
+  "OpenList/AList 进程身份已变化，为避免误操作已取消重启":
+      "OpenList/AList 處理程序身分已變更，為避免誤操作已取消重新啟動",
+  "无法安全发送优雅关闭信号，已取消重启且未强制结束进程": "無法安全傳送正常關閉訊號，已取消重新啟動且未強制結束處理程序",
+  "OpenList/AList 未在安全期限内退出，已取消重启且未强制结束进程":
+      "OpenList/AList 未在安全期限內結束，已取消重新啟動且未強制結束處理程序",
+  "OpenList/AList 已安全退出，但重新启动失败": "OpenList/AList 已安全結束，但重新啟動失敗",
+  "OpenList/AList 已重新启动，但未在等待期限内恢复服务": "OpenList/AList 已重新啟動，但未在等待期限內恢復服務",
+  "OpenList/AList 已安全重启并恢复服务": "OpenList/AList 已安全重新啟動並恢復服務",
+  "OpenList/AList 自动恢复请求异常，请检查后台地址和网络连接":
+      "OpenList/AList 自動恢復請求異常，請檢查後台位址及網路連線",
+  "OpenList/AList 自动恢复未启用": "OpenList/AList 自動恢復未啟用",
+  "未配置 OpenList/AList 管理员账号、密码或 Token": "未設定 OpenList/AList 管理員帳號、密碼或 Token",
+  "OpenList/AList 后台地址或媒体地址无效": "OpenList/AList 後台位址或媒體位址無效",
+  "媒体地址可正常读取，当前错误不属于链接失效，停止自动恢复": "媒體位址可正常讀取，目前錯誤並非連結失效，停止自動恢復",
+  "原 WebDAV 地址已可重新取链，无需刷新全部存储": "原 WebDAV 位址已可重新取得連結，無需重新整理全部儲存空間",
+  "OpenList/AList 安全重启后媒体地址已恢复": "OpenList/AList 安全重新啟動後媒體位址已恢復",
+  "后台近期已刷新，媒体地址现已恢复": "後台近期已重新整理，媒體位址現已恢復",
+  "后台近期已刷新但媒体仍不可用，为避免频繁重载已停止自动重试": "後台近期已重新整理但媒體仍無法使用，為避免頻繁重新載入已停止自動重試",
+  "共享的后台刷新流程结束，媒体地址恢复": "共用的後台重新整理流程結束，媒體位址恢復",
+  "共享的后台刷新流程结束，但媒体地址仍不可用": "共用的後台重新整理流程結束，但媒體位址仍無法使用",
+  "后台存储刷新流程结束，媒体地址已恢复": "後台儲存空間重新整理流程結束，媒體位址已恢復",
+  "后台存储刷新流程结束，但媒体地址在等待期限内仍不可用": "後台儲存空間重新整理流程結束，但媒體位址在等待期限內仍無法使用",
+  "OpenList/AList 存储刷新流程结束，等待目标媒体恢复": "OpenList/AList 儲存空間重新整理流程結束，等待目標媒體恢復",
+  "后台接受了刷新请求，但刷新流程未在等待期限内结束": "後台接受了重新整理請求，但重新整理流程未在等待期限內結束",
+  "IPC 未连接": "IPC 尚未連線",
+  "IPC 已断开": "IPC 已中斷連線",
+  "无法识别的文件后缀：「{extension}」（请使用英文逗号分隔，例如：.ass, .mkv）":
+      "無法識別的檔案副檔名：「{extension}」（請使用半形逗號分隔，例如：.ass, .mkv）",
+  "媒体库版本 {version} 高于当前支持版本 {supported}，已禁止降级写入":
+      "媒體庫版本 {version} 高於目前支援版本 {supported}，已禁止降級寫入",
+  "初始化播放进度数据库失败：{error}": "初始化播放進度資料庫失敗：{error}",
+  "保存播放进度失败：{error}": "儲存播放進度失敗：{error}",
+  "读取播放进度失败：{error}": "讀取播放進度失敗：{error}",
+  "保存临时播放点失败：{error}": "儲存暫存播放點失敗：{error}",
+  "读取临时播放点失败：{error}": "讀取暫存播放點失敗：{error}",
+  "删除播放进度失败：{error}": "刪除播放進度失敗：{error}",
+  "删除临时播放点失败：{error}": "刪除暫存播放點失敗：{error}",
+  "清空播放进度失败：{error}": "清空播放進度失敗：{error}",
+  "清理过期播放进度失败：{error}": "清理過期播放進度失敗：{error}",
+  "SQLite 完整性检查失败：{error}": "SQLite 完整性檢查失敗：{error}",
+  "SQLite 非破坏性维护失败：{error}": "SQLite 非破壞性維護失敗：{error}",
+  "{error}；恢复备份也不可用：{backupError}": "{error}；復原備份也無法使用：{backupError}",
+  "配置版本 {version} 高于当前支持版本 {supported}": "設定版本 {version} 高於目前支援版本 {supported}",
+  "配置版本 {version} 高于当前支持版本": "設定版本 {version} 高於目前支援版本",
+  "配置文件损坏：{error}": "設定檔損壞：{error}",
+  "读取配置文件失败：{error}": "讀取設定檔失敗：{error}",
+  "配置字段值无效：{error}": "設定欄位值無效：{error}",
+  "保存配置文件失败：{error}": "儲存設定檔失敗：{error}",
+  "重置配置文件失败：{error}": "重設設定檔失敗：{error}",
+  "文件内容超过 {limit} 字节限制": "檔案內容超過 {limit} 位元組限制",
+  "不支持的网络协议：{scheme}": "不支援的網路通訊協定：{scheme}",
+  "服务器重定向次数超过 {count} 次": "伺服器重新導向次數超過 {count} 次",
+  "连接服务器超时（{timeout}）": "連線至伺服器逾時（{timeout}）",
+  "无法连接到服务器：{error}": "無法連線至伺服器：{error}",
+  "认证失败：请检查账号与密码（HTTP {code}）": "認證失敗：請檢查帳號與密碼（HTTP {code}）",
+  "服务器返回错误（HTTP {code}）": "伺服器傳回錯誤（HTTP {code}）",
+  "网络请求失败：{error}": "網路請求失敗：{error}",
+  "服务器响应不是有效的 XML：{error}": "伺服器回應不是有效的 XML：{error}",
+  "拒绝清理非应用数据目录：{path}": "拒絕清理非應用程式資料目錄：{path}",
+  "拒绝清理无效目录：{path}": "拒絕清理無效目錄：{path}",
+  "缓存目录不在应用数据目录内：{path}": "快取目錄不在應用程式資料目錄內：{path}",
+  "拒绝删除缓存目录外的目标：{path}": "拒絕刪除快取目錄外的目標：{path}",
+  "拒绝删除重解析点：{path}": "拒絕刪除重新解析點：{path}",
+  "拒绝删除包含重解析点的目录：{path}": "拒絕刪除包含重新解析點的目錄：{path}",
+  "播放器启动失败：{error}（请检查可执行文件与系统 PATH）": "播放器啟動失敗：{error}（請檢查可執行檔與系統 PATH）",
+  "文件不存在：{path}": "檔案不存在：{path}",
+  "[会话 {sessionId}] {message}": "[工作階段 {sessionId}] {message}",
+  "检测到 MPV 播放失败，正在恢复链接（{attempt}/3）…": "偵測到 MPV 播放失敗，正在恢復連結（{attempt}/3）…",
+  "第三次自动恢复失败：{message}，已保留继续播放记录": "第三次自動恢復失敗：{message}，已保留繼續播放紀錄",
+  "{message}，已停止自动恢复并保留继续播放记录": "{message}，已停止自動恢復並保留繼續播放紀錄",
+  "链接已恢复，但重新启动播放器失败：{message}": "連結已恢復，但重新啟動播放器失敗：{message}",
+  "mpv IPC 请求超时: {command}": "mpv IPC 請求逾時: {command}",
+  "mpv IPC 写入失败: {error}": "mpv IPC 寫入失敗: {error}",
+  "{command} 失败: Windows error {code}": "{command} 失敗: Windows error {code}",
+  "mpv IPC 响应缺少 request_id={requestId}": "mpv IPC 回應缺少 request_id={requestId}",
+  "mpv 错误: {error}": "mpv 錯誤: {error}",
+  "OpenList/AList 存储刷新失败：{error}": "OpenList/AList 儲存空間重新整理失敗：{error}",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "網路頻寬不足以流暢播放（持續緩衝：快取跟不上播放速度）。已增加緩衝目標，若仍卡頓請降低畫質或檢查網路。",
+  "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度，实时速度 {speed}KB/s）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。":
+      "網路頻寬不足以流暢播放（持續緩衝：快取跟不上播放速度，即時速度 {speed}KB/s）。已增加緩衝目標，若仍卡頓請降低畫質或檢查網路。",
+  "网络带宽不足以流畅播放（实时速度 {speed}KB/s，需要 {required}KB/s 以上）。已加大缓冲，若持续卡顿请降低画质或检查网络。":
+      "網路頻寬不足以流暢播放（即時速度 {speed}KB/s，需要 {required}KB/s 以上）。已增加緩衝，若持續卡頓請降低畫質或檢查網路。",
+  "FormatException: {message}": "FormatException: {message}",
+  "NetworkException: {message}": "NetworkException: {message}",
+  "ParseException: {message}": "ParseException: {message}",
+  "ConfigException: {message}": "ConfigException: {message}",
+  "PlayerLaunchException: {message}": "PlayerLaunchException: {message}",
+  "StorageException: {message}": "StorageException: {message}",
+  '自动加载 WebDAV 外挂音轨': '自動載入 WebDAV 外掛音軌',
+  '流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV': '串流載入同目錄同名前綴的音軌，保留目前音軌選擇，僅支援 MPV',
+  '外挂音轨加载失败：{name}': '外掛音軌載入失敗：{name}',
   '网络文件夹': '網路資料夾',
   '挂载文件夹管理': '掛載資料夾管理',
   '文件夹管理': '資料夾管理',
@@ -1332,6 +2084,8 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   '在文件夹管理中添加本地文件夹': '請在資料夾管理中新增本機資料夾',
   '切换侧边栏显示模式': '切換側邊欄顯示模式',
   '显示侧边栏': '顯示側邊欄',
+  '简略模式': '簡略模式',
+  '展开侧边栏': '展開側邊欄',
   '上次浏览目录': '上次瀏覽目錄',
   '临时缓存': '暫時快取',
   '持久缓存': '永久快取',

@@ -6,6 +6,24 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_text.dart';
 
 void main() {
+  test('外挂音轨设置和加载失败提示覆盖四种语言', () {
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final source in [
+        '自动加载 WebDAV 外挂音轨',
+        '流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV',
+        '外挂音轨加载失败：{name}',
+      ]) {
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(l10n.text(source), isNot(source));
+        }
+      }
+      expect(
+        l10n.format('外挂音轨加载失败：{name}', {'name': 'movie.flac'}),
+        contains('movie.flac'),
+      );
+    }
+  });
   test('侧边栏、平铺和索引文案覆盖四种语言', () {
     const sources = [
       '网络文件夹',
@@ -13,6 +31,8 @@ void main() {
       '在文件夹管理中添加服务器',
       '在文件夹管理中添加本地文件夹',
       '切换侧边栏显示模式',
+      '简略模式',
+      '展开侧边栏',
       '上次浏览目录',
       '临时缓存',
       '持久缓存',

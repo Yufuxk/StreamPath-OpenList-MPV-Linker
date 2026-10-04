@@ -41,6 +41,59 @@ void main() {
 
   const synchronizer = MpvPlaybackProgressSynchronizer();
 
+  test('人工重置拒绝旧日志与 watch_later，允许操作后的零秒采样', () async {
+    const url = 'http://host/dav/one.mp4';
+    final reset = DateTime.now();
+    final old = reset.subtract(const Duration(seconds: 1));
+    await writeJournal([
+      {
+        'outcome': 'position',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 50,
+        'duration': 100,
+        'recorded_at': old.millisecondsSinceEpoch,
+      },
+    ]);
+    await watchLaterFile(url).writeAsString('start=50\nduration=100\n');
+    await watchLaterFile(url).setLastModified(old);
+    await synchronizer.sync(
+      progressService: progressService,
+      watchLaterDirectory: watchLaterDir,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+      ignoreBefore: {url: reset},
+    );
+    expect(await progressService.getResumeProgress(url), isNull);
+    await synchronizer.syncTemporaryCheckpoints(
+      progressService: progressService,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+      ignoreBefore: {url: reset},
+    );
+    expect(await progressService.getTemporaryProgress(url), isNull);
+    await writeJournal([
+      {
+        'outcome': 'position',
+        'playlist_pos': 0,
+        'path': url,
+        'position': 0,
+        'duration': 100,
+        'recorded_at': reset
+            .add(const Duration(seconds: 1))
+            .millisecondsSinceEpoch,
+      },
+    ]);
+    await synchronizer.sync(
+      progressService: progressService,
+      watchLaterDirectory: watchLaterDir,
+      entries: const [MediaEntry(url: url)],
+      journalFile: journalFile,
+      ignoreBefore: {url: reset},
+    );
+    expect((await progressService.getResumeProgress(url))!.positionMs, 0);
+  });
+
   test('失败记录只接受 end-file reason=error 并兼容空 path', () {
     final failure = MpvPlaybackFailureRecord.tryParse(
       jsonEncode({

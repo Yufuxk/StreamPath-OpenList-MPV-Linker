@@ -13,6 +13,7 @@ import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
+import 'package:streampath/data/models/video_playback_scope.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/widgets/mounted_playback_bars.dart';
 import 'package:streampath/presentation/widgets/playback_bar.dart';
@@ -131,5 +132,13 @@ void main() {
     expect(find.byTooltip('跳过本季'), findsOneWidget);
     expect(find.textContaining('远端电影.mkv'), findsNothing);
     expect(find.textContaining('本地动画.mkv'), findsOneWidget);
+    final single = historyStore.sessions
+        .firstWhere((history) => history.sourceId == 'local:root-a')
+        .copyWith(playbackScope: VideoPlaybackScope.singleItem);
+    await tester.runAsync(() => historyStore.upsert(single));
+    await pumpBars(true);
+    await pumpBars(false);
+    expect(find.byType(PlaybackBar), findsOneWidget);
+    expect(find.byTooltip('跳过本季'), findsNothing);
   });
 }

@@ -32,4 +32,7 @@ class WebDavMediaSourceAdapter implements MediaDirectorySource {
   @override
   Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async =>
       WebDavMediaOpenTarget(service.resolveUrl(entry.entryKey));
+
+  Future<List<MediaDirectoryEntry>> fetchCatalogDirectory(String path) =>
+      service.fetchCatalogDirectory(path);
 }

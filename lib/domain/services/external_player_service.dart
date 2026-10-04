@@ -1,3 +1,4 @@
+import '../../data/models/video_queue.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,6 +14,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/app_language.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
 import '../../features/cache_control/cache_policy_service.dart';
@@ -96,6 +98,7 @@ class _PlaybackLaunchContext {
     required this.username,
     required this.password,
     required this.isLocal,
+    this.language = AppLanguage.simplifiedChinese,
   });
 
   factory _PlaybackLaunchContext.capture({
@@ -105,6 +108,7 @@ class _PlaybackLaunchContext {
     required String profileId,
     required String? username,
     required String? password,
+    AppLanguage language = AppLanguage.simplifiedChinese,
   }) {
     return _PlaybackLaunchContext(
       player: PlayerConfig(
@@ -120,6 +124,8 @@ class _PlaybackLaunchContext {
         scanSpecialSiblingFolders: player.scanSpecialSiblingFolders,
         sharePlaylistFonts: player.sharePlaylistFonts,
         webDavFontCacheEnabled: player.webDavFontCacheEnabled,
+        externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
+        videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
         autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
         allowSeasonGap: player.allowSeasonGap,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
@@ -141,6 +147,7 @@ class _PlaybackLaunchContext {
       username: username,
       password: password,
       isLocal: false,
+      language: language,
     );
   }
 
@@ -164,9 +171,11 @@ class _PlaybackLaunchContext {
     username: username,
     password: password,
     isLocal: true,
+    language: language,
   );
 
   final PlayerConfig player;
+  final AppLanguage language;
   final String serverUrl;
   final OpenListRecoveryConfig recovery;
   final String profileId;
@@ -224,6 +233,13 @@ class _PlayerSessionRuntime {
     this.artifactPaths = const [],
   });
 
+  ImplicitVideoPlan? implicitPlan;
+  String? queueFilePath;
+  int queueGeneration = 0;
+  int queueOffset = 0;
+  bool queueBusy = false;
+  int? pendingQueueIndex;
+  final Set<int> completedQueueGenerations = {};
   final String sessionId;
   final int? pid;
   final bool isMpv;
@@ -246,21 +262,23 @@ class _PlayerSessionRuntime {
   int? currentPlaylistPos;
   final List<MediaEntry> entries;
   final List<String> watchLaterUrls;
-  final String? username;
-  final String? password;
+  String? username;
+  String? password;
   final String profileId;
-  final _PlaybackLaunchContext? launchContext;
+  _PlaybackLaunchContext? launchContext;
   final WebDavFontDirectory? webDavFonts;
   final List<WebDavFontDirectory?>? webDavFontsByEntry;
   final List<String?>? localFontDirectories;
-  final WebDavFontBytesLoader? webDavFontLoader;
-  final WebDavFontFileLoader? webDavFontFileLoader;
+  WebDavFontBytesLoader? webDavFontLoader;
+  WebDavFontFileLoader? webDavFontFileLoader;
   final List<String> artifactPaths;
   String? seasonPlanFilePath;
   String? seasonMarkerFilePath;
   String? currentSeasonPlaylistPath;
   int? currentStageLength;
   int seasonStageNumber = 1;
+  bool? restoredExternalAudioInjectionEnabled;
+  AppLanguage? restoredExternalAudioLanguage;
   int trackGeneration = 0;
   int failureJournalByteOffset = 0;
   int temporaryProgressJournalByteOffset = 0;
@@ -306,6 +324,8 @@ class ExternalPlayerService {
     this._cachePolicy,
     this.onCacheWarning,
     this.onPlaybackRecovery,
+    this.onVideoProgress,
+    this.videoResetBefore,
     void Function(String message)? cacheLogger,
     this._cacheIpcUpdater,
     PlaybackLinkRecoveryProvider? linkRecoveryProvider,
@@ -325,6 +345,27 @@ class ExternalPlayerService {
 
   final StreamPathConfigStore _configStore;
 
+  ExternalPlayerService forFilmLibrary(
+    PlaybackProgressService progress,
+    Directory watchLater,
+  ) => ExternalPlayerService(
+    configStore: _configStore,
+    progressService: progress,
+    watchLaterDir: watchLater,
+    cachePolicy: _cachePolicy,
+    onCacheWarning: onCacheWarning,
+    onPlaybackRecovery: onPlaybackRecovery,
+    onVideoProgress: onVideoProgress,
+    videoResetBefore: videoResetBefore,
+    cacheLogger: _cacheLogger,
+    cacheIpcUpdater: _cacheIpcUpdater,
+    linkRecoveryProvider: _linkRecoveryProvider,
+    serverRestarter: _serverRestarter,
+    processController: _processController,
+    fontLocalizer: _fontLocalizer,
+    fontCache: _fontCache,
+  );
+
   final PlaybackProgressService? _progressService;
 
   /// MPV 智能缓存控制系统门面（可选）。null 时完全不注入缓存参数，
@@ -337,6 +378,8 @@ class ExternalPlayerService {
 
   /// 播放失败自动恢复状态；界面可据此更新 PID/IPC 与显示中文提示。
   final void Function(PlaybackRecoveryEvent event)? onPlaybackRecovery;
+  Future<void> Function(VideoProgressUpdate)? onVideoProgress;
+  Future<DateTime?> Function(String sourceId, String path)? videoResetBefore;
 
   final PlaybackLinkRecoveryProvider _linkRecoveryProvider;
   final PlaybackServerRestarter _serverRestarter;
@@ -356,6 +399,36 @@ class ExternalPlayerService {
 
   /// watch_later 目录；null 时使用「数据目录/mpv-watch-later」。
   Directory? _watchLaterDir;
+
+  List<
+    ({
+      String sourceId,
+      String target,
+      String snapshotPath,
+      String? resourcePath,
+    })
+  >
+  get mediaProbeSnapshots => [
+    for (final runtime in _sessions.values)
+      if (runtime.statusFilePath != null && runtime.currentTrackUrl != null)
+        (
+          sourceId: runtime.profileId,
+          target: runtime.currentTrackUrl!,
+          snapshotPath: '${runtime.statusFilePath}.media.json',
+          resourcePath:
+              runtime.currentPlaylistPos != null &&
+                  runtime.currentPlaylistPos! >= 0 &&
+                  runtime.currentPlaylistPos! < runtime.entries.length
+              ? runtime.entries[runtime.currentPlaylistPos!].catalogPath
+              : null,
+        ),
+  ];
+  Future<bool> anyPlayerRunning() async {
+    for (final session in _sessions.keys.toList()) {
+      if (await isPlayerRunning(session)) return true;
+    }
+    return false;
+  }
 
   final Map<String, _PlayerSessionRuntime> _sessions = {};
   final Map<String, _PlaybackRecoveryState> _recoveryStates = {};
@@ -435,6 +508,7 @@ class ExternalPlayerService {
     void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
     void Function(String stage)? onPreparationStage,
     SeasonPlaybackEntries? nextSeason,
+    ImplicitVideoPlan? implicitPlan,
   }) => _launch(
     entries: entries,
     sessionId: sessionId,
@@ -453,6 +527,7 @@ class ExternalPlayerService {
     onFontProgress: onFontProgress,
     onPreparationStage: onPreparationStage,
     nextSeason: nextSeason,
+    implicitPlan: implicitPlan,
   );
 
   /// 播放本地视频；不接入 WebDAV 认证、OpenList 恢复或网络缓存。
@@ -464,6 +539,7 @@ class ExternalPlayerService {
     int? resumeSeconds,
     List<String?>? localFontDirectories,
     SeasonPlaybackEntries? nextSeason,
+    ImplicitVideoPlan? implicitPlan,
   }) => _launch(
     entries: entries,
     sessionId: sessionId,
@@ -472,6 +548,7 @@ class ExternalPlayerService {
     localSourceId: sourceId,
     localFontDirectories: localFontDirectories,
     nextSeason: nextSeason,
+    implicitPlan: implicitPlan,
   );
 
   Future<PlayerLaunchResult> _launch({
@@ -493,6 +570,7 @@ class ExternalPlayerService {
     void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
     void Function(String stage)? onPreparationStage,
     SeasonPlaybackEntries? nextSeason,
+    ImplicitVideoPlan? implicitPlan,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -535,6 +613,7 @@ class ExternalPlayerService {
               profileId: webDavSourceId ?? fullConfig.profileId,
               username: username,
               password: password,
+              language: fullConfig.language,
             )
           : _PlaybackLaunchContext.local(
               player: fullConfig.toPlayerConfig(),
@@ -556,6 +635,7 @@ class ExternalPlayerService {
         onFontProgress: onFontProgress,
         onPreparationStage: onPreparationStage,
         nextSeason: nextSeason,
+        implicitPlan: implicitPlan,
       );
     } catch (_) {
       if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
@@ -586,6 +666,7 @@ class ExternalPlayerService {
     void Function(WebDavFontLocalizationProgress progress)? onFontProgress,
     void Function(String stage)? onPreparationStage,
     SeasonPlaybackEntries? nextSeason,
+    ImplicitVideoPlan? implicitPlan,
   }) async {
     if (entries.isEmpty) {
       throw AppException.config('播放列表为空，无法启动播放器');
@@ -651,10 +732,13 @@ class ExternalPlayerService {
     await ensureOwned();
 
     // ── 3. 组装参数 ───────────────────────────────────────────
-    final seasonTransition = isMpv && config.autoSeasonTransitionEnabled;
+    final implicit = isMpv && implicitPlan != null;
+    final seasonTransition =
+        isMpv && !implicit && config.autoSeasonTransitionEnabled;
     final hasNextSeason =
         seasonTransition && nextSeason != null && nextSeason.entries.isNotEmpty;
-    final listMode = isMpv && (entries.length > 1 || seasonTransition);
+    final listMode =
+        isMpv && (implicit || entries.length > 1 || seasonTransition);
     // 每次启动使用唯一 named pipe，作为会话身份与未来 IPC 扩展入口。
     final pipeToken = launchEpoch;
     final ipcPipe = isMpv ? '${r'\\.\pipe\mpvsocket_'}$pipeToken' : null;
@@ -673,6 +757,21 @@ class ExternalPlayerService {
           )
         : null;
     if (playlistPath != null) artifactPaths.add(playlistPath);
+    final queueFile = implicit
+        ? p.join(scriptBase!.path, 'mpv-queue-$artifactSessionId.json')
+        : null;
+    if (queueFile != null) {
+      await File(queueFile).writeAsString(
+        jsonEncode({
+          'index': implicitPlan!.index,
+          'generation': 0,
+          'catalog_path': entries.first.catalogPath,
+          'playlist': playlistPath,
+        }),
+        flush: true,
+      );
+      artifactPaths.add(queueFile);
+    }
     final nextPlaylistPath = hasNextSeason
         ? await MpvScripts.ensurePlaylistM3u(
             nextSeason.entries,
@@ -700,6 +799,10 @@ class ExternalPlayerService {
             startSec,
           );
 
+    if (implicit) {
+      args.addAll(['--idle=yes', '--keep-open=no', '--force-window=yes']);
+    }
+    if (isMpv) args.add('--fullscreen=yes');
     // MPV 使用 URL userinfo 完成源站 Basic 认证。四个实测版本均会在
     // 跨来源重定向时移除该凭据，而全局 http-header-fields 会继续转发。
     if (isMpv) {
@@ -805,7 +908,9 @@ class ExternalPlayerService {
           }
         }
         seasonFontPaths = fontPaths;
-        if (!seasonTransition && fontPaths.any((path) => path != null)) {
+        if (!seasonTransition &&
+            !implicit &&
+            fontPaths.any((path) => path != null)) {
           final fontScript = fontPaths.length == 1 && fontPaths.first != null
               ? await MpvScripts.ensureFontDirectory(
                   fontPaths.first!,
@@ -874,6 +979,7 @@ class ExternalPlayerService {
       // sub-add select；关闭时使用 auto 并恢复原 sid，仅加入轨道且
       // 保留当前内封字幕。
       if (!seasonTransition &&
+          !implicit &&
           subtitleInjectionEnabled &&
           entries.any((e) => e.subtitle != null)) {
         final subtitleScript = listMode
@@ -896,7 +1002,7 @@ class ExternalPlayerService {
         args.add('--script=$subtitleScript');
       }
       // 多集标题兜底脚本（与字幕脚本独立，始终注入）。
-      if (listMode && !seasonTransition) {
+      if (listMode && !seasonTransition && !implicit) {
         final titlesScript = await MpvScripts.ensureTitles(
           entries,
           scriptBase!,
@@ -906,7 +1012,7 @@ class ExternalPlayerService {
         artifactPaths.add(titlesScript);
         args.add('--script=$titlesScript');
       }
-      if (seasonTransition) {
+      if (seasonTransition || implicit) {
         final currentResources = await MpvScripts.ensureSeasonResources(
           entries,
           seasonFontPaths.sublist(0, entries.length),
@@ -934,6 +1040,35 @@ class ExternalPlayerService {
           args.add('--script=$nextResources');
         }
       }
+      if (!launchContext.isLocal && config.externalAudioInjectionEnabled) {
+        for (final audioSeason in [
+          (entries: entries, playlist: playlistPath, id: artifactSessionId),
+          if (hasNextSeason)
+            (
+              entries: nextSeason.entries,
+              playlist: nextPlaylistPath,
+              id: '${artifactSessionId}_next',
+            ),
+        ]) {
+          if (!audioSeason.entries.any(
+            (entry) => entry.externalAudioTracks.isNotEmpty,
+          )) {
+            continue;
+          }
+          final audioScript = await MpvScripts.ensureExternalAudioTracks(
+            audioSeason.entries,
+            authUrl,
+            scriptBase!,
+            playlistPath: audioSeason.playlist,
+            deferUntilPlaylistChange: audioSeason.id != artifactSessionId,
+            language: launchContext.language,
+            sessionId: audioSeason.id,
+          );
+          artifactPaths.add(audioScript);
+          await ensureOwned();
+          args.add('--script=$audioScript');
+        }
+      }
       // 当前播放状态上报脚本：file-loaded（含自动切集）与暂停变化时
       // 写 mpv-current.txt，供软件同步「继续播放」条（单集同样注入）。
       {
@@ -952,7 +1087,13 @@ class ExternalPlayerService {
           dataDir.path,
           sessionProgressFileName(resolvedSessionId, launchEpoch: launchEpoch),
         );
-        artifactPaths.addAll([currentPath, commandPath, progressFilePath]);
+        artifactPaths.addAll([
+          currentPath,
+          '$currentPath.media.json',
+          '$currentPath.media.json.tmp',
+          commandPath,
+          progressFilePath,
+        ]);
         if (seasonTransition) {
           seasonPlanFilePath = p.join(
             dataDir.path,
@@ -994,6 +1135,7 @@ class ExternalPlayerService {
           sessionId: artifactSessionId,
           progressFile: progressFilePath,
           launchEpoch: launchEpoch,
+          queueFile: queueFile,
         );
         await ensureOwned();
         artifactPaths.add(currentScript);
@@ -1164,10 +1306,10 @@ class ExternalPlayerService {
       ownershipGeneration: ownershipGeneration,
       currentTrackUrl: entries[playlistStart].url,
       currentPlaylistPos: playlistStart,
-      entries: seasonTransition
+      entries: (seasonTransition || implicit)
           ? <MediaEntry>[...entries, if (hasNextSeason) ...nextSeason.entries]
           : List<MediaEntry>.unmodifiable(entries),
-      watchLaterUrls: seasonTransition
+      watchLaterUrls: (seasonTransition || implicit)
           ? <String>[
               ...watchLaterUrls,
               if (hasNextSeason)
@@ -1183,11 +1325,11 @@ class ExternalPlayerService {
       localFontDirectories: localFontDirectories,
       webDavFontLoader: webDavFontLoader,
       webDavFontFileLoader: webDavFontFileLoader,
-      artifactPaths: seasonTransition
+      artifactPaths: (seasonTransition || implicit)
           ? List<String>.of(artifactPaths)
           : List<String>.unmodifiable(artifactPaths),
     );
-    if (seasonTransition) {
+    if (seasonTransition || implicit) {
       runtime
         ..seasonPlanFilePath = seasonPlanFilePath
         ..seasonMarkerFilePath = seasonMarkerFilePath
@@ -1195,7 +1337,40 @@ class ExternalPlayerService {
         ..currentStageLength = entries.length;
       await _writeSeasonEntries(runtime);
     }
+    if (implicit) {
+      runtime.implicitPlan = implicitPlan;
+      runtime.queueFilePath = queueFile;
+      final first = entries.first;
+      runtime.entries
+        ..clear()
+        ..addAll(
+          implicitPlan.items.map(
+            (item) => MediaEntry(
+              url: '',
+              catalogPath: item.versions.first.path,
+              title: item.versions.first.name,
+            ),
+          ),
+        );
+      runtime.watchLaterUrls
+        ..clear()
+        ..addAll(List.filled(runtime.entries.length, ''));
+      runtime.entries[implicitPlan.index] = first;
+      runtime.watchLaterUrls[implicitPlan.index] = authUrl(first.url);
+      runtime.currentPlaylistPos = implicitPlan.index;
+      implicitPlan.selected[implicitPlan.index] = implicitPlan
+          .items[implicitPlan.index]
+          .versions
+          .firstWhere((v) => v.path == first.catalogPath);
+      implicitPlan.prepared[first.catalogPath!] = PreparedVideoItem(
+        entry: first,
+        localFontDirectory: localFontDirectories?.firstOrNull,
+        remoteFonts: webDavFontsByEntry?.firstOrNull,
+      );
+    }
+    if (implicit) await _writeSeasonEntries(runtime);
     _sessions[resolvedSessionId] = runtime;
+    if (implicit) unawaited(_watchImplicitQueue(runtime));
     _lastSessionId = resolvedSessionId;
     // 第二阶段：播放中动态监控（内存压力/网络异常/卡顿记录）。
     // 仅在本次会话状态为「正常注入且非 TS 直链」时启动；监控输出
@@ -1332,6 +1507,13 @@ class ExternalPlayerService {
         }
         final lines = await file.readAsLines();
         if (lines.length < 2) {
+          if (!await _shouldContinueRuntimeWork(runtime)) return;
+          continue;
+        }
+        if (runtime.queueFilePath != null &&
+            (lines.length < 26 ||
+                lines[25] != '1' ||
+                int.tryParse(lines[23]) != runtime.queueGeneration)) {
           if (!await _shouldContinueRuntimeWork(runtime)) return;
           continue;
         }
@@ -1690,6 +1872,7 @@ class ExternalPlayerService {
     required int generation,
   }) {
     if (runtime.sessionId != sessionId ||
+        runtime.queueFilePath != null && runtime.currentTrackUrl == null ||
         !_isRuntimeCurrent(runtime, generation)) {
       return;
     }
@@ -1996,6 +2179,7 @@ class ExternalPlayerService {
   }) async {
     // watcher、界面查询和诊断共享同一个 tracker；unknown 只允许继续等待，
     // 探活重试耗尽时保留 runtime，不清理也不把状态改成已退出。
+    await _calibrateVideoClock(runtime);
     final tracker = runtime.livenessTracker;
     while (true) {
       final liveness = await tracker.sample();
@@ -2013,6 +2197,7 @@ class ExternalPlayerService {
         // 均保持会话，避免 watcher 反复尝试破坏性操作。
         if (termination != PlayerTerminationOutcome.terminated) return;
       }
+      await _reportCurrentVideoProgress(runtime);
       await _syncTemporaryProgress(runtime);
       // 探活未知时不能把残留的失败日志解释为当前进程失败，
       // 否则恢复链可能在无法确认归属时终止或重启播放器。
@@ -2058,7 +2243,10 @@ class ExternalPlayerService {
       );
       return marker?.matches(
             expectedLastPlaylistPos:
-                (runtime.currentStageLength ?? runtime.entries.length) - 1,
+                (runtime.queueFilePath != null
+                    ? runtime.entries.length
+                    : runtime.currentStageLength ?? runtime.entries.length) -
+                1,
             expectedLaunchEpoch: runtime.launchEpoch,
           ) ??
           false;
@@ -2074,6 +2262,7 @@ class ExternalPlayerService {
       return;
     }
     try {
+      await _restoreManualVideoResets(runtime);
       final nextOffset = await _progressSyncCoordinator.run<int>(
         sessionId: runtime.sessionId,
         generation: runtime.progressGeneration,
@@ -2084,6 +2273,7 @@ class ExternalPlayerService {
               entries: runtime.entries,
               journalFile: File(path),
               startLine: runtime.temporaryProgressJournalByteOffset,
+              ignoreBefore: _manualResets[runtime.profileId] ?? const {},
               expectedEpoch: runtime.launchEpoch.isEmpty
                   ? null
                   : runtime.launchEpoch,
@@ -2223,11 +2413,15 @@ class ExternalPlayerService {
           ? null
           : (rawPosition.floor() - 2).clamp(0, 1 << 31).toInt();
       try {
+        runtime.implicitPlan?.index = entryIndex;
         final result = await _launchWithContext(
-          entries: runtime.entries,
+          entries: runtime.implicitPlan == null
+              ? runtime.entries
+              : [runtime.entries[entryIndex]],
+          implicitPlan: runtime.implicitPlan,
           launchContext: launchContext,
           sessionId: runtime.sessionId,
-          playlistStart: entryIndex,
+          playlistStart: runtime.implicitPlan == null ? entryIndex : 0,
           resumeSeconds: resumeSeconds,
           automaticRecovery: true,
           ownershipGeneration: runtime.ownershipGeneration,
@@ -2438,6 +2632,21 @@ class ExternalPlayerService {
     _PlayerSessionRuntime runtime,
     List<MediaEntry> entries,
   ) async {
+    if (runtime.progressFilePath != null &&
+        await File(runtime.progressFilePath!).exists()) {
+      final chunk = await const MpvCompleteJsonlReader().read(
+        File(runtime.progressFilePath!),
+      );
+      for (final line in chunk.lines) {
+        final record = jsonDecode(line) as Map<String, dynamic>;
+        if (record['epoch'] == runtime.launchEpoch &&
+            (record['outcome'] == 'position' ||
+                record['outcome'] == 'completed')) {
+          await _reportJournalProgress(runtime, record);
+        }
+      }
+    }
+    await _restoreManualVideoResets(runtime);
     final ps = _progressService;
     final dir = _watchLaterDir;
     if (ps == null || dir == null) return;
@@ -2454,6 +2663,7 @@ class ExternalPlayerService {
             ? null
             : File(runtime.progressFilePath!),
         expectedEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+        ignoreBefore: _manualResets[runtime.profileId] ?? const {},
       ),
     );
   }
@@ -2475,6 +2685,546 @@ class ExternalPlayerService {
   Future<Directory> _scriptBase() async =>
       _watchLaterDir ?? await AppPaths.cacheDirectory(); // 脚本/播放列表产物
 
+  final _manualResets = <String, Map<String, DateTime>>{};
+  final _manualPathResets = <String, Map<String, DateTime>>{};
+  Future<void> _restoreManualVideoResets(_PlayerSessionRuntime runtime) async {
+    final lookup = videoResetBefore;
+    if (lookup == null) return;
+    final paths = _manualPathResets.putIfAbsent(runtime.profileId, () => {});
+    final urls = _manualResets.putIfAbsent(runtime.profileId, () => {});
+    for (final entry in runtime.entries) {
+      final path = entry.catalogPath;
+      if (path == null || entry.url.isEmpty) continue;
+      final cutoff = paths[path] ??=
+          await lookup(runtime.profileId, path) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      if (cutoff.millisecondsSinceEpoch > 0) {
+        urls[stripUserInfo(entry.url)] = cutoff;
+      }
+    }
+  }
+
+  void setPendingVideo(String sessionId, int index) {
+    final runtime = _sessions[sessionId];
+    if (runtime?.implicitPlan != null) runtime!.pendingQueueIndex = index;
+  }
+
+  bool acceptsVideoSample(String sourceId, String path, DateTime observed) =>
+      observed.isAfter(
+        _manualPathResets[sourceId]?[path] ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+      );
+  Future<void> clearVideoResume(
+    String sourceId,
+    Set<String> paths,
+    Set<String> urls,
+    DateTime cutoff,
+  ) async {
+    final resets = _manualResets.putIfAbsent(sourceId, () => {});
+    final pathResets = _manualPathResets.putIfAbsent(sourceId, () => {});
+    for (final path in paths) {
+      pathResets[path] = cutoff;
+    }
+    final candidates = <String>{...urls};
+    for (final runtime in _sessions.values.where(
+      (r) => r.profileId == sourceId,
+    )) {
+      for (var i = 0; i < runtime.entries.length; i++) {
+        if (!paths.contains(runtime.entries[i].catalogPath)) continue;
+        candidates.add(runtime.entries[i].url);
+        if (i < runtime.watchLaterUrls.length) {
+          candidates.add(runtime.watchLaterUrls[i]);
+        }
+      }
+    }
+    final directory = await _ensureWatchLaterDir();
+    for (final url in candidates.where((u) => u.isNotEmpty)) {
+      resets[stripUserInfo(url)] = cutoff;
+      await _progressService?.deleteProgress(
+        stripUserInfo(url),
+        profileId: sourceId,
+      );
+      await _progressService?.deleteTemporaryProgress(
+        stripUserInfo(url),
+        profileId: sourceId,
+      );
+      await MpvWatchLaterSync().deleteRecord(directory, url);
+    }
+  }
+
+  bool hasPendingVideo(String sessionId) =>
+      _sessions[sessionId]?.pendingQueueIndex != null;
+  bool _queueControlEnabled = true;
+
+  /// 应用退出后保留当前 MPV，停止应用管理的后续切集。
+  void stopImplicitPlaybackControl() {
+    _queueControlEnabled = false;
+  }
+
+  Future<void> attachImplicitPlan(
+    String sessionId,
+    ImplicitVideoPlan plan, {
+    String? serverUrl,
+    String? username,
+    String? password,
+    WebDavFontBytesLoader? fontLoader,
+    WebDavFontFileLoader? fontFileLoader,
+  }) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null ||
+        runtime.queueFilePath == null ||
+        runtime.implicitPlan != null) {
+      return;
+    }
+    runtime.implicitPlan = plan;
+    final config = _configStore.current;
+    runtime.launchContext = serverUrl == null
+        ? _PlaybackLaunchContext.local(
+            player: config.toPlayerConfig(),
+            sourceId: runtime.profileId,
+          )
+        : _PlaybackLaunchContext.capture(
+            player: config.toPlayerConfig(),
+            serverUrl: serverUrl,
+            recovery: config.openListRecovery,
+            profileId: runtime.profileId,
+            username: username,
+            password: password,
+            language: config.language,
+          );
+    runtime.username = username;
+    runtime.password = password;
+    runtime.webDavFontLoader = fontLoader;
+    runtime.webDavFontFileLoader = fontFileLoader;
+    // 重启只恢复控制入口，历史 EOF 不触发自动播放。
+    if (runtime.progressFilePath != null &&
+        await File(runtime.progressFilePath!).exists()) {
+      final file = File(runtime.progressFilePath!);
+      final chunk = await const MpvCompleteJsonlReader().read(file);
+      runtime.queueOffset = chunk.nextOffset;
+      for (final line in chunk.lines) {
+        final record = jsonDecode(line) as Map<String, dynamic>;
+        if (record['epoch'] != runtime.launchEpoch ||
+            record['queue_generation'] != runtime.queueGeneration) {
+          continue;
+        }
+        await _reportJournalProgress(runtime, record);
+        if (record['outcome'] == 'completed' && record['reason'] == 'eof') {
+          final next = (record['playlist_pos'] as int) + 1;
+          if (next < plan.items.length) {
+            runtime.pendingQueueIndex = next;
+            await plan.pending?.call(next);
+          } else {
+            await _finishImplicitQueue(runtime);
+            return;
+          }
+        }
+      }
+    }
+    unawaited(_watchImplicitQueue(runtime));
+  }
+
+  Future<void> _prepareFollowingVideo(
+    _PlayerSessionRuntime runtime,
+    int index,
+  ) async {
+    final plan = runtime.implicitPlan!;
+    plan.prepared.removeWhere(
+      (path, _) =>
+          !plan.items[index].versions.any((v) => v.path == path) &&
+          !(index + 1 < plan.items.length &&
+              plan.items[index + 1].versions.any((v) => v.path == path)),
+    );
+    if (index + 1 >= plan.items.length ||
+        plan.items[index + 1].versions.length != 1) {
+      return;
+    }
+    final version = plan.items[index + 1].versions.single;
+    if (plan.prepared.containsKey(version.path)) return;
+    try {
+      var prepared = await plan.prepare(version);
+      final fonts = await _queuedFontDirectory(
+        runtime,
+        prepared,
+        await _scriptBase(),
+        '${runtime.artifactSessionId}_prepare${runtime.queueGeneration + 1}',
+      );
+      if (fonts != null) {
+        prepared = PreparedVideoItem(
+          entry: prepared.entry,
+          localFontDirectory: fonts,
+        );
+      }
+      if (_queueControlEnabled &&
+          identical(_sessions[runtime.sessionId], runtime) &&
+          plan.index == index) {
+        plan.prepared[version.path] = prepared;
+      }
+    } on AppException {
+      return;
+    } on FileSystemException {
+      return;
+    }
+  }
+
+  Future<String?> _queuedFontDirectory(
+    _PlayerSessionRuntime runtime,
+    PreparedVideoItem prepared,
+    Directory base,
+    String id,
+  ) async {
+    String? fonts = prepared.localFontDirectory;
+    if (prepared.remoteFonts case final source?) {
+      final loader = runtime.webDavFontLoader;
+      if (loader != null) {
+        final result = await _fontCache.localize(
+          source: source,
+          sourceId: runtime.profileId,
+          retentionSessionId: runtime.sessionId,
+          sessionBase: base,
+          sessionId: id,
+          loader: loader,
+          fileLoader: runtime.webDavFontFileLoader,
+          enabled: runtime.launchContext!.player.webDavFontCacheEnabled,
+          maxFiles: WebDavFontLocalizer.maxFontFiles,
+          maxBytes: WebDavFontLocalizer.maxSessionBytes,
+          timeout: const Duration(seconds: 30),
+        );
+        if (result != null) {
+          fonts = result.directory.path;
+          if (!result.persistent) {
+            runtime.artifactPaths.addAll([
+              ...result.files.map((f) => f.path),
+              result.directory.path,
+            ]);
+          }
+        }
+      }
+    }
+    return fonts;
+  }
+
+  Future<void> _calibrateVideoClock(_PlayerSessionRuntime runtime) async {
+    if (runtime.ipcPipeName == null) return;
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (await controller.connect(timeout: const Duration(seconds: 2))) {
+        await controller.command([
+          'script-message',
+          'streampath-clock',
+          DateTime.now().millisecondsSinceEpoch.toString(),
+        ]);
+      }
+    } on StateError {
+      return;
+    } on TimeoutException {
+      return;
+    } finally {
+      await controller.dispose();
+    }
+  }
+
+  Future<void> _watchImplicitQueue(_PlayerSessionRuntime runtime) async {
+    while (_queueControlEnabled &&
+        identical(_sessions[runtime.sessionId], runtime)) {
+      final path = runtime.progressFilePath;
+      if (path != null && await File(path).exists()) {
+        final chunk = await const MpvCompleteJsonlReader().read(
+          File(path),
+          startOffset: runtime.queueOffset,
+        );
+        runtime.queueOffset = chunk.nextOffset;
+        for (final line in chunk.lines) {
+          final record = jsonDecode(line) as Map<String, dynamic>;
+          if (record['epoch'] != runtime.launchEpoch ||
+              record['queue_generation'] != runtime.queueGeneration) {
+            continue;
+          }
+          final plan = runtime.implicitPlan!;
+          final index = (record['playlist_pos'] as num).toInt();
+          if (index < 0 || index >= plan.items.length) continue;
+          final physical = record['path'] as String? ?? '';
+          if (physical.isNotEmpty &&
+              !_sameTrack(
+                stripUserInfo(physical),
+                stripUserInfo(runtime.entries[index].url),
+              )) {
+            continue;
+          }
+          if (record['outcome'] == 'loaded') {
+            plan.index = index;
+            runtime.currentPlaylistPos = index;
+            runtime.pendingQueueIndex = null;
+            await plan.activated(index, plan.selected[index]!);
+            unawaited(_prepareFollowingVideo(runtime, index));
+          } else if (record['outcome'] == 'completed' &&
+              record['reason'] == 'eof' &&
+              runtime.completedQueueGenerations.add(
+                (record['file_generation'] as num?)?.toInt() ??
+                    runtime.queueGeneration,
+              )) {
+            await _reportJournalProgress(runtime, record);
+            if (runtime.queueBusy) continue;
+            final next = index + 1;
+            if (next < plan.items.length) {
+              runtime.pendingQueueIndex = next;
+              await plan.pending?.call(next);
+              await _selectImplicitEntry(runtime, next);
+            } else {
+              await _finishImplicitQueue(runtime);
+              return;
+            }
+          } else if (record['outcome'] == 'position') {
+            if (record['reason'] == 'error') {
+              runtime.pendingQueueIndex = index;
+              await plan.pending?.call(index);
+              if (runtime.launchContext?.recovery.enabled != true) {
+                plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
+              }
+            }
+            await _reportJournalProgress(runtime, record);
+          }
+        }
+      }
+      if (runtime.livenessTracker.status == PlayerProcessLiveness.exited) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+  }
+
+  Future<void> _finishImplicitQueue(_PlayerSessionRuntime runtime) async {
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (await controller.connect(timeout: const Duration(seconds: 2))) {
+        await controller.command([
+          'script-message',
+          'streampath-queue-finished',
+        ]);
+      }
+    } finally {
+      await controller.dispose();
+    }
+  }
+
+  Future<void> _reportJournalProgress(
+    _PlayerSessionRuntime runtime,
+    Map<String, dynamic> record,
+  ) async {
+    final index = (record['playlist_pos'] as num?)?.toInt();
+    if (index == null || index < 0 || index >= runtime.entries.length) return;
+    final physical = record['path'] as String? ?? '';
+    if (physical.isNotEmpty &&
+        !_sameTrack(
+          stripUserInfo(physical),
+          stripUserInfo(runtime.entries[index].url),
+        )) {
+      return;
+    }
+    final path = runtime.entries[index].catalogPath;
+    if (path == null || record['recorded_at'] is! num) return;
+    await onVideoProgress?.call(
+      VideoProgressUpdate(
+        sourceId: runtime.profileId,
+        path: path,
+        positionMs: (((record['position'] as num?) ?? 0) * 1000).round(),
+        durationMs: record['duration'] is num
+            ? ((record['duration'] as num) * 1000).round()
+            : null,
+        recordedAt: DateTime.fromMillisecondsSinceEpoch(
+          (record['recorded_at'] as num).toInt(),
+        ),
+        completed: record['outcome'] == 'completed',
+      ),
+    );
+  }
+
+  Future<void> _reportCurrentVideoProgress(
+    _PlayerSessionRuntime runtime,
+  ) async {
+    if (onVideoProgress == null || runtime.statusFilePath == null) return;
+    final file = File(runtime.statusFilePath!);
+    try {
+      if (!await file.exists()) return;
+      final modified = await file.lastModified();
+      final lines = await file.readAsLines();
+      if (lines.length < 5) return;
+      if (runtime.queueFilePath != null &&
+          (lines.length < 26 ||
+              lines[25] != '1' ||
+              int.tryParse(lines[23]) != runtime.queueGeneration)) {
+        return;
+      }
+      final index = int.tryParse(lines.first);
+      if (index == null || index < 0 || index >= runtime.entries.length) return;
+      final entry = runtime.entries[index];
+      if (entry.catalogPath == null ||
+          !_sameTrack(stripUserInfo(lines[1]), stripUserInfo(entry.url))) {
+        return;
+      }
+      final position = double.tryParse(lines[3]);
+      final duration = double.tryParse(lines[4]);
+      if (position == null || position < 0) return;
+      await onVideoProgress!.call(
+        VideoProgressUpdate(
+          sourceId: runtime.profileId,
+          path: entry.catalogPath!,
+          positionMs: (position * 1000).round(),
+          durationMs: duration != null && duration > 0
+              ? (duration * 1000).round()
+              : null,
+          recordedAt: modified,
+        ),
+      );
+    } on FileSystemException {
+      return;
+    }
+  }
+
+  Future<bool> _selectImplicitEntry(
+    _PlayerSessionRuntime runtime,
+    int index, {
+    String? versionPath,
+  }) async {
+    final plan = runtime.implicitPlan!;
+    if (!_queueControlEnabled ||
+        runtime.queueBusy ||
+        index < 0 ||
+        index >= plan.items.length) {
+      return false;
+    }
+    runtime.queueBusy = true;
+    runtime.pendingQueueIndex = index;
+    try {
+      await plan.pending?.call(index);
+      final item = plan.items[index];
+      final version =
+          (versionPath == null
+              ? null
+              : item.versions.firstWhere((v) => v.path == versionPath)) ??
+          plan.selected[index] ??
+          (item.versions.length == 1
+              ? item.versions.single
+              : await plan.chooseVersion(item));
+      if (version == null) return false;
+      final prepared = plan.prepared[version.path] ??= await plan.prepare(
+        version,
+      );
+      if (!_queueControlEnabled ||
+          !identical(_sessions[runtime.sessionId], runtime)) {
+        return false;
+      }
+      final entry = prepared.entry;
+      await syncActiveProgress(runtime.sessionId);
+      final base = await _scriptBase();
+      final generation = runtime.queueGeneration + 1;
+      final id = '${runtime.artifactSessionId}_item$generation';
+      final context = runtime.launchContext!;
+      String auth(String url) =>
+          runtime.username != null &&
+              runtime.username!.isNotEmpty &&
+              isSameOrigin(context.serverUrl, url)
+          ? embedCredentials(url, runtime.username!, runtime.password ?? '')
+          : url;
+      final playlist = await MpvScripts.ensurePlaylistM3u(
+        [entry],
+        auth,
+        base,
+        sessionId: id,
+      );
+      final fonts = await _queuedFontDirectory(runtime, prepared, base, id);
+      final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+      try {
+        if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+          return false;
+        }
+        final oldPlaylist = await controller.getProperty('playlist') as List;
+        final resources = await MpvScripts.ensureSeasonResources(
+          [entry],
+          [fonts],
+          auth,
+          playlist,
+          base,
+          subtitleInjectionEnabled: context.player.subtitleInjectionEnabled,
+          autoSelect: context.player.subtitleAutoSelectEnabled,
+          sessionId: id,
+          initialPlaylistIds: [
+            for (final item in oldPlaylist) (item as Map)['id'] as int,
+          ],
+        );
+        runtime.artifactPaths.addAll([playlist, resources]);
+        await controller.command(['load-script', resources]);
+        if (context.player.externalAudioInjectionEnabled &&
+            entry.externalAudioTracks.isNotEmpty) {
+          final script = await MpvScripts.ensureExternalAudioTracks(
+            [entry],
+            auth,
+            base,
+            playlistPath: playlist,
+            deferUntilPlaylistChange: true,
+            initialPlaylistIds: [
+              for (final item in oldPlaylist) (item as Map)['id'] as int,
+            ],
+            language: context.language,
+            sessionId: id,
+          );
+          runtime.artifactPaths.add(script);
+          await controller.command(['load-script', script]);
+        }
+        final progress = await _progressService?.getResumeProgress(
+          entry.url,
+          profileId: runtime.profileId,
+        );
+        await controller.setProperty(
+          'options/start',
+          context.player.resumeEnabled &&
+                  progress != null &&
+                  !progress.isFinishedNearEnd()
+              ? (progress.resumeSeconds ?? 0).toString()
+              : '0',
+        );
+        runtime.entries[index] = entry;
+        runtime.watchLaterUrls[index] = auth(entry.url);
+        runtime.queueGeneration = generation;
+        runtime.trackGeneration++;
+        runtime.currentTrackUrl = null;
+        plan.selected[index] = version;
+        runtime.currentSeasonPlaylistPath = playlist;
+        final queueFile = File(runtime.queueFilePath!);
+        await queueFile.writeAsString(
+          jsonEncode({
+            'index': index,
+            'generation': generation,
+            'catalog_path': version.path,
+            'playlist': playlist,
+          }),
+          flush: true,
+        );
+        await _writeSeasonEntries(runtime);
+        await controller.setProperty('fullscreen', true);
+        await controller.command(['loadlist', playlist, 'replace']);
+        await controller.setProperty('pause', false);
+      } finally {
+        await controller.dispose();
+      }
+      return true;
+    } on AppException catch (error) {
+      plan.failed?.call(error.message);
+      return false;
+    } on FileSystemException catch (error) {
+      plan.failed?.call(error.message);
+      return false;
+    } on StateError catch (error) {
+      plan.failed?.call(error.message);
+      return false;
+    } on TimeoutException {
+      plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
+      return false;
+    } finally {
+      runtime.queueBusy = false;
+    }
+  }
+
   Future<void> _writeSeasonEntries(_PlayerSessionRuntime runtime) async {
     final base = await AppPaths.cacheDirectory();
     final file = File(
@@ -2488,10 +3238,23 @@ class ExternalPlayerService {
       jsonEncode({
         'entries': [
           for (final entry in runtime.entries)
-            {'url': entry.url, 'title': entry.title},
+            {
+              'url': entry.url,
+              'title': entry.title,
+              'catalogPath': entry.catalogPath,
+            },
         ],
         'artifacts': runtime.artifactPaths,
         'stageNumber': runtime.seasonStageNumber,
+        'queueFile': runtime.queueFilePath,
+        'queueGeneration': runtime.queueGeneration,
+        'externalAudioInjectionEnabled':
+            runtime.launchContext?.player.externalAudioInjectionEnabled ??
+            runtime.restoredExternalAudioInjectionEnabled,
+        'externalAudioLanguage':
+            (runtime.launchContext?.language ??
+                    runtime.restoredExternalAudioLanguage)
+                ?.configValue,
       }),
       flush: true,
     );
@@ -2511,6 +3274,7 @@ class ExternalPlayerService {
       final entry = MediaEntry(
         url: value['url'] as String,
         title: value['title'] as String?,
+        catalogPath: value['catalogPath'] as String?,
       );
       runtime.entries.add(entry);
       runtime.watchLaterUrls.add(entry.url);
@@ -2518,7 +3282,16 @@ class ExternalPlayerService {
     runtime.artifactPaths.addAll(
       (json['artifacts'] as List? ?? const []).whereType<String>(),
     );
+    runtime.queueFilePath = json['queueFile'] as String?;
+    runtime.queueGeneration = (json['queueGeneration'] as num?)?.toInt() ?? 0;
     runtime.seasonStageNumber = (json['stageNumber'] as num?)?.toInt() ?? 1;
+    runtime.restoredExternalAudioInjectionEnabled =
+        json['externalAudioInjectionEnabled'] as bool?;
+    if (json['externalAudioLanguage'] != null) {
+      runtime.restoredExternalAudioLanguage = AppLanguage.fromJson(
+        json['externalAudioLanguage'],
+      );
+    }
   }
 
   /// 为已运行的 MPV 会话准备下一个季列表，并在资源脚本加载成功后提交切换计划。
@@ -2622,12 +3395,38 @@ class ExternalPlayerService {
       sessionId: stageId,
     );
     runtime.artifactPaths.addAll([playlist, resources]);
+    final launchContext = runtime.launchContext;
     final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
     try {
       if (!await controller.connect(timeout: const Duration(seconds: 2))) {
         return null;
       }
       await controller.command(['load-script', resources]);
+      if ((launchContext?.player.externalAudioInjectionEnabled ??
+              runtime.restoredExternalAudioInjectionEnabled ??
+              config.externalAudioInjectionEnabled) &&
+          season.entries.any((entry) => entry.externalAudioTracks.isNotEmpty)) {
+        // Lua 初始化可晚于 loadlist，先固定旧列表身份。
+        final currentPlaylist =
+            await controller.getProperty('playlist') as List;
+        final audioScript = await MpvScripts.ensureExternalAudioTracks(
+          season.entries,
+          authUrl,
+          base,
+          playlistPath: playlist,
+          deferUntilPlaylistChange: true,
+          initialPlaylistIds: [
+            for (final item in currentPlaylist) (item as Map)['id'] as int,
+          ],
+          language:
+              launchContext?.language ??
+              runtime.restoredExternalAudioLanguage ??
+              config.language,
+          sessionId: stageId,
+        );
+        runtime.artifactPaths.add(audioScript);
+        await controller.command(['load-script', audioScript]);
+      }
     } finally {
       await controller.disconnect();
     }
@@ -2700,6 +3499,7 @@ class ExternalPlayerService {
         return false;
       }
       await syncActiveProgress(sessionId);
+      await controller.setProperty('fullscreen', true);
       await controller.command(['loadlist', nextPlaylistPath, 'replace']);
       try {
         await controller.setProperty('pause', false);
@@ -2780,6 +3580,7 @@ class ExternalPlayerService {
         ..currentStageLength = currentStageLength;
       await _restoreSeasonEntries(runtime);
     }
+    if (runtime.entries.isEmpty) await _restoreSeasonEntries(runtime);
     _sessions[sessionId] = runtime;
     _launchOwnership[sessionId] = runtime.ownershipGeneration;
     _lastSessionId = sessionId;
@@ -2860,8 +3661,46 @@ class ExternalPlayerService {
   Future<void> sendPause([String? sessionId]) =>
       _sendPauseCmd(sessionId ?? _lastSessionId, true);
 
-  Future<void> sendResume([String? sessionId]) =>
-      _sendPauseCmd(sessionId ?? _lastSessionId, false);
+  Future<void> sendResume([String? sessionId]) async {
+    final id = sessionId ?? _lastSessionId;
+    final runtime = _sessions[id];
+    if (runtime?.implicitPlan != null && runtime!.pendingQueueIndex != null) {
+      await _selectImplicitEntry(runtime, runtime.pendingQueueIndex!);
+    } else {
+      await _sendPauseCmd(id, false);
+    }
+  }
+
+  /// 在已有 MPV 列表内切集，状态和进度仍由原会话通道同步。
+  Future<bool> selectPlaylistEntry(
+    String sessionId,
+    int index, {
+    String? versionPath,
+  }) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null ||
+        !runtime.isMpv ||
+        runtime.ipcPipeName == null ||
+        await runtime.livenessTracker.sample() != PlayerProcessLiveness.alive) {
+      return false;
+    }
+    if (runtime.implicitPlan != null) {
+      return _selectImplicitEntry(runtime, index, versionPath: versionPath);
+    }
+    if (runtime.queueFilePath != null) return false;
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+        return false;
+      }
+      await syncActiveProgress(sessionId);
+      await controller.setProperty('playlist-pos', index);
+      await controller.setProperty('pause', false);
+      return true;
+    } finally {
+      await controller.dispose();
+    }
+  }
 
   Future<void> _sendPauseCmd(String? sessionId, bool pause) async {
     if (sessionId == null) return;
@@ -3011,11 +3850,14 @@ class ExternalPlayerService {
       }
       final dataDir = await AppPaths.cacheDirectory(); // mpv 会话产物
       final base = await _scriptBase();
+      final statusPath = p.join(
+        dataDir.path,
+        sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
+      );
       final paths = <String>[
-        p.join(
-          dataDir.path,
-          sessionStatusFileName(sessionId, launchEpoch: launchEpoch),
-        ),
+        statusPath,
+        '$statusPath.media.json',
+        '$statusPath.media.json.tmp',
         p.join(
           dataDir.path,
           sessionCommandFileName(sessionId, launchEpoch: launchEpoch),

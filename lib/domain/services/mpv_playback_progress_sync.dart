@@ -70,6 +70,7 @@ class MpvProgressJournalRecord {
     required this.positionSeconds,
     required this.durationSeconds,
     this.epoch,
+    this.recordedAt,
   });
 
   final MpvProgressOutcome outcome;
@@ -78,6 +79,7 @@ class MpvProgressJournalRecord {
   final double? positionSeconds;
   final double? durationSeconds;
   final String? epoch;
+  final int? recordedAt;
 
   static MpvProgressJournalRecord? tryParse(
     String line, {
@@ -102,6 +104,7 @@ class MpvProgressJournalRecord {
         positionSeconds: (value['position'] as num?)?.toDouble(),
         durationSeconds: (value['duration'] as num?)?.toDouble(),
         epoch: epoch,
+        recordedAt: (value['recorded_at'] as num?)?.toInt(),
       );
     } on FormatException {
       return null;
@@ -120,6 +123,7 @@ class MpvTemporaryProgressRecord {
     required this.positionSeconds,
     required this.durationSeconds,
     this.epoch,
+    this.recordedAt,
   });
 
   final MpvTemporaryProgressOutcome outcome;
@@ -128,6 +132,7 @@ class MpvTemporaryProgressRecord {
   final double? positionSeconds;
   final double? durationSeconds;
   final String? epoch;
+  final int? recordedAt;
 
   static MpvTemporaryProgressRecord? tryParse(
     String line, {
@@ -152,6 +157,7 @@ class MpvTemporaryProgressRecord {
         positionSeconds: (value['position'] as num?)?.toDouble(),
         durationSeconds: (value['duration'] as num?)?.toDouble(),
         epoch: epoch,
+        recordedAt: (value['recorded_at'] as num?)?.toInt(),
       );
     } on FormatException {
       return null;
@@ -236,6 +242,7 @@ class MpvPlaybackProgressSynchronizer {
     List<String> watchLaterUrls = const [],
     File? journalFile,
     String? expectedEpoch,
+    Map<String, DateTime> ignoreBefore = const {},
   }) async {
     final indexedUrls = <String>{};
     for (var index = 0; index < entries.length; index++) {
@@ -253,6 +260,7 @@ class MpvPlaybackProgressSynchronizer {
       entries: entries,
       journalFile: journalFile,
       expectedEpoch: expectedEpoch,
+      ignoreBefore: ignoreBefore,
     );
     final latestJournalRecords = <int, MpvProgressJournalRecord>{};
     if (journalFile != null) {
@@ -262,6 +270,11 @@ class MpvPlaybackProgressSynchronizer {
       )) {
         final index = _entryIndexFor(record, entries);
         if (index == null) continue;
+        final cutoff = ignoreBefore[stripUserInfo(entries[index].url)];
+        if (cutoff != null &&
+            (record.recordedAt ?? 0) <= cutoff.millisecondsSinceEpoch) {
+          continue;
+        }
         latestJournalRecords[index] = record;
         final entry = entries[index];
         final watchLaterUrl = index < watchLaterUrls.length
@@ -299,6 +312,7 @@ class MpvPlaybackProgressSynchronizer {
 
     for (var index = 0; index < entries.length; index++) {
       final entry = entries[index];
+      if (entry.url.isEmpty) continue;
       final watchLaterUrl = index < watchLaterUrls.length
           ? watchLaterUrls[index]
           : entry.url;
@@ -314,6 +328,12 @@ class MpvPlaybackProgressSynchronizer {
       var record = watchLaterIndex.recordFor(watchLaterUrl);
       if (record?.startSeconds == null && watchLaterUrl != entry.url) {
         record = watchLaterIndex.recordFor(entry.url);
+      }
+      final cutoff = ignoreBefore[stripUserInfo(entry.url)];
+      if (cutoff != null &&
+          (record == null ||
+              !(await record.file.lastModified()).isAfter(cutoff))) {
+        continue;
       }
       final start = record?.startSeconds;
       if (start == null) continue;
@@ -338,6 +358,7 @@ class MpvPlaybackProgressSynchronizer {
     File? journalFile,
     int startLine = 0,
     String? expectedEpoch,
+    Map<String, DateTime> ignoreBefore = const {},
   }) async {
     if (journalFile == null) return startLine;
     final chunk = await const MpvCompleteJsonlReader().read(
@@ -356,6 +377,11 @@ class MpvPlaybackProgressSynchronizer {
         entries,
       );
       if (entryIndex == null) continue;
+      final cutoff = ignoreBefore[stripUserInfo(entries[entryIndex].url)];
+      if (cutoff != null &&
+          (record.recordedAt ?? 0) <= cutoff.millisecondsSinceEpoch) {
+        continue;
+      }
       final cleanUrl = stripUserInfo(entries[entryIndex].url);
       if (record.outcome == MpvTemporaryProgressOutcome.cleared) {
         await progressService.deleteTemporaryProgress(

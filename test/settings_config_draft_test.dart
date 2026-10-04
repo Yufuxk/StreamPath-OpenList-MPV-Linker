@@ -9,6 +9,61 @@ import 'package:streampath/features/cache_expiration/models/cache_expiration_con
 import 'package:streampath/presentation/models/settings_config_draft.dart';
 
 void main() {
+  test('简洁命名默认开启，关闭值贯通配置转换、复制与设置草稿', () {
+    expect(StreamPathConfig.fromJson({}).videoPlaylistSimpleNaming, isTrue);
+    const disabled = StreamPathConfig(videoPlaylistSimpleNaming: false);
+    final restored = StreamPathConfig.fromJson(disabled.toJson());
+    final player = restored.toPlayerConfig();
+    final copied = restored
+        .copyWithGlobalSettings(
+          player: player,
+          appearance: restored.appearance,
+          mediaLibrary: restored.mediaLibrary,
+        )
+        .copyWithParts()
+        .withLocalRoots(const [])
+        .withMountedProfileIds(const []);
+    expect(copied.videoPlaylistSimpleNaming, isFalse);
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    draft.loadFrom(
+      fullConfig: copied,
+      appearance: copied.appearance,
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(draft.buildPlayerConfig().videoPlaylistSimpleNaming, isFalse);
+    draft.videoPlaylistSimpleNaming = true;
+    expect(draft.buildPlayerConfig().videoPlaylistSimpleNaming, isTrue);
+  });
+  test('外挂音轨默认开启且独立于字幕，配置和草稿保留关闭值', () {
+    expect(
+      StreamPathConfig.fromJson({
+        'subtitleEnabled': false,
+      }).externalAudioInjectionEnabled,
+      isTrue,
+    );
+    const disabled = StreamPathConfig(externalAudioInjectionEnabled: false);
+    final restored = StreamPathConfig.fromJson(disabled.toJson());
+    final copied = restored
+        .copyWithParts()
+        .withLocalRoots(const [])
+        .withMountedProfileIds(const []);
+    expect(copied.toPlayerConfig().externalAudioInjectionEnabled, isFalse);
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    draft.loadFrom(
+      fullConfig: copied,
+      appearance: copied.appearance,
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(draft.buildPlayerConfig().externalAudioInjectionEnabled, isFalse);
+    draft.externalAudioInjectionEnabled = true;
+    expect(draft.buildPlayerConfig().externalAudioInjectionEnabled, isTrue);
+  });
   test('WebDAV 字体缓存默认开启，关闭值在配置与草稿中保留', () {
     expect(StreamPathConfig.fromJson({}).webDavFontCacheEnabled, isTrue);
     const disabled = StreamPathConfig(webDavFontCacheEnabled: false);

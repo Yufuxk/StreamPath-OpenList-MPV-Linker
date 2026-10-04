@@ -63,6 +63,12 @@ class MediaLibraryStore {
 
   MediaLibraryConfig get config => _config;
 
+  /// 影视库播放记录独立保存，沿用现有会话更新与清除语义。
+  MediaLibraryStore forFilmLibrary() => MediaLibraryStore._(
+    File(p.join(_file.parent.path, 'film_playback_records.json')),
+    _now,
+  ).._config = const MediaLibraryConfig(maxContinuePerLane: 50);
+
   /// 应用统一配置中的容量限制，并立即淘汰各来源超出上限的旧记录。
   Future<void> applyConfig(MediaLibraryConfig config) => _enqueue(() async {
     await _load();
@@ -235,6 +241,8 @@ class MediaLibraryStore {
     MediaLibraryItem item, {
     String? playbackSessionId,
     LocalDiscSessionSnapshot? localDiscSession,
+    int? playlistIndex,
+    int? playlistCount,
   }) => _enqueue(() async {
     if (!item.kind.isMedia) return;
     await _load();
@@ -248,6 +256,8 @@ class MediaLibraryStore {
             item,
             playbackSessionId,
             localDiscSession: localDiscSession,
+            playlistIndex: playlistIndex,
+            playlistCount: playlistCount,
           );
     final bounded = _boundPerSource(
       records,
@@ -264,6 +274,46 @@ class MediaLibraryStore {
       await _write(videoHistory: bounded);
       _videoHistory = bounded;
     }
+    _notifyChanged();
+  });
+
+  Future<void> updateStrmProgress({
+    required String sourceId,
+    required String playbackSessionId,
+    required String fileName,
+    required int playlistIndex,
+    required int positionMs,
+    int? durationMs,
+  }) => _enqueue(() async {
+    await _load();
+    final index = _videoHistory.indexWhere(
+      (record) =>
+          record.item.sourceId == sourceId &&
+          record.playbackSessionId == playbackSessionId &&
+          record.item.name == fileName &&
+          record.playlistIndex == playlistIndex &&
+          record.item.kind == MediaLibraryKind.strm,
+    );
+    if (index < 0) return;
+    final records = [..._videoHistory];
+    records[index] = records[index].copyWith(
+      strmPositionMs: positionMs,
+      strmDurationMs: durationMs,
+    );
+    await _write(videoHistory: records);
+    _videoHistory = records;
+    _notifyChanged();
+  });
+
+  Future<void> clearStrmProgress() => _enqueue(() async {
+    await _load();
+    if (!_videoHistory.any((record) => record.strmPositionMs != null)) return;
+    final records = [
+      for (final record in _videoHistory)
+        record.copyWith(clearStrmProgress: true),
+    ];
+    await _write(videoHistory: records);
+    _videoHistory = records;
     _notifyChanged();
   });
 
@@ -514,7 +564,17 @@ class MediaLibraryStore {
     MediaLibraryItem item,
     String playbackSessionId, {
     LocalDiscSessionSnapshot? localDiscSession,
+    int? playlistIndex,
+    int? playlistCount,
   }) {
+    final previous = source
+        .where(
+          (record) =>
+              record.item.sourceId == item.sourceId &&
+              record.playbackSessionId == playbackSessionId &&
+              record.item.stableKey == item.stableKey,
+        )
+        .firstOrNull;
     final records = [...source]
       ..removeWhere(
         (record) =>
@@ -528,6 +588,12 @@ class MediaLibraryStore {
         updatedAt: _now(),
         playbackSessionId: playbackSessionId,
         localDiscSession: localDiscSession,
+        playlistIndex: playlistIndex ?? previous?.playlistIndex,
+        playlistCount: playlistCount ?? previous?.playlistCount,
+        strmPositionMs:
+            previous?.strmPositionMs ??
+            (item.kind == MediaLibraryKind.strm ? 0 : null),
+        strmDurationMs: previous?.strmDurationMs,
       ),
     );
     return records;

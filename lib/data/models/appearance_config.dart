@@ -31,6 +31,7 @@ class AppearanceConfig {
     this.glassOpacity = defaultGlassOpacity,
     this.fontFamily,
     this.sidebarMode = SidebarDisplayMode.pinned,
+    this.sidebarCompact = false,
     this.directoryMemoryMode = DirectoryMemoryMode.temporary,
   });
 
@@ -48,6 +49,7 @@ class AppearanceConfig {
   /// 界面字体；null 表示使用系统推荐的 Segoe UI 系列。
   final String? fontFamily;
   final SidebarDisplayMode sidebarMode;
+  final bool sidebarCompact;
   final DirectoryMemoryMode directoryMemoryMode;
 
   bool get isGlass => style == InterfaceStyle.glass;
@@ -60,6 +62,7 @@ class AppearanceConfig {
     'glassOpacity': glassOpacity,
     'fontFamily': fontFamily,
     'sidebarMode': sidebarMode.name,
+    'sidebarCompact': sidebarCompact,
     'directoryMemoryMode': directoryMemoryMode.name,
   };
 
@@ -95,6 +98,7 @@ class AppearanceConfig {
       sidebarMode: json['sidebarMode'] == SidebarDisplayMode.autoHide.name
           ? SidebarDisplayMode.autoHide
           : SidebarDisplayMode.pinned,
+      sidebarCompact: json['sidebarCompact'] == true,
       directoryMemoryMode:
           json['directoryMemoryMode'] == DirectoryMemoryMode.persistent.name
           ? DirectoryMemoryMode.persistent
@@ -104,6 +108,7 @@ class AppearanceConfig {
 
   AppearanceConfig copyWith({
     SidebarDisplayMode? sidebarMode,
+    bool? sidebarCompact,
     DirectoryMemoryMode? directoryMemoryMode,
   }) => AppearanceConfig(
     style: style,
@@ -111,6 +116,7 @@ class AppearanceConfig {
     glassOpacity: glassOpacity,
     fontFamily: fontFamily,
     sidebarMode: sidebarMode ?? this.sidebarMode,
+    sidebarCompact: sidebarCompact ?? this.sidebarCompact,
     directoryMemoryMode: directoryMemoryMode ?? this.directoryMemoryMode,
   );
 }

@@ -1,3 +1,7 @@
+import '../../data/models/video_playlist_mode.dart';
+import '../../domain/services/video_entry_preparer.dart';
+import 'dart:convert';
+import '../../data/models/video_queue.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -6,12 +10,22 @@ import 'package:path/path.dart' as p;
 import 'package:flutter/foundation.dart';
 
 import '../../core/errors/app_exception.dart';
+import '../../core/utils/url_utils.dart';
 import '../../data/local/playback_history_store.dart';
 import '../../data/local/audio_playback_history_store.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/directory_cache.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/local/media_library_store.dart';
+import '../../data/local/film_catalog_store.dart';
+import '../../data/models/film_catalog_item.dart';
+import '../../data/models/media_source.dart';
+import '../../domain/services/film_catalog_image_cache.dart';
+import '../../domain/services/tmdb_metadata_service.dart';
+import '../../domain/services/webdav_media_source_adapter.dart';
+import '../../domain/repositories/media_directory_source.dart';
+import '../controllers/film_catalog_controller.dart';
+import '../controllers/film_media_probe_controller.dart';
 import '../../data/local/navigation_location_store.dart';
 import '../../data/local/global_search_index.dart';
 import '../../core/utils/app_paths.dart';
@@ -22,6 +36,7 @@ import '../../data/models/server_profile.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/stream_path_config.dart';
 import '../../data/models/media_library_item.dart';
+import '../../data/models/web_dav_file.dart';
 import '../../data/models/playback_history.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/webdav_font_cache.dart';
@@ -79,12 +94,14 @@ class AppState extends ChangeNotifier {
        _cacheExpirationConfigStore = cacheExpirationConfigStore,
        // ignore: prefer_initializing_formals
        _playbackHistoryStore = playbackHistoryStore,
+       _filmPlaybackHistoryStore = playbackHistoryStore.forFilmLibrary(),
        _progressService = progressService,
        // ignore: prefer_initializing_formals
        _audioPlaybackHistoryStore = audioPlaybackHistoryStore,
        _audioProgressService = audioProgressService,
        // ignore: prefer_initializing_formals
        _mediaLibraryStore = mediaLibraryStore,
+       _filmMediaLibraryStore = mediaLibraryStore?.forFilmLibrary(),
        _directoryCache = directoryCache ?? DirectoryCache(),
        navigationLocations =
            navigationLocationStore ??
@@ -120,6 +137,9 @@ class AppState extends ChangeNotifier {
           onCacheWarning: (message) => _cacheWarnings.add(message),
           onPlaybackRecovery: (event) => _playbackRecoveryEvents.add(event),
         );
+    _playerService.onVideoProgress = _recordVideoWatch;
+    _playerService.videoResetBefore = (source, path) async =>
+        (await getFilmCatalogStore()).manualWatchResetAt(source, path);
     _audioPlayerService =
         audioPlayerService ??
         (audioProgressService == null
@@ -147,13 +167,501 @@ class AppState extends ChangeNotifier {
   final CacheIntelligenceConfigStore? _cacheIntelligenceConfigStore;
   final CacheExpirationConfigStore? _cacheExpirationConfigStore;
   final PlaybackHistoryStore _playbackHistoryStore;
+  final PlaybackHistoryStore _filmPlaybackHistoryStore;
   final PlaybackProgressService _progressService;
   final AudioPlaybackHistoryStore? _audioPlaybackHistoryStore;
   final PlaybackProgressService? _audioProgressService;
   final MediaLibraryStore? _mediaLibraryStore;
+  final MediaLibraryStore? _filmMediaLibraryStore;
   final DirectoryCache _directoryCache;
   final NavigationLocationStore navigationLocations;
   Future<GlobalSearchIndex>? _globalSearchIndex;
+  Future<FilmCatalogStore>? _filmCatalogStore;
+  Future<FilmCatalogStore> getFilmCatalogStore() =>
+      _filmCatalogStore ??= () async {
+        final library = await AppPaths.libraryDirectory();
+        final store = await FilmCatalogStore.open(
+          p.join(library.path, 'film_catalog.db'),
+        );
+        await importFilmWatchProgress(store);
+        return store;
+      }();
+  Future<VideoQueueVersion?> Function(VideoQueueItem)? chooseVideoVersion;
+  void Function(String)? onImplicitVideoError;
+  Future<void> restoreImplicitVideoControls() async {
+    if (_disposed || chooseVideoVersion == null) return;
+    for (final film in [false, true]) {
+      final histories = film
+          ? _filmPlaybackHistoryStore
+          : _playbackHistoryStore;
+      final rows = (await histories.loadAll())
+          .where(
+            (h) =>
+                h.queueItems.isNotEmpty &&
+                h.playerPid != null &&
+                h.sourceId != null,
+          )
+          .toList();
+      if (rows.isEmpty) continue;
+      if (film) await initializeFilmPlayback();
+      final player = film ? _filmPlayerService! : _playerService;
+      final records = film ? _filmMediaLibraryStore : _mediaLibraryStore;
+      for (final history in rows) {
+        final sourceId = history.sourceId!;
+        final service =
+            mountedService(sourceId) ??
+            (_webDavService?.sourceId == sourceId ? _webDavService : null);
+        final local = localRoots
+            .where((r) => r.sourceId == sourceId && r.enabled)
+            .firstOrNull;
+        if (service == null && local == null) continue;
+        final MediaDirectorySource source = local != null
+            ? localMediaSource(local)
+            : WebDavMediaSourceAdapter(service!);
+        await player.restoreSession(
+          sessionId: history.sessionId,
+          profileId: sourceId,
+          pid: history.playerPid,
+          executablePath: history.playerExecutablePath,
+          creationTime: history.playerCreationTime,
+          ipcPipeName: history.ipcPipeName,
+          launchEpoch: history.launchEpoch,
+        );
+        final store = await getFilmCatalogStore();
+        final items = history.queueItems;
+        final preparer = VideoEntryPreparer(
+          source: source,
+          config: _configStore.current.toPlayerConfig(),
+          subtitleMatcher: _subtitleMatcher,
+          fontMatcher: _webDavFontMatcher,
+          titles: _configStore.current.videoPlaylistSimpleNaming
+              ? await store.videoPlaylistTitles(
+                  sourceId,
+                  items.expand((i) => i.versions.map((v) => v.path)).toList(),
+                )
+              : <String, String>{},
+        );
+        await preparer.prepareSharedFonts(
+          history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
+        );
+        Future<void> target(
+          int index,
+          VideoQueueVersion version, {
+          bool loaded = false,
+        }) async {
+          final current = (await histories.loadAll())
+              .where((h) => h.sessionId == history.sessionId)
+              .firstOrNull;
+          if (current == null) return;
+          if (!loaded) {
+            await histories.upsert(current.copyWith(pendingVideoIndex: index));
+            notifyListeners();
+            return;
+          }
+          final paths = List<String>.of(current.playlistRelativePaths),
+              names = List<String>.of(current.playlistFileNames);
+          paths[index] = version.path;
+          names[index] = version.name;
+          final parent = p.posix.dirname(version.path);
+          final updated = current.copyWith(
+            videoIndex: index,
+            fileName: version.name,
+            dirCrumbs: parent == '.' ? [] : parent.split('/'),
+            playlistRelativePaths: paths,
+            playlistFileNames: names,
+            clearPendingVideoIndex: true,
+            updatedAt: DateTime.now(),
+          );
+          await histories.upsert(updated);
+          await records?.recordPlayback(
+            MediaLibraryItem(
+              sourceId: sourceId,
+              sourceKind: source.descriptor.kind,
+              parentPath: parent == '.' ? '' : parent,
+              name: version.name,
+              playbackMode: local != null
+                  ? PlaybackMode.localFile
+                  : PlaybackMode.legacyTitle,
+              kind: version.name.endsWith('.strm')
+                  ? MediaLibraryKind.strm
+                  : MediaLibraryKind.video,
+            ),
+            playbackSessionId: history.sessionId,
+            playlistIndex: index,
+            playlistCount: items.length,
+          );
+          notifyListeners();
+        }
+
+        final plan = ImplicitVideoPlan(
+          items: items,
+          index: history.videoIndex,
+          prepare: preparer.prepare,
+          chooseVersion: (item) => chooseVideoVersion!(item),
+          activated: (i, v) => target(i, v, loaded: true),
+          pending: (i) => target(i, items[i].versions.first),
+          failed: (message) => onImplicitVideoError?.call(message),
+        );
+        for (var i = 0; i < items.length; i++) {
+          final version = items[i].versions
+              .where((v) => v.path == history.playlistRelativePaths[i])
+              .firstOrNull;
+          if (version != null &&
+              (i <= history.videoIndex || items[i].versions.length == 1)) {
+            plan.selected[i] = version;
+          }
+        }
+        await player.attachImplicitPlan(
+          history.sessionId,
+          plan,
+          serverUrl: service?.baseUrl,
+          username: service?.credentialSnapshot.username,
+          password: service?.credentialSnapshot.password,
+          fontLoader: service?.fetchFileBytes,
+          fontFileLoader: service?.downloadFile,
+        );
+      }
+    }
+  }
+
+  @visibleForTesting
+  Future<void> importFilmWatchProgress(FilmCatalogStore store) async {
+    final snapshots = await Future.wait([
+      for (final progress in [
+        _progressService,
+        _filmProgressService,
+      ].whereType<PlaybackProgressService>())
+        progress.resumeProgressSnapshot(),
+    ]);
+    if (snapshots.every((s) => s.isEmpty)) return;
+    final paths = <String, String>{};
+    final directories = <String, Map<String, List<WebDavFile>>>{};
+    final cache = await AppPaths.cacheDirectory();
+    for (final histories in [
+      _playbackHistoryStore,
+      _filmPlaybackHistoryStore,
+    ]) {
+      for (final history in await histories.loadAll()) {
+        final epoch = history.launchEpoch;
+        final artifact = epoch == null || epoch.isEmpty
+            ? history.sessionId
+            : '${history.sessionId}__e$epoch';
+        final file = File(
+          p.join(cache.path, 'mpv-season-entries-$artifact.json'),
+        );
+        if (!await file.exists()) continue;
+        final data =
+            jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        for (final entry in data['entries'] as List? ?? []) {
+          if (entry['catalogPath'] is String &&
+              entry['url'] is String &&
+              (entry['url'] as String).isNotEmpty) {
+            paths['${history.sourceId}\u0000${entry['catalogPath']}'] =
+                entry['url'] as String;
+          }
+        }
+      }
+    }
+    for (final r in await store.resources()) {
+      if (r.availability != 'present' ||
+          r.workId == null ||
+          r.mediaKind != 'video' && r.mediaKind != 'strm' ||
+          r.type == FilmMediaType.tv &&
+              (r.season == null || r.episode == null)) {
+        continue;
+      }
+      final url =
+          paths['${r.sourceId}\u0000${r.path}'] ??
+          (r.mediaKind == 'strm'
+              ? null
+              : _resolveMediaLibraryTarget(
+                  r.playbackItem,
+                  allowLogicalPath: true,
+                  cachedDirectories: directories,
+                ));
+      if (url == null) continue;
+      for (final snapshot in snapshots) {
+        final sample = snapshot[(r.sourceId, url)];
+        if (sample != null &&
+            sample.positionMs > 0 &&
+            sample.updatedAt != null) {
+          await store.recordVideoProgress(
+            VideoProgressUpdate(
+              sourceId: r.sourceId,
+              path: r.path,
+              positionMs: sample.positionMs,
+              durationMs: sample.durationMs,
+              recordedAt: sample.updatedAt!,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _recordVideoWatch(VideoProgressUpdate update) async {
+    if (_disposed) return;
+    await (await getFilmCatalogStore()).recordVideoProgress(update);
+  }
+
+  Future<void> markFilmWatched(
+    List<FilmResource> selected,
+    bool watched,
+  ) async {
+    final store = await getFilmCatalogStore();
+    final selectedDiscs = <int, FilmResource>{};
+    final episodes = <(String, int), Set<(int?, int?)>>{};
+    for (final r in selected) {
+      if (!r.canMarkWatched) continue;
+      if (r.isDisc) {
+        selectedDiscs[r.id] = r;
+      } else {
+        episodes.putIfAbsent((r.sourceId, r.workId!), () => {}).add((
+          r.season,
+          r.episode,
+        ));
+      }
+    }
+    final resources = selectedDiscs.values.toList();
+    for (final group in episodes.entries) {
+      final (sourceId, workId) = group.key;
+      final candidates = await store.resources(
+        workId: workId,
+        sourceId: sourceId,
+      );
+      resources.addAll(
+        candidates.where(
+          (v) =>
+              v.canMarkWatched &&
+              !v.isDisc &&
+              (v.type == FilmMediaType.movie ||
+                  group.value.contains((v.season, v.episode))),
+        ),
+      );
+    }
+    final cutoff = DateTime.now();
+    await store.markWatched(resources, watched, observedAt: cutoff);
+    // 光盘仅标记整片，不修改原有节目级续播点。
+    if (resources.every((r) => r.isDisc)) return;
+    await initializeFilmPlayback();
+    final bySource = <String, List<FilmResource>>{};
+    for (final r in resources.where((r) => !r.isDisc)) {
+      bySource.putIfAbsent(r.sourceId, () => []).add(r);
+    }
+    for (final group in bySource.entries) {
+      final urls = <String>{};
+      final directories = <String, Map<String, List<WebDavFile>>>{};
+      for (final r in group.value) {
+        final target = _resolveMediaLibraryTarget(
+          r.playbackItem,
+          allowLogicalPath: true,
+          cachedDirectories: directories,
+        );
+        if (target != null) urls.add(target);
+      }
+      final paths = group.value.map((r) => r.path).toSet();
+      final cache = await AppPaths.cacheDirectory();
+      for (final histories in [
+        _playbackHistoryStore,
+        _filmPlaybackHistoryStore,
+      ]) {
+        for (final history in (await histories.loadAll()).where(
+          (h) => h.sourceId == group.key,
+        )) {
+          final epoch = history.launchEpoch;
+          final artifact = epoch == null || epoch.isEmpty
+              ? history.sessionId
+              : '${history.sessionId}__e$epoch';
+          final file = File(
+            p.join(cache.path, 'mpv-season-entries-$artifact.json'),
+          );
+          if (!await file.exists()) continue;
+          final data =
+              jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+          for (final entry in data['entries'] as List? ?? []) {
+            if (paths.contains(entry['catalogPath']) &&
+                entry['url'] is String &&
+                (entry['url'] as String).isNotEmpty) {
+              urls.add(entry['url'] as String);
+            }
+          }
+        }
+      }
+      await _playerService.clearVideoResume(group.key, paths, urls, cutoff);
+      await _filmPlayerService?.clearVideoResume(
+        group.key,
+        paths,
+        urls,
+        cutoff,
+      );
+      for (final histories in [
+        _playbackHistoryStore,
+        _filmPlaybackHistoryStore,
+      ]) {
+        final records = identical(histories, _playbackHistoryStore)
+            ? _mediaLibraryStore
+            : _filmMediaLibraryStore;
+        for (final history in (await histories.loadAll()).where(
+          (h) => h.sourceId == group.key && h.kind == PlaybackHistoryKind.video,
+        )) {
+          final current = history.playlistRelativePaths.elementAtOrNull(
+            history.videoIndex,
+          );
+          if (!paths.contains(current)) continue;
+          if (watched) {
+            var next = history.videoIndex + 1;
+            while (next < history.playlistRelativePaths.length &&
+                paths.contains(history.playlistRelativePaths[next])) {
+              next++;
+            }
+            if (next >= history.playlistRelativePaths.length) {
+              await histories.remove(history.sessionId);
+              await records?.dismissVideoContinueSession(
+                group.key,
+                history.sessionId,
+              );
+            } else {
+              final path = history.playlistRelativePaths[next],
+                  parent = history.playlistRelativePaths[next].split('/')
+                    ..removeLast();
+              final player = identical(histories, _playbackHistoryStore)
+                  ? _playerService
+                  : _filmPlayerService!;
+              final running =
+                  history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+                  await player.isPlayerRunning(history.sessionId);
+              if (running) player.setPendingVideo(history.sessionId, next);
+              final updated = history.copyWith(
+                pendingVideoIndex: running ? next : null,
+                videoIndex: running ? history.videoIndex : next,
+                fileName: running
+                    ? history.fileName
+                    : history.playlistFileNames[next],
+                dirCrumbs: running ? history.dirCrumbs : parent,
+                updatedAt: DateTime.now(),
+                clearPendingVideoIndex: !running,
+              );
+              await histories.upsert(updated);
+              final resource = await store.resourceAt(group.key, path);
+              if (resource != null) {
+                await records?.recordPlayback(
+                  resource.playbackItem,
+                  playbackSessionId: history.sessionId,
+                  playlistIndex: next,
+                  playlistCount: history.playlistRelativePaths.length,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<FilmCatalogController>? _filmCatalog;
+  FilmCatalogController? _filmCatalogValue;
+  bool _disposed = false;
+
+  Future<FilmCatalogController> getFilmCatalog() => _filmCatalog ??= () async {
+    await initializeFilmPlayback();
+    final cache = await AppPaths.cacheDirectory();
+    final store = await getFilmCatalogStore();
+    final tmdb = TmdbMetadataService();
+    final controller = FilmCatalogController(
+      store: store,
+      tmdb: tmdb,
+      images: FilmCatalogImageCache(
+        Directory(p.join(cache.path, 'film_artwork')),
+        tmdb,
+      ),
+      mediaProbe: FilmMediaProbeController(
+        store: store,
+        sourceFor: _filmSource,
+        snapshots: () => [
+          ..._playerService.mediaProbeSnapshots,
+          ..._filmPlayerService!.mediaProbeSnapshots,
+          ..._localDiscPlaybackService.mediaProbeSnapshots,
+          ..._filmLocalDiscPlaybackService!.mediaProbeSnapshots,
+          ...?_isoPlaybackService?.mediaProbeSnapshots,
+          ...?_filmIsoPlaybackService?.mediaProbeSnapshots,
+        ],
+        relativePathFor: _filmSnapshotPath,
+        isPlaying: () async =>
+            await _playerService.anyPlayerRunning() ||
+            await _filmPlayerService!.anyPlayerRunning() ||
+            await _localDiscPlaybackService.anyPlayerRunning() ||
+            await _filmLocalDiscPlaybackService!.anyPlayerRunning() ||
+            (await _isoPlaybackService?.hasActivePlayback() ?? false) ||
+            (await _filmIsoPlaybackService?.hasActivePlayback() ?? false),
+      ),
+      sourceFor: _filmSource,
+    );
+    _filmCatalogValue = controller;
+    if (!_disposed) {
+      controller.mediaProbe!.start();
+    }
+    return controller;
+  }();
+
+  MediaDirectorySource _filmSource(FilmCatalogRoot root) {
+    if (root.sourceKind == MediaSourceKind.local) {
+      final local = localRoots
+          .where((r) => r.sourceId == root.sourceId && r.enabled)
+          .firstOrNull;
+      if (local == null) {
+        throw const FilmCatalogException('sourceUnavailable');
+      }
+      return localMediaSource(local);
+    }
+    final service = mountedService(root.sourceId);
+    if (!_configStore.current.mountedProfileIds.contains(root.sourceId) ||
+        service == null) {
+      throw const FilmCatalogException('sourceUnavailable');
+    }
+    return WebDavMediaSourceAdapter(service);
+  }
+
+  String? _filmSnapshotPath(FilmPlaybackSnapshot snapshot) {
+    if (snapshot.resourcePath != null) {
+      return validateFilmPath(snapshot.resourcePath!);
+    }
+    if (snapshot.sourceId.startsWith('local:')) {
+      final root = localRoots
+          .where((r) => r.sourceId == snapshot.sourceId && r.enabled)
+          .firstOrNull;
+      if (root == null || !p.isAbsolute(snapshot.target)) return null;
+      if (p.equals(root.path, snapshot.target)) return '';
+      return p.isWithin(root.path, snapshot.target)
+          ? p.relative(snapshot.target, from: root.path).replaceAll('\\', '/')
+          : null;
+    }
+    final service = mountedService(snapshot.sourceId);
+    final target = Uri.tryParse(snapshot.target);
+    if (service == null || target == null) return null;
+    final base = Uri.parse(service.baseUrl);
+    if (base.scheme != target.scheme ||
+        base.host != target.host ||
+        base.port != target.port) {
+      return null;
+    }
+    final prefix = base.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (target.pathSegments.length < prefix.length) return null;
+    for (var i = 0; i < prefix.length; i++) {
+      if (prefix[i] != target.pathSegments[i]) return null;
+    }
+    return target.pathSegments
+        .skip(prefix.length)
+        .where((s) => s.isNotEmpty)
+        .join('/');
+  }
+
+  Future<T> withMediaPlaybackPriority<T>(Future<T> Function() operation) async {
+    final catalog = _filmCatalog;
+    if (catalog == null) return operation();
+    final probe = (await catalog).mediaProbe;
+    return probe == null ? operation() : probe.withPlaybackPriority(operation);
+  }
 
   Future<GlobalSearchIndex> getGlobalSearchIndex() =>
       _globalSearchIndex ??= () async {
@@ -163,6 +671,159 @@ class AppState extends ChangeNotifier {
   final CacheCleaner? _cacheCleaner;
   final CacheCleaner? _learningDataCleaner;
   final IsoPlaybackService? _isoPlaybackService;
+  Future<void>? _filmPlaybackReady;
+  PlaybackProgressService? _filmProgressService;
+  ExternalPlayerService? _filmPlayerService;
+  LocalDiscPlaybackService? _filmLocalDiscPlaybackService;
+  IsoPlaybackService? _filmIsoPlaybackService;
+
+  Future<void> initializeFilmPlayback() => _filmPlaybackReady ??= () async {
+    final sources = {
+      ...localRoots.map((r) => r.sourceId),
+      ..._configStore.current.profiles.map((p) => p.profileId),
+    };
+    final media = <(String, String)>{};
+    final isoKeys = <String>{};
+    final records = _filmMediaLibraryStore;
+    if (records != null) {
+      for (final source in sources) {
+        for (final record in [
+          ...await records.playbackHistory(source, audio: false),
+          ...await records.playbackHistory(source, audio: false, iso: true),
+        ]) {
+          final target = resolveMediaLibraryTarget(
+            record.item,
+            allowLogicalPath: true,
+          );
+          if (target != null) {
+            media.add((source, target));
+            if (record.item.kind == MediaLibraryKind.iso &&
+                record.item.sourceKind == MediaSourceKind.webdav) {
+              isoKeys.add(
+                IsoPlaybackService.libraryKey(
+                  profileId: source,
+                  resolvedUrl: target,
+                ),
+              );
+              isoKeys.add(
+                IsoPlaybackService.libraryKey(
+                  profileId: source,
+                  resolvedUrl: target,
+                  playbackMode: record.item.playbackMode,
+                ),
+              );
+            }
+          }
+        }
+      }
+    }
+    final progress = await _progressService.forFilmLibrary(media);
+    final player = _playerService.forFilmLibrary(
+      progress,
+      Directory(
+        p.join(
+          _filmPlaybackHistoryStore.directory.path,
+          'film_mpv_watch_later',
+        ),
+      ),
+    );
+    final localDisc = _localDiscPlaybackService.forFilmLibrary(
+      progress,
+      records,
+    );
+    IsoPlaybackService? iso;
+    try {
+      if (_isoPlaybackService != null) {
+        final histories = await _filmPlaybackHistoryStore.loadAll();
+        isoKeys.addAll(histories.map((h) => h.isoKey).whereType<String>());
+        iso = await _isoPlaybackService.forFilmLibrary(_configStore, isoKeys);
+      }
+    } catch (_) {
+      localDisc.dispose();
+      await progress.close();
+      rethrow;
+    }
+    _filmProgressService = progress;
+    _filmPlayerService = player;
+    if (_filmCatalogStore != null) {
+      await importFilmWatchProgress(await _filmCatalogStore!);
+    }
+    _filmLocalDiscPlaybackService = localDisc;
+    _filmIsoPlaybackService = iso;
+    if (_disposed) await _closeFilmPlayback();
+  }();
+
+  Future<void> _closeFilmPlayback() async {
+    _filmIsoPlaybackService?.dispose();
+    _filmLocalDiscPlaybackService?.dispose();
+    await _filmProgressService?.close();
+  }
+
+  String? resolveMediaLibraryTarget(
+    MediaLibraryItem item, {
+    bool allowLogicalPath = false,
+  }) => _resolveMediaLibraryTarget(item, allowLogicalPath: allowLogicalPath);
+
+  String? _resolveMediaLibraryTarget(
+    MediaLibraryItem item, {
+    bool allowLogicalPath = false,
+    Map<String, Map<String, List<WebDavFile>>>? cachedDirectories,
+  }) {
+    if (item.kind == MediaLibraryKind.directory ||
+        item.kind == MediaLibraryKind.strm) {
+      return null;
+    }
+    if (item.sourceKind == MediaSourceKind.local) {
+      final root = localRoots
+          .where((r) => r.sourceId == item.sourceId)
+          .firstOrNull;
+      if (root == null) return null;
+      final path =
+          item.kind == MediaLibraryKind.iso &&
+              item.parentPath.isEmpty &&
+              item.name == root.displayName
+          ? ''
+          : item.targetPath;
+      return localMediaSource(root).lexicalPath(path);
+    }
+    final profile = _configStore.current.profiles
+        .where((p) => p.profileId == item.sourceId)
+        .firstOrNull;
+    if (profile == null) return null;
+    if (item.discRootPath != null) {
+      return '${joinUrl(profile.serverUrl, item.discRootPath!).replaceAll(RegExp(r'/+$'), '')}/';
+    }
+    Iterable<WebDavFile> entries;
+    final parent = item.normalizedParentPath;
+    if (cachedDirectories != null) {
+      // 批量处理期间每个来源只解码一次目录缓存，按父目录查找。
+      final directories = cachedDirectories.putIfAbsent(item.sourceId, () {
+        final result = <String, List<WebDavFile>>{};
+        for (final snapshot in _directoryCache.visitedDirectories(
+          item.sourceId,
+        )) {
+          result
+              .putIfAbsent(normalizeLibraryPath(snapshot.path), () => [])
+              .addAll(snapshot.entries);
+        }
+        return result;
+      });
+      entries = directories[parent] ?? const [];
+    } else {
+      entries = _directoryCache
+          .visitedDirectories(item.sourceId)
+          .where((snapshot) => normalizeLibraryPath(snapshot.path) == parent)
+          .expand((snapshot) => snapshot.entries);
+    }
+    final file = entries.where(item.matches).firstOrNull;
+    if (file != null) {
+      return stripUserInfo(resolveHref(profile.serverUrl, file.href));
+    }
+    return allowLogicalPath
+        ? stripUserInfo(joinUrl(profile.serverUrl, item.targetPath))
+        : null;
+  }
+
   late final LocalDiscPlaybackService _localDiscPlaybackService;
   AppLanguage _language;
   late final ExternalPlayerService _playerService;
@@ -182,14 +843,19 @@ class AppState extends ChangeNotifier {
   Future<void> pruneWebDavFontCache() =>
       _playerService.pruneWebDavFontCache(() async {
         final active = <String>{};
-        for (final history in await _playbackHistoryStore.loadAll()) {
+        for (final history in [
+          ...await _playbackHistoryStore.loadAll(),
+          ...await _filmPlaybackHistoryStore.loadAll(),
+        ]) {
           if (history.kind != PlaybackHistoryKind.video) continue;
           final sourceId = history.sourceId;
           if (sourceId == null || sourceId.isEmpty) continue;
           active.add(WebDavFontCache.sessionKey(sourceId, history.sessionId));
         }
-        final library = _mediaLibraryStore;
-        if (library != null) {
+        for (final library in [
+          _mediaLibraryStore,
+          _filmMediaLibraryStore,
+        ].whereType<MediaLibraryStore>()) {
           for (final profile in _configStore.current.profiles) {
             final records = await library.playbackHistory(
               profile.profileId,
@@ -226,7 +892,10 @@ class AppState extends ChangeNotifier {
       _playbackRecoveryEvents.stream;
 
   WebDAVService? _webDavService;
-  final ValueNotifier<double> sidebarRevealProgress = ValueNotifier(0);
+  // null 表示普通页面；详情页保存滚动顶栏的显现进度。
+  final ValueNotifier<double?> filmDetailChrome = ValueNotifier(null);
+  final ValueNotifier<bool> filmLibraryActive = ValueNotifier(true);
+  final ValueNotifier<bool> startupReady = ValueNotifier(false);
   final Map<String, WebDAVService> _mountedServices = {};
   final Map<String, String> _mountErrors = {};
   String? _username;
@@ -250,8 +919,21 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
-    sidebarRevealProgress.dispose();
+    _disposed = true;
+    _playerService.stopImplicitPlaybackControl();
+    _filmPlayerService?.stopImplicitPlaybackControl();
+    _filmCatalogValue?.mediaProbe?.stop();
+    if (_filmCatalog != null) {
+      unawaited(_filmCatalog!.then((controller) => controller.close()));
+    }
+    if (_filmCatalog == null && _filmCatalogStore != null) {
+      unawaited(_filmCatalogStore!.then((s) => s.close()));
+    }
+    filmDetailChrome.dispose();
+    filmLibraryActive.dispose();
+    startupReady.dispose();
     _isoPlaybackService?.dispose();
+    unawaited(_closeFilmPlayback());
     _localDiscPlaybackService.dispose();
     _openListIndexScheduler.dispose();
     _cacheWarnings.close();
@@ -266,11 +948,19 @@ class AppState extends ChangeNotifier {
   CacheExpirationConfigStore? get cacheExpirationConfigStore =>
       _cacheExpirationConfigStore;
   PlaybackHistoryStore get playbackHistoryStore => _playbackHistoryStore;
+  PlaybackHistoryStore get filmPlaybackHistoryStore =>
+      _filmPlaybackHistoryStore;
   PlaybackProgressService get progressService => _progressService;
+  PlaybackProgressService get filmProgressService => _filmProgressService!;
+  ExternalPlayerService get filmPlayerService => _filmPlayerService!;
+  LocalDiscPlaybackService get filmLocalDiscPlaybackService =>
+      _filmLocalDiscPlaybackService!;
+  IsoPlaybackService? get filmIsoPlaybackService => _filmIsoPlaybackService;
   AudioPlaybackHistoryStore? get audioPlaybackHistoryStore =>
       _audioPlaybackHistoryStore;
   PlaybackProgressService? get audioProgressService => _audioProgressService;
   MediaLibraryStore? get mediaLibraryStore => _mediaLibraryStore;
+  MediaLibraryStore? get filmMediaLibraryStore => _filmMediaLibraryStore;
   DirectoryCache get directoryCache => _directoryCache;
   String? get mediaSourceId => _webDavService?.sourceId;
   ExternalPlayerService get playerService => _playerService;
@@ -376,6 +1066,19 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setSidebarCompact(bool compact) async {
+    final current = _configStore.current;
+    if (current.appearance.sidebarCompact == compact) return;
+    await _configStore.save(
+      current.copyWithGlobalSettings(
+        player: current.toPlayerConfig(),
+        appearance: current.appearance.copyWith(sidebarCompact: compact),
+        mediaLibrary: current.mediaLibrary,
+      ),
+    );
+    notifyListeners();
+  }
+
   Future<void> applyDirectoryMemoryMode() => navigationLocations.setMode(
     _configStore.current.appearance.directoryMemoryMode,
   );
@@ -451,8 +1154,14 @@ class AppState extends ChangeNotifier {
     if (await _isoPlaybackService?.hasActivePlayback() ?? false) {
       throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
     }
+    if (await _filmIsoPlaybackService?.hasActivePlayback() ?? false) {
+      throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
+    }
     await _releaseStoppedPlaybackSessions();
     final result = await cleaner.clear();
+    await _filmPlaybackHistoryStore.clear();
+    await _filmMediaLibraryStore?.clearStrmProgress();
+    await _filmProgressService?.clearAll();
     notifyListeners();
     return result;
   }
@@ -473,9 +1182,22 @@ class AppState extends ChangeNotifier {
 
   Future<bool> _hasRunningPlayback() async {
     if (await _playerService.isPlayerRunning()) return true;
-    final videoHistories = await _playbackHistoryStore.loadAll();
+    if (await _filmPlayerService?.anyPlayerRunning() ?? false) return true;
+    if (await _filmLocalDiscPlaybackService?.anyPlayerRunning() ?? false) {
+      return true;
+    }
+    final filmHistories = await _filmPlaybackHistoryStore.loadAll();
+    if (filmHistories.isNotEmpty) await initializeFilmPlayback();
+    final filmIds = filmHistories.map((h) => h.sessionId).toSet();
+    final videoHistories = [
+      ...await _playbackHistoryStore.loadAll(),
+      ...filmHistories,
+    ];
     for (final history in videoHistories) {
-      await _playerService.restoreSession(
+      final player = filmIds.contains(history.sessionId)
+          ? _filmPlayerService!
+          : _playerService;
+      await player.restoreSession(
         sessionId: history.sessionId,
         profileId: history.sourceId,
         pid: history.playerPid,
@@ -483,7 +1205,7 @@ class AppState extends ChangeNotifier {
         creationTime: history.playerCreationTime,
         ipcPipeName: history.ipcPipeName,
       );
-      if (await _playerService.isPlayerRunning(history.sessionId)) return true;
+      if (await player.isPlayerRunning(history.sessionId)) return true;
     }
 
     final audioService = _audioPlayerService;
@@ -505,9 +1227,13 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _releaseStoppedPlaybackSessions() async {
-    final videoHistories = await _playbackHistoryStore.loadAll();
+    final videoHistories = [
+      ...await _playbackHistoryStore.loadAll(),
+      ...await _filmPlaybackHistoryStore.loadAll(),
+    ];
     for (final history in videoHistories) {
       _playerService.releaseSession(history.sessionId);
+      _filmPlayerService?.releaseSession(history.sessionId);
     }
     final audioService = _audioPlayerService;
     final audioStore = _audioPlaybackHistoryStore;
@@ -569,6 +1295,7 @@ class AppState extends ChangeNotifier {
       _mountedServices[profileId] = service;
       _mountErrors.remove(profileId);
       notifyListeners();
+      await restoreImplicitVideoControls();
     } on AppException catch (error) {
       _mountErrors[profileId] = error.message;
       notifyListeners();
@@ -585,6 +1312,7 @@ class AppState extends ChangeNotifier {
             // 离线档案留在挂载列表，用户可以手动重试。
           }),
     ]);
+    await restoreImplicitVideoControls();
   }
 
   Future<void> activateMountedProfile(String profileId) async {

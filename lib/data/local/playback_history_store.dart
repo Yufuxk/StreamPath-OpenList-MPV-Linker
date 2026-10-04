@@ -15,9 +15,17 @@ import '../models/playback_history.dart';
 /// 文件位于数据目录 `playback_history.json`。新格式保存会话列表，读取时
 /// 兼容旧版单对象结构并自动作为 `legacy` 会话载入。
 class PlaybackHistoryStore {
-  PlaybackHistoryStore._(this._configFile, this._now, this._policyProvider);
+  PlaybackHistoryStore._(
+    this._configFile,
+    this._now,
+    this._policyProvider, {
+    this.maxSessionsPerSource = AppConstants.maxPlaybackSessions,
+  });
+
+  final int maxSessionsPerSource;
 
   final File _configFile;
+  Directory get directory => _configFile.parent;
   final DateTime Function() _now;
   final CacheRetentionPolicyProvider _policyProvider;
 
@@ -51,6 +59,14 @@ class PlaybackHistoryStore {
 
   /// 当前全部会话（最早创建在前）。
   List<PlaybackHistory> get sessions => List.unmodifiable(_cached);
+
+  /// 影视库会话使用独立文件和相同的保留规则。
+  PlaybackHistoryStore forFilmLibrary() => PlaybackHistoryStore._(
+    File(p.join(_configFile.parent.path, 'film_playback_history.json')),
+    _now,
+    _policyProvider,
+    maxSessionsPerSource: 50,
+  );
 
   /// 加载全部播放会话（最早创建在前）。
   Future<List<PlaybackHistory>> loadAll() => _enqueue(_loadAll);
@@ -129,37 +145,13 @@ class PlaybackHistoryStore {
   /// 新增或更新一个会话。达到上限且 [history] 是新 ID 时返回 false。
   Future<bool> upsert(PlaybackHistory history) => _enqueue(() async {
     await _loadAll();
-    final record = PlaybackHistory(
-      sessionId: history.sessionId,
-      dirCrumbs: history.dirCrumbs,
-      fileName: history.fileName,
-      videoIndex: history.videoIndex,
-      updatedAt: _now(),
-      createdAt: history.createdAt,
-      playlistFileNames: history.playlistFileNames,
-      playlistRelativePaths: history.playlistRelativePaths,
-      seasonPlaylistPath: history.seasonPlaylistPath,
-      nextSeasonRootPath: history.nextSeasonRootPath,
-      nextSeasonFileNames: history.nextSeasonFileNames,
-      nextSeasonRelativePaths: history.nextSeasonRelativePaths,
-      nextSeasonPlaylistPath: history.nextSeasonPlaylistPath,
-      playerPid: history.playerPid,
-      playerExecutablePath: history.playerExecutablePath,
-      playerCreationTime: history.playerCreationTime,
-      ipcPipeName: history.ipcPipeName,
-      launchEpoch: history.launchEpoch,
-      kind: history.kind,
-      isoKey: history.isoKey,
-      isoSessionDirectoryPath: history.isoSessionDirectoryPath,
-      sourceId: history.sourceId,
-      playbackMode: history.playbackMode,
-    );
+    final record = history.copyWith(updatedAt: _now());
     final records = [..._cached];
     final index = records.indexWhere((e) => e.sessionId == record.sessionId);
     final sameSourceCount = records
         .where((item) => item.sourceId == record.sourceId)
         .length;
-    if (index < 0 && sameSourceCount >= AppConstants.maxPlaybackSessions) {
+    if (index < 0 && sameSourceCount >= maxSessionsPerSource) {
       return false;
     }
     if (index < 0) {
@@ -222,11 +214,11 @@ class PlaybackHistoryStore {
   static CacheRetentionPolicy _defaultPolicyProvider() =>
       const DefaultCacheRetentionPolicy();
 
-  static List<PlaybackHistory> _limitPerSource(List<PlaybackHistory> records) {
+  List<PlaybackHistory> _limitPerSource(List<PlaybackHistory> records) {
     final counts = <String?, int>{};
     return records.where((record) {
       final count = counts[record.sourceId] ?? 0;
-      if (count >= AppConstants.maxPlaybackSessions) return false;
+      if (count >= maxSessionsPerSource) return false;
       counts[record.sourceId] = count + 1;
       return true;
     }).toList();

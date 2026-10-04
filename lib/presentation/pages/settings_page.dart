@@ -1,3 +1,5 @@
+import '../../data/models/video_playlist_mode.dart';
+import '../widgets/settings_group_card.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -43,15 +45,18 @@ import '../widgets/settings_category_forms.dart';
 import '../widgets/settings_columns.dart';
 import '../widgets/sp_font_picker.dart';
 import '../widgets/sp_controls.dart';
+import 'film_library_manage_page.dart';
+import '../controllers/film_catalog_controller.dart';
 
 /// 设置页中的可用分类。
 ///
-/// 新增页面时只需补充枚举值，并在 [_SettingsPageState._buildSections]
+/// 新增页面时只需补充枚举值，并在 [SettingsPageState._buildSections]
 /// 注册页面描述与内容构建器。
 enum SettingsSection {
   server,
   playback,
   mediaLibrary,
+  films,
   cache,
   diagnostics,
   appearance,
@@ -114,16 +119,31 @@ class _SettingsSectionDefinition {
 /// `{url}` 视频地址 · `{subfile}` 字幕地址 · `{start}` 续播秒数；
 /// 无值的占位符所在的整行参数会被自动移除。
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, this.onSectionBuilt});
+  const SettingsPage({super.key, this.onSectionBuilt, this.onNavigationHeight});
+
+  final ValueChanged<double>? onNavigationHeight;
 
   @visibleForTesting
   final ValueChanged<SettingsSection>? onSectionBuilt;
 
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
+  State<SettingsPage> createState() => SettingsPageState();
 }
 
-class _SettingsPageState extends State<SettingsPage> {
+class SettingsPageState extends State<SettingsPage> {
+  final _navigationKey = GlobalKey();
+
+  void _measureNavigation() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final size = _navigationKey.currentContext?.size;
+      if (size != null) widget.onNavigationHeight?.call(size.height);
+    });
+  }
+
+  void selectSection(SettingsSection section) => _selectSection(section);
+
+  Future<FilmCatalogController>? _filmSettings;
   Color get _dropdownMenuColor => AppTheme.dropdownMenuColor(Theme.of(context));
 
   final Map<SettingsSection, GlobalKey<FormState>> _formKeys = {
@@ -375,13 +395,14 @@ class _SettingsPageState extends State<SettingsPage> {
     final cacheConfig = _draft.buildCachePolicyConfig();
     final intelligenceConfig = _draft.buildIntelligenceConfig();
     final expirationConfig = _draft.buildExpirationConfig();
+    final sidebarAppearance = context
+        .read<AppState>()
+        .configStore
+        .current
+        .appearance;
     final appearance = _draft.buildAppearanceConfig().copyWith(
-      sidebarMode: context
-          .read<AppState>()
-          .configStore
-          .current
-          .appearance
-          .sidebarMode,
+      sidebarMode: sidebarAppearance.sidebarMode,
+      sidebarCompact: sidebarAppearance.sidebarCompact,
     );
     final mediaLibraryConfig = _draft.buildMediaLibraryConfig();
 
@@ -896,7 +917,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final (title, description, successMessage) = switch (target) {
       _MediaLibraryCleanupTarget.favorites => (
         '清空收藏列表？',
-        '将清除当前来源的目录、视频、STRM、音频和 ISO 收藏。',
+        '将清除当前来源的媒体、目录、视频、STRM、音频和 ISO 收藏。',
         '收藏列表已清空',
       ),
       _MediaLibraryCleanupTarget.continuePlayback => (
@@ -947,6 +968,9 @@ class _SettingsPageState extends State<SettingsPage> {
         _MediaLibraryCleanupTarget.recentDirectories =>
           store.clearRecentDirectories(sourceId),
       };
+      if (target == _MediaLibraryCleanupTarget.favorites) {
+        await (await appState.getFilmCatalog()).store.clearFavorites(sourceId);
+      }
       if (target == _MediaLibraryCleanupTarget.continuePlayback ||
           target == _MediaLibraryCleanupTarget.recentPlayback) {
         appState.scheduleWebDavFontCachePrune();
@@ -1487,6 +1511,23 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
       _SettingsSectionDefinition(
+        section: SettingsSection.films,
+        label: '影视库',
+        description: '影视目录、刮削与媒体探测',
+        icon: 0xE714,
+        builder: () => _observeSectionBuild(
+          SettingsSection.films,
+          FutureBuilder<FilmCatalogController>(
+            future: _filmSettings ??= context.read<AppState>().getFilmCatalog(),
+            builder: (_, state) => state.hasData
+                ? FilmLibraryManagePage(catalog: state.data!, embedded: true)
+                : state.hasError
+                ? const AppText('影视目录库操作失败')
+                : const Center(child: CircularProgressIndicator()),
+          ),
+        ),
+      ),
+      _SettingsSectionDefinition(
         section: SettingsSection.cache,
         label: '缓存',
         description: '基础策略与智能优化',
@@ -1542,7 +1583,7 @@ class _SettingsPageState extends State<SettingsPage> {
         SettingsColumns(
           firstFraction: 0.5,
           children: [
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.network,
               title: '服务器档案',
               description: '每个档案使用稳定 profileId 隔离缓存、媒体资产与播放进度。',
@@ -1634,7 +1675,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.cloud,
               title: 'WebDAV 服务器',
               description: '用于登录、浏览目录和访问媒体文件。',
@@ -1710,7 +1751,7 @@ class _SettingsPageState extends State<SettingsPage> {
         SettingsColumns(
           firstFraction: 0.5,
           children: [
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.health,
               title: 'OpenList/AList 后台与自动恢复',
               description: '管理员凭据供播放恢复和索引更新共用。',
@@ -1883,7 +1924,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.manageSearch,
               title: 'OpenList/AList 索引',
               description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
@@ -2003,15 +2044,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final statusColor = progress?.isDone == false
         ? scheme.primary
         : scheme.onSurfaceVariant;
-    return Container(
+    return SettingsProgressPanel(
       key: const Key('openlist-index-progress-panel'),
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.38),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2131,7 +2165,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return SettingsColumns(
       firstFraction: 0.55,
       children: [
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.playerSettings,
           title: '外部播放器',
           description: '配置播放器程序及每行一个的启动参数。',
@@ -2211,12 +2245,54 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.subtitles,
           title: '播放行为',
           description: '控制外挂字幕、外挂字体与 LRC 注入、轨道选择和续播。',
           child: Column(
             children: [
+              DropdownButtonFormField<VideoPlaylistMode>(
+                initialValue: _draft.videoPlaylistMode,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('视频播放列表模式'),
+                ),
+                items: [
+                  for (final mode in VideoPlaylistMode.values)
+                    DropdownMenuItem(
+                      value: mode,
+                      child: AppText(
+                        mode == VideoPlaylistMode.implicit
+                            ? '隐式播放列表'
+                            : '传统完整播放列表',
+                      ),
+                    ),
+                ],
+                onChanged: (mode) {
+                  if (mode != null) {
+                    setState(() => _draft.videoPlaylistMode = mode);
+                  }
+                },
+              ),
+              const SizedBox(height: 12),
+              SPToggleTile(
+                key: const Key('video-playlist-simple-naming'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('播放列表简洁命名'),
+                subtitle: const AppText('从文件名提取片名、年份和季集信息，按当前语言显示；识别不足时保留原名'),
+                value: _draft.videoPlaylistSimpleNaming,
+                onChanged: (value) =>
+                    setState(() => _draft.videoPlaylistSimpleNaming = value),
+              ),
+              SPToggleTile(
+                key: const Key('external-audio-injection'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('自动加载 WebDAV 外挂音轨'),
+                subtitle: const AppText('流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV'),
+                value: _draft.externalAudioInjectionEnabled,
+                onChanged: (value) => setState(
+                  () => _draft.externalAudioInjectionEnabled = value,
+                ),
+              ),
               SPToggleTile(
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('自动注入匹配的外挂字幕、外挂字体与 LRC'),
@@ -2352,7 +2428,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('audio-lyrics-settings'),
           icon: SPIcons.music,
           title: '音频歌词',
@@ -2505,7 +2581,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('media-library-capacity-section'),
           icon: SPIcons.package,
           title: '容量限制',
@@ -2625,7 +2701,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('media-library-cleanup-section'),
           icon: SPIcons.erase,
           title: '记录清理',
@@ -2699,7 +2775,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.checklist,
           title: '诊断中心',
           description: '逐项检查外部连接、播放器、数据目录、SQLite 和缓存。',
@@ -2754,7 +2830,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.hardDrive,
           title: 'SQLite 非破坏性维护',
           description: '只在完整性检查通过后创建一致性备份并重建索引。',
@@ -2774,7 +2850,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.shield,
           title: '脱敏边界',
           description: '诊断包用于排障，不复制原始配置和运行数据。',
@@ -2787,7 +2863,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildCacheSettings() {
-    return _SettingsGroupCard(
+    return SettingsGroupCard(
       key: const Key('cache-settings-section'),
       icon: SPIcons.hardDrive,
       title: '基础缓存策略',
@@ -2924,7 +3000,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildCacheExpirationSettings() {
-    return _SettingsGroupCard(
+    return SettingsGroupCard(
       key: const Key('cache-expiration-settings-section'),
       icon: SPIcons.stopwatch,
       title: '缓存过期时间',
@@ -3048,7 +3124,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildIntelligenceSettings() {
-    return _SettingsGroupCard(
+    return SettingsGroupCard(
       key: const Key('cache-intelligence-settings-section'),
       icon: SPIcons.sparkle,
       title: '智能缓存优化',
@@ -3158,7 +3234,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildCacheCleanupSettings() {
     final errorColor = Theme.of(context).colorScheme.error;
     final appState = context.read<AppState>();
-    return _SettingsGroupCard(
+    return SettingsGroupCard(
       key: const Key('cache-cleanup-settings-section'),
       icon: SPIcons.delete,
       title: '缓存文件清理',
@@ -3193,7 +3269,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildLearningDataCleanupSettings() {
     final errorColor = Theme.of(context).colorScheme.error;
     final appState = context.read<AppState>();
-    return _SettingsGroupCard(
+    return SettingsGroupCard(
       key: const Key('learning-data-cleanup-settings-section'),
       icon: SPIcons.idea,
       title: '学习数据清理',
@@ -3249,7 +3325,7 @@ class _SettingsPageState extends State<SettingsPage> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.layers,
               title: '界面样式',
               description: '默认样式保持原有不透明界面；Windows 材质使用 Acrylic 或 Mica 系统背景。',
@@ -3321,7 +3397,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
             const SizedBox(height: 16),
-            _SettingsGroupCard(
+            SettingsGroupCard(
               icon: SPIcons.color,
               title: 'Windows 系统材质',
               description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
@@ -3411,7 +3487,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
         ),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('windows-appearance-capabilities-section'),
           icon: SPIcons.diagnostic,
           title: 'Windows 外观兼容性',
@@ -3516,7 +3592,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('language-settings-section'),
           icon: SPIcons.language,
           title: '语言',
@@ -3546,7 +3622,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           icon: SPIcons.folderOpen,
           title: '文件浏览',
           description: '这些选项只改变界面显示，不影响稳定播放列表和字幕匹配。',
@@ -3640,7 +3716,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _SettingsGroupCard(
+        SettingsGroupCard(
           key: const Key('settings-maintenance-section'),
           icon: SPIcons.restore,
           title: '配置维护',
@@ -3695,32 +3771,47 @@ class _SettingsPageState extends State<SettingsPage> {
     List<_SettingsSectionDefinition> sections,
   ) {
     final tokens = Theme.of(context).glass;
-    return GlassSurface(
-      level: GlassSurfaceLevel.chrome,
-      automaticBorder: false,
-      border: Border(bottom: BorderSide(color: tokens.dividerColor)),
-      child: SizedBox(
-        width: double.infinity,
-        child: Center(
+    _measureNavigation();
+    return NotificationListener<SizeChangedLayoutNotification>(
+      onNotification: (_) {
+        _measureNavigation();
+        return false;
+      },
+      child: SizeChangedLayoutNotifier(
+        key: _navigationKey,
+        child: GlassSurface(
+          key: const Key('settings-navigation-bar'),
+          level: GlassSurfaceLevel.chrome,
+          automaticBorder: false,
+          border: Border(bottom: BorderSide(color: tokens.dividerColor)),
           child: SizedBox(
-            width: 1248,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-              child: Row(
-                children: [
-                  for (var index = 0; index < sections.length; index++) ...[
-                    _SettingsNavigationButton(
-                      key: Key(
-                        'settings-section-${sections[index].section.name}',
-                      ),
-                      definition: sections[index],
-                      selected: sections[index].section == _selectedSection,
-                      onTap: () => _selectSection(sections[index].section),
-                    ),
-                    if (index != sections.length - 1) const SizedBox(width: 8),
-                  ],
-                ],
+            width: double.infinity,
+            child: Center(
+              child: SizedBox(
+                width: 1248,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      for (var index = 0; index < sections.length; index++) ...[
+                        _SettingsNavigationButton(
+                          key: Key(
+                            'settings-section-${sections[index].section.name}',
+                          ),
+                          definition: sections[index],
+                          selected: sections[index].section == _selectedSection,
+                          onTap: () => _selectSection(sections[index].section),
+                        ),
+                        if (index != sections.length - 1)
+                          const SizedBox(width: 8),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -3766,6 +3857,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       child: Scaffold(
         appBar: AppBar(
+          toolbarHeight: 48,
           title: const AppText('设置'),
           actions: [
             IconButton(
@@ -3961,67 +4053,6 @@ class _SettingsNavigationButton extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _SettingsGroupCard extends StatelessWidget {
-  const _SettingsGroupCard({
-    super.key,
-    required this.icon,
-    required this.title,
-    required this.description,
-    required this.child,
-  });
-
-  final IconData icon;
-  final String title;
-  final String description;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final tokens = Theme.of(context).glass;
-    return GlassSurface(
-      level: GlassSurfaceLevel.raised,
-      border: Border.all(color: tokens.borderColor),
-      showShadow: false,
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, size: 24, color: scheme.primary),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AppText(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 2),
-                    AppText(
-                      description,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          child,
-        ],
       ),
     );
   }

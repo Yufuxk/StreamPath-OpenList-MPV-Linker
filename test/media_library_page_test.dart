@@ -299,6 +299,8 @@ void main() {
     await tester.pumpWidget(buildPage());
     await settleLibraryPage(tester);
 
+    await tester.tap(find.text('视频'));
+    await tester.pump();
     expect(find.text('收藏影片.mkv'), findsOneWidget);
     final removeButton = tester.widget<IconButton>(
       find.widgetWithIcon(IconButton, SPIcons.favoriteFill),
@@ -323,9 +325,19 @@ void main() {
     final audioFile = file(audio.name);
     String url(WebDavFile value) => 'https://example.test${value.href}';
     await tester.runAsync(() async {
-      await store.recordPlayback(video);
+      await store.recordPlayback(
+        video,
+        playbackSessionId: 'video-summary',
+        playlistIndex: 1,
+        playlistCount: 12,
+      );
       await store.recordPlayback(ending);
-      await store.recordPlayback(audio);
+      await store.recordPlayback(
+        audio,
+        playbackSessionId: 'audio-summary',
+        playlistIndex: 2,
+        playlistCount: 10,
+      );
       await videoProgress.saveProgress(url: url(videoFile), positionMs: 0);
       await videoProgress.saveTemporaryProgress(
         url: url(videoFile),
@@ -355,11 +367,185 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('继续影片.mkv'), findsOneWidget);
+    expect(find.textContaining('第 2/12 集  ·  已播放 02:00'), findsOneWidget);
     expect(find.text('片尾影片.mkv'), findsNothing);
 
     await tester.tap(find.text('音频').last);
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('继续歌曲.flac'), findsOneWidget);
+    expect(find.textContaining('第 3/10 首  ·  已播放 01:30'), findsOneWidget);
+  });
+
+  for (final kind in [MediaLibraryKind.video, MediaLibraryKind.strm]) {
+    testWidgets('视频完成过滤仅作用于最后一集的 99%：$kind', (tester) async {
+      final extension = kind == MediaLibraryKind.strm ? 'strm' : 'mkv';
+      final episodes = [
+        item('非末集.$extension', kind),
+        item('末集.$extension', kind),
+        item('单集.$extension', kind),
+        item('末集未到99.$extension', kind),
+      ];
+      await tester.runAsync(() async {
+        for (var index = 0; index < episodes.length; index++) {
+          final episode = episodes[index];
+          final playlistIndex = index == 0 || index == 2 ? 0 : 2;
+          final positionMs = index == 3 ? 98000 : 99000;
+          await store.recordPlayback(
+            episode,
+            playbackSessionId: 'completion-$index',
+            playlistIndex: playlistIndex,
+            playlistCount: index == 2 ? 1 : 3,
+          );
+          if (kind == MediaLibraryKind.strm) {
+            await store.updateStrmProgress(
+              sourceId: sourceId,
+              playbackSessionId: 'completion-$index',
+              fileName: episode.name,
+              playlistIndex: playlistIndex,
+              positionMs: positionMs,
+              durationMs: 100000,
+            );
+          } else {
+            await videoProgress.saveProgress(
+              url: 'https://example.test${file(episode.name).href}',
+              positionMs: positionMs,
+              durationMs: 100000,
+            );
+          }
+        }
+      });
+      await tester.pumpWidget(
+        buildPage(
+          snapshots: [
+            VisitedDirectorySnapshot(
+              path: '媒体',
+              entries: episodes.map((episode) => file(episode.name)).toList(),
+              lastAccessedAt: DateTime.now(),
+            ),
+          ],
+        ),
+      );
+      await settleLibraryPage(tester);
+      await tester.tap(find.text('继续播放').first);
+      await tester.pumpAndSettle();
+      expect(find.text(episodes[0].name), findsOneWidget);
+      expect(find.text(episodes[1].name), findsNothing);
+      expect(find.text(episodes[2].name), findsNothing);
+      expect(find.text(episodes[3].name), findsOneWidget);
+    });
+  }
+
+  testWidgets('同一视频的不同列表会话按各自位置过滤完成通知', (tester) async {
+    final video = item('共享影片.mkv', MediaLibraryKind.video);
+    final url = 'https://example.test${file(video.name).href}';
+    await tester.runAsync(() async {
+      for (final count in [3, 1]) {
+        await store.recordPlayback(
+          video,
+          playbackSessionId: 'same-url-$count',
+          playlistIndex: 0,
+          playlistCount: count,
+        );
+      }
+      await videoProgress.saveProgress(
+        url: url,
+        positionMs: 10000,
+        durationMs: 100000,
+      );
+    });
+    await tester.pumpWidget(
+      buildPage(
+        snapshots: [
+          VisitedDirectorySnapshot(
+            path: '媒体',
+            entries: [file(video.name)],
+            lastAccessedAt: DateTime.now(),
+          ),
+        ],
+      ),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(video.name), findsNWidgets(2));
+    await tester.runAsync(
+      () => videoProgress.saveProgress(
+        url: url,
+        positionMs: 99000,
+        durationMs: 100000,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.textContaining('已播放 01:39'));
+    expect(find.text(video.name), findsOneWidget);
+    expect(find.textContaining('第 1/3 集'), findsOneWidget);
+  });
+
+  testWidgets('STRM 继续播放不读取指针文件，随快照更新集数和时间', (tester) async {
+    final strm = item('第二集.strm', MediaLibraryKind.strm);
+    await tester.runAsync(
+      () => store.recordPlayback(
+        strm,
+        playbackSessionId: 'strm-summary',
+        playlistIndex: 1,
+        playlistCount: 3,
+      ),
+    );
+    await tester.pumpWidget(buildPage());
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    expect(find.text(strm.name), findsOneWidget);
+    expect(find.text('媒体  ·  第 2/3 集'), findsOneWidget);
+    expect(find.textContaining('已播放'), findsNothing);
+    await tester.runAsync(
+      () => store.updateStrmProgress(
+        sourceId: sourceId,
+        playbackSessionId: 'strm-summary',
+        fileName: strm.name,
+        playlistIndex: 1,
+        positionMs: 123000,
+        durationMs: 600000,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(
+      tester,
+      find.text('媒体  ·  第 2/3 集  ·  已播放 02:03'),
+    );
+  });
+
+  testWidgets('ISO 单项隐藏集数，零秒隐藏时间且保留多项数量', (tester) async {
+    final iso = item('单集.iso', MediaLibraryKind.iso);
+    final url = 'https://example.test${file(iso.name).href}';
+    final reader = _FakeIsoProgressReader()
+      ..values[url] = const IsoLibraryProgress(
+        episodeNumber: 1,
+        episodeCount: 1,
+        position: Duration(seconds: 4),
+      );
+    await tester.runAsync(
+      () => store.recordPlayback(iso, playbackSessionId: 'single-iso'),
+    );
+    await tester.pumpWidget(
+      buildPage(isoProgressReader: reader, resolveDirectTarget: (_) => url),
+    );
+    await settleLibraryPage(tester);
+    await tester.tap(find.text('继续播放').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ISO').last);
+    await tester.pumpAndSettle();
+    expect(find.text('媒体  ·  已播放 00:04'), findsOneWidget);
+    expect(find.textContaining('第 1/1 集'), findsNothing);
+    reader.values[url] = const IsoLibraryProgress(
+      episodeNumber: 2,
+      episodeCount: 6,
+      position: Duration.zero,
+    );
+    reader.notify();
+    await tester.pump(const Duration(milliseconds: 150));
+    await waitForLibraryState(tester, find.text('媒体  ·  第 2/6 集'));
+    expect(find.textContaining('已播放 00:00'), findsNothing);
   });
 
   for (final mode in [PlaybackMode.legacyTitle, PlaybackMode.webdavHdmvMenu]) {
@@ -785,6 +971,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text(video.name), findsOneWidget);
     expect(find.text(missing.name), findsNothing);
+    expect(find.textContaining('已播放 00:00'), findsNothing);
     await tester.tap(find.text('音频').last);
     await tester.pumpAndSettle();
     expect(find.text(audio.name), findsNothing);

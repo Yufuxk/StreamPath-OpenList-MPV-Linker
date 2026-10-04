@@ -17,6 +17,7 @@ class FlutterWindow : public Win32Window {
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
+  bool IsFullscreen() const override { return fullscreen_; }
 
  protected:
   // Win32Window:
@@ -26,6 +27,10 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  bool SetFullscreen(bool enabled);
+  bool fullscreen_ = false;
+  WINDOWPLACEMENT windowed_placement_ = {sizeof(WINDOWPLACEMENT)};
+  LONG_PTR windowed_style_ = 0;
   // The project to run.
   flutter::DartProject project_;
 

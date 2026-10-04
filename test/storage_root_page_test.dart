@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:ui' show PointerDeviceKind;
+import 'helpers/shell_test_app_state.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
+import 'package:streampath/data/local/navigation_location_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
@@ -17,9 +18,103 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
+import 'package:streampath/presentation/widgets/directory_breadcrumbs.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
+
+  for (final mode in DirectoryMemoryMode.values) {
+    testWidgets('侧边栏首帧直接打开记忆目录 ${mode.name}', (tester) async {
+      final temp = Directory.systemTemp.createTempSync('directory_restore_');
+      final media = Directory(p.join(temp.path, 'Media'))..createSync();
+      Directory(
+        p.join(media.path, 'Series', 'Season 1'),
+      ).createSync(recursive: true);
+      final root = LocalRootConfig(
+        rootId: 'remembered',
+        displayName: '记忆挂载',
+        path: media.path,
+      );
+      final config = StreamPathConfigStore.forPath(
+        p.join(temp.path, 'config.json'),
+      );
+      late PlaybackProgressService progress;
+      late NavigationLocationStore locations;
+      await tester.runAsync(() async {
+        await config.save(StreamPathConfig(localRoots: [root]));
+        progress = await PlaybackProgressService.open(
+          inMemoryDatabasePath,
+          factory: databaseFactoryFfi,
+        );
+        final file = File(p.join(temp.path, 'locations.json'));
+        locations = NavigationLocationStore(file, mode: mode);
+        await locations.remember(
+          sourceId: root.sourceId,
+          kind: 'local',
+          path: 'Series/Season 1',
+        );
+        if (mode == DirectoryMemoryMode.persistent) {
+          locations = NavigationLocationStore(file, mode: mode);
+          await locations.load();
+        }
+      });
+      final app = ShellTestAppState(
+        configStore: config,
+        playbackHistoryStore: PlaybackHistoryStore.forPath(
+          p.join(temp.path, 'history.json'),
+        ),
+        progressService: progress,
+        navigationLocationStore: locations,
+      );
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(app.closeTestStores);
+        app.dispose();
+        await tester.runAsync(() async {
+          await progress.close();
+          temp.deleteSync(recursive: true);
+        });
+      });
+
+      await tester.runAsync(app.getFilmCatalog);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: const MaterialApp(home: AppShellPage()),
+        ),
+      );
+
+      expect(find.byKey(const Key('sidebar-films')), findsOneWidget);
+      expect(find.byType(DirectoryBreadcrumbs), findsNothing);
+      await tester.tap(find.byKey(const Key('sidebar-folders')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('folders-local-tab')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.tap(find.byKey(const ValueKey('local-root-remembered')));
+      await tester.pump();
+      expect(find.byType(DirectoryBreadcrumbs), findsOneWidget);
+      expect(
+        tester
+            .widget<DirectoryBreadcrumbs>(find.byType(DirectoryBreadcrumbs))
+            .crumbs,
+        ['Series', 'Season 1'],
+      );
+      await tester.pump(const Duration(milliseconds: 350));
+      for (var attempt = 0; attempt < 4; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        );
+        await tester.pump();
+      }
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('local-root-remembered')),
+        findsOneWidget,
+      );
+    });
+  }
 
   testWidgets('侧边栏保留本地浏览页并显示本地根目录递归大小', (tester) async {
     final temporaryDirectory = Directory.systemTemp.createTempSync(
@@ -54,14 +149,17 @@ void main() {
         legacyProfileId: 'legacy',
       );
     });
-    final appState = AppState(
+    final appState = ShellTestAppState(
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         p.join(temporaryDirectory.path, 'history.json'),
       ),
       progressService: progress,
     );
+    await tester.runAsync(appState.getFilmCatalog);
     addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(appState.closeTestStores);
       appState.dispose();
       await tester.runAsync(() async {
         await progress.close();
@@ -78,12 +176,7 @@ void main() {
           home: Scaffold(
             body: Column(
               children: [
-                Consumer<AppState>(
-                  builder: (context, app, _) => WindowTitleBar(
-                    sidebarMode: app.configStore.current.appearance.sidebarMode,
-                    sidebarRevealProgress: app.sidebarRevealProgress,
-                  ),
-                ),
+                const WindowTitleBar(),
                 const Expanded(child: AppShellPage()),
               ],
             ),
@@ -93,27 +186,31 @@ void main() {
     );
 
     for (final section in [
-      'network',
-      'local',
+      'films',
+      'folders',
       'library',
       'mounts',
-      'search',
       'settings',
     ]) {
       expect(find.byKey(Key('sidebar-$section')), findsOneWidget);
     }
     Finder pageTitle(String text) =>
         find.descendant(of: find.byType(AppBar), matching: find.text(text));
-    final localTitle = pageTitle('本地文件夹');
+    await tester.tap(find.byKey(const Key('sidebar-folders')));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('本地文件夹'), findsOneWidget);
+    expect(find.text('网络文件夹'), findsOneWidget);
+    expect(find.byKey(const Key('folders-search')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('folders-local-tab')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    final localTitle = pageTitle('文件夹');
     final localTitlePosition = tester.getTopLeft(localTitle);
     final localTitleStyle = DefaultTextStyle.of(
       tester.element(localTitle),
     ).style;
     expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
-    for (final (section, title) in [
-      ('network', '网络文件夹'),
-      ('mounts', '文件夹管理'),
-    ]) {
+    for (final (section, title) in [('mounts', '文件夹管理')]) {
       await tester.tap(find.byKey(Key('sidebar-$section')));
       await tester.pump(const Duration(milliseconds: 250));
       final currentTitle = pageTitle(title);
@@ -127,14 +224,14 @@ void main() {
       expect(currentStyle.fontWeight, localTitleStyle.fontWeight);
       expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
     }
-    await tester.tap(find.byKey(const Key('sidebar-local')));
+    await tester.tap(find.byKey(const Key('sidebar-folders')));
     await tester.pump(const Duration(milliseconds: 250));
     expect(
       tester.getTopLeft(find.byKey(const Key('sidebar-mounts'))).dy,
       lessThan(tester.getTopLeft(find.byKey(const Key('sidebar-library'))).dy),
     );
-    expect(find.text('文件夹管理'), findsOneWidget);
-    expect(find.text('StreamPath'), findsOneWidget);
+    expect(find.byTooltip('文件夹管理'), findsOneWidget);
+    expect(find.text('StreamPath'), findsNothing);
     expect(find.text('本地影视'), findsOneWidget);
     final localSurface = find.ancestor(
       of: find.byKey(const ValueKey('local-root-root-test')),
@@ -197,85 +294,28 @@ void main() {
     expect(find.text('episode.mp4'), findsOneWidget);
     await tester.tap(find.byKey(const Key('sidebar-mounts')));
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.byKey(const Key('sidebar-local')));
+    await tester.tap(find.byKey(const Key('sidebar-folders')));
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('episode.mp4'), findsOneWidget);
 
-    final pinnedColor = tester
-        .widget<Material>(find.byKey(const Key('sidebar-surface')))
-        .color;
+    expect(find.byKey(const Key('sidebar-controls')), findsNothing);
+    expect(find.byKey(const Key('sidebar-mode-toggle')), findsNothing);
+    expect(find.byKey(const Key('sidebar-compact-toggle')), findsNothing);
+    expect(tester.getSize(find.byKey(const Key('sidebar-rail'))).width, 64);
+    expect(tester.getSize(find.byKey(const Key('sidebar-surface'))).width, 56);
+    for (final label in ['影视库', '文件夹', '文件夹管理', '媒体中心', '设置']) {
+      expect(find.byTooltip(label), findsOneWidget);
+    }
+    expect(find.byKey(const Key('sidebar-search')), findsNothing);
+    expect(find.byKey(const Key('sidebar-local')), findsNothing);
+    expect(find.byKey(const Key('sidebar-network')), findsNothing);
     final edge = tester.widget<DecoratedBox>(
       find.byKey(const Key('sidebar-edge')),
     );
-    expect((edge.decoration as BoxDecoration).border, isA<Border>());
-    await tester.runAsync(
-      () => appState.setSidebarMode(SidebarDisplayMode.autoHide),
-    );
-    await tester.pumpAndSettle();
-    final titleBarSurface = find.byKey(WindowTitleBar.sidebarSurfaceKey);
-    expect(tester.widget<Material>(titleBarSurface).color, pinnedColor);
     expect(
-      tester.getTopLeft(titleBarSurface).dx,
-      closeTo(
-        WindowTitleBar.sidebarTriggerWidth - WindowTitleBar.sidebarWidth,
-        0.1,
-      ),
+      (edge.decoration as BoxDecoration).borderRadius,
+      BorderRadius.circular(28),
     );
-    expect(
-      tester.getSize(find.byKey(const Key('sidebar-visible-strip'))).width,
-      WindowTitleBar.sidebarTriggerWidth,
-    );
-    expect(
-      tester.getSize(find.byKey(const Key('sidebar-hover-zone'))).width,
-      36,
-    );
-    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-    await mouse.addPointer(location: const Offset(300, 100));
-    await mouse.moveTo(const Offset(28, 100));
-    await mouse.moveTo(const Offset(40, 100));
-    await tester.pump(const Duration(milliseconds: 45));
-    final movingTitleEdge = tester.getRect(titleBarSurface).right;
-    final movingSidebarEdge = tester
-        .getRect(find.byKey(const Key('sidebar-surface')))
-        .right;
-    expect(movingTitleEdge, closeTo(movingSidebarEdge, 0.1));
-    await tester.pumpAndSettle();
-    expect(tester.getTopLeft(titleBarSurface).dx, closeTo(0, 0.1));
-    await tester.pump(const Duration(milliseconds: 250));
-    expect(tester.getTopLeft(titleBarSurface).dx, closeTo(0, 0.1));
-    final floatingColor = tester
-        .widget<Material>(find.byKey(const Key('sidebar-surface')))
-        .color;
-    expect(floatingColor, pinnedColor);
-    final clip = find.byKey(const Key('sidebar-content-clip'));
-    expect(
-      tester.widget<ClipRect>(clip).clipper!.getClip(tester.getSize(clip)).left,
-      closeTo(WindowTitleBar.sidebarWidth - 12, 0.1),
-    );
-    expect(find.text('episode.mp4'), findsOneWidget);
-    await mouse.moveTo(const Offset(300, 100));
-    await tester.pump(const Duration(milliseconds: 220));
-    await tester.pump(const Duration(milliseconds: 45));
-    final hidingTitleEdge = tester.getRect(titleBarSurface).right;
-    final hidingSidebarEdge = tester
-        .getRect(find.byKey(const Key('sidebar-surface')))
-        .right;
-    expect(hidingTitleEdge, closeTo(hidingSidebarEdge, 0.1));
-    expect(hidingSidebarEdge, greaterThan(WindowTitleBar.sidebarTriggerWidth));
-    expect(hidingSidebarEdge, lessThan(WindowTitleBar.sidebarWidth));
-    await tester.pumpAndSettle();
-    for (var attempt = 0; attempt < 3; attempt++) {
-      await mouse.moveTo(const Offset(9, 100));
-      await tester.pumpAndSettle();
-      expect(tester.getTopLeft(titleBarSurface).dx, closeTo(0, 0.1));
-      await mouse.moveTo(const Offset(300, 100));
-      await tester.pump(const Duration(milliseconds: 220));
-      await tester.pumpAndSettle();
-      expect(
-        tester.getRect(titleBarSurface).right,
-        closeTo(WindowTitleBar.sidebarTriggerWidth, 0.1),
-      );
-    }
-    await mouse.removePointer();
+    expect(tester.takeException(), isNull);
   });
 }

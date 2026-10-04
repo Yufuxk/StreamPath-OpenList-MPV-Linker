@@ -124,7 +124,8 @@ class _FakeWebDavClient extends WebDavClient {
   final Future<String> Function(String path) _handler;
 
   @override
-  Future<String> propfind(String path) => _handler(path);
+  Future<String> propfind(String path, {bool namesOnly = false}) =>
+      _handler(path);
 }
 
 class _MemoryDirectoryCache extends DirectoryCache {

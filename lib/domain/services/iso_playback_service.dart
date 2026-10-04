@@ -15,6 +15,7 @@ import '../../data/models/web_dav_file.dart';
 import '../../data/models/webdav_bdmv.dart';
 import '../../features/cache_control/iso_cache_coordinator.dart';
 import 'iso_access_provider.dart';
+import 'mpv_scripts.dart';
 import 'iso_player_arguments.dart';
 import 'mpv_watch_later_sync.dart';
 import 'player_process_controller.dart';
@@ -33,7 +34,8 @@ enum IsoPlaybackPhase {
 }
 
 class DiscStartupTrace {
-  DiscStartupTrace() : startedAtUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch {
+  DiscStartupTrace()
+    : startedAtUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch {
     clock.start();
     mark('clicked');
   }
@@ -210,12 +212,15 @@ class _IsoRuntime {
     required this.isoKey,
     required this.titles,
     required this.journalFile,
+    this.probeSourceId = '',
+    this.probeTarget = '',
     this.cacheSessionId,
     this.performanceTracker,
     this.sharedResumeKey,
     this.playbackMode = PlaybackMode.legacyTitle,
   });
 
+  final String probeSourceId, probeTarget;
   final Directory sessionDirectory;
   final IsoAccessHandle? handle;
   final PlayerProcessIdentity playerIdentity;
@@ -246,6 +251,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     DateTime Function()? now,
     IsoCacheCoordinator? cacheCoordinator,
     this.orphanRetention = const Duration(hours: 24),
+    this.progressPrefix = '',
   }) : _accessProvider = accessProvider ?? IsoBridgeAccessProvider(),
        _remoteMenuAccess =
            remoteMenuAccessProvider ??
@@ -273,6 +279,69 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
        _cacheCoordinator = cacheCoordinator;
 
   static const String tempDirectoryName = 'iso_temp';
+  final String progressPrefix;
+
+  static String libraryKey({
+    required String profileId,
+    required String resolvedUrl,
+    PlaybackMode playbackMode = PlaybackMode.legacyTitle,
+  }) {
+    final key = _buildIsoKey(profileId: profileId, resolvedUrl: resolvedUrl);
+    return playbackMode == PlaybackMode.webdavHdmvMenu ? _menuKey(key) : key;
+  }
+
+  Future<IsoPlaybackService> forFilmLibrary(
+    StreamPathConfigStore config,
+    Set<String> keys,
+  ) async {
+    final service = IsoPlaybackService(
+      configStore: config,
+      accessProvider: _accessProvider,
+      remoteMenuAccessProvider: _remoteMenuAccess,
+      processController: _processController,
+      configLoader: _configLoader,
+      processStarter: _processStarter,
+      ownerIdentityLoader: _ownerIdentityLoader,
+      now: _now,
+      cacheCoordinator: _cacheCoordinator?.forFilmLibrary(),
+      progressPrefix: 'film_',
+      tempRootProvider: () async => Directory(
+        p.join((await _tempRootProvider()).parent.path, 'film_iso_temp'),
+      ),
+    );
+    try {
+      await service.initialize();
+      final destination = await service._catalog();
+      final root = await service._rootDirectory();
+      final marker = File(
+        p.join(root.parent.path, 'film_iso_progress_migrated'),
+      );
+      if (!await marker.exists()) {
+        final all = await (await _catalog())._readAll();
+        await destination._writeAll({
+          for (final key in keys)
+            if (all.containsKey(key)) key: all[key]!,
+        });
+        for (final key in keys) {
+          if (!RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(key)) continue;
+          final old = await _watchLaterDirectory(key, create: false);
+          if (!await old.exists()) continue;
+          final target = await service._watchLaterDirectory(key);
+          await for (final entry in old.list(followLinks: false)) {
+            if (entry is File) {
+              await entry.copy(p.join(target.path, p.basename(entry.path)));
+            }
+          }
+        }
+        await marker.writeAsString('1', flush: true);
+      }
+      return service;
+    } catch (_) {
+      service.dispose();
+      rethrow;
+    }
+  }
+
   static const String manifestFileName = 'iso-session.json';
   static const String catalogFileName = 'iso_catalog.json';
   static const String watchLaterDirectoryName = 'iso_watch_later';
@@ -293,6 +362,28 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   final DateTime Function() _now;
   final IsoCacheCoordinator? _cacheCoordinator;
   final Duration orphanRetention;
+  bool get hasPlaybackSessions => _runtimes.isNotEmpty;
+  List<
+    ({
+      String sourceId,
+      String target,
+      String snapshotPath,
+      String? resourcePath,
+    })
+  >
+  get mediaProbeSnapshots => [
+    for (final runtime in _runtimes.values)
+      if (runtime.probeSourceId.isNotEmpty)
+        (
+          sourceId: runtime.probeSourceId,
+          target: runtime.probeTarget,
+          resourcePath: null,
+          snapshotPath: p.join(
+            runtime.sessionDirectory.path,
+            '$statusFileName.media.json',
+          ),
+        ),
+  ];
   final Map<String, _IsoRuntime> _runtimes = {};
   final RemoteMenuPlaybackService remoteMenu;
   final IsoAccessProvider _remoteMenuAccess;
@@ -354,7 +445,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     if (isBusy) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
-    if (!file.isIso && file is! WebDavBdmv) throw AppException.config('仅支持 Blu-ray ISO 文件');
+    if (!file.isIso && file is! WebDavBdmv) {
+      throw AppException.config('仅支持 Blu-ray ISO 文件');
+    }
 
     final performanceClock = Stopwatch()..start();
     int? probeCompletedAtMs;
@@ -474,16 +567,26 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       }
 
       if (subtitlePreparation != null) {
-        subtitles = await Future.any([subtitlePreparation, _subtitleCancellation!.future]);
+        subtitles = await Future.any([
+          subtitlePreparation,
+          _subtitleCancellation!.future,
+        ]);
       }
-      if (_cancelRequested) { await handle.cleanup(); return null; }
+      if (_cancelRequested) {
+        await handle.cleanup();
+        return null;
+      }
       await subtitles?.refreshDiscRevision();
       startupTrace?.mark('subtitleDiscoveryJoined');
       final catalog = await _catalog();
-      subtitles?.titleCatalog = probedTitles.map((title) => <String, dynamic>{
-        'id': title.mplsId,
-        'duration': title.duration.inMilliseconds / 1000,
-      }).toList();
+      subtitles?.titleCatalog = probedTitles
+          .map(
+            (title) => <String, dynamic>{
+              'id': title.mplsId,
+              'duration': title.duration.inMilliseconds / 1000,
+            },
+          )
+          .toList();
       final saved = await catalog.load(isoKey);
       final orderedTitles = _applySavedOrder(probedTitles, saved.order);
       final availableIds = orderedTitles.map((title) => title.mplsId).toSet();
@@ -616,14 +719,22 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         mpvMaxBytes: startCachePlan?.mpvMaxBytes,
       );
       if (config.subtitleInjectionEnabled && subtitles != null) {
-        final subtitleArgs = await subtitles.prepareArgs(handle.sessionDirectory,
+        final subtitleArgs = await subtitles.prepareArgs(
+          handle.sessionDirectory,
           sessionId: p.basename(handle.sessionDirectory.path),
-          pipeName: ipcPipeName, menu: false,
+          pipeName: ipcPipeName,
+          menu: false,
           autoSelect: config.subtitleAutoSelectEnabled,
-          playlist: selectedTitles.map((title) => {
-            'id': title.mplsId, 'path': handle!.playbackUri(title.mplsId).toString(),
-            'duration': (title.duration.inMilliseconds / 1000).toString(),
-          }).toList());
+          playlist: selectedTitles
+              .map(
+                (title) => {
+                  'id': title.mplsId,
+                  'path': handle!.playbackUri(title.mplsId).toString(),
+                  'duration': (title.duration.inMilliseconds / 1000).toString(),
+                },
+              )
+              .toList(),
+        );
         args.insertAll(0, subtitleArgs);
       }
       startupTrace?.mark('subtitleResourcesReady');
@@ -645,10 +756,14 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
       startupTrace?.mark('processStarted');
       if (startupClock != null) {
-        await _writeStartupTiming(handle.sessionDirectory,
-            startupClock.elapsedMilliseconds, selectionWaitMs,
-            startupTrace: startupTrace, pid: pid,
-            processStartedUtcUs: processStartedUtcUs);
+        await _writeStartupTiming(
+          handle.sessionDirectory,
+          startupClock.elapsedMilliseconds,
+          selectionWaitMs,
+          startupTrace: startupTrace,
+          pid: pid,
+          processStartedUtcUs: processStartedUtcUs,
+        );
       }
       final identity = await _captureIdentityWithRetry(pid);
       if (identity == null) {
@@ -664,6 +779,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         expectedIdentity: handle.helperIdentity,
       );
       final runtime = _IsoRuntime(
+        probeSourceId: webDavService.sourceId,
+        probeTarget: resolvedIsoUrl,
         sessionDirectory: handle.sessionDirectory,
         handle: handle,
         playerIdentity: identity,
@@ -742,22 +859,33 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     }
   }
 
-  Future<void> _writeStartupTiming(Directory directory, int elapsed, int selectionWait, {
+  Future<void> _writeStartupTiming(
+    Directory directory,
+    int elapsed,
+    int selectionWait, {
     DiscStartupTrace? startupTrace,
     required int pid,
     required int processStartedUtcUs,
   }) async {
     try {
-      await File(p.join(directory.path, 'disc-startup.json')).writeAsString(jsonEncode({
-        'version': 1, 'modeToProcessStartedMs': elapsed,
-        'titleSelectionWaitMs': selectionWait, 'processingMs': elapsed - selectionWait,
-        if (startupTrace != null) 'clickToProcessStartedMs': startupTrace.eventsMs['processStarted'],
-        if (startupTrace != null) 'firstClickUtcUs': startupTrace.startedAtUtcUs,
-        'processStartedUtcUs': processStartedUtcUs,
-        if (startupTrace != null) 'eventsMs': startupTrace.eventsMs,
-        'pid': pid,
-      }));
-    } on FileSystemException { /* 遥测写入失败不影响播放。 */ }
+      await File(p.join(directory.path, 'disc-startup.json')).writeAsString(
+        jsonEncode({
+          'version': 1,
+          'modeToProcessStartedMs': elapsed,
+          'titleSelectionWaitMs': selectionWait,
+          'processingMs': elapsed - selectionWait,
+          if (startupTrace != null)
+            'clickToProcessStartedMs': startupTrace.eventsMs['processStarted'],
+          if (startupTrace != null)
+            'firstClickUtcUs': startupTrace.startedAtUtcUs,
+          'processStartedUtcUs': processStartedUtcUs,
+          if (startupTrace != null) 'eventsMs': startupTrace.eventsMs,
+          'pid': pid,
+        }),
+      );
+    } on FileSystemException {
+      /* 遥测写入失败不影响播放。 */
+    }
   }
 
   Future<IsoPlaybackLaunchResult?> startRemoteMenu({
@@ -783,8 +911,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     var registered = false;
     try {
       final config = await _configLoader();
-      final executable = file is WebDavBdmv &&
-              precheckedMenuExecutable == config.executable
+      final executable =
+          file is WebDavBdmv && precheckedMenuExecutable == config.executable
           ? config.executable
           : await remoteMenu.requireCapability(config: config);
       startupTrace?.mark('menuCapabilityConfirmed');
@@ -839,7 +967,10 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       startupTrace?.mark('bridgeReady');
       if (_cancelRequested) return null;
       if (subtitlePreparation != null) {
-        subtitles = await Future.any([subtitlePreparation, _subtitleCancellation!.future]);
+        subtitles = await Future.any([
+          subtitlePreparation,
+          _subtitleCancellation!.future,
+        ]);
       }
       if (_cancelRequested) return null;
       await subtitles?.refreshDiscRevision();
@@ -863,10 +994,17 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
             '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
       );
       if (config.subtitleInjectionEnabled && subtitles != null) {
-        args.insertAll(0, await subtitles.prepareArgs(directory,
-          sessionId: p.basename(directory.path),
-          pipeName: '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
-          menu: true, autoSelect: config.subtitleAutoSelectEnabled));
+        args.insertAll(
+          0,
+          await subtitles.prepareArgs(
+            directory,
+            sessionId: p.basename(directory.path),
+            pipeName:
+                '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
+            menu: true,
+            autoSelect: config.subtitleAutoSelectEnabled,
+          ),
+        );
       }
       startupTrace?.mark('subtitleResourcesReady');
       if (_cancelRequested) return null;
@@ -894,15 +1032,22 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
       startupTrace?.mark('processStarted');
       if (startupClock != null) {
-        await _writeStartupTiming(directory, startupClock.elapsedMilliseconds, 0,
-            startupTrace: startupTrace, pid: pid,
-            processStartedUtcUs: processStartedUtcUs);
+        await _writeStartupTiming(
+          directory,
+          startupClock.elapsedMilliseconds,
+          0,
+          startupTrace: startupTrace,
+          pid: pid,
+          processStartedUtcUs: processStartedUtcUs,
+        );
       }
       player = await _captureIdentityWithRetry(pid);
       if (player == null) {
         throw AppException.process('无法确认 MPV 播放器身份');
       }
       final runtime = _IsoRuntime(
+        probeSourceId: webDavService.sourceId,
+        probeTarget: webDavService.resolveUrl(file.href),
         sessionDirectory: directory,
         handle: handle,
         playerIdentity: player,
@@ -972,7 +1117,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   void cancel() {
     if (!_operationActive) return;
     _cancelRequested = true;
-    if (_subtitleCancellation?.isCompleted == false) _subtitleCancellation!.complete(null);
+    if (_subtitleCancellation?.isCompleted == false) {
+      _subtitleCancellation!.complete(null);
+    }
     _accessProvider.cancel();
     _remoteMenuAccess.cancel();
   }
@@ -1072,7 +1219,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     PlaybackMode playbackMode = PlaybackMode.legacyTitle,
   }) => playbackMode == PlaybackMode.webdavHdmvMenu
       ? _getMenuLibraryProgressByKey(
-          _menuKey(_buildIsoKey(profileId: profileId, resolvedUrl: resolvedUrl)),
+          _menuKey(
+            _buildIsoKey(profileId: profileId, resolvedUrl: resolvedUrl),
+          ),
         )
       : _getLibraryProgressByKey(
           _buildIsoKey(profileId: profileId, resolvedUrl: resolvedUrl),
@@ -1146,6 +1295,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     final safeTitle = title.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ').trim();
     args.addAll([
       '--resume-playback=no',
+      '--fullscreen=yes',
       '--save-position-on-quit=no',
       '--idle=no',
       '--keep-open=no',
@@ -1229,9 +1379,13 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         sessionDirectory: directory,
         handle: null,
         playbackMode: PlaybackModeJson.fromJson(json['playbackMode']),
-        sharedResumeKey: json['sharedResumeKey'] is String &&
-                RegExp(r'^[a-f0-9]{64}$').hasMatch(json['sharedResumeKey'] as String)
-            ? json['sharedResumeKey'] as String : null,
+        sharedResumeKey:
+            json['sharedResumeKey'] is String &&
+                RegExp(
+                  r'^[a-f0-9]{64}$',
+                ).hasMatch(json['sharedResumeKey'] as String)
+            ? json['sharedResumeKey'] as String
+            : null,
         playerIdentity: playerIdentity,
         playerTracker: playerTracker,
         helperIdentity: helperIdentity,
@@ -1577,7 +1731,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       if (helperIdentity != null)
         'helperCreationTime': helperIdentity.creationTime,
       if (runtime.isoKey != null) 'isoKey': runtime.isoKey,
-      if (runtime.sharedResumeKey != null) 'sharedResumeKey': runtime.sharedResumeKey,
+      if (runtime.sharedResumeKey != null)
+        'sharedResumeKey': runtime.sharedResumeKey,
       if (runtime.journalFile != null)
         'journalFile': p.basename(runtime.journalFile!.path),
       if (runtime.titles.isNotEmpty)
@@ -1705,7 +1860,13 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         .replace(userInfo: '', query: '', fragment: '')
         .normalizePath()
         .toString();
-    return sha256.convert(utf8.encode('$profileId\n${uri.path.endsWith('/') ? 'bdmv\n' : ''}$canonical')).toString();
+    return sha256
+        .convert(
+          utf8.encode(
+            '$profileId\n${uri.path.endsWith('/') ? 'bdmv\n' : ''}$canonical',
+          ),
+        )
+        .toString();
   }
 
   static String _buildPipeToken(String sessionDirectoryPath) => sha256
@@ -1753,10 +1914,15 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     return result;
   }
 
-  Future<IsoLibraryProgress?> _getMenuLibraryProgressByKey(String isoKey) async {
+  Future<IsoLibraryProgress?> _getMenuLibraryProgressByKey(
+    String isoKey,
+  ) async {
     final menuRuntime = _runtimes.values
-        .where((runtime) => runtime.isoKey == isoKey &&
-            runtime.playbackMode == PlaybackMode.webdavHdmvMenu)
+        .where(
+          (runtime) =>
+              runtime.isoKey == isoKey &&
+              runtime.playbackMode == PlaybackMode.webdavHdmvMenu,
+        )
         .firstOrNull;
     final menuFile = File(
       p.join(
@@ -1906,7 +2072,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     if (existing != null) return existing;
     final root = await _rootDirectory();
     final store = _IsoCatalogStore(
-      File(p.join(root.parent.path, catalogFileName)),
+      File(p.join(root.parent.path, '$progressPrefix$catalogFileName')),
       _now,
     );
     _catalogStore = store;
@@ -1919,7 +2085,11 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   }) async {
     final root = await _rootDirectory();
     final directory = Directory(
-      p.join(root.parent.path, watchLaterDirectoryName, isoKey),
+      p.join(
+        root.parent.path,
+        '$progressPrefix$watchLaterDirectoryName',
+        isoKey,
+      ),
     );
     if (create && !await directory.exists()) {
       await directory.create(recursive: true);
@@ -1995,6 +2165,7 @@ local STATUS_TMP = $statusTempPath
 local COMMAND = $commandPath
 local PERFORMANCE_EVENTS = $performanceEventsPath
 local TITLES = utils.parse_json($titleDataLiteral) or {}
+${MpvScripts.mediaInfoSnapshotLua(outputExpression: 'STATUS', pathExpression: 'mp.get_property("path", "")', programmeExpression: '(TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).mplsId', programmeTypeExpression: '"mpls"')}
 local resumed = {}
 local loaded = false
 local recorded = false
@@ -2221,6 +2392,7 @@ mp.register_event("start-file", function()
 end)
 
 mp.register_event("file-loaded", function()
+    write_media_info()
     loaded = true
     sample()
     local info = TITLES[playlist_pos + 1]
@@ -2245,6 +2417,7 @@ end)
 
 mp.register_event("playback-restart", function()
     if not loaded then return end
+    write_media_info()
     restart_serial = restart_serial + 1
     append_performance_event("playback-restart")
     if resume_pending ~= nil and not resume_inflight then
@@ -2375,28 +2548,39 @@ end)
           final position = (record['position'] as num).toDouble();
           final duration = (record['duration'] as num).toDouble();
           final url = 'bd://mpls/${entry.key}';
-          if (position == 0 || record['completed'] == true || position / duration >= 0.99) {
+          if (position == 0 ||
+              record['completed'] == true ||
+              position / duration >= 0.99) {
             await const MpvWatchLaterSync().deleteRecord(directory, url);
           } else {
-            await _writeResumeRecord(directory, url,
-                positionSeconds: position, durationSeconds: duration);
+            await _writeResumeRecord(
+              directory,
+              url,
+              positionSeconds: position,
+              durationSeconds: duration,
+            );
           }
         }
         if (latest.isNotEmpty) {
           final last = latest.values.first;
           final position = (last['position'] as num).toDouble();
           final duration = (last['duration'] as num).toDouble();
-          await (await _catalog()).saveLastMpls(sharedKey,
-              position == 0 || last['completed'] == true || position / duration >= 0.99
-                  ? null : latest.keys.first);
+          await (await _catalog()).saveLastMpls(
+            sharedKey,
+            position == 0 ||
+                    last['completed'] == true ||
+                    position / duration >= 0.99
+                ? null
+                : latest.keys.first,
+          );
         }
       }
       for (final line in lines.reversed) {
         final record = _parseMenuProgress(line);
         if (record == null) continue;
-        final target = File(p.join(
-          (await _watchLaterDirectory(isoKey)).path, 'menu-resume.json',
-        ));
+        final target = File(
+          p.join((await _watchLaterDirectory(isoKey)).path, 'menu-resume.json'),
+        );
         final temporary = File('${target.path}.tmp');
         await temporary.writeAsString(jsonEncode(record), flush: true);
         await temporary.rename(target.path);
@@ -2457,10 +2641,17 @@ end)
       final editions = value['editions'];
       final position = value['position'];
       final duration = value['duration'];
-      if (edition is! int || editions is! int || edition < 0 ||
-          edition >= editions || position is! num || !position.isFinite ||
-          position < 0 || duration is! num || !duration.isFinite ||
-          duration <= 0 || value['completed'] is! bool) {
+      if (edition is! int ||
+          editions is! int ||
+          edition < 0 ||
+          edition >= editions ||
+          position is! num ||
+          !position.isFinite ||
+          position < 0 ||
+          duration is! num ||
+          !duration.isFinite ||
+          duration <= 0 ||
+          value['completed'] is! bool) {
         return null;
       }
       return value;

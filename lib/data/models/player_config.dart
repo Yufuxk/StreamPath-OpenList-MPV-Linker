@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import 'special_playlist_mode.dart';
+import 'video_playlist_mode.dart';
 
 ///
 /// `args` 为启动参数模板列表，每项支持占位符：
@@ -50,6 +51,9 @@ class PlayerConfig {
     this.scanSpecialSiblingFolders = false,
     this.sharePlaylistFonts = false,
     this.webDavFontCacheEnabled = true,
+    this.externalAudioInjectionEnabled = true,
+    this.videoPlaylistMode = VideoPlaylistMode.implicit,
+    this.videoPlaylistSimpleNaming = true,
     this.autoSeasonTransitionEnabled = true,
     this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
@@ -104,6 +108,9 @@ class PlayerConfig {
   final bool scanSpecialSiblingFolders;
   final bool sharePlaylistFonts;
   final bool webDavFontCacheEnabled;
+  final bool externalAudioInjectionEnabled;
+  final VideoPlaylistMode videoPlaylistMode;
+  final bool videoPlaylistSimpleNaming;
   final bool autoSeasonTransitionEnabled;
   final bool allowSeasonGap;
 
@@ -158,6 +165,9 @@ class PlayerConfig {
     'scanSpecialSiblingFolders': scanSpecialSiblingFolders,
     'sharePlaylistFonts': sharePlaylistFonts,
     'webDavFontCacheEnabled': webDavFontCacheEnabled,
+    'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
+    'videoPlaylistMode': videoPlaylistMode.name,
+    'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
     'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
@@ -205,6 +215,11 @@ class PlayerConfig {
           (json['scanSpecialSiblingFolders'] as bool?) ?? false,
       sharePlaylistFonts: (json['sharePlaylistFonts'] as bool?) ?? false,
       webDavFontCacheEnabled: (json['webDavFontCacheEnabled'] as bool?) ?? true,
+      externalAudioInjectionEnabled:
+          (json['externalAudioInjectionEnabled'] as bool?) ?? true,
+      videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
+      videoPlaylistSimpleNaming:
+          (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
       autoSeasonTransitionEnabled:
           (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
       allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,

@@ -6,10 +6,12 @@ import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/media_directory_entry.dart';
 import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/domain/repositories/media_directory_source.dart';
 import 'package:streampath/domain/services/openlist_index_service.dart';
+import 'package:streampath/domain/services/external_audio_matcher.dart';
 import 'package:streampath/presentation/controllers/directory_browser_controller.dart';
 
 void main() {
@@ -37,6 +39,41 @@ void main() {
       tempDirectory.deleteSync(recursive: true);
     }
   });
+
+  for (final initialPath in <String?>[null, 'Remembered/Nested', '']) {
+    test('构造时确定初始目录并只加载该目录：$initialPath', () async {
+      await configStore.save(
+        configStore.current.upsertProfile(
+          const ServerProfile(
+            profileId: 'webdav:test',
+            name: 'test',
+            defaultDirectory: 'Default',
+          ),
+        ),
+      );
+      final path = initialPath ?? 'Default';
+      final files = [
+        const WebDavFile(
+          name: 'cached.mkv',
+          href: '/dav/cached.mkv',
+          isDirectory: false,
+        ),
+      ];
+      final repository = _FakeDirectoryRepository({path: files});
+      final controller = DirectoryBrowserController(
+        service: repository,
+        configStore: configStore,
+        initialPath: initialPath,
+      );
+      addTearDown(controller.dispose);
+
+      expect(controller.currentPath, path);
+      expect(controller.files, same(files));
+      await controller.initialize();
+      expect(controller.currentPath, path);
+      expect(repository.requestedPaths, [path]);
+    });
+  }
 
   test('显示过滤、搜索和排序不改写后台完整目录', () async {
     final allFiles = [
@@ -93,6 +130,44 @@ void main() {
       'C.mkv',
       'B.mkv',
     ]);
+  });
+
+  test('隐藏音频仍从完整目录匹配外挂音轨，只读取目录元数据', () async {
+    await configStore.save(
+      const StreamPathConfig(
+        hiddenExtensionsEnabled: true,
+        hiddenExtensions: ['.flac'],
+      ),
+    );
+    const video = WebDavFile(
+      name: 'movie.mkv',
+      href: '/dav/movie.mkv',
+      isDirectory: false,
+    );
+    final repository = _FakeDirectoryRepository({
+      '': [
+        video,
+        const WebDavFile(
+          name: 'movie.zh.flac',
+          href: '/dav/movie.zh.flac',
+          isDirectory: false,
+        ),
+      ],
+    });
+    final controller = DirectoryBrowserController(
+      service: repository,
+      configStore: configStore,
+    );
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    expect(controller.visibleFiles, [video]);
+    final tracks = const ExternalAudioMatcher().matchFor(
+      video,
+      controller.files,
+      baseUrl: 'https://example.test/dav',
+    );
+    expect(tracks.single.name, 'movie.zh.flac');
+    expect(repository.requestedPaths, ['']);
   });
 
   test('较早目录请求晚返回时不能覆盖新导航结果', () async {
@@ -172,7 +247,7 @@ void main() {
     controller.addListener(() => notifications++);
 
     await controller.initialize();
-    expect(notifications, 1, reason: '初始化只发布一次缓存目录变化');
+    expect(notifications, 0, reason: '缓存目录已在构造时就绪，初始化不重复通知');
     notifications = 0;
 
     await controller.load();
@@ -196,6 +271,7 @@ class _FakeDirectoryRepository implements MediaDirectorySource {
   _FakeDirectoryRepository(this.directories);
 
   final Map<String, List<WebDavFile>> directories;
+  final List<String> requestedPaths = [];
 
   @override
   MediaSourceDescriptor get descriptor => const MediaSourceDescriptor(
@@ -214,7 +290,10 @@ class _FakeDirectoryRepository implements MediaDirectorySource {
   Future<List<WebDavFile>> fetchDirectory(
     String path, {
     bool forceRefresh = false,
-  }) async => directories[path] ?? const [];
+  }) async {
+    requestedPaths.add(path);
+    return directories[path] ?? const [];
+  }
 
   @override
   Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async =>

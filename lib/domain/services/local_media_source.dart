@@ -114,6 +114,49 @@ class LocalMediaSource implements MediaDirectorySource {
     );
   }
 
+  /// 建库仅枚举名称和类型，不读取文件内容或逐文件大小、时间。
+  Future<List<MediaDirectoryEntry>> fetchCatalogDirectory(
+    String relativePath,
+  ) async {
+    if (!root.enabled) throw AppException.config('该本地文件夹已停用');
+    final normalized = _normalizeRelativePath(relativePath);
+    final directoryPath = await _validatedLexicalPath(
+      normalized,
+      expectDirectory: true,
+    );
+    final entries = <MediaDirectoryEntry>[];
+    await for (final entity in Directory(
+      directoryPath,
+    ).list(followLinks: false)) {
+      if (entity is Link || _isHiddenOrSystem(entity.path)) continue;
+      if (Platform.isWindows) {
+        final nativePath = entity.path.toNativeUtf16();
+        try {
+          final attributes = GetFileAttributes(nativePath);
+          if (attributes == 0xffffffff) {
+            throw FileSystemException(
+              'Cannot read entry attributes',
+              entity.path,
+            );
+          }
+          if (attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0) continue;
+        } finally {
+          calloc.free(nativePath);
+        }
+      }
+      final name = p.basename(entity.path);
+      entries.add(
+        LocalMediaEntry(
+          name: name,
+          relativePath: _joinRelative(normalized, name),
+          absolutePath: entity.path,
+          isDirectory: entity is Directory,
+        ),
+      );
+    }
+    return entries;
+  }
+
   /// 解析媒体中心保存的相对路径；打开前仍执行最终路径边界校验。
   Future<String> resolveRelativePath(
     String relativePath, {

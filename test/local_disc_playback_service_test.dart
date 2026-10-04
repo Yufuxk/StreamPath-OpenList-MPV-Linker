@@ -58,6 +58,7 @@ void main() {
     expect(args, contains('--audio-spdif=ac3,dts'));
     expect(args, isNot(contains('--no-config')));
     expect(args, contains('--idle=no'));
+    expect(args, contains('--fullscreen=yes'));
     expect(args, contains('--keep-open=no'));
     expect(args, contains(r'--input-ipc-server=\\.\pipe\controlled'));
     expect(args, contains(r'--bluray-device=C:\Media\disc.iso'));

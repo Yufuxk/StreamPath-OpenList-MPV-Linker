@@ -48,6 +48,28 @@ void main() {
 
   tearDown(() => service.close());
 
+  test('迁移快照隔离来源，保留零秒临时点并排除过期记录', () async {
+    const url = 'http://fixture/video.mkv';
+    await service.saveProgress(url: url, positionMs: 90000, profileId: 'a');
+    await service.saveProgress(url: url, positionMs: 45000, profileId: 'b');
+    await service.saveTemporaryProgress(
+      url: url,
+      positionMs: 0,
+      profileId: 'a',
+    );
+    var snapshot = await service.resumeProgressSnapshot();
+    expect(snapshot[('a', url)]!.positionMs, 0);
+    expect(snapshot[('b', url)]!.positionMs, 45000);
+    expect(snapshot[('c', url)], isNull);
+    expect(
+      snapshot[('a', url)]!.positionMs,
+      (await service.getResumeProgress(url, profileId: 'a'))!.positionMs,
+    );
+    now = now.add(service.retention + const Duration(days: 1));
+    snapshot = await service.resumeProgressSnapshot();
+    expect(snapshot, isEmpty);
+  });
+
   group('PlaybackProgressService 进度 CRUD', () {
     test('保存后按 URL 查询', () async {
       await service.saveProgress(

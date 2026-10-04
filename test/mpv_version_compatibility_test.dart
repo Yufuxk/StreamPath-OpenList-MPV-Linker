@@ -1,6 +1,14 @@
 @TestOn('windows')
 library;
 
+import 'package:streampath/data/models/external_audio_track.dart';
+import 'package:streampath/domain/services/video_entry_preparer.dart';
+import 'package:streampath/domain/services/webdav_service.dart';
+import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
+import 'package:streampath/domain/services/webdav_font_matcher.dart';
+import 'package:streampath/domain/services/subtitle_matcher.dart';
+
+import 'package:streampath/data/models/video_queue.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -9,6 +17,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/models/audio_media_entry.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
@@ -24,11 +33,674 @@ import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/mpv_session_controller.dart';
 import 'package:streampath/domain/services/mpv_scripts.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
+import 'package:streampath/domain/services/player_process_controller.dart';
 
 final List<({int pid, Future<int> exitCode})> _ownedMpvProcesses = [];
 
 void main() {
   final testRoot = Platform.environment['STREAMPATH_MPV_TEST_ROOT'];
+
+  test(
+    '隐式队列在支持版本保持 PID，逻辑索引、版本取消和 EOF 均隔离',
+    () async {
+      final builds = _fiveBuilds(testRoot!);
+      for (final build in builds) {
+        final dir = await Directory.systemTemp.createTemp('implicit_mpv_');
+        final config = StreamPathConfigStore.forPath(
+          p.join(dir.path, 'config.json'),
+        );
+        await config.save(
+          StreamPathConfig(
+            playerExecutable: build.executable.path,
+            playerArgs: [
+              '--no-config',
+              '--vo=null',
+              '--ao=null',
+              '--pause=yes',
+              '--log-file=${p.join(dir.path, 'mpv.log')}',
+              '{url}',
+            ],
+            subtitleInjectionEnabled: true,
+            externalAudioInjectionEnabled: true,
+            autoSeasonTransitionEnabled: false,
+          ),
+        );
+        final entries = <MediaEntry>[];
+        final fontDirs = <String>[];
+        for (var i = 0; i < 3; i++) {
+          final file = File(p.join(dir.path, '$i.wav'));
+          await file.writeAsBytes(_silentWave(seconds: 3));
+          final subtitle = File(p.join(dir.path, '$i.srt'));
+          await subtitle.writeAsString(
+            '1\n00:00:00,000 --> 00:00:03,000\nEpisode $i\n',
+          );
+          final fontDir = await Directory(p.join(dir.path, 'font$i')).create();
+          final font = File(r'C:\Windows\Fonts\arial.ttf');
+          if (await font.exists()) {
+            await font.copy(p.join(fontDir.path, 'arial.ttf'));
+          }
+          fontDirs.add(fontDir.path);
+          final audio = File(p.join(dir.path, 'audio$i.wav'));
+          await audio.writeAsBytes(_silentWave(seconds: 3));
+          entries.add(
+            MediaEntry(
+              url: file.path,
+              catalogPath: 'Show/$i.wav',
+              title: 'Episode $i',
+              subtitle: SubtitleItem(
+                name: '$i.srt',
+                url: subtitle.path,
+                language: SubtitleLanguage.exact,
+              ),
+              externalAudioTracks: [
+                ExternalAudioTrack(name: 'Audio $i', url: audio.path),
+              ],
+            ),
+          );
+        }
+        final active = <int>[];
+        final errors = <String>[];
+        final progress = await PlaybackProgressService.open(
+          p.join(dir.path, 'progress.db'),
+        );
+        var choices = 0;
+        final plan = ImplicitVideoPlan(
+          index: 0,
+          items: [
+            for (var i = 0; i < 3; i++)
+              VideoQueueItem(
+                versions: [
+                  VideoQueueVersion(path: 'Show/$i.wav', name: '$i.wav'),
+                  if (i == 2)
+                    const VideoQueueVersion(
+                      path: 'Show/alt.wav',
+                      name: 'alt.wav',
+                    ),
+                ],
+              ),
+          ],
+          prepare: (v) async => PreparedVideoItem(
+            entry: entries[int.parse(v.name[0])],
+            localFontDirectory: fontDirs[int.parse(v.name[0])],
+          ),
+          chooseVersion: (i) async => ++choices == 1 ? null : i.versions.first,
+          failed: errors.add,
+          activated: (i, v) async {
+            active.add(i);
+          },
+        );
+        final service = ExternalPlayerService(
+          configStore: config,
+          progressService: progress,
+          watchLaterDir: Directory(p.join(dir.path, 'watch')),
+        );
+        final id =
+            'implicit-${build.id}-${DateTime.now().microsecondsSinceEpoch}';
+        PlayerLaunchResult? launched;
+        MpvSessionController? controller;
+        Future<void> waitFor(Future<bool> Function() check) async {
+          for (var i = 0; i < 80; i++) {
+            if (await check()) return;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+          fail(
+            '${build.id}: ${await File(p.join(dir.path, 'mpv.log')).readAsString()}',
+          );
+        }
+
+        try {
+          launched = await service.launch(
+            entries: [entries.first],
+            webDavSourceId: 'dav:test',
+            webDavSourceUrl: 'http://fixture/dav',
+            localFontDirectories: [fontDirs.first],
+            sessionId: id,
+            implicitPlan: plan,
+          );
+          controller = MpvSessionController(pipeName: launched.ipcPipeName!);
+          expect(await controller.connect(), true);
+          await waitFor(() async => active.contains(0));
+          expect(await controller.getProperty('fullscreen'), true);
+          expect(await controller.getProperty('playlist-count'), 1);
+          await progress.saveProgress(
+            url: entries[1].url,
+            positionMs: 0,
+            profileId: 'dav:test',
+          );
+          expect(
+            (await progress.getResumeProgress(
+              entries[1].url,
+              profileId: 'dav:test',
+            ))!.resumeSeconds,
+            isNull,
+          );
+          await controller.setProperty('fullscreen', false);
+          expect(await service.selectPlaylistEntry(id, 1), true);
+          await waitFor(() async => active.contains(1));
+          expect(await controller.getProperty('fullscreen'), true);
+          expect(await controller.getProperty('pid'), launched.process.pid);
+          expect(await controller.getProperty('media-title'), 'Episode 1');
+          await waitFor(() async {
+            final tracks = await controller!.getProperty('track-list') as List;
+            return tracks.any((t) => t['type'] == 'sub') &&
+                tracks.any(
+                  (t) => t['type'] == 'audio' && t['external'] == true,
+                );
+          });
+          final tracks = await controller.getProperty('track-list') as List;
+          expect(tracks.where((t) => t['type'] == 'sub').length, 1);
+          expect(
+            tracks.where((t) => t['type'] == 'sub').single['external-filename'],
+            endsWith('1.srt'),
+          );
+          expect(
+            tracks
+                .where((t) => t['type'] == 'audio' && t['external'] == true)
+                .single['external-filename'],
+            endsWith('audio1.wav'),
+          );
+          expect(await controller.getProperty('aid'), 1);
+          final properties =
+              await controller.getProperty('property-list') as List;
+          if (properties.contains('sub-fonts-dir')) {
+            expect(await controller.getProperty('sub-fonts-dir'), fontDirs[1]);
+          }
+
+          final status = File(launched.statusFilePath!);
+          await waitFor(() async => (await status.readAsLines()).first == '1');
+          await waitFor(() async => choices == 1);
+          expect(await controller.getProperty('idle-active'), true);
+          expect(await controller.getProperty('pid'), launched.process.pid);
+          expect((await status.readAsLines()).first, isNot('-1'));
+          expect(service.hasPendingVideo(id), true);
+          await controller.setProperty('fullscreen', false);
+          await service.sendResume(id);
+          await waitFor(() async => active.contains(2));
+          expect(await controller.getProperty('fullscreen'), true);
+          expect(choices, 2);
+          expect(await controller.getProperty('playlist-count'), 1);
+          expect(await controller.getProperty('pid'), launched.process.pid);
+          await waitFor(() async => !await service.isPlayerRunning(id));
+          final journal = File(launched.progressFilePath!);
+          final rows = (await journal.readAsLines())
+              .map((l) => jsonDecode(l) as Map)
+              .toList();
+          expect(
+            rows
+                .where((r) => r['outcome'] == 'completed')
+                .map((r) => r['playlist_pos']),
+            [1, 2],
+          );
+          expect(
+            rows
+                .where((r) => r['outcome'] == 'completed')
+                .map((r) => r['queue_generation']),
+            [1, 2],
+          );
+          expect((await status.readAsLines()).first, '-1');
+          expect(errors, isEmpty);
+          // ignore: avoid_print
+          print('Implicit queue passed: ${build.id}');
+        } finally {
+          await controller?.dispose();
+          if (launched != null) await service.terminateSession(id);
+          await progress.close();
+          await dir.delete(recursive: true);
+        }
+      }
+    },
+    skip: testRoot == null ? 'Set STREAMPATH_MPV_TEST_ROOT' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    '真实 HTTP WebDAV 的 STRM、字幕、字体与外挂音轨逐集注入',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('implicit_dav_');
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final origin = 'http://${server.address.address}:${server.port}';
+      final requests = <String>[];
+      final wrongAuth = <String>[];
+      final payloads = <String, List<int>>{};
+      for (var i = 1; i <= 2; i++) {
+        payloads['/dav/S$i/E$i.strm'] = utf8.encode('$origin/media/E$i.mkv');
+        final movie = File(p.join(dir.path, 'E$i.mkv'));
+        final generated = await Process.run('ffmpeg', [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-f',
+          'lavfi',
+          '-i',
+          'color=c=blue:size=160x90:rate=10',
+          '-f',
+          'lavfi',
+          '-i',
+          'anullsrc=r=8000:cl=mono',
+          '-t',
+          '4',
+          '-c:v',
+          'libx264',
+          '-pix_fmt',
+          'yuv420p',
+          '-c:a',
+          'pcm_s16le',
+          '-threads',
+          '1',
+          movie.path,
+        ]);
+        expect(generated.exitCode, 0, reason: '${generated.stderr}');
+        payloads['/media/E$i.mkv'] = await movie.readAsBytes();
+        payloads['/dav/S$i/E$i.srt'] = utf8.encode(
+          '1\n00:00:00,000 --> 00:00:03,000\nEpisode $i\n',
+        );
+        payloads['/dav/S$i/E$i.external.wav'] = _silentWave(seconds: 4);
+        payloads['/dav/S$i/fonts/arial.ttf'] = await File(
+          r'C:\Windows\Fonts\arial.ttf',
+        ).readAsBytes();
+      }
+      server.listen((request) async {
+        requests.add('${request.method} ${request.uri.path}');
+        if (request.headers.value('authorization') !=
+            'Basic ${base64Encode(utf8.encode('fixture:pass'))}') {
+          if (request.headers.value('authorization') != null) {
+            wrongAuth.add(request.uri.path);
+          }
+          request.response.headers.set(
+            'WWW-Authenticate',
+            'Basic realm="fixture"',
+          );
+          request.response.statusCode = 401;
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'PROPFIND') {
+          final path = request.uri.path.replaceAll(RegExp(r'/+$'), '');
+          final children = <String, bool>{'$path/': true};
+          if (path.endsWith('fonts')) {
+            children['$path/arial.ttf'] = false;
+          } else {
+            final i = path.endsWith('1') ? 1 : 2;
+            children.addAll({
+              '$path/E$i.strm': false,
+              '$path/E$i.srt': false,
+              '$path/E$i.external.wav': false,
+              '$path/fonts/': true,
+            });
+          }
+          final xml = children.entries
+              .map(
+                (e) =>
+                    '<d:response><d:href>${e.key}</d:href><d:propstat><d:prop><d:displayname>${p.posix.basename(e.key.replaceAll(RegExp(r"/+$"), ""))}</d:displayname><d:resourcetype>${e.value ? "<d:collection/>" : ""}</d:resourcetype><d:getcontentlength>${payloads[e.key]?.length ?? 0}</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>',
+              )
+              .join();
+          request.response
+            ..statusCode = 207
+            ..headers.contentType = ContentType(
+              'application',
+              'xml',
+              charset: 'utf-8',
+            )
+            ..write('<d:multistatus xmlns:d="DAV:">$xml</d:multistatus>');
+        } else {
+          final bytes = payloads[request.uri.path];
+          if (bytes == null) {
+            request.response.statusCode = 404;
+          } else {
+            final range = request.headers.value('range');
+            final start = range == null
+                ? 0
+                : int.parse(
+                    RegExp(r'bytes=(\d+)').firstMatch(range)!.group(1)!,
+                  );
+            if (start >= bytes.length) {
+              request.response.statusCode = 416;
+            } else {
+              if (range != null) {
+                request.response
+                  ..statusCode = 206
+                  ..headers.set(
+                    'Content-Range',
+                    'bytes $start-${bytes.length - 1}/${bytes.length}',
+                  );
+              }
+              request.response.headers
+                ..set('Accept-Ranges', 'bytes')
+                ..contentLength = bytes.length - start;
+              request.response.add(bytes.sublist(start));
+            }
+          }
+        }
+        await request.response.close();
+      });
+      final config = StreamPathConfigStore.forPath(
+        p.join(dir.path, 'config.json'),
+      );
+      await config.save(
+        StreamPathConfig(
+          playerExecutable: Platform.environment['STREAMPATH_PATH_MPV']!,
+          playerArgs: [
+            '--no-config',
+            '--vo=null',
+            '--ao=null',
+            '--pause=yes',
+            '--log-file=${p.join(dir.path, 'mpv.log')}',
+            '{url}',
+          ],
+          externalAudioInjectionEnabled: true,
+        ),
+      );
+      final dav = WebDAVService(
+        client: WebDavClient(
+          baseUrl: '$origin/dav',
+          username: 'fixture',
+          password: 'pass',
+        ),
+        profileId: 'dav:fixture',
+      );
+      final preparer = VideoEntryPreparer(
+        source: WebDavMediaSourceAdapter(dav),
+        config: config.current.toPlayerConfig(),
+        subtitleMatcher: const SubtitleMatcher(),
+        fontMatcher: const WebDavFontMatcher(),
+        titles: {'S1/E1.strm': 'Episode 1', 'S2/E2.strm': 'Episode 2'},
+      );
+      final items = [
+        for (var i = 1; i <= 2; i++)
+          VideoQueueItem(
+            versions: [
+              VideoQueueVersion(path: 'S$i/E$i.strm', name: 'E$i.strm'),
+            ],
+          ),
+      ];
+      final first = await preparer.prepare(items.first.versions.single);
+      expect(requests.where((r) => r.startsWith('GET /media')), isEmpty);
+      expect(first.entry.url, '$origin/media/E1.mkv');
+      expect(
+        first.entry.externalAudioTracks.single.url,
+        '$origin/dav/S1/E1.external.wav',
+      );
+      final active = <int>[];
+      final plan = ImplicitVideoPlan(
+        items: items,
+        index: 0,
+        prepare: preparer.prepare,
+        chooseVersion: (_) async => null,
+        activated: (i, v) async {
+          active.add(i);
+        },
+      );
+      final service = ExternalPlayerService(
+        configStore: config,
+        watchLaterDir: Directory(p.join(dir.path, 'watch')),
+      );
+      final id = 'dav-${DateTime.now().microsecondsSinceEpoch}';
+      PlayerLaunchResult? launched;
+      MpvSessionController? ipc;
+      try {
+        launched = await service.launch(
+          entries: [first.entry],
+          webDavSourceId: 'dav:fixture',
+          webDavSourceUrl: '$origin/dav',
+          username: 'fixture',
+          password: 'pass',
+          sessionId: id,
+          implicitPlan: plan,
+          webDavFontsByEntry: [first.remoteFonts],
+          webDavFontLoader: dav.fetchFileBytes,
+          webDavFontFileLoader: dav.downloadFile,
+        );
+        ipc = MpvSessionController(pipeName: launched.ipcPipeName!);
+        expect(await ipc.connect(), true);
+        await _waitForProperty(
+          ipc,
+          'track-list',
+          (v) =>
+              v is List &&
+              v.any((t) => t['type'] == 'sub') &&
+              v.any((t) => t['type'] == 'audio' && t['external'] == true),
+        );
+        expect(await service.selectPlaylistEntry(id, 1), true);
+        await _waitForProperty(
+          ipc,
+          'track-list',
+          (v) =>
+              v is List &&
+              v.any(
+                (t) =>
+                    t['type'] == 'sub' &&
+                    (t['external-filename'] as String? ?? '').endsWith(
+                      '/S2/E2.srt',
+                    ),
+              ),
+        );
+        final tracks = await ipc.getProperty('track-list') as List;
+        expect(tracks.where((t) => t['type'] == 'sub'), hasLength(1));
+        expect(
+          tracks
+              .where((t) => t['type'] == 'audio' && t['external'] == true)
+              .single['external-filename'],
+          endsWith('/S2/E2.external.wav'),
+        );
+        expect(await ipc.getProperty('width'), 160);
+        expect(await ipc.getProperty('aid'), 1);
+        expect(await ipc.getProperty('pid'), launched.process.pid);
+        expect(await ipc.getProperty('playlist-count'), 1);
+        expect(await ipc.getProperty('sub-fonts-dir'), contains('font'));
+        expect(requests, contains('GET /dav/S2/fonts/arial.ttf'));
+        expect(wrongAuth, isEmpty);
+      } catch (error) {
+        // ignore: avoid_print
+        print('WebDAV requests: $requests; invalid-auth: $wrongAuth');
+        final log = File(p.join(dir.path, 'mpv.log'));
+        if (await log.exists()) {
+          // ignore: avoid_print
+          print(await log.readAsString());
+        }
+        rethrow;
+      } finally {
+        await ipc?.dispose();
+        if (launched != null) await service.terminateSession(id);
+        await server.close(force: true);
+        await dir.delete(recursive: true);
+      }
+    },
+    skip: Platform.environment['STREAMPATH_PATH_MPV'] == null
+        ? 'Set STREAMPATH_PATH_MPV'
+        : false,
+  );
+
+  test(
+    '应用退出保留 MPV，本集 EOF 后等待，重启接管不自动起播',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('implicit_restart_');
+      final config = StreamPathConfigStore.forPath(
+        p.join(dir.path, 'config.json'),
+      );
+      await config.save(
+        StreamPathConfig(
+          playerExecutable: Platform.environment['STREAMPATH_PATH_MPV']!,
+          playerArgs: [
+            '--no-config',
+            '--vo=null',
+            '--ao=null',
+            '--pause=yes',
+            '{url}',
+          ],
+          subtitleInjectionEnabled: false,
+        ),
+      );
+      final entries = <MediaEntry>[];
+      for (var i = 0; i < 2; i++) {
+        final file = File(p.join(dir.path, '$i.wav'));
+        await file.writeAsBytes(_silentWave(seconds: 1));
+        entries.add(MediaEntry(url: file.path, catalogPath: 'Show/$i.wav'));
+      }
+      final items = [
+        for (var i = 0; i < 2; i++)
+          VideoQueueItem(
+            versions: [VideoQueueVersion(path: 'Show/$i.wav', name: '$i.wav')],
+          ),
+      ];
+      final active = <int>[];
+      ImplicitVideoPlan plan() => ImplicitVideoPlan(
+        items: items,
+        index: 0,
+        prepare: (v) async =>
+            PreparedVideoItem(entry: entries[int.parse(v.name[0])]),
+        chooseVersion: (_) async => null,
+        activated: (i, v) async {
+          active.add(i);
+        },
+      );
+      final first = ExternalPlayerService(
+        configStore: config,
+        watchLaterDir: Directory(p.join(dir.path, 'watch')),
+      );
+      final second = ExternalPlayerService(
+        configStore: config,
+        watchLaterDir: Directory(p.join(dir.path, 'watch')),
+      );
+      final id = 'restart-${DateTime.now().microsecondsSinceEpoch}';
+      PlayerLaunchResult? launched;
+      MpvSessionController? ipc;
+      try {
+        launched = await first.launchLocal(
+          entries: [entries.first],
+          sourceId: 'local:test',
+          sessionId: id,
+          implicitPlan: plan(),
+        );
+        ipc = MpvSessionController(pipeName: launched.ipcPipeName!);
+        expect(await ipc.connect(), true);
+        await _waitForProperty(ipc, 'duration', (v) => v is num && v > 0);
+        first.stopImplicitPlaybackControl();
+        await ipc.setProperty('pause', false);
+        await _waitForProperty(ipc, 'idle-active', (v) => v == true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        expect(await ipc.getProperty('pid'), launched.process.pid);
+        expect(active, isNot(contains(1)));
+        await second.restoreSession(
+          sessionId: id,
+          profileId: 'local:test',
+          pid: launched.process.pid,
+          executablePath: launched.processIdentity!.executablePath,
+          creationTime: launched.processIdentity!.creationTime,
+          ipcPipeName: launched.ipcPipeName,
+          launchEpoch: launched.launchEpoch,
+        );
+        final restored = plan();
+        restored.selected[0] = items[0].versions.single;
+        await second.attachImplicitPlan(id, restored);
+        expect(second.hasPendingVideo(id), true);
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        expect(await ipc.getProperty('idle-active'), true);
+        await second.sendResume(id);
+        await _waitForProperty(ipc, 'path', (v) => v == entries[1].url);
+        expect(await ipc.getProperty('pid'), launched.process.pid);
+        expect(await ipc.getProperty('playlist-count'), 1);
+      } finally {
+        await ipc?.dispose();
+        if (launched != null) await second.terminateSession(id);
+        await dir.delete(recursive: true);
+      }
+    },
+    skip: Platform.environment['STREAMPATH_PATH_MPV'] == null
+        ? 'Set STREAMPATH_PATH_MPV'
+        : false,
+  );
+
+  test(
+    '影视列表选择已有条目保持 MPV PID，标题与状态使用原通道',
+    () async {
+      const executable = r'D:\MPV_Player\mpv_config-2026.04.14\mpv.exe';
+      final workspace = await Directory.systemTemp.createTemp(
+        'film_mpv_select_',
+      );
+      final config = StreamPathConfigStore.forPath(
+        p.join(workspace.path, 'config.json'),
+      );
+      await config.save(
+        const StreamPathConfig(
+          playerExecutable: executable,
+          playerArgs: [
+            '--no-config',
+            '--vo=null',
+            '--ao=null',
+            '--pause=yes',
+            '{url}',
+          ],
+          autoSeasonTransitionEnabled: false,
+          subtitleInjectionEnabled: false,
+        ),
+      );
+      final service = ExternalPlayerService(
+        configStore: config,
+        watchLaterDir: Directory(p.join(workspace.path, 'watch_later')),
+      );
+      final entries = <MediaEntry>[];
+      for (var i = 0; i < 2; i++) {
+        final wave = File(p.join(workspace.path, '$i.wav'));
+        await wave.writeAsBytes(_silentWave(seconds: 30));
+        entries.add(
+          MediaEntry(url: wave.path, title: 'TMDB 剧名 2023 S01E0${i + 1} 集名$i'),
+        );
+      }
+      final sessionId = 'film-select-${DateTime.now().microsecondsSinceEpoch}';
+      MpvSessionController? controller;
+      PlayerLaunchResult? launched;
+      try {
+        launched = await service.launchLocal(
+          entries: entries,
+          sourceId: 'local:test',
+          sessionId: sessionId,
+        );
+        controller = MpvSessionController(pipeName: launched.ipcPipeName!);
+        expect(await controller.connect(), isTrue);
+        for (var i = 0; i < 30; i++) {
+          if (await controller.getProperty('media-title') ==
+              entries.first.title) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        expect(
+          await controller.getProperty('media-title'),
+          entries.first.title,
+        );
+        expect(await service.selectPlaylistEntry(sessionId, 1), isTrue);
+        for (var i = 0; i < 30; i++) {
+          if (await controller.getProperty('media-title') ==
+              entries.last.title) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        expect(await controller.getProperty('playlist-pos'), 1);
+        expect(await controller.getProperty('media-title'), entries.last.title);
+        expect(await controller.getProperty('pause'), isFalse);
+        final lines = await File(launched.statusFilePath!).readAsLines();
+        expect(lines.first, '1');
+        expect(
+          lines[1].replaceAll('\\', '/'),
+          entries.last.url.replaceAll('\\', '/'),
+        );
+        expect(await service.isPlayerRunning(sessionId), isTrue);
+        expect(await controller.getProperty('pid'), launched.process.pid);
+      } finally {
+        await controller?.dispose();
+        if (launched != null) {
+          final termination = await service.terminateSession(sessionId);
+          expect(termination.isSafeToRelaunch, isTrue);
+        }
+        await workspace.delete(recursive: true);
+      }
+    },
+    skip: !File(r'D:\MPV_Player\mpv_config-2026.04.14\mpv.exe').existsSync()
+        ? 'Configured MPV test executable unavailable'
+        : false,
+    timeout: const Timeout(Duration(seconds: 45)),
+  );
 
   test(
     '实际 MPV 版本可加载状态脚本、命令通道、IPC 与进度日志',

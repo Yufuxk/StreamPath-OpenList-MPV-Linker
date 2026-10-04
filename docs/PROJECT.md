@@ -34,6 +34,8 @@ BDMV 字幕发现与 Bridge 准备并行，在 Title 选择/MPV 启动前汇合�
 
 ## 2. 启动与模块关系
 
+Windows runner 在 Flutter、配置与数据库初始化前通过当前 Windows 会话中的命名 mutex 限制单实例，所有便携目录共用同一身份；自动重置事件保留启动期间的窗口激活请求。重复启动授权原实例获取前台后发出事件并退出，不进入 Dart 入口。原实例在首帧可见后处理激活，最小化时恢复，保留最大化状态，通过一次置顶与立即解除完成前置。互斥所有权在窗口及 Flutter 资源销毁后释放，异常退出后的 abandoned mutex 允许新实例接管。初始窗口按主显示器 DPI 缩放并居中于工作区，尺寸不超过可用区域；runner 源码以 UTF-8 编译。
+
 启动顺序：
 
 1. `WidgetsFlutterBinding` 初始化；
@@ -44,6 +46,7 @@ BDMV 字幕发现与 Bridge 准备并行，在 Title 选择/MPV 启动前汇合�
 5. 初始化可降级的 ISO 远程播放服务、本地 Blu-ray 启动服务，并扫描远程 Bridge/MPV 双进程会话；文件系统不可用时只关闭对应模块；
 6. 组装 `AppState` 与独立的 `AppearanceController`，根据地址和用户名是否完整决定自动连接或显示存储根目录/登录页；
 7. 持久化为磨砂样式时在首帧前恢复窗口外观，避免窗口合成状态切换产生黑帧；默认样式不初始化窗口材质插件，恢复失败继续使用不透明主题。
+8. 首屏整窗加载遮罩使用主题基础表面，跟随纯色、Acrylic、Mica 及明暗样式，玻璃效果复用已恢复的原生窗口材质；窗口控件位于遮罩上方。加载期保持页面构建和布局但不绘制，避免半透明材质透出待加载界面；影视库完成本地初始化与首帧布局后显示正文，遮罩用 280ms 动画淡出，结束时释放遮罩子树。目录加载失败也释放遮罩并展示原错误提示。旧观看进度迁移一次读取各进度库的有效快照，按 profileId＋URL 匹配，临时点优先于正式点；单次导入按来源和规范化父目录复用目录缓存索引，保留最新快照的真实 href，索引在调用结束后释放。
 
 主要目录：
 
@@ -78,10 +81,11 @@ lib/
 旧单账号配置和旧双文件配置使用原有 `mediaSourceId` 算法生成“默认服务器”ID，使现有
 收藏、访问索引和播放进度仍能归入同一来源。
 
-`appearance.sidebarMode` 选择常驻或自动隐藏，默认常驻；`appearance.directoryMemoryMode`
+`appearance.sidebarMode`／`appearance.sidebarCompact` 保留配置读写兼容，当前胶囊导航统一为普通页面常驻、影视详情自动收起。`appearance.directoryMemoryMode`
 选择临时或持久目录记忆，默认临时。`NavigationLocationStore` 按 `profileId` 或
 `local:<rootId>` 记录最后成功打开的相对目录及各分类最后来源。持久模式使用独立轻量 JSON，
 目录导航不重写主配置和凭据；切回临时模式删除持久记录。挂载移除会清理对应位置记录。
+文件夹分支先展示合并来源列表，打开具体来源时网络连接状态显示于对应来源；激活成功后进入浏览，失败时保留列表并提示错误。浏览控制器在构造时按显式目标、来源记忆、默认目录的优先级确定路径，并同步读取该路径的缓存列表与排序设置；后续加载沿用原有缓存和网络策略。
 
 密码和 OpenList/AList Token 默认由 `WindowsProfileCredentialStore` 保存为当前 Windows
 用户的通用凭据，目标名为 `StreamPath/server-profile/<profileId>`；主配置 JSON 不保存这些
@@ -131,6 +135,8 @@ runner 通过现有外观通道读取 DWM 系统着色颜色，随 Windows 颜�
 - `cache/media_metadata.json`：媒体长度、时长、码率、ETag 等；
 - `cache/cache_intelligence_learning.json`：匿名聚合样本；
 - `library/media_library.json`：按匿名来源隔离的收藏、最近目录以及视频、音频、ISO 长期播放历史；
+- `library/film_catalog.db`：永久影视根、作品、实际资源、目录归属、季缓存和人工季集关联；
+- `cache/film_artwork/`：可重建 TMDB 图片及图片尺寸配置，不保存 API 凭据；
 - 本地 ISO 会话记录在媒体库 ISO 历史中附带 `rootId`、相对路径、大小、修改时间、fingerprint 及 MPV 进程身份快照；旧记录缺少该字段时仍可读取；
 - `cache/mpv-watch-later/`：MPV 原生续播文件；
 - `cache/mpv-audio-watch-later/`：音频专用 MPV 原生续播文件；
@@ -179,9 +185,11 @@ runner 通过现有外观通道读取 DWM 系统着色颜色，随 Windows 颜�
 
 本地蓝光历史的可选 `playbackBarDismissed` 只控制底栏可见性，独立于媒体中心的 `continueDismissed`。删除底栏仍核验并关闭对应播放器，但不删除媒体中心历史、Title 快照或续播点。蓝光播放方式按钮统一为带边框按钮，取消动作保持原样。
 
-`AppShellPage` 使用六个懒创建的导航分支承载网络文件夹、本地文件夹、文件夹管理、媒体中心、搜索和设置。`IndexedStack` 保留已打开的浏览路由及其播放监控；自动隐藏侧边栏在左边缘悬浮滑出，侧栏与标题栏左侧色块共用动画进度，显示模式写入外观配置。网络与本地列表只负责打开挂载，添加、重试、编辑、启停和移除集中在管理页。挂载列表底部按原共享设置展示持久化视频、音频与蓝光继续播放栏；停止的会话可进入对应 `BrowserPage` 续播，保留进程身份的会话先进入浏览页查看状态，删除时沿用定向终止安全检查。
-窗口标题栏左段与固定、悬浮侧边栏共用 `sidebarSurfaceColor`：深色玻璃模式在 `surfaceContainerLow` 上叠加轻薄的半透明中性黑灰，保留比主体更明显的背景透视；其他模式沿用原表面色。侧栏右边缘与标题栏对应色块绘制同色 1 像素描边。应用标识和名称只在标题栏显示；两种侧边栏模式复用同一材质组件。自动隐藏模式以同步滑动的裁剪边界遮住侧栏下方的页面绘制，并让标题栏左段的色块随侧栏滑出和收回。隐藏时的可见边条宽 12 像素，鼠标触发范围向内覆盖 36 像素；触发区与侧栏共同维持悬浮状态，移出后延迟 220 毫秒收回。网络与本地挂载列表的内容容器四角均为 14 像素圆角并裁剪列表内容。媒体中心与挂载管理页签按内容宽度从左排列；媒体中心来源筛选与标题共用页头，宽窗口搜索框也位于页头，窄窗口搜索框独立成行。
+`AppShellPage` 使用五个懒创建的导航分支，按影视库、文件夹、文件夹管理、媒体中心和设置顺序展示，默认选中影视库。`FoldersPage` 使用顶部页签分别展示网络与本地来源，网络在左、本地在右，默认网络；两类列表保持各自状态与滚动位置，通过页内按钮进入既有 `GlobalSearchPage`，搜索结果在同一文件夹导航栈中打开原 `BrowserPage`，返回后保留搜索内容。`IndexedStack` 保留已打开的浏览路由及其播放监控；64px 导航区域内按整个窗口的垂直中心显示 56px、28px 圆角的胶囊玻璃底座，只保留五个图标按钮与本地化 Tooltip。普通页面固定显示，详情页面移除占位并收起侧栏，8px 左边缘支持鼠标与键盘唤出，沿用既有滑动与延迟收回动画。原配置中的 sidebarMode／sidebarCompact 字段保留序列化兼容，胶囊导航采用统一显示规则。网络与本地列表只负责打开挂载，添加、重试、编辑、启停和移除集中在管理页。挂载列表底部按原共享设置展示持久化视频、音频与蓝光继续播放栏；停止的会话可进入对应 `BrowserPage` 续播，保留进程身份的会话先进入浏览页查看状态，删除时沿用定向终止安全检查。
+胶囊侧栏使用 `sidebarSurfaceColor` 半透明底色、20px 背景模糊、细描边与柔和阴影；玻璃主题的深／浅色不透明度为 0.28／0.44，经典主题为 0.48／0.64，普通页面与浮动详情复用同一材质。鼠标区域只覆盖胶囊本体；详情左边缘 8px 触发区只保留辅助功能标签，不显示提示浮层，与侧栏共同维持悬浮状态，移出后延迟 220 毫秒收回。窗口标题栏只显示右侧窗口控制，影视库主界面与详情采用透明背景，其他页面匹配 AppBar 合成色，导航区域使用相同的 Scaffold 底色，并将当前页头材质与底部分隔线延伸到窗口左边缘；页签分隔线由 AppBar 统一绘制，搜索及目录浏览路由按实际页头高度衔接。影视详情的窗口标题栏与返回按钮区域在所有滚动位置保持透明，返回和窗口控制按钮保留各自交互表面。影视库主界面使用最近作品背景及连续阅读渐变，覆盖整个窗口；胶囊叠在背景上，前景预留 64px 导航空间，页头与筛选区透明，作品与来源卡片以封面和文字展示。待整理页复用同一个 `FilmLibraryBackground` 与目录控制器背景状态，背景覆盖导航预留区域；前景预留 64px，采用 48px 透明页头和 16px 内容边距，主页、映射季集与刷新位于页头下方的可换行操作区。目录配置从设置页进入。网络与本地挂载列表的内容容器四角均为 14 像素圆角并裁剪列表内容。媒体中心与挂载管理页签按内容宽度从左排列；媒体中心来源筛选与标题共用页头，宽窗口搜索框也位于页头，窄窗口搜索框独立成行。
 网络与本地挂载列表的内容容器按条目高度收束，超出窗口时由页面滚动；挂载行使用无描边、高光和阴影的平面 `content` 表面。平铺浏览将上级目录作为独立导航行，普通条目继续使用虚拟网格。媒体中心只有一层页面底色，空状态以紧凑图标及文字呈现，非空列表使用一层 `raised` 内容面；全局搜索空状态也采用紧凑布局。
+
+侧栏五个入口使用居中的 24px Fluent 图标、48px 点击区域与蓝色圆形选中态，保留名称 Tooltip、键盘操作和选中状态语义。`AppState.filmDetailChrome` 保存当前分支的详情滚动进度，`filmLibraryActive` 标记影视库分支的沉浸窗口布局；切换分支和详情往返保持各自路由、目录与滚动位置。旧侧栏偏好字段继续使用原配置保存约定。
 
 本地根目录通过文件夹管理页添加。Windows runner 在 STA 线程使用 `IFileOpenDialog` 目录选择器并通过 MethodChannel 返回选择或取消，也允许直接输入绝对路径；保存前检查目录存在、可枚举并解析最终路径。每个根目录由 `local:<rootId>` 作为独立来源，目录内部只使用 `/` 分隔的相对路径；`.`、`..`、空段、根目录外的 junction/symlink 和删除后的路径均拒绝。
 
@@ -301,7 +309,7 @@ WebDAV 浏览页搜索框默认范围为“全部索引”，可切换回“当�
 直接把可能过期的索引路径交给播放器。关闭搜索、切换目录后范围恢复“全部索引”，且索引结果
 不能改写控制器的完整 `files`。
 
-侧边栏全局搜索使用 `GlobalSearchIndex` 的独立 SQLite 数据库保存匿名来源 ID、相对父目录、
+文件夹页内搜索使用 `GlobalSearchIndex` 的独立 SQLite 数据库保存匿名来源 ID、相对父目录、
 名称与文件夹标志。本地和普通 WebDAV 按来源逐目录建立索引；普通 WebDAV 只使用 Depth 1
 列表，不读取文件正文。每个来源完成后在事务中替换旧条目，中途失败保留旧版完整结果。
 OpenList/AList 优先使用服务端索引，失败时尝试客户端索引。搜索结果进入对应挂载的真实父目录，
@@ -355,19 +363,34 @@ STRM 规则：
 前提下追加安全参数。
 
 不能给 MPV 使用全局 `--http-header-fields=Authorization`：实体测试证实它会把 Basic
-继续发送给跨来源重定向目标。当前实现只对与播放启动快照中 `serverUrl` 同源的媒体和字幕 URL
+继续发送给跨来源重定向目标。当前实现只对与播放启动快照中 `serverUrl` 同源的媒体、字幕和外挂音轨 URL
 写入百分号编码的 userinfo；空密码保留 `username:` 中的冒号，以兼容 MPV 0.34。
 四个实测版本均能完成源站 Basic，并在跨来源重定向后移除凭据。第三方 URL 不注入。
 
-### 5.2 单集、多集、字幕和外挂字体
+### 5.2 单集、多集、字幕、外挂字体和音轨
 
-单集直接展开 `{url}`，并使用 `--force-media-title`。多集生成 M3U：
+`videoPlaylistMode` 支持 `implicit`／`legacy`，配置缺失默认 `implicit`；没有模式字段的既存播放会话按 `legacy` 恢复。隐式模式由 ExternalPlayerService 持有完整 VideoQueueItem 队列，MPV 仅接收当前项 M3U，使用 `idle=yes` 与 `loadlist replace` 保持同一进程、窗口及 sessionId。已关联剧集通过 sourceId＋workId 查询现存版本与季缓存，按每集 air_date、季号、集号排序，无日期统一尾排；重复版本占同一逻辑位置。S00 的季归属与自动切季／允许缺季限制统一计算。未整理目录和电影保留目录自然顺序与特典递归规则。起播固定队列，重播按真实路径重建；影视库内关闭隐式会话后，点选最后播放项以外的集数建立独立 sessionId 和队列，保留原会话续播；点选最后播放项或显式续播复用原会话，存活播放器内选集使用原 IPC；后续多版本取消后保留 pendingVideoIndex，file-loaded 才提交当前集。VideoEntryPreparer 捕获来源与设置、真实父目录、STRM、字幕、字体及 WebDAV 外挂音轨，当前与下一集按需准备，控制回调不依赖 BrowserPage 存活。应用退出停止自动推进，恢复控制时历史 EOF 只收敛待播目标。详见 [隐式播放列表与观看状态](隐式播放列表与观看状态.md)。
+
+传统模式单集直接展开 `{url}`，并使用 `--force-media-title`。传统多集生成 M3U：
 
 - `#EXTINF` 和 `EXTVLCOPT:force-media-title` 保存稳定标题；
 - `--playlist-start` 决定点击的起始集；
 - 标题 Lua 是不支持 EXTVLCOPT 的旧版兜底；
 - 字幕 Lua 监听 `file-loaded`，按 `playlist-pos` 调用 `sub-add`；
 - 自动选择关闭时加入轨道但恢复原 sid；自动注入关闭时不增加字幕参数或脚本。
+
+`videoPlaylistSimpleNaming` 默认开启，贯通统一配置、`PlayerConfig`、设置草稿和启动快照。
+`BrowserPage` 在当前列表与候选下一季的 `MediaEntry.title` 构建处调用
+`AppLocalizations.videoPlaylistTitles`，本地、WebDAV、STRM 和普通视频特典共用该入口。
+该入口按片名、年份和季号分组，以已收集的最大集号确定显示位宽，对各集号补前导零；
+特别篇与各季分别计算，区间和离散集号分别补齐。各非空字段按片名、年份、季数、集数、
+其他信息的顺序用 `·` 连接，字段内部的空格保留。
+`VideoFilenameParser` 按明确季集标记、中文季集、日期、动漫集数及年份等证据评分，
+低于 70 分或高分候选冲突时返回原名；技术参数不参与集数推断。原始名称、URL、自然排序、
+字幕／音轨匹配和历史键继续使用真实文件信息。简中／繁中以中文季数显示，日文／英文采用
+各自季集模板；季号 0 统一显示特别篇，片名与原文描述保持原文。新建列表时固定显示名称，
+M3U、单集参数及标题／季资源／音轨身份脚本沿用同一条目标题。解析范围和评分见
+[普通视频播放列表简洁命名](普通视频播放列表简洁命名.md)。
 
 普通视频的 `SpecialVideoPlaylistCollector` 复用 `MediaDirectorySource`，按
 `scanSpecialChildFolders` 与 `scanSpecialSiblingFolders` 两个独立开关，从当前目录或其
@@ -422,6 +445,28 @@ ISO、BDMV 与音频栏没有此入口。
 媒体中心与底栏的视频继续播放会话 ID 共同决定保留范围，两个入口均无对应会话时清理。
 关闭缓存或下载不完整时使用单次会话目录，结束时按精确文件清单清理本地副本和空目录。
 
+`ExternalAudioMatcher` 从每集完整同级目录和已有音频扩展名列表匹配
+`ExternalAudioTrack(name, url)`，保存到 `MediaEntry.externalAudioTracks`。候选必须是
+同源、同父目录的 WebDAV 文件；视频完整主名忽略大小写，接受完全同名或主名后跟
+点、下划线、空格、连字符、左括号的音轨，按文件名自然排序并以 URL 去重。
+STRM 按自身文件名匹配，显示隐藏规则不影响候选；不扫描音轨子目录，不执行音轨
+HEAD、ffprobe 或内容预读。`externalAudioInjectionEnabled` 默认开启，独立于字幕和
+字体设置，并随语言、来源及凭据进入播放启动快照。
+
+音轨仅在远程普通视频的 MPV 链路注入：每集首次 `playback-restart` 后，独立 Lua
+使用 `mp.command_native_async` 顺序执行 `audio-add(URL, "auto", 文件名)`，同时只打开
+一个文件，脚本不写 `aid`。归属核对播放列表、位置和当前文件路径；缺少 `playlist-path`
+的 MPV 0.34 用完整列表的路径、标题及条目 ID 确认身份。暂存下一季时先读取旧列表 ID，
+避免异步脚本初始化时绑定到已替换的列表。Seek 不重复挂载；切集、换列表或关闭会递增
+文件代际并取消当前异步命令，旧回调不继续加载。单项超过 10 秒取消后继续下一项，
+加载失败显示简短本地化提示，正常切换取消不提示且不重试。
+
+后续集与下一季只保存候选 URL，实际播放后才读取。音轨的网络读取、缓冲和 Seek
+由 MPV 处理，沿用普通视频智能缓存策略；应用不创建音轨下载器或磁盘音轨缓存。
+脚本和含认证 URL 的列表进入现有会话产物清理与恢复清单；自动切季快照仅新增音轨
+开关及语言字段。此功能不接入本地视频、ISO/BDMV、音乐服务、手动绑定或自动校时；
+真实 WebDAV 的起播、切轨和同步效果需独立实机验收。
+
 TS/M2TS 使用 `--rebase-start-time=yes`，无历史进度时不得注入 `--start=0`，避免对非零
 起始时间戳执行无意义 seek。零点首次起播保持 `cache=no` 快速路径，首次
 `playback-restart` 后切入 15～60 秒、最多 128 MiB 的运行态小窗口；非零续播从启动阶段启用
@@ -439,7 +484,7 @@ TS/M2TS 使用 `--rebase-start-time=yes`，无历史进度时不得注入 `--sta
 - Lua、M3U 和 IPC pipe；
 - 缓存策略状态、代际令牌和进程身份。
 
-状态文件固定为十八行：
+状态文件前十八行保留缓存与播放采样字段；第 19～26 行为光盘、列表和隐式队列归属：
 
 ```text
 playlist-pos
@@ -460,11 +505,21 @@ playback-restart serial
 demuxer-cache-duration
 forward-cache-bytes
 total-cache-bytes
+disc-menu-active
+edition
+edition-list
+last-loaded-playlist-path
+last-loaded-playlist-position
+queue-generation
+catalog-path
+file-loaded-current
 ```
 
 MPV 0.41 优先读取 `demuxer-cache-idle`，旧版回退 `cache-idle`；速度优先
 `cache-speed`，再回退 `demuxer-cache-state.raw-input-rate` 和旧版 reader 结构。属性缺失
 写 `-1`，监控按未知降级，不能抛错或停止播放。
+
+隐式模式的状态及 JSONL 列表位置表示应用逻辑队列位置，MPV 原生列表位置始终为 0。JSONL 同时记录 queue_generation、catalog_path、file_generation 和毫秒 recorded_at；loaded 事件确认实际激活，只有自然 EOF 推进。缓存、进度与轨道回调核对播放代次、真实媒体路径与实际加载标记；准备、等待版本选择及错误闲置期间不写队列完成标记。Lua 时钟通过现有 IPC 与应用校准，人工操作时间边界过滤旧日志与 watch_later。
 
 JSONL 记录每个 `end-file` 的播放列表位置、路径、位置、时长、原因和错误。自然 EOF
 删除 SQLite 旧进度，0 秒是明确状态，普通退出允许 watch_later 的精确值覆盖每秒采样。
@@ -501,6 +556,7 @@ MPV 会话同时更新时互相覆盖或留下半写入 JSON。
 $env:STREAMPATH_MPV_TEST_ROOT = 'C:\Users\YX\Documents\StreamPathProject\cross_version_testing\打包版本'
 $env:STREAMPATH_PATH_MPV = 'D:\MPV_Player\mpv_config-2026.04.14\mpv.exe'
 flutter test --no-pub test/mpv_version_compatibility_test.dart -r expanded
+flutter test --no-pub test/external_audio_mpv_integration_test.dart -r expanded
 ```
 
 测试同时覆盖 Lua、named pipe、四项动态缓存属性、TS、字幕、watch_later、file_error、
@@ -817,6 +873,8 @@ Windows 服务及非标准启动方式不会被自动重启。2FA 返回时提�
 应用根节点立即更新 `Locale`，项目文案和 Flutter 内置控件语言同步切换。版本 3 配置升级时
 先按既有规则生成迁移备份，再补入 `zh-CN`，不改变其他设置。版本号、数量、状态等运行时
 内容通过本地化模板填充，避免动态拼接文本绕过翻译目录。
+应用生成的动态错误优先按完整模板匹配，错误与提示参数递归进入同一翻译入口；文件名、
+路径、端点和数值参数保持原值，未匹配模板的文案沿用已有受控片段翻译。
 缓存页的“缓存过期时间”写入独立 `cache_expiration.json`；保存后各缓存通过策略提供函数
 读取新值，不需要依赖或重建设置页。滚动位置不写入磁盘，并受可配置空闲时间和 LRU 上限
 约束。
@@ -856,11 +914,15 @@ ISO Bridge 服务只额外保护常规缓存清理，避免删除仍被 MPV/help
 播放上限只限制派生列表的读取与显示，不复制进度数据。
 
 媒体中心固定分为“收藏”“继续播放”“最近播放”“目录”四页，视频和音频使用独立分栏，
-STRM 归入视频。从任何资产打开媒体时只向浏览页返回父目录、文件名和媒体类型；浏览页重新
+STRM 归入视频。收藏页默认媒体分类按作品展示海报，与原视频／音频／ISO 分类并存；媒体收藏进入作品详情，资源起播按影视库既有路径处理。其他资产打开媒体时只向浏览页返回父目录、文件名和媒体类型；浏览页重新
 加载完整父目录、确认真实条目存在后调用原播放入口，因此稳定播放列表、字幕、LRC、封面和
 STRM 安全校验不被旁路。播放器成功启动和现有状态监控检测到切集或切歌后，浏览页才旁路
 更新长期历史。同一视频或音频播放会话始终复用一条媒体中心记录，切集或切歌只更新该记录的
 当前条目；退出时也会根据本次会话最终的有效集数补齐视频历史，切集不沿用上一集的进度采样。
+视频退出时，仅当前列表最后一项达到 99% 或整份列表自然结束时移除续播会话。
+非末项达到 99% 后退出，复用切集路径将同一会话的当前文件、列表位置和媒体中心记录调整到下一项，清空上一项采样。
+普通视频按来源及真实路径读取下一项进度，缺少记录时保存 0 秒；STRM 新条目使用 0 秒快照，不解析指针文件。
+已收敛且无 PID／IPC 的普通视频会话不参与状态同步，其他会话运行时也保持保存的续播目标。
 播放器关闭后再次启动会获得新的播放会话，即使目录和文件相同也会创建新的记录。
 个人资产和 SQLite 进度成功写入后发送轻量的进程内通知，媒体中心保持打开时
 按当前来源只刷新对应历史或 URL；本地蓝光服务只转发当前蓝光会话和全库清理通知，ISO 后台
@@ -868,7 +930,18 @@ STRM 安全校验不被旁路。播放器成功启动和现有状态监控检测
 连续播放最多每 10 秒保存一次。切集或切歌继续复用现有 JSONL 与 `watch_later` 合并，退出同步
 仍是最终进度来源。继续播放最多八路分批读取现有视频
 `getResumeProgress()` 和音频 `getProgress()`。视频保留已落库的 0 秒记录，点击后从头播放；
-音频仍过滤 0 秒。无进度记录及正数进度按现有规则判定的片尾不显示。
+音频过滤 0 秒及片尾，无进度记录不显示。普通视频和 STRM 仅在当前列表最后一项达到 99% 时
+过滤完成进度；缺少列表信息的旧记录按单项处理。
+底栏与媒体中心共用 `AppLocalizations.playbackDetails`：多项视频／光盘显示当前第 N/M 集，
+音频显示第 N/M 首；单项或未知数量隐藏数量，进度不足 1 秒隐藏时间。普通视频和音频的
+`MediaLibraryRecord.playlistIndex`／`playlistCount` 在启动、切项、切季及退出收尾时记录真实列表位置与长度，
+不从文件名或目录数量推测。缺少字段的旧媒体中心记录保留时间显示，后续播放时补齐列表信息。
+
+`ContinuePlaybackSubtitle` 复用视频／音频 SQLite、ISO 与本地蓝光进度接口及现有变更通知，
+按来源身份和真实路径读取底栏信息，不新增轮询或媒体正文读取。本地光盘的 Title 数量在无进度时仍可由会话快照提供。
+STRM 使用 `MediaLibraryRecord.strmPositionMs`／`strmDurationMs` 显示快照；快照随既有进度保存节奏和退出同步更新，
+媒体中心及底栏无需后台解析 STRM，不保存真实媒体地址、凭据或签名参数。切项只接受匹配来源、会话、文件名和列表位置的快照，
+自然完成沿用继续播放隐藏标记，清除缓存通过 `clearStrmProgress()` 清空快照并保留长期历史。
 远端缺失或暂时不可用时只提示，不自动删除收藏和历史。
 
 设置页“媒体中心”分页提供当前来源的收藏、继续播放、最近播放和最近目录分项清理。清空继续
@@ -876,6 +949,10 @@ STRM 安全校验不被旁路。播放器成功启动和现有状态监控检测
 同一播放会话后续切集或重新起播时会清除此标记。清空最近播放会删除当前来源的视频和音频长期
 历史，因此对应的媒体中心继续播放入口同步消失，但底层进度仍保留。清空收藏或最近目录不影响
 其他资产。所有清理操作都必须确认，并通过 `MediaLibraryStore` 原有串行原子写入执行。
+
+影视目录数据库版本 6 的 film_watch_state 独立保存普通视频／STRM 观看状态，身份为来源＋作品＋季集号（电影使用 -1／-1）；升级前复制数据库备份。同源版本共享状态，99%／自然 EOF 标记已看后重新观看仍保留已看；人工未看可以重置。FilmWatchOverlay 在作品、季、单集、收藏与续播封面统一显示，聚合按已入库的不同集数计算，跨来源合并取同集最高完成度，来源筛选仍读取独立状态。作品只汇总正季，只有 S00 时汇总 S00。ISO／BDMV 的 film_disc_watch_state 按资源 ID＋作品 ID 保存整片手动标记，来源由资源身份隔离；没有节目级自动完成推断，每张剧集光盘作为独立汇总单位，未知季光盘参加作品汇总，电影版本汇总取最高完成度。更换关联作品读取对应作品标记。人工普通视频操作清理两个媒体中心的同集版本正式／临时进度与 watch_later，推进相应继续播放目标；manual_at 跨重启拒绝旧样本，光盘操作只写标记。作品封面与详情主封面菜单覆盖当前作品所有季，季封面使用定位 PopupMenu，多个来源显式选择一个来源。AppState.getFilmCatalogStore 独立于界面、刮削和媒体探测初始化，两套历史和续播存储继续隔离。
+
+影视库主页拥有独立 ScrollController、唯一 Scrollbar，关闭自动滚动条，复用 DirectoryWheelScrollRegion 的 pointerSignalResolver 兜底；列表优先处理滚轮，外层只接管未处理的事件。FilmSectionSettings 在保存期间显示本次栏目值，保存成功后发布偏好并异步刷新，保存失败回退并使用已有错误提示。MPV 视频与本地／WebDAV 光盘启动参数最后指定 fullscreen=yes；普通视频与本地光盘的 file-loaded 状态脚本设置 fullscreen，保持换表后的全屏状态。
 
 媒体中心与浏览页控件只使用 `ColorScheme`、`GlassTokens`、`GlassSurface` 和
 `showGlassDialog`，经典、Acrylic、Mica 三种外观共用同一业务结构；不得增加独立材质判断，
@@ -915,7 +992,7 @@ Windows 11 优先使用 Mica，在 Windows 10 使用 Acrylic；显式 Mica 不�
 
 窗口使用无系统标题栏样式（保留可缩放边框、系统菜单与最小化/最大化能力，并申请
 Windows 11 圆角）。标题栏由表现层自绘（`presentation/widgets/window_title_bar.dart`），
-经 `streampath/appearance` 通道提供最小化/最大化/关闭操作，最大化状态由 `WM_SIZE` 推送同步。
+经 `streampath/appearance` 通道提供全屏/最小化/最大化/关闭操作，最大化状态由 `WM_SIZE` 推送同步。全屏使用当前显示器的 `rcMonitor`，保存并恢复窗口样式与 `WINDOWPLACEMENT`；覆盖任务栏区域、关闭窗口圆角与缩放命中，退出恢复原位置和最大化状态。`fullscreenChanged` 同步按钮图标，F11 切换、Escape 退出；DPI 或显示器配置变化时重新匹配显示器边界。
 磨砂模式下，标题栏使用页面 AppBar 与 Scaffold 的等价半透明合成色，使两者最终观感一致。
 Windows runner 通过 `WM_NCCALCSIZE` 将 Flutter 客户区扩展到窗口最上方，由同一个磨砂标题栏
 直接绘制圆角区域；原生框架保持 `COLOR_NONE`。`WM_NCHITTEST` 为边缘
@@ -924,7 +1001,7 @@ Windows runner 通过 `WM_NCCALCSIZE` 将 Flutter 客户区扩展到窗口最上
 窗口装饰始终关闭 DWM 原生边框；`WM_NCACTIVATE` 先重申无边框状态，再以 `lParam = -1`
 交还 Windows 更新窗口材质激活状态，仅跳过过渡帧的非客户区重绘，
 保留阴影、圆角、缩放边缘和磨砂聚焦效果。
-三个窗口控制图标使用同一视觉框，并直接采用 Windows `Segoe Fluent Icons` 的 Caption
+四个窗口控制图标使用同一视觉框和前景色；全屏采用四角直线矢量，最小化、最大化／还原和关闭采用 Windows `Segoe Fluent Icons` 的 Caption
 字形；旧系统回退 `Segoe MDL2 Assets`，由系统字体栅格化保持原生比例与 DPI 细线观感。
 标题栏位于 Navigator 之上，其 Tooltip 依赖一个额外的空条目 Overlay 提供挂载点。
 非 Windows 构建继续使用系统窗口装饰。
@@ -932,6 +1009,21 @@ Windows runner 通过 `WM_NCCALCSIZE` 将 Flutter 客户区扩展到窗口最上
 Windows 页面路由统一使用短时淡入淡出，并为旧路由提供同样的淡出委托，不使用 Material
 默认的页面缩放，也不插入不透明遮罩；登录、目录和设置页面会平滑交接，各入口原有的
 push、replace 和清栈语义保持不变。
+
+### 8.1 影视目录库
+
+`AppState.getFilmCatalog()` 首次进入影视页、媒体收藏或影视设置时创建 `FilmCatalogController`，数据库位于 `AppPaths.libraryDirectory()`。`FilmCatalogStore` 使用 `catalog_roots`、`works`、`resources`、`series_bindings`、`season_metadata`、`scan_entries`、`catalog_settings`、`work_favorites`、`resource_probes`、`root_covers` 和 `catalog_preferences` 十一张表；movie/tv 与 TMDB ID 联合标识作品，sourceId 与规范化相对路径标识资源。本地路径键忽略大小写，WebDAV 保留大小写，不持久化认证 href 或实际播放 URL。根范围按来源拒绝重叠，网络操作不占用写事务。目录库 schema 4 支持 search 自动关联来源、ISO／BDMV、作品收藏、探测缓存、来源封面与首页偏好；v1／v2／v3 升级前用 VACUUM INTO 创建完整备份，再在升级事务中保留全部资源 ID、关联版本和人工季集。
+
+`FilmCatalogScanner` 一次一个根，逐目录串行枚举；`FilmCatalogController.scanRoots` 串行编排用户选择的多个根，每根独立 staging 与原子提交，取消在等待元数据凭据后也会再次检查。`LocalMediaSource.fetchCatalogDirectory()` 只读名称和类型，不逐文件 stat，不跟随链接或 Windows reparse point，不写浏览缓存。WebDAV 建库使用 `Depth: 1` 的显式 `displayname`／`resourcetype` PROPFIND，绕过缓存，目录请求间隔至少一秒；不打开媒体、STRM、字幕或字体。扫描结果逐目录写 staging，并将发现的文件交给 FilmCatalogController 持有的独立刮削队列；完整成功后同一事务 UPSERT 正式资源，普通全量扫描标记 missing，保留资源 ID 和人工关联；增量扫描仍枚举全部视频子目录，以本根现有 present 路径键跳过已收录文件，仅 staging 新文件与重新出现的 missing 文件，提交时不标记其他资源 missing；取消、失败、过期 generation、移除根或进程中断不提交半份清单。独立 worker 通过 FilmScanMetadataSession 复用作品和季请求，applyMetadata 逐项核对 binding_version 保存关联与季缓存；尚未提交的资源先缓存作品资料，扫描提交后应用此前的结果，后续结果继续即时关联。扫描结束、取消或失败只结束文件生产，队列仍继续处理；已有清单也可单独刮削。管理页每根提供独立的增量扫描与增量刮削入口，增量刮削仅选择当前 TV 根内 availability=present、workId 为空的待整理资源，不读取来源目录，电影与已有作品但待映射的资源不进入该队列。暂停或错误保留当前项和剩余队列，应用关闭时唤醒等待并取消请求，等待两项任务结束后释放数据库。递归没有固定层数上限，复用 SpecialVideoPlaylistCollector.directChildPath 的直属路径校验；特典及 Season 0 纳入视频清单；本地与 WebDAV ISO 直接登记，发现直属 BDMV 时将当前光盘根登记为单个资源并停止进入内部，VIDEO_TS 保留在原 DVD 边界。
+
+`TmdbMetadataService` 只使用固定 `https://api.themoviedb.org/3/` 与 `https://api.tmdb.org/3/`，连接错误或连接／发送／接收超时最多切换一次入口，成功入口在当前实例内优先复用；两个入口均失败继续上报原网络错误。Bearer 仅发送到这两个固定 HTTPS API origin；串行元数据请求、合并重复详情／季请求、禁止重定向，401/403 暂停凭据请求、429 遵守 Retry-After。认证、限流、其他 HTTP 状态、证书／TLS 握手异常、数据错误和取消不触发域名切换。`tmdb_http_client.dart` 仅为 TMDB API 与图片客户端读取当前用户 Windows 手动代理，支持统一地址、按协议地址和主机例外；未设置手动代理时遵守 Dart 环境变量代理，不执行 PAC／WPAD。读取结果由 WinHTTP 提供并按要求释放，TLS 校验保持开启；连接超时、网络故障与认证失败分别提示。`TmdbCredentialStore` 使用专用 Windows 凭据目标 `StreamPath/tmdb`，与 WebDAV、OpenList 后台令牌隔离；保存后清空输入，验证使用内存或凭据管理器中的值。`FilmCatalogMatcher` 先提取明确 ID，电影按完整片名与年份解析，TV 保留原文件名季集提示，识别片名时忽略季集前的 4K／1080P 等画质标记；只有季集的文件从所选根内作品目录取名，去掉目录编号与书名号并跳过特别篇等通用目录。冲突 ID 保留待整理。文本搜索先核验标题／原名，再以 append_to_response 读取官方译名与别名；归一化标点和剧场版标签后允许模糊匹配。剧集中英双名在两部分续作数字一致时分别检索，合并候选并核验任一完整名称；名称指向不同作品时继续执行歧义检查。相似度使用归一化 Damerau-Levenshtein 距离，至少 0.85，领先次选至少 0.08；四字以内的非同名候选、不同续作数字及电影年份不符均不自动关联。完全同名仍须唯一；剧集出现多个同名候选时，以文件年份或所选根内最近的目录年份消歧，后续季年份不限制唯一作品的首播年。最终详情再次核验；歧义由用户确认。查询、标题、详情及季结果在本次刮削任务内复用；TMDB 认证、限流或网络故障暂停刮削队列，目录枚举继续；scrapeError／scrapePaused 与扫描错误独立，用户可在处理问题后继续。扫描根状态只记录目录任务的结果。TV 目录归属按最近祖先继承，人工关联和人工季集优先；单一 SxxExx 按文件名保存季集号，S00Exx 对应第 0 季；紧随季集的四位年份参与提示提取，S00E02 11.5集等描述性小数集号忽略并采用明确整数编号，实际小数 S/E 编号、多集与冲突标记保留人工映射；本地季集关联独立于 TMDB 是否收录该集。季详情 404 视为缺少官方资料，在任务内复用缺失结果；其他请求错误继续上报。官方集资料存在时显示集名、剧照及日期／时长，缺少时复用作品名称和背景图，不生成虚构集资料。多集与绝对集号使用人工映射预览，季号非负、集号为正且文件属于同一作品即可保存，不要求官方季集存在。关联版本校验拒绝迟到写入。
+
+`FilmCatalogImageCache` 使用 TMDB 配置确认图片尺寸，目标为列表 w342、详情 w500、背景 original、分集 still w300，分别使用 poster_sizes、backdrop_sizes 与 still_sizes；仅允许 HTTPS 的固定 image.tmdb.org 与 tmdb-image-prod.b-cdn.net 图片路径；网络连接、超时或握手中断时最多切换一次，解码并提升缓存后在本实例复用成功入口。HTTP 错误、显式证书拒绝、取消、大小或图像校验失败保持可见错误，不触发切换；无 API 或网盘认证头，禁止重定向。作品详情另读取不带语言过滤的 images，在横图中按像素总量选择最高分辨率，保存路径和原始宽高；详情同时保存 credits 与透明 PNG Clearlogo，优先元数据语言，其次原语言／无语言；presentation_version 标记资料完整版本，在线首次打开旧作品时更新资料。下载最多两项并发、单图 10 MiB、每次连接上限 5 秒、单图两次尝试共用 15 秒总时限，partial 经图像解码校验后提升，专用缓存预算 512 MiB；配置和有效图片可离线复用。全屏背景保留原始解码像素，以屏幕 devicePixelRatio 和 BoxFit.scaleDown 完整等比显示，不放大超过原始物理像素；同文件的 ImageFiltered 模糊层覆盖窗口并压暗，清晰层以 Center 保持实际图像边界，水平／垂直 ShaderMask 在四边渐隐，中心保留原始清晰度。左右／纵向表面渐变保障文字与卡片可读，右侧保留足够遮罩以压低明亮补边。背景位于滚动内容下方并随可用视口调整尺寸；原图请求失败时仅复用已有 w780 背景缓存，不额外下载低清图。页面使用本地文件解码与占位，SQL 首页每批 60 项，海报网格按需构建；ScrollController 在剩余距离不超过两倍视口高度或 700 逻辑像素的较大值时预取下一批，ScrollMetricsNotification 在布局及窗口尺寸变化后补足，同一请求加载中不重复发起。数据变更刷新保留当前已加载批数，类型、搜索、根、栏目或排序改变时重置；筛选条件变化在首次 await 前清空旧作品，query generation 阻止过期查询覆盖当前结果，普通刷新保留同条件已展示结果；正文没有查询进度条，扫描和刮削仍显示各自任务进度；数据库异常保留可见错误并停止自动翻页，显式刷新可再次请求。支持全部／电影／剧集、名称／原名搜索、影视根 root_id 独立过滤和排序；详情以季海报和分集／电影版本卡片只列真实已登记资源，透明 Clearlogo 等比限制至 90px，失败时显示标题；简介四行可展开，演职人员采用 68px 圆形头像、姓名与角色／职务横向排列，悬停局部缩放至 1.08，右侧通过 ShaderMask 的 dstIn 淡出列表内容，透出详情背景并提示可拖动。详情的分支级 `ValueNotifier<double?>` 保存滚动顶栏进度，AppShellPage 只向 `AppState.filmDetailChrome` 发布当前分支状态；普通页面为 null。窗口 Overlay 使详情背景覆盖完整窗口，通过 MediaQuery 的 32px 顶部间距保留返回与内容位置，窗口控件始终位于顶层；滚动 0～120px 时标题栏与详情工具栏同步增加透明度和模糊。首页与收藏入口在打开和返回时更新所属分支状态，切换侧栏保留详情滚动位置。详情圆形磨砂返回键位于原生标题栏下方 2px；评分、TMDB、年份与时长使用同一富文本基线，主海报与主页、筛选及收藏作品封面共用 showFilmWorkMenu，提供收藏／取消收藏、刷新元数据与纠正作品匹配，纠正入口传入该作品真实资源并复用 FilmMatchDialog；浮层采用 AppTheme.dropdownMenuColor 与 dropdownBorderRadius，背景左侧与底部使用连续渐变；主信息没有独立底板。评分以一位小数和星形图标显示，完整评分与票数保留在 Tooltip；技术标签只使用实测缓存。主播放按钮使用白底深色文字并提供轻微悬停缩放与阴影，收藏按钮采用局部模糊与半透明表面，资源卡片使用低透明底色、细边框和原有菜单。主页 FilmShelf 的 LayoutBuilder 按实际可用逻辑宽度与既有卡片目标宽度计算最近的整数容量，固定 16px 间距；项目足够时均分宽度填满一行，扩大卡片时同步增加高度以容纳封面，项目不足时使用原尺寸；FilmArtwork 继续以 2∶3 约束海报，不拉伸图片。窗口、侧栏与 DPI 布局变化自动重新计算，仅构建本行可见卡片，通过 keep-alive 保留离屏卡片状态，整页滚轮与竖向滑动条独占纵向滚动，其他项目通过“查看全部”进入海报墙／续播网格；只有演职人员显式启用横向列表。封面播放标记的三角轮廓使用抗锯齿矢量路径与圆角连接，随窗口物理像素比例栅格化，保留 1.8px 圆形边线和轻微阴影。作品标题单行省略，封面悬停通过 AnimatedScale 轻微放大至 1.04。FilmLibraryPage 使用 IndexedStack 保留主页及续播状态，筛选墙只在当前筛选模式构建；返回主页直接显示已就绪的续播，有效记录为空时 FilmShelf 不占位。续播“查看全部”保留 16∶9 卡片，页头和正文预留同一 sidebarInset，页头下方的“主页”按钮返回；FilmLibraryBackground 在主页与展开页共用全窗口自定义图片、渐变及默认主题表面。栏目默认显示续播、来源、最近添加、电影与剧集；catalog_preferences 保存全部栏目顺序与启用状态，类型／地区／年代取自库内 TMDB genres／origin_country／year，新增栏目默认关闭，查看全部使用与首页一致的 SQL 条件；旧资料的地区栏目依后续元数据刷新补齐。来源封面每控制器从已缓存的本地背景或海报文件随机选择一次，多个可用封面时下一次启动避开上次记录；渲染来源封面不发起图片下载。来源封面的设置与右键编辑入口复用原目录选择器；改名保留 ID／关联，来源、路径、类型变化先 VACUUM INTO 备份后仅清空该根资源与目录绑定，后续需要重新扫描。root_covers.custom_path 覆盖随机封面，默认删除覆盖；来源封面和背景可选择本地图片或已缓存图，校验后复制到 library/film_custom_artwork，独立于图片缓存。原筛选继续使用分页海报墙。FilmMediaCenterPage 的独立 Navigator 保留全局侧栏与窗口栏；新媒体中心只有收藏／继续播放／最近播放，收藏复用 FilmPosterGrid，其余以 2∶3 海报、作品标题与已有季集、时间展示，并按作品标题搜索。页头按钮进入旧 GlobalMediaLibraryPage，返回按钮关闭该路由；两页复用同一 toolbarHeight、TabBar、搜索与来源过滤布局，均关闭该入口的自动返回箭头。旧页保留四页签、媒体／视频／音频／ISO 分类和文件浏览器记录。影视管理位于侧栏设置的影视库分类，复用 SettingsGroupCard 与 SettingsProgressPanel，探测选择框沿用 AppTheme.dropdownBorderRadius。主页默认背景读取 Theme.scaffoldBackgroundColor，随全局纯色／Mica／Acrylic 材质与明暗主题更新；自定义图片覆盖窗口并保留可读性渐变。页头与筛选条透明，FilmLibraryShell 采用透明宿主背景。刮削队列结束递增 scrapeCompletion，AppShellPage 单一监听器调用既有 SPNotice；任务行只显示进行中的任务与错误；设置进度容器由扫描和刮削任务各自提供一条进度，不叠加总进度条。来源菜单还显示缓存技术信息；来源不可用、missing、待映射分开显示。
+
+普通影视视频／STRM 起播使用 `VideoPlaybackScope.directory`，经 `MediaLibraryItem`、`PlaybackHistory`、持久化存储和浏览页保存；旧影视单项记录重新起播时也复用完整目录列表，stableKey 保持原规则。FilmLibraryShell 持有按来源区分的 BrowserPage.playbackOnly 组件，通过隐藏宿主复用原有准备、会话监控及控制回调；playbackOnly 宿主选择独立的 film_playback_history.json 与 film_playback_records.json，同目录的旧存储继续服务文件浏览器和原媒体中心；两套会话容量、隐藏与删除分别维护；影视会话同来源最多 50 条，影视续播按来源合并视频与 ISO 后保留最多 50 条，旧会话容量沿用原值，影视 MediaLibraryConfig 独立于旧设置；既有旧记录保持原归属；主页续播卡片只读取影视库记录并复用既有实际进度查询，右键／更多菜单进入宿主原控制链路；删除操作等待对应进程终止或已退出的安全结果，再删除会话和同一 MediaLibraryRecord，存储通知刷新当前续播栏目；终止被拒绝时保留记录并显示原错误提示；已无会话的残留记录也提供删除入口；通过明确的 webDavSource 或 localRoot 绑定来源，起播及续播保持在影视库，内部父目录读取不修改浏览目录记忆。重进先恢复影视库会话与本地光盘记录对应的可用来源宿主，已有网络挂载恢复完成后补充对应来源的续播卡片。播放链路先刷新真实父目录，使用完整 siblings 准备伴随资源，复用原目录列表、特典递归与当前／下一季准备；字幕、字体、外挂音轨、特典范围和自动切季沿用现有设置。同一来源的已有列表条目或列表根目录复用原 sessionId，活动 MPV 通过原 IPC 在列表内切集，状态实际加载后由原 playlist-pos／列表代际协议更新同一续播记录；已关闭会话按所选真实路径重建原列表。命名开启时，FilmCatalogStore 按来源与原路径批量读取已缓存 TMDB 作品、年份和人工／自动季集映射，使用“片名·年份·SxxExx·集名”或“片名·年份”，保留字段内部空格；集名超过 48 个 Unicode 字符时保留前 45 个并追加三个点。TMDB 映射不足时采用原本地化批量简洁名，再回退文件名；关闭命名时使用原文件名。命名不联网，不改变 URL、排序或伴随资源匹配；STRM 的 catalogPath 保持原始逻辑路径。目标缺失不回退相邻项。ISO／BDMV 由原 WebDAV／本地光盘服务选择 Title、MPLS 或菜单并保存独立光盘进度；目录起播维持既有列表与切季语义。AppState.initializeFilmPlayback 在创建隐藏宿主前初始化独立 film_streampath.db 与 ExternalPlayerService／LocalDiscPlaybackService／IsoPlaybackService 实例，复用原协议、缓存策略、字体服务与进程控制。普通视频及本地光盘进度首次只复制影视历史引用的旧进度，标记与记录在同一事务提交；STRM 的实际进度保存在独立影视记录。MPV 恢复目录使用 film_mpv_watch_later，ISO 使用 film_iso_catalog.json、film_iso_watch_later 与 film_iso_temp，首次只复制影视会话引用的 ISO key；迁移保留旧文件，完成标记阻止重复覆盖新进度。新媒体中心的播放／续播／控制回调直接复用 FilmLibraryShellState 的同一来源宿主。应用缓存清理、播放活动检查和字体缓存保护读取两套会话，不写入用户媒体或播放器全局配置。
+
+
+`FilmMediaProbeController` 归目录库所有，每五秒读取 MPV 原解析结果的白名单快照；默认 playback 模式不打开额外媒体，源路径与当前播放条目一致后按原资源键保存，STRM 使用 catalogPath 关联逻辑条目。物理分辨率来自 demux／解码参数，外部音轨和封面不计入源轨道；DV 依明确 Profile，PQ 缺少静态元数据时仅标记 HDR (PQ)。full 模式在无播放与准备操作时串行补充未完整探测资源，失败／不完整由用户重试，STRM 保持播放时探测。MediaInfo 26.05 Unicode Buffer SDK 随 CMake 固定 SHA-256 归档分发 DLL 与 BSD 许可证；独立 isolate 由应用控制 Range 和 seek，每块 256 KiB、每资源 8 MiB／32 请求／45 秒、远程请求间隔至少一秒，只接受精确 206，拒绝重定向、完整响应及资源验证器变化。蓝光使用独立 Bridge helper 与既有 libbluray，预算 64 MiB／128 请求／90 秒、远程请求间隔至少一秒、16 块缓存且禁用预读，选择最长 MPLS 的主标题时长；本地光盘经随机令牌 loopback Range 服务访问。准备播放先取消解析、请求与探测 helper 并等待退出，应用关闭同步停止调度再释放任务与数据库。完整探测设置附流量、取回和限流警告；共享网络／存储的绝对零竞争不作为保证。技术信息存于资源 JSON，主界面只显示特殊格式、分辨率与年份，来源菜单显示实际时长、码率、体积与轨道，未知值不使用文件名推定。电影详情优先将资源中有效的实测时长折算为分钟，去重后以 ` & ` 连接；没有有效实测值时显示作品官方时长。
 
 ## 9. 测试与质量门槛
 
@@ -953,6 +1045,10 @@ flutter test --no-pub test/mpv_version_compatibility_test.dart -r expanded
 其中四个样本从测试根目录发现，第五个版本默认从系统 PATH 发现，也可设置
 `STREAMPATH_PATH_MPV` 为完整路径。音频兼容门槛会实际组合 HTTP 音频、不支持 Range
 的远程 LRC 与远程外挂封面，并要求五个 MPV 都自然完成两首播放列表。
+
+普通视频外挂音轨门槛使用限速 HTTP 大型 WAV，记录请求时序和发送字节，核对视频播放、
+当前音轨选择、Range Seek、切集与换表归属；另覆盖鉴权重定向、401/404、延迟、超时、
+无 Range 服务及关闭取消。上述实体门槛由环境变量显式启用，常规测试中的跳过不代表验收。
 
 重点覆盖：WebDAV 空密码、同源/跨源重定向、PROPFIND 方法保持、STRM 字节上限、
 ISO 独立类型、Bridge ready/IPC、Range/Content-Range、Structure Cache 身份/损坏/未来版本/原子替换、块边界/同块合并/LRU、动态块容量、

@@ -1,3 +1,10 @@
+import '../widgets/video_version_dialog.dart';
+import '../../data/models/video_queue.dart';
+import '../../data/models/video_playlist_mode.dart';
+import '../../data/models/film_catalog_item.dart';
+import '../../domain/services/film_video_timeline.dart';
+import '../../domain/services/video_entry_preparer.dart';
+import '../../data/local/playback_history_store.dart';
 import '../../data/models/webdav_bdmv.dart';
 import '../../domain/services/webdav_bdmv_service.dart';
 import 'dart:async';
@@ -11,6 +18,7 @@ import '../widgets/sp_notice.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
@@ -28,11 +36,13 @@ import '../../data/models/local_root_config.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/playback_history.dart';
+import '../../data/models/video_playback_scope.dart';
 import '../../data/models/playback_progress.dart';
 import '../../data/models/subtitle_item.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/media_entry.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/external_audio_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/iso_playback_service.dart';
 import '../../domain/services/local_disc_playback_service.dart';
@@ -61,6 +71,7 @@ import '../widgets/directory_file_grid.dart';
 import '../widgets/file_tile.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/playback_bar.dart';
+import '../widgets/continue_playback_subtitle.dart';
 
 /// 文件浏览页：WebDAV 目录虚拟列表浏览 + 视频一键外部播放。
 ///
@@ -77,8 +88,11 @@ class BrowserPage extends StatefulWidget {
     this.resumeSessionId,
     this.initialVideoResumeHistory,
     this.initialSkipSeasonSessionId,
+    this.initialVideoSelectIndex,
     this.initialDirectoryPath,
     this.initialRevealName,
+    this.playbackOnly = false,
+    this.webDavSource,
   });
 
   final LocalRootConfig? localRoot;
@@ -86,11 +100,14 @@ class BrowserPage extends StatefulWidget {
   final String? resumeSessionId;
   final PlaybackHistory? initialVideoResumeHistory;
   final String? initialSkipSeasonSessionId;
+  final int? initialVideoSelectIndex;
   final String? initialDirectoryPath;
   final String? initialRevealName;
+  final bool playbackOnly;
+  final WebDAVService? webDavSource;
 
   @override
-  State<BrowserPage> createState() => _BrowserPageState();
+  BrowserPageState createState() => BrowserPageState();
 }
 
 class _LocalDiscContinueEntry {
@@ -103,14 +120,6 @@ class _LocalDiscContinueEntry {
   final MediaLibraryRecord record;
   final bool running;
   final bool? paused;
-
-  String? get titleLabel {
-    final snapshot = record.localDiscSession;
-    if (snapshot?.currentEdition == null || snapshot?.editionCount == null) {
-      return null;
-    }
-    return 'Title ${snapshot!.currentEdition! + 1}/${snapshot.editionCount}';
-  }
 }
 
 class _PreparedSeason {
@@ -609,7 +618,194 @@ class _WebDavVideoPreparationDialogState
   }
 }
 
-class _BrowserPageState extends State<BrowserPage> {
+class BrowserPageState extends State<BrowserPage> {
+  late final Future<void> _sessionsLoaded;
+
+  /// 影视库复用现有起播与续播流程，不改变所在导航页面。
+  Future<void> playLibraryItem(
+    MediaLibraryItem item, {
+    String? resumeSessionId,
+  }) async {
+    await _sessionsLoaded;
+    if (!mounted) return;
+    var session = resumeSessionId == null
+        ? null
+        : _playbackPresenter.videoSessionById(resumeSessionId);
+    if (widget.playbackOnly && resumeSessionId == null) {
+      session = _playbackSessions.where((candidate) {
+        final history = candidate.history;
+        if (history.sourceId != item.sourceId) return false;
+        if (item.kind.isVideoLane &&
+            history.kind == PlaybackHistoryKind.video) {
+          return history.playlistRelativePaths.contains(item.targetPath) ||
+              history.queueItems.any(
+                (i) => i.versions.any((v) => v.path == item.targetPath),
+              ) ||
+              history.dirCrumbs.join('/') == item.normalizedParentPath;
+        }
+        return item.kind == MediaLibraryKind.iso &&
+            history.kind == PlaybackHistoryKind.iso &&
+            history.dirCrumbs.join('/') == item.normalizedParentPath &&
+            history.fileName == item.name;
+      }).firstOrNull;
+      if (session != null && item.kind.isVideoLane) {
+        if (session.launching || session.deleting || session.recovering) return;
+        final history = session.history;
+        final running = await _playerService.isPlayerRunning(history.sessionId);
+        if (!mounted) return;
+        if (running) {
+          final index = history.videoPlaylistMode == VideoPlaylistMode.implicit
+              ? history.queueItems.indexWhere(
+                  (i) => i.versions.any((v) => v.path == item.targetPath),
+                )
+              : history.playlistRelativePaths.indexOf(item.targetPath);
+          if (index == history.videoIndex &&
+              history.playlistRelativePaths[index] == item.targetPath &&
+              !_playerService.hasPendingVideo(history.sessionId)) {
+            await _playerService.sendResume(history.sessionId);
+            return;
+          }
+          try {
+            if (index < 0 ||
+                !await _playerService.selectPlaylistEntry(
+                  history.sessionId,
+                  index,
+                  versionPath: item.targetPath,
+                )) {
+              _showLibraryError('无法切换播放集数，请关闭播放器后重试');
+            }
+          } on StateError {
+            _showLibraryError('无法切换播放集数，请关闭播放器后重试');
+          } on TimeoutException {
+            _showLibraryError('无法切换播放集数，请关闭播放器后重试');
+          }
+          return;
+        }
+        await _playerService.waitForExitSync(history.sessionId);
+        if (!mounted) return;
+        final closedHistory = session.history;
+        if (closedHistory.videoPlaylistMode == VideoPlaylistMode.implicit &&
+            closedHistory.playlistRelativePaths[closedHistory.videoIndex] !=
+                item.targetPath) {
+          await _openLibraryItem(item);
+          return;
+        }
+        _directoryBrowser.navigateToPath(closedHistory.dirCrumbs.join('/'));
+        await _load(force: true);
+        if (!mounted) return;
+        await _playVideo(
+          null,
+          sessionId: closedHistory.sessionId,
+          playlistRootPath: closedHistory.dirCrumbs.join('/'),
+          resumeTargetPath: item.targetPath,
+        );
+        return;
+      }
+    }
+    if (session != null) {
+      await _resumePlaybackSession(session);
+      return;
+    }
+    if (_isLocal &&
+        item.kind == MediaLibraryKind.iso &&
+        resumeSessionId != null &&
+        await _localDiscPlaybackService.isPlayerRunning(resumeSessionId)) {
+      await _localDiscPlaybackService.sendResume(resumeSessionId);
+      return;
+    }
+    await _openLibraryItem(item, resumeSessionId: resumeSessionId);
+  }
+
+  Future<void> showLibraryPlaybackMenu(
+    MediaLibraryRecord record,
+    Offset position,
+  ) async {
+    await _sessionsLoaded;
+    if (!mounted) return;
+    final session = record.playbackSessionId == null
+        ? null
+        : _sessionById(record.playbackSessionId!);
+    PlaybackBar? bar;
+    _LocalDiscContinueEntry? discEntry;
+    if (session != null) {
+      bar = _buildPlaybackBar(session) as PlaybackBar;
+    } else if (_isLocal &&
+        record.item.kind == MediaLibraryKind.iso &&
+        record.playbackSessionId != null) {
+      final status = await _localDiscPlaybackService.sessionStatus(
+        record.playbackSessionId!,
+      );
+      if (!mounted) return;
+      discEntry = _LocalDiscContinueEntry(
+        record: record,
+        running: status.running,
+        paused: status.paused,
+      );
+      bar = _buildLocalDiscPlaybackBar(discEntry) as PlaybackBar;
+    }
+    if (!mounted) return;
+    final controls = bar;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final selected = await showMenu<String>(
+      context: context,
+      color: AppTheme.dropdownMenuColor(Theme.of(context)),
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        if (controls?.onPressed != null)
+          PopupMenuItem(value: 'play', child: AppText(controls!.tooltip)),
+        if (controls?.onSubtitles != null)
+          const PopupMenuItem(value: 'subtitles', child: AppText('蓝光外挂字幕')),
+        if (controls?.onSkipSeason != null)
+          const PopupMenuItem(value: 'skip', child: AppText('跳过本季')),
+        const PopupMenuItem(value: 'delete', child: AppText('删除并关闭播放器')),
+      ],
+    );
+    if (!mounted) return;
+    switch (selected) {
+      case 'play':
+        controls!.onPressed!();
+      case 'subtitles':
+        controls!.onSubtitles!();
+      case 'skip':
+        controls!.onSkipSeason!();
+      case 'delete':
+        bool removed;
+        if (session != null) {
+          removed = await _removePlaybackSession(
+            session,
+            terminateProcess: true,
+          );
+        } else if (discEntry != null) {
+          removed = await _removeLocalDiscContinue(discEntry);
+        } else if (record.item.kind.isVideoLane &&
+            record.playbackSessionId != null) {
+          final outcome = await _playerService.terminateSession(
+            record.playbackSessionId!,
+          );
+          removed = outcome.isSafeToRelaunch;
+          if (!removed) {
+            _showLibraryError('无法确认视频播放器身份，已保留会话且未终止进程');
+          }
+        } else {
+          // 已删除会话的遗留卡片仍可清除自己的记录。
+          removed = true;
+        }
+        if (removed) {
+          try {
+            await _mediaLibraryStore?.removePlaybackRecord(record);
+          } on FileSystemException catch (error) {
+            _showLibraryError('删除最近播放失败：$error');
+          } on AppException catch (error) {
+            _showLibraryError('删除最近播放失败：$error');
+          }
+        }
+    }
+  }
+
   late final MediaDirectorySource _source;
   WebDAVService? _webDavSourceService;
   final Set<String> _seasonStageAttempts = {};
@@ -635,6 +831,15 @@ class _BrowserPageState extends State<BrowserPage> {
   IsoPlaybackService? _isoPlaybackService;
   late final LocalDiscPlaybackService _localDiscPlaybackService;
   MediaLibraryStore? _mediaLibraryStore;
+  PlaybackHistoryStore get _historyStore => widget.playbackOnly
+      ? context.read<AppState>().filmPlaybackHistoryStore
+      : context.read<AppState>().playbackHistoryStore;
+  ExternalPlayerService get _playerService => widget.playbackOnly
+      ? context.read<AppState>().filmPlayerService
+      : context.read<AppState>().playerService;
+  PlaybackProgressService get _progressService => widget.playbackOnly
+      ? context.read<AppState>().filmProgressService
+      : context.read<AppState>().progressService;
   bool _hasLocalDisc = false;
   bool _preparingBdmv = false;
   bool _tileView = false;
@@ -679,6 +884,7 @@ class _BrowserPageState extends State<BrowserPage> {
   String get _sourceId => _source.descriptor.sourceId;
 
   Set<String> get _visibleSourceIds {
+    if (widget.playbackOnly) return {_sourceId};
     final config = context.read<AppState>().configStore.current;
     return {
           _sourceId,
@@ -763,15 +969,23 @@ class _BrowserPageState extends State<BrowserPage> {
   void initState() {
     super.initState();
     final appState = context.read<AppState>();
-    _localDiscPlaybackService = appState.localDiscPlaybackService;
+    _localDiscPlaybackService = widget.playbackOnly
+        ? appState.filmLocalDiscPlaybackService
+        : appState.localDiscPlaybackService;
     unawaited(_localDiscPlaybackService.cleanupSubtitleSessions());
-    _mediaLibraryStore = appState.mediaLibraryStore;
-    _isoPlaybackService = appState.isoPlaybackService;
+    _mediaLibraryStore = widget.playbackOnly
+        ? appState.filmMediaLibraryStore
+        : appState.mediaLibraryStore;
+    _isoPlaybackService = widget.playbackOnly
+        ? appState.filmIsoPlaybackService
+        : appState.isoPlaybackService;
     final localRoot = widget.localRoot;
     if (localRoot == null) {
-      _webDavSourceService = appState.webDavService!;
+      _webDavSourceService = widget.webDavSource ?? appState.webDavService!;
       _source = WebDavMediaSourceAdapter(_webDavSourceService!);
-      _isoPlaybackService = appState.isoPlaybackService;
+      _isoPlaybackService = widget.playbackOnly
+          ? appState.filmIsoPlaybackService
+          : appState.isoPlaybackService;
     } else {
       _localSource = appState.localMediaSource(localRoot);
       _source = _localSource!;
@@ -791,29 +1005,28 @@ class _BrowserPageState extends State<BrowserPage> {
     _directoryBrowser = DirectoryBrowserController(
       service: _source,
       configStore: appState.configStore,
-      onDirectoryLoaded: _recordRecentDirectory,
+      initialPath:
+          widget.initialDirectoryPath ??
+          appState.navigationLocations.pathFor(_sourceId),
+      onDirectoryLoaded: widget.playbackOnly ? null : _recordRecentDirectory,
       onForcedRefresh: _isLocal
           ? null
-          : appState.playerService.captureOpenListProcessIdentity,
+          : _playerService.captureOpenListProcessIdentity,
       openListIndexSearch: _isLocal ? null : _searchNetworkIndex,
     )..addListener(_handleDirectoryBrowserChanged);
-    final rememberedPath =
-        widget.initialDirectoryPath ??
-        appState.navigationLocations.pathFor(_sourceId);
-    if (rememberedPath != null) {
-      _directoryBrowser.navigateToPath(rememberedPath);
-    }
     _playbackPresenter = PlaybackSessionPresenter()
       ..addListener(_handlePlaybackPresenterChanged);
     _isoPlaybackService?.addLibraryProgressListener(_handleIsoProgressChanged);
     _sessionCacheDirectory = _resolveSessionCacheDirectory();
-    _initLoad(
-      Future.wait([_loadPlaybackSessions(), _loadAudioPlaybackSessions()]),
-    );
-    _loadFavoriteKeys();
+    _sessionsLoaded = Future.wait([
+      _loadPlaybackSessions(),
+      if (!widget.playbackOnly) _loadAudioPlaybackSessions(),
+    ]);
+    _initLoad(_sessionsLoaded);
     _refreshLocalDiscContinue();
-    if (_isLocal) {
-      _refreshLocalDiscState();
+    if (!widget.playbackOnly) {
+      _loadFavoriteKeys();
+      if (_isLocal) _refreshLocalDiscState();
     }
     // 播放中动态保护警告（如网络带宽不足）：SnackBar 展示。
     _cacheWarningSub = appState.cacheWarnings.listen((message) {
@@ -993,7 +1206,7 @@ class _BrowserPageState extends State<BrowserPage> {
                 ..lastReportedPositionSeconds = null
                 ..lastReportedDurationSeconds = null;
             });
-            unawaited(appState.playbackHistoryStore.upsert(history));
+            unawaited(_historyStore.upsert(history));
             _refreshPlaybackMonitor();
           }
           break;
@@ -1039,7 +1252,7 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _loadFavoriteKeys() async {
-    final store = context.read<AppState>().mediaLibraryStore;
+    final store = _mediaLibraryStore;
     final sourceId = _sourceId;
     if (store == null) return;
     try {
@@ -1059,6 +1272,7 @@ class _BrowserPageState extends State<BrowserPage> {
     MediaDirectoryEntry file, {
     String? parentPath,
     PlaybackMode? playbackMode,
+    VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
   }) {
     final kind = file is WebDavBdmv
         ? MediaLibraryKind.iso
@@ -1074,12 +1288,13 @@ class _BrowserPageState extends State<BrowserPage> {
       name: file.name,
       kind: kind,
       discRootPath: file is WebDavBdmv ? file.rootPath : null,
+      playbackScope: playbackScope,
     );
   }
 
   Future<void> _toggleFavorite(MediaDirectoryEntry file) async {
     final item = _libraryItemForFile(file);
-    final store = context.read<AppState>().mediaLibraryStore;
+    final store = _mediaLibraryStore;
     if (item == null || store == null) return;
     try {
       final added = await store.toggleFavorite(item);
@@ -1101,7 +1316,7 @@ class _BrowserPageState extends State<BrowserPage> {
   Future<void> _recordRecentDirectory(String path) async {
     final normalized = normalizeLibraryPath(path);
     final appState = context.read<AppState>();
-    final store = appState.mediaLibraryStore;
+    final store = _mediaLibraryStore;
     try {
       await appState.navigationLocations.remember(
         sourceId: _sourceId,
@@ -1143,12 +1358,23 @@ class _BrowserPageState extends State<BrowserPage> {
       file,
       parentPath: parentPath,
       playbackMode: playbackMode,
+      playbackScope:
+          _sessionById(playbackSessionId)?.history.playbackScope ??
+          VideoPlaybackScope.directory,
     );
     final appState = context.read<AppState>();
-    final store = appState.mediaLibraryStore;
+    final store = _mediaLibraryStore;
     if (item == null || store == null || !item.kind.isMedia) return;
     try {
-      await store.recordPlayback(item, playbackSessionId: playbackSessionId);
+      final video = _sessionById(playbackSessionId);
+      final audio = _audioSessionById(playbackSessionId);
+      await store.recordPlayback(
+        item,
+        playbackSessionId: playbackSessionId,
+        playlistIndex: audio?.history.trackIndex ?? video?.history.videoIndex,
+        playlistCount:
+            audio?.playlistFileNames.length ?? video?.playlistFileNames.length,
+      );
       if (!_isLocal && item.kind.isVideoLane) {
         appState.scheduleWebDavFontCachePrune();
       }
@@ -1165,7 +1391,7 @@ class _BrowserPageState extends State<BrowserPage> {
     String? playbackSourceId,
   }) async {
     final appState = context.read<AppState>();
-    final store = appState.mediaLibraryStore;
+    final store = _mediaLibraryStore;
     final sourceId = playbackSourceId ?? _sourceId;
     if (store == null) return;
     final parentPath = normalizeLibraryPath(dirCrumbs.join('/'));
@@ -1188,7 +1414,11 @@ class _BrowserPageState extends State<BrowserPage> {
       }
     }
     final kind = matched == null
-        ? (audio ? MediaLibraryKind.audio : MediaLibraryKind.video)
+        ? (audio
+              ? MediaLibraryKind.audio
+              : fileName.toLowerCase().endsWith('.strm')
+              ? MediaLibraryKind.strm
+              : MediaLibraryKind.video)
         : MediaLibraryKindX.fromEntry(matched);
     if (kind == null || !kind.isMedia) return;
     final item = MediaLibraryItem(
@@ -1202,9 +1432,22 @@ class _BrowserPageState extends State<BrowserPage> {
       parentPath: parentPath,
       name: fileName,
       kind: kind,
+      playbackScope:
+          _sessionById(playbackSessionId)?.history.playbackScope ??
+          VideoPlaybackScope.directory,
     );
     try {
-      await store.recordPlayback(item, playbackSessionId: playbackSessionId);
+      final video = _sessionById(playbackSessionId);
+      final audioSession = _audioSessionById(playbackSessionId);
+      await store.recordPlayback(
+        item,
+        playbackSessionId: playbackSessionId,
+        playlistIndex:
+            audioSession?.history.trackIndex ?? video?.history.videoIndex,
+        playlistCount:
+            audioSession?.playlistFileNames.length ??
+            video?.playlistFileNames.length,
+      );
       if (kind.isVideoLane && !sourceId.startsWith('local:')) {
         appState.scheduleWebDavFontCachePrune();
       }
@@ -1260,8 +1503,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   /// 载入持久化播放会话并恢复各自 PID/IPC 追踪。
   Future<void> _loadPlaybackSessions() async {
-    final appState = context.read<AppState>();
-    final histories = (await appState.playbackHistoryStore.loadAll())
+    final histories = (await _historyStore.loadAll())
         .where(
           (history) =>
               _visibleSourceIds.contains(history.sourceId) ||
@@ -1272,7 +1514,7 @@ class _BrowserPageState extends State<BrowserPage> {
     _playbackPresenter.replaceVideoSessions(histories);
     for (final history in histories) {
       if (history.kind == PlaybackHistoryKind.iso) continue;
-      await appState.playerService.restoreSession(
+      await _playerService.restoreSession(
         sessionId: history.sessionId,
         profileId: history.sourceId,
         pid: history.playerPid,
@@ -1283,9 +1525,127 @@ class _BrowserPageState extends State<BrowserPage> {
         currentSeasonPlaylistPath: history.seasonPlaylistPath,
         currentStageLength: history.playlistFileNames.length,
       );
+      if (history.sourceId == _sourceId && history.queueItems.isNotEmpty) {
+        await _restoreImplicitControl(history);
+      }
     }
     _refreshPlaybackMonitor();
     _syncPlaybackSessions();
+  }
+
+  Future<void> _restoreImplicitControl(PlaybackHistory history) async {
+    final source = _source, id = history.sessionId;
+    final player = _playerService,
+        histories = _historyStore,
+        records = _mediaLibraryStore;
+    final app = context.read<AppState>(),
+        navigator = Navigator.of(context, rootNavigator: true);
+    final service = _isLocal ? null : _service;
+    final store = await app.getFilmCatalogStore();
+    final items = history.queueItems;
+    final titles = app.configStore.current.videoPlaylistSimpleNaming
+        ? await store.videoPlaylistTitles(
+            history.sourceId!,
+            items.expand((i) => i.versions.map((v) => v.path)).toList(),
+          )
+        : <String, String>{};
+    final preparer = VideoEntryPreparer(
+      source: source,
+      config: app.configStore.current.toPlayerConfig(),
+      subtitleMatcher: app.subtitleMatcher,
+      fontMatcher: app.webDavFontMatcher,
+      titles: titles,
+    );
+    await preparer.prepareSharedFonts(
+      history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
+    );
+    Future<void> target(
+      int index,
+      VideoQueueVersion version, {
+      bool loaded = false,
+    }) async {
+      final current = (await histories.loadAll())
+          .where((h) => h.sessionId == id)
+          .firstOrNull;
+      if (current == null) return;
+      final paths = List<String>.of(current.playlistRelativePaths),
+          names = List<String>.of(current.playlistFileNames);
+      paths[index] = version.path;
+      names[index] = version.name;
+      final parent = p.posix.dirname(version.path);
+      if (!loaded) {
+        await histories.upsert(current.copyWith(pendingVideoIndex: index));
+        return;
+      }
+      final updated = current.copyWith(
+        clearPendingVideoIndex: true,
+        videoIndex: index,
+        fileName: version.name,
+        playlistRelativePaths: paths,
+        playlistFileNames: names,
+        dirCrumbs: parent == '.' ? [] : parent.split('/'),
+        updatedAt: DateTime.now(),
+      );
+      await histories.upsert(updated);
+      if (loaded) {
+        await records?.recordPlayback(
+          MediaLibraryItem(
+            sourceId: history.sourceId!,
+            sourceKind: source.descriptor.kind,
+            parentPath: parent == '.' ? '' : parent,
+            name: version.name,
+            kind: version.name.endsWith('.strm')
+                ? MediaLibraryKind.strm
+                : MediaLibraryKind.video,
+          ),
+          playbackSessionId: id,
+          playlistIndex: index,
+          playlistCount: items.length,
+        );
+      }
+      if (mounted) {
+        final session = _sessionById(id);
+        if (session != null) setState(() => session.history = updated);
+      }
+    }
+
+    final plan = ImplicitVideoPlan(
+      items: items,
+      index: history.videoIndex,
+      prepare: preparer.prepare,
+      chooseVersion: (item) async {
+        if (!navigator.mounted) return null;
+        return showVideoVersionDialog(navigator.context, item);
+      },
+      activated: (i, v) => target(i, v, loaded: true),
+      pending: (i) => target(i, items[i].versions.first),
+      failed: (message) {
+        if (navigator.mounted) {
+          ScaffoldMessenger.of(
+            navigator.context,
+          ).showSnackBar(SPNotice(content: AppText(message)));
+        }
+      },
+    );
+    for (var i = 0; i < items.length; i++) {
+      final path = history.playlistRelativePaths[i];
+      final version = items[i].versions
+          .where((v) => v.path == path)
+          .firstOrNull;
+      if (version != null &&
+          (i <= history.videoIndex || items[i].versions.length == 1)) {
+        plan.selected[i] = version;
+      }
+    }
+    await player.attachImplicitPlan(
+      id,
+      plan,
+      serverUrl: service?.baseUrl,
+      username: service?.credentialSnapshot.username,
+      password: service?.credentialSnapshot.password,
+      fontLoader: service?.fetchFileBytes,
+      fontFileLoader: service?.downloadFile,
+    );
   }
 
   PlaybackUiSession? _sessionById(String sessionId) =>
@@ -1354,7 +1714,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   /// 首帧加载：先同步读缓存秒开，再走网络/缓存编排。
   Future<void> _initLoad(Future<void> sessionsLoaded) async {
-    await _directoryBrowser.initialize();
+    if (!widget.playbackOnly) await _directoryBrowser.initialize();
     if (mounted && widget.initialRevealName != null && _error == null) {
       final found = _files.any(
         (file) => !file.isSelfEntry && file.name == widget.initialRevealName,
@@ -1365,10 +1725,19 @@ class _BrowserPageState extends State<BrowserPage> {
         _showLibraryError('搜索条目已失效，请刷新索引后重试');
       }
     }
-    if (_isLocal) await _refreshLocalDiscState();
+    if (_isLocal && !widget.playbackOnly) await _refreshLocalDiscState();
     if (mounted) _scheduleDirectoryScrollRestore();
     if (mounted && _revealedName != null) _scrollToRevealed();
-    if (mounted && widget.initialSkipSeasonSessionId != null) {
+    if (mounted &&
+        widget.initialVideoSelectIndex != null &&
+        widget.resumeSessionId != null) {
+      await sessionsLoaded;
+      if (!mounted) return;
+      final session = _sessionById(widget.resumeSessionId!);
+      if (session != null) {
+        await _selectVideoIndex(session, widget.initialVideoSelectIndex!);
+      }
+    } else if (mounted && widget.initialSkipSeasonSessionId != null) {
       await sessionsLoaded;
       if (!mounted) return;
       final session = _sessionById(widget.initialSkipSeasonSessionId!);
@@ -1393,7 +1762,7 @@ class _BrowserPageState extends State<BrowserPage> {
   Future<void> _load({bool force = false}) async {
     if (force) _folderSizes.clear();
     await _directoryBrowser.load(force: force);
-    if (_isLocal) await _refreshLocalDiscState();
+    if (_isLocal && !widget.playbackOnly) await _refreshLocalDiscState();
     if (mounted) _scheduleDirectoryScrollRestore();
   }
 
@@ -1508,6 +1877,18 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _playLocalDisc({
+    required String relativePath,
+    required String displayName,
+    MediaLibraryRecord? continueRecord,
+  }) => context.read<AppState>().withMediaPlaybackPriority(
+    () => _playLocalDiscPrepared(
+      relativePath: relativePath,
+      displayName: displayName,
+      continueRecord: continueRecord,
+    ),
+  );
+
+  Future<void> _playLocalDiscPrepared({
     required String relativePath,
     required String displayName,
     MediaLibraryRecord? continueRecord,
@@ -1636,15 +2017,17 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _playRemoteBdmv(String path, {String? sessionId}) async {
+    await context.read<AppState>().withMediaPlaybackPriority(
+      () => _playRemoteBdmvPrepared(path, sessionId: sessionId),
+    );
+  }
+
+  Future<void> _playRemoteBdmvPrepared(String path, {String? sessionId}) async {
     if (_preparingBdmv) return;
-    final service = context.read<AppState>().webDavService;
-    if (service == null) return;
+    final service = _service;
     final startupTrace = DiscStartupTrace();
     startupTrace.mark('menuCapabilityStarted');
-    final menuAvailability = context
-        .read<AppState>()
-        .isoPlaybackService
-        ?.remoteMenu
+    final menuAvailability = _isoPlaybackService?.remoteMenu
         .checkAvailability()
         .then((value) {
           startupTrace.mark('menuCapabilityReady');
@@ -1655,7 +2038,7 @@ class _BrowserPageState extends State<BrowserPage> {
     try {
       final disc = await WebDavBdmvService.discover(service, path);
       startupTrace.mark('manifestReady');
-      if (!mounted || service != context.read<AppState>().webDavService) return;
+      if (!mounted || service != _service) return;
       await _playIso(
         disc,
         sessionId: sessionId,
@@ -1677,12 +2060,27 @@ class _BrowserPageState extends State<BrowserPage> {
     bool titleOnly = false,
     DiscStartupTrace? startupTrace,
     Future<RemoteMenuAvailability>? menuAvailability,
+  }) => context.read<AppState>().withMediaPlaybackPriority(
+    () => _playIsoPrepared(
+      file,
+      sessionId: sessionId,
+      titleOnly: titleOnly,
+      startupTrace: startupTrace,
+      menuAvailability: menuAvailability,
+    ),
+  );
+
+  Future<void> _playIsoPrepared(
+    WebDavFile file, {
+    String? sessionId,
+    bool titleOnly = false,
+    DiscStartupTrace? startupTrace,
+    Future<RemoteMenuAvailability>? menuAvailability,
   }) async {
     final trace = startupTrace ?? DiscStartupTrace();
-    final appState = context.read<AppState>();
-    final isoService = appState.isoPlaybackService;
-    final webDavService = appState.webDavService;
-    if (isoService == null || webDavService == null) {
+    final isoService = _isoPlaybackService;
+    final webDavService = _service;
+    if (isoService == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SPNotice(content: AppText('ISO 远程播放测试模块初始化失败，视频和音频播放不受影响')),
       );
@@ -1700,14 +2098,15 @@ class _BrowserPageState extends State<BrowserPage> {
                       (session.history.sourceId ?? _sourceId) == _sourceId,
                 )
                 .length >=
-            AppConstants.maxPlaybackSessions) {
+            _historyStore.maxSessionsPerSource) {
       await showGlassDialog<void>(
         context: context,
         builder: (dialogContext) => SPDialog(
           title: const AppText('播放位置已占满'),
-          content: AppText(
-            '当前最多同时保留 ${AppConstants.maxPlaybackSessions} 个播放会话，'
-            '请先关闭或删除一个下边栏后再播放。',
+          content: Text(
+            context.l10n.format('当前最多同时保留 {count} 个播放会话，请先关闭或删除一个下边栏后再播放。', {
+              'count': _historyStore.maxSessionsPerSource,
+            }),
           ),
           actions: [
             TextButton(
@@ -1888,7 +2287,7 @@ class _BrowserPageState extends State<BrowserPage> {
       if (existingSession == null) {
         _playbackPresenter.addVideoSession(session);
       }
-      final stored = await appState.playbackHistoryStore.upsert(history);
+      final stored = await _historyStore.upsert(history);
       if (!stored) {
         await isoService.terminateSession(launch.sessionDirectoryPath);
         if (mounted) _playbackPresenter.removeVideoSession(session);
@@ -2269,6 +2668,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (scan.incomplete || !mounted) return null;
     final items = [...rootVideos, ...scan.items];
     if (items.isEmpty) return null;
+    final titles = await _videoPlaylistTitles(items);
     final entries = <MediaEntry>[];
     final active = <SpecialVideoItem>[];
     final localFonts = <String?>[];
@@ -2278,7 +2678,8 @@ class _BrowserPageState extends State<BrowserPage> {
     var remainingFiles = WebDavFontLocalizer.maxFontFiles;
     var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
     final fontDeadline = DateTime.now().add(const Duration(seconds: 30));
-    for (final item in items) {
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
       final video = item.entry;
       String url;
       try {
@@ -2297,7 +2698,15 @@ class _BrowserPageState extends State<BrowserPage> {
       entries.add(
         MediaEntry(
           url: url,
-          title: video.name,
+          title: titles[i],
+          catalogPath: item.path,
+          externalAudioTracks: !_isLocal
+              ? const ExternalAudioMatcher().matchFor(
+                  video,
+                  item.siblings,
+                  baseUrl: _service.baseUrl,
+                )
+              : const [],
           subtitle: config.subtitleInjectionEnabled
               ? await _resolvedSubtitleFor(video, item.siblings)
               : null,
@@ -2352,6 +2761,29 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  Future<List<String>> _videoPlaylistTitles(
+    List<SpecialVideoItem> items,
+  ) async {
+    final filenames = [for (final item in items) item.entry.name];
+    if (!context
+        .read<AppState>()
+        .configStore
+        .current
+        .videoPlaylistSimpleNaming) {
+      return filenames;
+    }
+    final fallback = context.l10n.videoPlaylistTitles(filenames);
+    if (!widget.playbackOnly) return fallback;
+    final catalog = await context.read<AppState>().getFilmCatalog();
+    final titles = await catalog.store.videoPlaylistTitles(_sourceId, [
+      for (final item in items) item.path,
+    ]);
+    return [
+      for (var i = 0; i < items.length; i++)
+        titles[items[i].path] ?? fallback[i],
+    ];
+  }
+
   Future<AudioCompanionFile?> _resolvedAudioCompanion(
     AudioCompanionFile? companion,
   ) async {
@@ -2377,6 +2809,23 @@ class _BrowserPageState extends State<BrowserPage> {
     String? sessionId,
     String? playlistRootPath,
     String? resumeTargetPath,
+    VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
+  }) => context.read<AppState>().withMediaPlaybackPriority(
+    () => _playVideoPrepared(
+      video,
+      sessionId: sessionId,
+      playlistRootPath: playlistRootPath,
+      resumeTargetPath: resumeTargetPath,
+      playbackScope: playbackScope,
+    ),
+  );
+
+  Future<void> _playVideoPrepared(
+    MediaDirectoryEntry? video, {
+    String? sessionId,
+    String? playlistRootPath,
+    String? resumeTargetPath,
+    VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
   }) async {
     if (_isLocal) {
       return _playVideoCore(
@@ -2384,6 +2833,7 @@ class _BrowserPageState extends State<BrowserPage> {
         sessionId: sessionId,
         playlistRootPath: playlistRootPath,
         resumeTargetPath: resumeTargetPath,
+        playbackScope: playbackScope,
       );
     }
     await showGlassDialog<void>(
@@ -2400,6 +2850,7 @@ class _BrowserPageState extends State<BrowserPage> {
               sessionId: sessionId,
               playlistRootPath: playlistRootPath,
               resumeTargetPath: resumeTargetPath,
+              playbackScope: playbackScope,
               report: report,
             );
           } on AppException catch (error) {
@@ -2417,13 +2868,331 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  Future<void> _playImplicitVideo(
+    List<SpecialVideoItem> ordered,
+    String targetPath,
+    String rootPath,
+    List<MediaDirectoryEntry> rootFiles,
+    String? sessionId,
+    PlaybackUiSession? existingSession,
+    VideoPlaybackScope scope,
+  ) async {
+    final app = context.read<AppState>();
+    final source = _source;
+    final sourceId = _sourceId;
+    final player = _playerService;
+    final histories = _historyStore;
+    final progressStore = _progressService;
+    final records = _mediaLibraryStore;
+    final local = _isLocal;
+    final service = local ? null : _service;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final config = app.configStore.current.toPlayerConfig();
+    final store = await app.getFilmCatalogStore();
+    var items = [
+      for (final item in ordered)
+        VideoQueueItem(
+          versions: [VideoQueueVersion(path: item.path, name: item.entry.name)],
+        ),
+    ];
+    final mapped = await store.resourceAt(sourceId, targetPath);
+    if (scope == VideoPlaybackScope.directory &&
+        mapped?.type == FilmMediaType.tv &&
+        mapped?.workId != null &&
+        mapped?.season != null &&
+        mapped?.episode != null) {
+      final resources = await store.resources(
+        sourceId: sourceId,
+        workId: mapped!.workId!,
+      );
+      final seasons = <int, Map<String, dynamic>>{};
+      for (final number
+          in resources.map((r) => r.season).whereType<int>().toSet()) {
+        final metadata = await store.season(mapped.workId!, number);
+        if (metadata != null) seasons[number] = metadata;
+      }
+      items = buildFilmVideoTimeline(
+        resources,
+        seasons,
+        selectedPath: targetPath,
+        autoSeason: config.autoSeasonTransitionEnabled,
+        allowGap: config.allowSeasonGap,
+      );
+    }
+    if (scope == VideoPlaybackScope.directory &&
+        config.autoSeasonTransitionEnabled &&
+        !(mapped?.type == FilmMediaType.tv &&
+            mapped?.season != null &&
+            mapped?.episode != null)) {
+      var path = rootPath;
+      var files = rootFiles;
+      final seen = <String>{rootPath};
+      final expanded = List<SpecialVideoItem>.of(ordered);
+      while (true) {
+        final next = await const SeasonVideoPlaylistCollector().findNext(
+          source: source,
+          rootPath: path,
+          rootEntries: files,
+          allowGap: config.allowSeasonGap,
+        );
+        if (next == null || !seen.add(next.path)) break;
+        final videos = <SpecialVideoItem>[];
+        for (final entry in next.entries.where(
+          (e) => local ? e.isVideo : e.isPlayable,
+        )) {
+          final child = SpecialVideoPlaylistCollector.directChildPath(
+            source,
+            next.path,
+            entry,
+          );
+          if (child != null) {
+            videos.add(SpecialVideoItem(entry, next.entries, next.path, child));
+          }
+        }
+        videos.sort((a, b) => naturalCompare(a.entry.name, b.entry.name));
+        final special = await const SpecialVideoPlaylistCollector().collect(
+          source: source,
+          rootPath: next.path,
+          rootEntries: next.entries,
+          mode: config.specialPlaylistMode,
+          scanChildFolders: config.scanSpecialChildFolders,
+          scanSiblingFolders: config.scanSpecialSiblingFolders,
+        );
+        expanded.addAll(
+          [
+            ...videos,
+            ...special.items,
+          ].where((i) => !expanded.any((old) => old.path == i.path)),
+        );
+        path = next.path;
+        files = next.entries;
+      }
+      ordered = expanded;
+      items = [
+        for (final item in ordered)
+          VideoQueueItem(
+            versions: [
+              VideoQueueVersion(path: item.path, name: item.entry.name),
+            ],
+            season:
+                SeasonVideoPlaylistCollector.seasonFromVideo(item.entry.name) ??
+                SeasonVideoPlaylistCollector.seasonFromFolder(
+                  p.posix.basename(item.parentPath),
+                ),
+          ),
+      ];
+    }
+    final index = items.indexWhere(
+      (item) => item.versions.any((v) => v.path == targetPath),
+    );
+    if (index < 0) throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
+    final titles = await _videoPlaylistTitles(ordered);
+    final titleMap = {
+      for (var i = 0; i < ordered.length; i++) ordered[i].path: titles[i],
+    };
+    if (config.videoPlaylistSimpleNaming) {
+      titleMap.addAll(
+        await store.videoPlaylistTitles(
+          sourceId,
+          items.expand((i) => i.versions.map((v) => v.path)).toList(),
+        ),
+      );
+    }
+    final preparer = VideoEntryPreparer(
+      source: source,
+      config: config,
+      subtitleMatcher: app.subtitleMatcher,
+      fontMatcher: app.webDavFontMatcher,
+      titles: titleMap,
+      directories: {
+        rootPath: rootFiles,
+        for (final item in ordered) item.parentPath: item.siblings,
+      },
+    );
+    await preparer.prepareSharedFonts(rootPath, siblings: rootFiles);
+    final version = items[index].versions.firstWhere(
+      (v) => v.path == targetPath,
+    );
+    final initial = await preparer.prepare(version);
+    if (!mounted) return;
+    final id = sessionId ?? _newSessionId();
+    final now = DateTime.now();
+    final history = PlaybackHistory(
+      sessionId: id,
+      sourceId: sourceId,
+      dirCrumbs: rootPath.isEmpty ? [] : rootPath.split('/'),
+      fileName: version.name,
+      videoIndex: index,
+      updatedAt: now,
+      createdAt: existingSession?.history.createdAt ?? now,
+      playlistFileNames: [for (final item in items) item.versions.first.name],
+      playlistRelativePaths: [
+        for (final item in items) item.versions.first.path,
+      ],
+      videoQueueRootPath: rootPath,
+      queueItems: items,
+      videoPlaylistMode: VideoPlaylistMode.implicit,
+      playbackScope: scope,
+    );
+    final session = existingSession ?? PlaybackUiSession(history);
+    session
+      ..history = history
+      ..lastSyncedPos = index
+      ..finishPending = 0
+      ..paused = null
+      ..recovering = false
+      ..launching = true;
+    session.activationGuard.reset();
+    if (existingSession == null) _playbackPresenter.addVideoSession(session);
+    if (!await histories.upsert(history)) return;
+    Future<void> updateTarget(
+      int next,
+      VideoQueueVersion target, {
+      required bool loaded,
+    }) async {
+      final current = (await histories.loadAll())
+          .where((h) => h.sessionId == id)
+          .firstOrNull;
+      if (current == null) return;
+      final paths = List<String>.of(current.playlistRelativePaths);
+      final names = List<String>.of(current.playlistFileNames);
+      paths[next] = target.path;
+      names[next] = target.name;
+      final parent = p.posix.dirname(target.path);
+      if (!loaded) {
+        await histories.upsert(current.copyWith(pendingVideoIndex: next));
+        return;
+      }
+      final updated = current.copyWith(
+        clearPendingVideoIndex: true,
+        videoIndex: next,
+        fileName: target.name,
+        dirCrumbs: parent == '.' ? [] : parent.split('/'),
+        updatedAt: DateTime.now(),
+        playlistRelativePaths: paths,
+        playlistFileNames: names,
+      );
+      await histories.upsert(updated);
+      if (loaded) {
+        await records?.recordPlayback(
+          MediaLibraryItem(
+            sourceId: sourceId,
+            sourceKind: source.descriptor.kind,
+            parentPath: parent == '.' ? '' : parent,
+            name: target.name,
+            kind: target.name.toLowerCase().endsWith('.strm')
+                ? MediaLibraryKind.strm
+                : MediaLibraryKind.video,
+            playbackMode: local
+                ? PlaybackMode.localFile
+                : PlaybackMode.legacyTitle,
+            playbackScope: scope,
+          ),
+          playbackSessionId: id,
+          playlistIndex: next,
+          playlistCount: items.length,
+        );
+      }
+      if (mounted && _playbackSessions.contains(session)) {
+        setState(() {
+          session.history = updated;
+          if (loaded) {
+            session.lastSyncedPos = next;
+            session.launching = false;
+          }
+        });
+      }
+    }
+
+    final plan = ImplicitVideoPlan(
+      items: items,
+      index: index,
+      prepare: preparer.prepare,
+      chooseVersion: (item) async {
+        if (!navigator.mounted) return null;
+        return showVideoVersionDialog(navigator.context, item);
+      },
+      activated: (i, v) => updateTarget(i, v, loaded: true),
+      pending: (i) => updateTarget(i, items[i].versions.first, loaded: false),
+      failed: (message) {
+        if (navigator.mounted) {
+          ScaffoldMessenger.of(
+            navigator.context,
+          ).showSnackBar(SPNotice(content: AppText(message)));
+        }
+      },
+    );
+    plan.selected[index] = version;
+    plan.prepared[version.path] = initial;
+    try {
+      final progress = await progressStore.getResumeProgress(
+        initial.entry.url,
+        profileId: sourceId,
+      );
+      final resume = progress != null && !progress.isFinishedNearEnd()
+          ? progress.resumeSeconds
+          : null;
+      session.statusNotBefore = DateTime.now();
+      final result = local
+          ? await player.launchLocal(
+              entries: [initial.entry],
+              sourceId: sourceId,
+              sessionId: id,
+              resumeSeconds: resume,
+              localFontDirectories: [initial.localFontDirectory],
+              implicitPlan: plan,
+            )
+          : await player.launch(
+              entries: [initial.entry],
+              sessionId: id,
+              resumeSeconds: resume,
+              implicitPlan: plan,
+              username: service!.credentialSnapshot.username,
+              password: service.credentialSnapshot.password,
+              webDavSourceUrl: service.baseUrl,
+              webDavSourceId: sourceId,
+              webDavFontsByEntry: [initial.remoteFonts],
+              webDavFontLoader: service.fetchFileBytes,
+              webDavFontFileLoader: service.downloadFile,
+            );
+      final current = (await histories.loadAll()).firstWhere(
+        (h) => h.sessionId == id,
+      );
+      final launched = current.copyWith(
+        playerPid: result.process.pid,
+        playerExecutablePath: result.processIdentity?.executablePath,
+        playerCreationTime: result.processIdentity?.creationTime,
+        ipcPipeName: result.ipcPipeName,
+        launchEpoch: result.launchEpoch,
+        clearSeasonPlaylistPath: true,
+        clearNextSeason: true,
+      );
+      await histories.upsert(launched);
+      if (mounted) {
+        setState(() {
+          session.history = launched;
+          session.launching = false;
+        });
+        _refreshPlaybackMonitor();
+      }
+    } on AppException catch (error) {
+      session.launching = false;
+      if (mounted) {
+        setState(() {});
+        _showLibraryError(error.message);
+      }
+    }
+  }
+
   Future<void> _playVideoCore(
     MediaDirectoryEntry? video, {
     String? sessionId,
     String? playlistRootPath,
     String? resumeTargetPath,
+    VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
     void Function(String stage, WebDavFontLocalizationProgress? font)? report,
   }) async {
+    if (widget.playbackOnly) playbackScope = VideoPlaybackScope.directory;
     final appState = context.read<AppState>();
     final rootPath = playlistRootPath ?? _currentPath;
     final rootFiles = rootPath == _currentPath
@@ -2439,14 +3208,15 @@ class _BrowserPageState extends State<BrowserPage> {
                       (session.history.sourceId ?? _sourceId) == _sourceId,
                 )
                 .length >=
-            AppConstants.maxPlaybackSessions) {
+            _historyStore.maxSessionsPerSource) {
       await showGlassDialog<void>(
         context: context,
         builder: (dialogContext) => SPDialog(
           title: const AppText('播放位置已占满'),
-          content: AppText(
-            '当前最多同时保留 ${AppConstants.maxPlaybackSessions} 个播放会话，'
-            '请先关闭或删除一个下边栏后再播放。',
+          content: Text(
+            context.l10n.format('当前最多同时保留 {count} 个播放会话，请先关闭或删除一个下边栏后再播放。', {
+              'count': _historyStore.maxSessionsPerSource,
+            }),
           ),
           actions: [
             TextButton(
@@ -2489,19 +3259,38 @@ class _BrowserPageState extends State<BrowserPage> {
                 video,
               ));
     final config = appState.configStore.current;
-    final scan = await const SpecialVideoPlaylistCollector().collect(
-      source: _source,
-      rootPath: rootPath,
-      rootEntries: rootFiles,
-      mode: config.specialPlaylistMode,
-      scanChildFolders: config.scanSpecialChildFolders,
-      scanSiblingFolders: config.scanSpecialSiblingFolders,
-    );
-    final ordered = [...rootVideos, ...scan.items];
+    final scan = playbackScope == VideoPlaybackScope.singleItem
+        ? const SpecialVideoScanResult([], false)
+        : await const SpecialVideoPlaylistCollector().collect(
+            source: _source,
+            rootPath: rootPath,
+            rootEntries: rootFiles,
+            mode: config.specialPlaylistMode,
+            scanChildFolders: config.scanSpecialChildFolders,
+            scanSiblingFolders: config.scanSpecialSiblingFolders,
+          );
+    final ordered = playbackScope == VideoPlaybackScope.singleItem
+        ? rootVideos.where((item) => item.path == targetPath).toList()
+        : [...rootVideos, ...scan.items];
     report?.call('正在匹配外挂字幕…', null);
     if (!mounted) return;
     if (targetPath == null || !ordered.any((item) => item.path == targetPath)) {
       _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
+      return;
+    }
+    final mode =
+        existingSession?.history.videoPlaylistMode ?? config.videoPlaylistMode;
+    if (mode == VideoPlaylistMode.implicit &&
+        p.basename(config.playerExecutable).toLowerCase().contains('mpv')) {
+      await _playImplicitVideo(
+        ordered,
+        targetPath,
+        rootPath,
+        rootFiles,
+        sessionId,
+        existingSession,
+        playbackScope,
+      );
       return;
     }
     // strm 流指针条目：分批并发预取指向的真实媒体地址（每批限流，
@@ -2532,7 +3321,9 @@ class _BrowserPageState extends State<BrowserPage> {
     final subtitleInjectionEnabled =
         appState.configStore.current.subtitleInjectionEnabled;
     final activeVideos = <SpecialVideoItem>[];
-    for (final item in ordered) {
+    final titles = await _videoPlaylistTitles(ordered);
+    for (var i = 0; i < ordered.length; i++) {
+      final item = ordered[i];
       final v = item.entry;
       String? url;
       try {
@@ -2560,7 +3351,15 @@ class _BrowserPageState extends State<BrowserPage> {
       entries.add(
         MediaEntry(
           url: url,
-          title: v.name,
+          title: titles[i],
+          catalogPath: item.path,
+          externalAudioTracks: !_isLocal
+              ? const ExternalAudioMatcher().matchFor(
+                  v,
+                  item.siblings,
+                  baseUrl: _service.baseUrl,
+                )
+              : const [],
           subtitle: subtitleInjectionEnabled
               ? await _resolvedSubtitleFor(v, item.siblings)
               : null,
@@ -2579,7 +3378,8 @@ class _BrowserPageState extends State<BrowserPage> {
     }
     final playStart = clickedIndex;
     final seasonLookup =
-        config.autoSeasonTransitionEnabled &&
+        playbackScope == VideoPlaybackScope.directory &&
+            config.autoSeasonTransitionEnabled &&
             playStart == entries.length - 1 &&
             p.basename(config.playerExecutable).toLowerCase().contains('mpv')
         ? _prepareNextSeason(rootPath, rootFiles)
@@ -2659,6 +3459,7 @@ class _BrowserPageState extends State<BrowserPage> {
       createdAt: existingSession?.history.createdAt ?? now,
       playlistFileNames: activeVideos.map((item) => item.entry.name).toList(),
       playlistRelativePaths: activeVideos.map((item) => item.path).toList(),
+      playbackScope: playbackScope,
       nextSeasonRootPath: nextSeason?.rootPath,
       nextSeasonFileNames:
           nextSeason?.items.map((item) => item.entry.name).toList() ?? const [],
@@ -2682,7 +3483,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (mounted && existingSession == null) {
       _playbackPresenter.addVideoSession(session);
     }
-    final stored = await appState.playbackHistoryStore.upsert(history);
+    final stored = await _historyStore.upsert(history);
     if (!stored) {
       if (mounted) _playbackPresenter.removeVideoSession(session);
       return;
@@ -2693,7 +3494,7 @@ class _BrowserPageState extends State<BrowserPage> {
     //    避免 mpv 从片尾恢复导致秒切下一集。
     PlaybackProgress? progress;
     try {
-      progress = await appState.progressService.getResumeProgress(
+      progress = await _progressService.getResumeProgress(
         entries[playStart].url,
         profileId: _sourceId,
       );
@@ -2716,7 +3517,7 @@ class _BrowserPageState extends State<BrowserPage> {
       );
       session.statusNotBefore = DateTime.now();
       final result = _isLocal
-          ? await appState.playerService.launchLocal(
+          ? await _playerService.launchLocal(
               entries: entries,
               sourceId: _sourceId,
               sessionId: resolvedSessionId,
@@ -2725,7 +3526,7 @@ class _BrowserPageState extends State<BrowserPage> {
               localFontDirectories: localFonts,
               nextSeason: nextSeason?.playback,
             )
-          : await appState.playerService.launch(
+          : await _playerService.launch(
               entries: entries,
               sessionId: resolvedSessionId,
               playlistStart: playStart,
@@ -2744,7 +3545,7 @@ class _BrowserPageState extends State<BrowserPage> {
               nextSeason: nextSeason?.playback,
             );
       if (!mounted || !_playbackSessions.contains(session)) {
-        await appState.playerService.terminateLaunch(result);
+        await _playerService.terminateLaunch(result);
         return;
       }
       final launchedHistory = session.history.copyWith(
@@ -2786,7 +3587,7 @@ class _BrowserPageState extends State<BrowserPage> {
           ..paused = null
           ..launching = false;
       });
-      unawaited(appState.playbackHistoryStore.upsert(launchedHistory));
+      unawaited(_historyStore.upsert(launchedHistory));
       await _recordPlaybackFile(
         activeVideos[playStart].entry,
         parentPath: activeVideos[playStart].parentPath,
@@ -3283,6 +4084,7 @@ class _BrowserPageState extends State<BrowserPage> {
     required bool force,
     required DateTime? lastPersistedAt,
     required ValueChanged<DateTime> onPersisted,
+    String? videoSessionId,
   }) async {
     if (!running || lines.length < 5) return;
     final url = lines[1].trim();
@@ -3305,6 +4107,19 @@ class _BrowserPageState extends State<BrowserPage> {
         profileId: profileId,
       );
       onPersisted(now);
+      if (videoSessionId != null) {
+        final session = _sessionById(videoSessionId);
+        if (session != null) {
+          await _saveStrmPlaybackProgress(
+            session,
+            playlistIndex: int.parse(lines[0].trim()),
+            positionMs: (position * 1000).round(),
+            durationMs: duration != null && duration > 0
+                ? (duration * 1000).round()
+                : null,
+          );
+        }
+      }
     } on AppException {
       // 运行中进度属于旁路刷新，失败时仍由退出同步提供最终进度。
     }
@@ -3323,6 +4138,40 @@ class _BrowserPageState extends State<BrowserPage> {
     fallbackPositionSeconds: session.lastReportedPositionSeconds,
     fallbackDurationSeconds: session.lastReportedDurationSeconds,
   );
+
+  Future<void> _saveStrmPlaybackProgress(
+    PlaybackUiSession session, {
+    int? playlistIndex,
+    int? positionMs,
+    int? durationMs,
+  }) async {
+    final index = playlistIndex ?? session.history.videoIndex;
+    final name = session.playlistFileNames[index];
+    final store = _mediaLibraryStore;
+    if (!name.toLowerCase().endsWith('.strm') || store == null) return;
+    final sourceId = session.history.sourceId ?? _sourceId;
+    if (positionMs == null && session.lastReportedUrl != null) {
+      final progress = await _progressService.getResumeProgress(
+        session.lastReportedUrl!,
+        profileId: sourceId,
+      );
+      positionMs = progress?.positionMs;
+      durationMs = progress?.durationMs;
+    }
+    if (positionMs == null) return;
+    try {
+      await store.updateStrmProgress(
+        sourceId: sourceId,
+        playbackSessionId: session.history.sessionId,
+        fileName: name,
+        playlistIndex: index,
+        positionMs: positionMs,
+        durationMs: durationMs,
+      );
+    } on AppException catch (error) {
+      _showLibraryError(error.message);
+    }
+  }
 
   Future<bool> _hasPersistedAudioCompletion(
     AudioPlaybackUiSession session,
@@ -3446,8 +4295,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   Future<void> _syncIsoPlaybackSession(PlaybackUiSession session) async {
     if (!_playbackSessions.contains(session)) return;
-    final appState = context.read<AppState>();
-    final service = appState.isoPlaybackService;
+    final service = _isoPlaybackService;
     if (service == null) return;
     final history = session.history;
     final snapshot = await service.sessionSnapshot(
@@ -3495,7 +4343,7 @@ class _BrowserPageState extends State<BrowserPage> {
         clearIsoSessionDirectoryPath: true,
         updatedAt: DateTime.now(),
       );
-      await appState.playbackHistoryStore.upsert(session.history);
+      await _historyStore.upsert(session.history);
     }
     if (session.paused != null && mounted) {
       setState(() => session.paused = null);
@@ -3505,11 +4353,25 @@ class _BrowserPageState extends State<BrowserPage> {
   /// 独立同步一个下边栏对应的 PID、状态文件、暂停状态与切集位置。
   Future<void> _syncPlaybackSession(PlaybackUiSession session) async {
     if (!_playbackSessions.contains(session)) return;
+    if (session.history.playerPid == null &&
+        session.history.ipcPipeName == null &&
+        !session.activationGuard.isWaiting) {
+      return;
+    }
     var names = session.playlistFileNames;
     if (names.isEmpty) return;
-    final appState = context.read<AppState>();
-    final store = appState.playbackHistoryStore;
-    final playerService = appState.playerService;
+    final store = _historyStore;
+    if (session.history.videoPlaylistMode == VideoPlaylistMode.implicit) {
+      final latest = store.sessions
+          .where((h) => h.sessionId == session.history.sessionId)
+          .firstOrNull;
+      if (latest == null) {
+        _playbackPresenter.removeVideoSession(session);
+        return;
+      }
+      session.history = latest;
+    }
+    final playerService = _playerService;
     final sessionId = session.history.sessionId;
     final now = DateTime.now();
     final guard = session.activationGuard;
@@ -3553,6 +4415,7 @@ class _BrowserPageState extends State<BrowserPage> {
         // MPV 正在写状态文件时留待下一轮读取。
       }
     }
+    if (!mounted || !_playbackSessions.contains(session)) return;
     final pendingPlaylist = session.history.nextSeasonPlaylistPath;
     final reportedPos = lines == null || lines.isEmpty
         ? null
@@ -3580,6 +4443,25 @@ class _BrowserPageState extends State<BrowserPage> {
       names = session.playlistFileNames;
     }
 
+    if (lines != null && statusModifiedAt != null) {
+      final i = int.tryParse(lines.first);
+      if (i != null &&
+          i >= 0 &&
+          i < session.history.playlistRelativePaths.length &&
+          !playerService.acceptsVideoSample(
+            session.history.sourceId ?? _sourceId,
+            session.history.playlistRelativePaths[i],
+            statusModifiedAt,
+          )) {
+        return;
+      }
+    }
+    if (running &&
+        session.history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+        lines != null &&
+        (lines.length < 26 || lines[25] != '1')) {
+      return;
+    }
     final loadedPos = lines == null || lines.isEmpty
         ? null
         : int.tryParse(lines[0].trim());
@@ -3591,6 +4473,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (mediaChanged) {
       // 切集后的零秒或未知进度不能回退到上一集的片尾采样。
       session.lastReportedPositionSeconds = null;
+      session.lastReportedUrl = null;
       session.lastReportedDurationSeconds = null;
     }
     _rememberReportedProgress(session, lines, running: running);
@@ -3639,6 +4522,10 @@ class _BrowserPageState extends State<BrowserPage> {
                 expectedEpoch: session.history.launchEpoch,
               ) ||
               (pos == -1 && session.lastSyncedPos == names.length - 1));
+      final currentPos = pos != null && pos >= 0 && pos < names.length
+          ? pos
+          : session.lastSyncedPos;
+      final isLastItem = currentPos == names.length - 1;
       var reachedCompletion = _hasReachedCompletionThreshold(session, lines);
       if (!reachedCompletion) {
         reachedCompletion = await _hasPersistedCompletionThreshold(
@@ -3646,7 +4533,7 @@ class _BrowserPageState extends State<BrowserPage> {
           lines,
         );
       }
-      if (naturallyFinished || reachedCompletion) {
+      if (naturallyFinished || (isLastItem && reachedCompletion)) {
         await _removePlaybackSession(
           session,
           terminateProcess: false,
@@ -3656,11 +4543,18 @@ class _BrowserPageState extends State<BrowserPage> {
       }
 
       // shutdown 时 path 可能已清空，仍按本会话有效的 playlist-pos 收敛历史。
-      if (mediaChanged) {
+      if (reachedCompletion) {
+        await _advanceCompletedVideoSession(
+          session,
+          session.history.pendingVideoIndex ?? currentPos + 1,
+        );
+        if (!mounted || !_playbackSessions.contains(session)) return;
+      } else if (mediaChanged) {
         await _updateVideoPlaybackHistory(session, loadedPos);
         if (!mounted || !_playbackSessions.contains(session)) return;
       }
       session.finishPending = 0;
+      await _saveStrmPlaybackProgress(session);
       final needsHistoryUpdate =
           session.history.playerPid != null ||
           session.history.ipcPipeName != null;
@@ -3680,6 +4574,14 @@ class _BrowserPageState extends State<BrowserPage> {
 
     if (lines == null) return;
     if (lines.length < 2) return;
+    if (session.history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+        playerService.hasPendingVideo(sessionId)) {
+      session.finishPending = 0;
+      if (session.paused != null && mounted) {
+        setState(() => session.paused = null);
+      }
+      return;
+    }
     final pos = int.tryParse(lines[0].trim());
     if (pos == null || pos < 0 || pos >= names.length) {
       if (session.history.nextSeasonPlaylistPath != null && running) {
@@ -3719,8 +4621,10 @@ class _BrowserPageState extends State<BrowserPage> {
         // 切集进度同步失败不影响播放列表和下边栏更新。
       }
     }
+    if (!mounted || !_playbackSessions.contains(session)) return;
     await _persistLiveProgress(
-      service: appState.progressService,
+      service: _progressService,
+      videoSessionId: sessionId,
       profileId: session.history.sourceId ?? _sourceId,
       lines: lines,
       running: running,
@@ -3732,6 +4636,7 @@ class _BrowserPageState extends State<BrowserPage> {
       setState(() => session.paused = paused);
     }
 
+    if (!mounted || !_playbackSessions.contains(session)) return;
     final seasonPlaylist = session.history.seasonPlaylistPath;
     if (running &&
         pos >= names.length - 2 &&
@@ -3750,6 +4655,61 @@ class _BrowserPageState extends State<BrowserPage> {
     await _updateVideoPlaybackHistory(session, pos);
   }
 
+  Future<void> _advanceCompletedVideoSession(
+    PlaybackUiSession session,
+    int nextPos,
+  ) async {
+    session
+      ..lastReportedPositionSeconds = null
+      ..lastReportedUrl = null
+      ..lastReportedDurationSeconds = null;
+    final appState = context.read<AppState>();
+    final history = session.history;
+    final name = session.playlistFileNames[nextPos];
+    final sourceId = history.sourceId ?? _sourceId;
+    if (!name.toLowerCase().endsWith('.strm')) {
+      final path =
+          history.playlistRelativePaths.length ==
+              history.playlistFileNames.length
+          ? history.playlistRelativePaths[nextPos]
+          : [...history.dirCrumbs, name].join('/');
+      String? url;
+      if (sourceId.startsWith('local:')) {
+        url = _localSourceFor(sourceId)?.lexicalPath(path);
+      } else {
+        final serverUrl = sourceId == _sourceId
+            ? _service.baseUrl
+            : appState.configStore.current.profiles
+                  .where((profile) => profile.profileId == sourceId)
+                  .firstOrNull
+                  ?.serverUrl;
+        final parent = normalizeLibraryPath(
+          p.posix.dirname(path).replaceFirst(RegExp(r'^\.$'), ''),
+        );
+        final file = appState.directoryCache
+            .visitedDirectories(sourceId)
+            .where((snapshot) => normalizeLibraryPath(snapshot.path) == parent)
+            .expand((snapshot) => snapshot.entries)
+            .where((file) => file.name == name)
+            .firstOrNull;
+        if (serverUrl != null && file != null) {
+          url = stripUserInfo(resolveHref(serverUrl, file.href));
+        }
+      }
+      if (url != null &&
+          await _progressService.getResumeProgress(url, profileId: sourceId) ==
+              null) {
+        await _progressService.saveProgress(
+          url: url,
+          positionMs: 0,
+          profileId: sourceId,
+        );
+      }
+    }
+    if (!mounted || !_playbackSessions.contains(session)) return;
+    await _updateVideoPlaybackHistory(session, nextPos);
+  }
+
   Future<void> _updateVideoPlaybackHistory(
     PlaybackUiSession session,
     int pos,
@@ -3761,7 +4721,7 @@ class _BrowserPageState extends State<BrowserPage> {
       updatedAt: DateTime.now(),
     );
     session.history = history;
-    await context.read<AppState>().playbackHistoryStore.upsert(history);
+    await _historyStore.upsert(history);
     if (!mounted || !_playbackSessions.contains(session)) return;
     final path =
         history.playlistRelativePaths.length == history.playlistFileNames.length
@@ -3777,6 +4737,7 @@ class _BrowserPageState extends State<BrowserPage> {
       playbackSessionId: history.sessionId,
       playbackSourceId: history.sourceId,
     );
+    await _saveStrmPlaybackProgress(session);
     if (!mounted || !_playbackSessions.contains(session)) return;
     setState(() {});
   }
@@ -3799,9 +4760,8 @@ class _BrowserPageState extends State<BrowserPage> {
         pos >= names.length) {
       return;
     }
-    final appState = context.read<AppState>();
-    await appState.playerService.syncActiveProgress(old.sessionId);
-    appState.playerService.commitSeasonTransition(
+    await _playerService.syncActiveProgress(old.sessionId);
+    _playerService.commitSeasonTransition(
       old.sessionId,
       playlistPath: playlist,
       playlistLength: names.length,
@@ -3821,8 +4781,9 @@ class _BrowserPageState extends State<BrowserPage> {
       ..lastSyncedPos = pos
       ..finishPending = 0
       ..lastReportedPositionSeconds = null
+      ..lastReportedUrl = null
       ..lastReportedDurationSeconds = null;
-    await appState.playbackHistoryStore.upsert(history);
+    await _historyStore.upsert(history);
     if (!mounted || !_playbackSessions.contains(session)) return;
     await _recordPlaybackByName(
       dirCrumbs: root.split('/'),
@@ -3842,7 +4803,8 @@ class _BrowserPageState extends State<BrowserPage> {
     String playlistPath, {
     bool retry = false,
   }) {
-    if (session.history.sourceId != _sourceId ||
+    if (session.history.playbackScope == VideoPlaybackScope.singleItem ||
+        session.history.sourceId != _sourceId ||
         !context
             .read<AppState>()
             .configStore
@@ -3883,8 +4845,7 @@ class _BrowserPageState extends State<BrowserPage> {
           session.history.seasonPlaylistPath != playlistPath) {
         return null;
       }
-      final appState = context.read<AppState>();
-      final stagedPath = await appState.playerService.stageNextSeason(
+      final stagedPath = await _playerService.stageNextSeason(
         session.history.sessionId,
         season: next.playback,
         currentPlaylistPath: playlistPath,
@@ -3908,7 +4869,7 @@ class _BrowserPageState extends State<BrowserPage> {
         updatedAt: DateTime.now(),
       );
       session.history = updated;
-      await appState.playbackHistoryStore.upsert(updated);
+      await _historyStore.upsert(updated);
       return stagedPath;
     } on AppException catch (error) {
       // 候选季读取失败时当前播放不受影响。
@@ -3955,6 +4916,7 @@ class _BrowserPageState extends State<BrowserPage> {
     if (playlistPos == null || playlistPos < 0 || lines[1].trim().isEmpty) {
       return;
     }
+    session.lastReportedUrl = stripUserInfo(lines[1].trim());
     final position = double.tryParse(lines[3].trim());
     final duration = double.tryParse(lines[4].trim());
     if (position != null && position >= 0) {
@@ -3981,13 +4943,10 @@ class _BrowserPageState extends State<BrowserPage> {
       return false;
     }
     try {
-      final progress = await context
-          .read<AppState>()
-          .progressService
-          .getProgress(
-            stripUserInfo(lines[1].trim()),
-            profileId: session.history.sourceId ?? _sourceId,
-          );
+      final progress = await _progressService.getProgress(
+        stripUserInfo(lines[1].trim()),
+        profileId: session.history.sourceId ?? _sourceId,
+      );
       final updatedAt = progress?.updatedAt;
       if (progress == null ||
           updatedAt == null ||
@@ -4030,19 +4989,19 @@ class _BrowserPageState extends State<BrowserPage> {
       statusModifiedAt != null &&
       DateTime.now().difference(statusModifiedAt) <= maxAge;
 
-  Future<void> _removePlaybackSession(
+  Future<bool> _removePlaybackSession(
     PlaybackUiSession session, {
     required bool terminateProcess,
     bool completed = false,
   }) async {
-    if (session.deleting || !_playbackSessions.contains(session)) return;
+    if (session.deleting || !_playbackSessions.contains(session)) return false;
     session.deleting = true;
     if (mounted) setState(() {});
     final appState = context.read<AppState>();
     final sessionId = session.history.sessionId;
     if (session.history.kind == PlaybackHistoryKind.iso) {
       if (terminateProcess && session.history.playerPid != null) {
-        final service = appState.isoPlaybackService;
+        final service = _isoPlaybackService;
         final termination = service == null
             ? PlayerTerminationOutcome.refused
             : await service.terminateSession(
@@ -4056,19 +5015,17 @@ class _BrowserPageState extends State<BrowserPage> {
               const SPNotice(content: AppText('无法确认 ISO 播放器身份，已保留会话且未终止进程')),
             );
           }
-          return;
+          return false;
         }
       }
-      await appState.playbackHistoryStore.remove(sessionId);
-      if (!mounted) return;
+      await _historyStore.remove(sessionId);
+      if (!mounted) return true;
       _playbackPresenter.removeVideoSession(session);
       _refreshPlaybackMonitor();
-      return;
+      return true;
     }
     if (terminateProcess) {
-      final termination = await appState.playerService.terminateSession(
-        sessionId,
-      );
+      final termination = await _playerService.terminateSession(sessionId);
       if (!termination.isSafeToRelaunch) {
         session.deleting = false;
         if (mounted) {
@@ -4077,14 +5034,14 @@ class _BrowserPageState extends State<BrowserPage> {
             const SPNotice(content: AppText('无法确认视频播放器身份，已保留会话且未终止进程')),
           );
         }
-        return;
+        return false;
       }
     } else {
-      appState.playerService.releaseSession(sessionId);
+      _playerService.releaseSession(sessionId);
     }
     if (completed) {
       try {
-        await appState.mediaLibraryStore?.dismissVideoContinueSession(
+        await _mediaLibraryStore?.dismissVideoContinueSession(
           session.history.sourceId ?? _sourceId,
           sessionId,
         );
@@ -4094,20 +5051,67 @@ class _BrowserPageState extends State<BrowserPage> {
         debugPrint('Video continue cleanup failed: $error');
       }
     }
-    await appState.playbackHistoryStore.remove(sessionId);
+    await _historyStore.remove(sessionId);
     appState.scheduleWebDavFontCachePrune();
-    if (!mounted) return;
+    if (!mounted) return true;
     _seasonStageAttempts.removeWhere((key) => key.startsWith('$sessionId|'));
     _seasonStageTasks.removeWhere((key, _) => key.startsWith('$sessionId|'));
     _playbackPresenter.removeVideoSession(session);
     _refreshPlaybackMonitor();
+    return true;
+  }
+
+  Future<void> _selectVideoIndex(PlaybackUiSession session, int index) async {
+    final history = session.history;
+    if (index < 0 ||
+        index >= history.playlistRelativePaths.length ||
+        session.launching ||
+        session.recovering ||
+        session.deleting) {
+      return;
+    }
+    if (history.sourceId != null && history.sourceId != _sourceId) {
+      final target = history.playlistRelativePaths[index];
+      final parent = p.posix.dirname(target);
+      await _openLibraryItem(
+        MediaLibraryItem(
+          sourceId: history.sourceId!,
+          sourceKind: history.sourceId!.startsWith('local:')
+              ? MediaSourceKind.local
+              : MediaSourceKind.webdav,
+          parentPath: parent == '.' ? '' : parent,
+          name: history.playlistFileNames[index],
+          kind: MediaLibraryKind.video,
+        ),
+        selectVideoSessionId: history.sessionId,
+        selectVideoIndex: index,
+      );
+      return;
+    }
+    if (await _playerService.isPlayerRunning(history.sessionId)) {
+      if (!await _playerService.selectPlaylistEntry(history.sessionId, index) &&
+          mounted) {
+        _showLibraryError('无法切换播放集数，请关闭播放器后重试');
+      }
+    } else {
+      final target = history.playlistRelativePaths[index];
+      final parent = p.posix.dirname(target);
+      await _playVideo(
+        null,
+        sessionId: history.sessionId,
+        playlistRootPath: parent == '.' ? '' : parent,
+        resumeTargetPath: target,
+        playbackScope: history.playbackScope,
+      );
+    }
   }
 
   Future<void> _skipSeason(
     PlaybackUiSession session, {
     bool confirmed = false,
   }) async {
-    if (session.deleting ||
+    if (session.history.playbackScope == VideoPlaybackScope.singleItem ||
+        session.deleting ||
         session.launching ||
         session.recovering ||
         !_playbackSessions.contains(session) ||
@@ -4142,6 +5146,20 @@ class _BrowserPageState extends State<BrowserPage> {
         if (accepted != true || !mounted) return;
       }
       final old = session.history;
+      if (old.videoPlaylistMode == VideoPlaylistMode.implicit &&
+          old.queueItems.isNotEmpty) {
+        final season = old.queueItems[old.videoIndex].season;
+        final next = old.queueItems.indexWhere(
+          (i) => i.season != null && i.season! > 0 && i.season != season,
+          old.videoIndex + 1,
+        );
+        if (next < 0) {
+          _showLibraryError('未找到可用的下一季，当前季播放列表保持不变');
+          return;
+        }
+        await _selectVideoIndex(session, next);
+        return;
+      }
       if (old.sourceId != null && old.sourceId != _sourceId) {
         await _openLibraryItem(
           MediaLibraryItem(
@@ -4159,7 +5177,7 @@ class _BrowserPageState extends State<BrowserPage> {
       }
       final appState = context.read<AppState>();
       final rootPath = old.dirCrumbs.join('/');
-      final running = await appState.playerService.isPlayerRunning(sessionId);
+      final running = await _playerService.isPlayerRunning(sessionId);
       if (!mounted || !_playbackSessions.contains(session)) return;
       if (running) {
         final currentPlaylist = old.seasonPlaylistPath;
@@ -4181,7 +5199,7 @@ class _BrowserPageState extends State<BrowserPage> {
           _showLibraryError('未找到可用的下一季，当前季播放列表保持不变');
           return;
         }
-        final switched = await appState.playerService.skipToNextSeason(
+        final switched = await _playerService.skipToNextSeason(
           sessionId,
           currentPlaylistPath: currentPlaylist,
           nextPlaylistPath: nextPlaylist,
@@ -4228,7 +5246,7 @@ class _BrowserPageState extends State<BrowserPage> {
         _showLibraryError('未找到可用的下一季，当前季播放列表保持不变');
         return;
       }
-      await appState.playerService.waitForExitSync(sessionId);
+      await _playerService.waitForExitSync(sessionId);
       await _playVideo(
         null,
         sessionId: sessionId,
@@ -4238,7 +5256,7 @@ class _BrowserPageState extends State<BrowserPage> {
       if (!mounted || !_playbackSessions.contains(session)) return;
       if (session.history.playerPid == null) {
         session.history = old;
-        await appState.playbackHistoryStore.upsert(old);
+        await _historyStore.upsert(old);
         if (mounted) setState(() {});
       }
     } on AppException catch (error) {
@@ -4262,6 +5280,16 @@ class _BrowserPageState extends State<BrowserPage> {
 
   /// 「继续播放」：进入上次目录扫描并复用对应类型的常规播放入口。
   Future<void> _resumePlaybackSession(PlaybackUiSession session) async {
+    if (widget.playbackOnly && session.paused != null) {
+      if (session.history.kind == PlaybackHistoryKind.iso) {
+        await _isoPlaybackService?.sendResume(
+          session.history.isoSessionDirectoryPath,
+        );
+      } else {
+        await _playerService.sendResume(session.history.sessionId);
+      }
+      return;
+    }
     final origin = session.history.sourceId;
     if (origin != null && origin != _sourceId) {
       await _openLibraryItem(
@@ -4272,8 +5300,11 @@ class _BrowserPageState extends State<BrowserPage> {
               : MediaSourceKind.webdav,
           parentPath: session.history.dirCrumbs.join('/'),
           name: session.history.fileName,
+          playbackScope: session.history.playbackScope,
           kind: session.history.kind == PlaybackHistoryKind.iso
               ? MediaLibraryKind.iso
+              : session.history.fileName.toLowerCase().endsWith('.strm')
+              ? MediaLibraryKind.strm
               : MediaLibraryKind.video,
         ),
         resumeSessionId: session.history.sessionId,
@@ -4298,7 +5329,9 @@ class _BrowserPageState extends State<BrowserPage> {
     _directorySearchFocusNode.unfocus();
     _directoryBrowser.navigateToPath(history.dirCrumbs.join('/'));
     try {
-      await _load();
+      await _load(
+        force: history.playbackScope == VideoPlaybackScope.singleItem,
+      );
     } on AppException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -4346,29 +5379,56 @@ class _BrowserPageState extends State<BrowserPage> {
     // 找不到或目录内容已变化时回退到历史索引（越界取首项）。
     var index = videos.indexWhere((f) => f.name == history.fileName);
     if (index < 0) {
+      if (history.playbackScope == VideoPlaybackScope.singleItem) {
+        _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
+        return;
+      }
       index = history.videoIndex.clamp(0, videos.length - 1);
     }
-    await _playVideo(videos[index], sessionId: history.sessionId);
+    await _playVideo(
+      videos[index],
+      sessionId: history.sessionId,
+      playbackScope: history.playbackScope,
+    );
   }
 
   Future<void> _resumePlaylistHistory(PlaybackHistory history) async {
-    final index = history.videoIndex;
+    if (await _playerService.isPlayerRunning(history.sessionId)) {
+      await _playerService.sendResume(history.sessionId);
+      return;
+    }
+    if (!mounted) return;
+    final index = history.pendingVideoIndex ?? history.videoIndex;
     if (index < 0 || index >= history.playlistRelativePaths.length) {
       _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
       return;
     }
-    final rootPath = history.dirCrumbs.join('/');
+    var target = history.playlistRelativePaths[index];
+    if (history.pendingVideoIndex != null &&
+        history.queueItems.elementAtOrNull(index)?.versions.length != 1) {
+      final item = history.queueItems.elementAtOrNull(index);
+      if (item != null) {
+        final selected = await showVideoVersionDialog(context, item);
+        if (selected == null || !mounted) return;
+        target = selected.path;
+      }
+    }
+    final selectedParent = p.posix.dirname(target);
+    final rootPath = selectedParent == '.' ? '' : selectedParent;
     _directorySearchController.clear();
     _directorySearchFocusNode.unfocus();
     _directoryBrowser.navigateToPath(rootPath);
     try {
-      await _load();
+      await _load(
+        force: history.playbackScope == VideoPlaybackScope.singleItem,
+      );
       if (!mounted) return;
       await _playVideo(
         null,
         sessionId: history.sessionId,
         playlistRootPath: rootPath,
-        resumeTargetPath: history.playlistRelativePaths[index],
+        resumeTargetPath: target,
+        playbackScope: history.playbackScope,
       );
     } on AppException catch (error) {
       _showLibraryError(error.message);
@@ -4380,6 +5440,8 @@ class _BrowserPageState extends State<BrowserPage> {
     String? resumeSessionId,
     PlaybackHistory? resumeVideoHistory,
     String? skipSeasonSessionId,
+    String? selectVideoSessionId,
+    int? selectVideoIndex,
   }) async {
     if (item.sourceId != _sourceId) {
       if (!_visibleSourceIds.contains(item.sourceId)) {
@@ -4415,8 +5477,12 @@ class _BrowserPageState extends State<BrowserPage> {
             MaterialPageRoute<void>(
               builder: (_) => BrowserPage(
                 localRoot: root,
-                initialLibraryItem: skipSeasonSessionId == null ? item : null,
-                resumeSessionId: resumeSessionId,
+                initialLibraryItem:
+                    skipSeasonSessionId == null && selectVideoSessionId == null
+                    ? item
+                    : null,
+                resumeSessionId: selectVideoSessionId ?? resumeSessionId,
+                initialVideoSelectIndex: selectVideoIndex,
                 initialVideoResumeHistory: resumeVideoHistory,
                 initialSkipSeasonSessionId: skipSeasonSessionId,
               ),
@@ -4455,7 +5521,11 @@ class _BrowserPageState extends State<BrowserPage> {
       _directorySearchFocusNode.unfocus();
       _directoryBrowser.navigateToPath(normalizeLibraryPath(destination));
     });
-    await _load();
+    await _load(
+      force:
+          widget.playbackOnly ||
+          item.playbackScope == VideoPlaybackScope.singleItem,
+    );
     if (!mounted || item.kind == MediaLibraryKind.directory) return;
     if (!_isLocal && item.discRootPath != null) {
       await _playRemoteBdmv(item.discRootPath!, sessionId: resumeSessionId);
@@ -4485,7 +5555,11 @@ class _BrowserPageState extends State<BrowserPage> {
     } else if (file.isIso && file is WebDavFile) {
       await _playIso(file, sessionId: resumeSessionId);
     } else {
-      await _playVideo(file, sessionId: resumeSessionId);
+      await _playVideo(
+        file,
+        sessionId: resumeSessionId,
+        playbackScope: item.playbackScope,
+      );
     }
   }
 
@@ -4538,6 +5612,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.playbackOnly) return _buildPlaybackBars();
     return Scaffold(
       appBar: AppBar(
         titleSpacing: _directorySearchOpen ? null : 4,
@@ -4550,11 +5625,12 @@ class _BrowserPageState extends State<BrowserPage> {
                 onChanged: _onDirectorySearchChanged,
                 textInputAction: TextInputAction.search,
                 decoration: InputDecoration(
-                  hintText:
-                      _directorySearchScope ==
-                          DirectorySearchScope.currentDirectory
-                      ? '搜索当前目录'
-                      : '搜索全部索引（至少 2 个字符）',
+                  hintText: context.l10n.text(
+                    _directorySearchScope ==
+                            DirectorySearchScope.currentDirectory
+                        ? '搜索当前目录'
+                        : '搜索全部索引（至少 2 个字符）',
+                  ),
                   prefixIcon: const Icon(SPIcons.search),
                   border: InputBorder.none,
                 ),
@@ -4725,6 +5801,7 @@ class _BrowserPageState extends State<BrowserPage> {
       for (final session in displayed) _buildPlaybackBar(session),
       for (final entry in _localDiscContinue) _buildLocalDiscPlaybackBar(entry),
     ];
+    if (bars.isEmpty) return const SizedBox.shrink();
     final surface = PlaybackBarsSurface(children: bars);
     if (bars.length <= 4) return surface;
     return ConstrainedBox(
@@ -4735,7 +5812,7 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  Future<void> _removeLocalDiscContinue(_LocalDiscContinueEntry entry) async {
+  Future<bool> _removeLocalDiscContinue(_LocalDiscContinueEntry entry) async {
     final sessionId = entry.record.playbackSessionId;
     if (sessionId != null && entry.running) {
       final outcome = await _localDiscPlaybackService.terminateSession(
@@ -4743,11 +5820,12 @@ class _BrowserPageState extends State<BrowserPage> {
       );
       if (!outcome.isSafeToRelaunch) {
         _showLibraryError('无法确认对应蓝光播放器进程，未删除播放会话');
-        return;
+        return false;
       }
     }
     await _mediaLibraryStore?.dismissLocalDiscPlaybackBar(entry.record);
     await _refreshLocalDiscContinue();
+    return true;
   }
 
   Future<void> _setLocalDiscPaused(
@@ -4812,7 +5890,6 @@ class _BrowserPageState extends State<BrowserPage> {
       record.item.normalizedParentPath.isEmpty
           ? context.l10n.text('根目录')
           : record.item.normalizedParentPath,
-      if (entry.titleLabel != null) entry.titleLabel!,
     ];
     return PlaybackBar(
       key: ValueKey<String>('local-disc-playback-bar-${record.recordKey}'),
@@ -4827,6 +5904,10 @@ class _BrowserPageState extends State<BrowserPage> {
           : null,
       title: title,
       dirLabel: _barDirectoryLabel(record.item.sourceId, details.join(' · ')),
+      subtitle: ContinuePlaybackSubtitle.disc(
+        label: _barDirectoryLabel(record.item.sourceId, details.join(' · ')),
+        record: record,
+      ),
       icon: icon,
       tooltip: tooltip,
       deleting: false,
@@ -4906,6 +5987,11 @@ class _BrowserPageState extends State<BrowserPage> {
       key: ValueKey<String>('audio-playback-bar-$sessionId'),
       title: title,
       dirLabel: _barDirectoryLabel(history.sourceId, dirLabel),
+      subtitle: ContinuePlaybackSubtitle.audio(
+        label: _barDirectoryLabel(history.sourceId, dirLabel),
+        history: history,
+        fallbackSourceId: _sourceId,
+      ),
       icon: icon,
       tooltip: tooltip,
       deleting: session.deleting,
@@ -4976,14 +6062,12 @@ class _BrowserPageState extends State<BrowserPage> {
       title = '正在播放：${history.fileName}';
       icon = SPIcons.pause;
       tooltip = '暂停';
-      onPressed = () =>
-          context.read<AppState>().playerService.sendPause(sessionId);
+      onPressed = () => _playerService.sendPause(sessionId);
     } else if (paused == true) {
       title = '已暂停：${history.fileName}';
       icon = SPIcons.play;
       tooltip = '继续播放';
-      onPressed = () =>
-          context.read<AppState>().playerService.sendResume(sessionId);
+      onPressed = () => _playerService.sendResume(sessionId);
     } else {
       title = '继续播放：${history.fileName}';
       icon = SPIcons.play;
@@ -4993,8 +6077,19 @@ class _BrowserPageState extends State<BrowserPage> {
 
     return PlaybackBar(
       key: ValueKey<String>('playback-bar-$sessionId'),
+      onPrevious:
+          history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+              history.videoIndex > 0
+          ? () => _selectVideoIndex(session, history.videoIndex - 1)
+          : null,
+      onNext:
+          history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+              history.videoIndex + 1 < history.playlistRelativePaths.length
+          ? () => _selectVideoIndex(session, history.videoIndex + 1)
+          : null,
       onSkipSeason:
-          context
+          history.playbackScope == VideoPlaybackScope.directory &&
+              context
                   .read<AppState>()
                   .configStore
                   .current
@@ -5003,11 +6098,21 @@ class _BrowserPageState extends State<BrowserPage> {
               !session.recovering &&
               ((history.playerPid == null && history.ipcPipeName == null) ||
                   (history.ipcPipeName != null &&
-                      history.seasonPlaylistPath != null))
+                      (history.seasonPlaylistPath != null ||
+                          history.videoPlaylistMode ==
+                              VideoPlaylistMode.implicit)))
           ? () => _skipSeason(session)
           : null,
       title: title,
       dirLabel: _barDirectoryLabel(history.sourceId, dirLabel),
+      subtitle: ContinuePlaybackSubtitle.video(
+        label: _barDirectoryLabel(
+          history.sourceId,
+          context.l10n.text(dirLabel),
+        ),
+        history: history,
+        fallbackSourceId: _sourceId,
+      ),
       icon: icon,
       tooltip: tooltip,
       deleting: session.deleting,
@@ -5039,16 +6144,14 @@ class _BrowserPageState extends State<BrowserPage> {
       title = '正在播放 ISO：${history.fileName}';
       icon = SPIcons.pause;
       tooltip = '暂停';
-      onPressed = () => context.read<AppState>().isoPlaybackService?.sendPause(
-        history.isoSessionDirectoryPath,
-      );
+      onPressed = () =>
+          _isoPlaybackService?.sendPause(history.isoSessionDirectoryPath);
     } else if (paused == true) {
       title = 'ISO 已暂停：${history.fileName}';
       icon = SPIcons.play;
       tooltip = '继续播放';
-      onPressed = () => context.read<AppState>().isoPlaybackService?.sendResume(
-        history.isoSessionDirectoryPath,
-      );
+      onPressed = () =>
+          _isoPlaybackService?.sendResume(history.isoSessionDirectoryPath);
     } else {
       title = '继续播放 ISO：${history.fileName}';
       icon = SPIcons.play;
@@ -5074,6 +6177,11 @@ class _BrowserPageState extends State<BrowserPage> {
           : null,
       title: title,
       dirLabel: _barDirectoryLabel(history.sourceId, dirLabel),
+      subtitle: ContinuePlaybackSubtitle.video(
+        label: _barDirectoryLabel(history.sourceId, dirLabel),
+        history: history,
+        fallbackSourceId: _sourceId,
+      ),
       icon: icon,
       tooltip: tooltip,
       deleting: session.deleting,
@@ -5127,7 +6235,7 @@ class _BrowserPageState extends State<BrowserPage> {
         child: CircularProgressIndicator(strokeWidth: 2),
       );
     }
-    if (context.read<AppState>().mediaLibraryStore == null) return null;
+    if (_mediaLibraryStore == null) return null;
     final item = _libraryItemForFile(file);
     if (item == null) return null;
     final selected = _favoriteKeys.contains(item.stableKey);

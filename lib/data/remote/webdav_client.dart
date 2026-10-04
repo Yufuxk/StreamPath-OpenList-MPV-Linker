@@ -53,13 +53,19 @@ class WebDavClient {
   /// 执行 PROPFIND（Depth: 1），返回原始 XML 文本。
   ///
   /// [path] 为相对路径（如 `电影/动作`、`''` 表示根目录）。
-  Future<String> propfind(String path) async {
+  Future<String> propfind(String path, {bool namesOnly = false}) async {
     final url = joinUrl(baseUrl, path);
     try {
       final response = await _requestFollowingRedirects<String>(
         url: url,
         method: 'PROPFIND',
-        headers: const {'Depth': '1'},
+        headers: {
+          'Depth': '1',
+          if (namesOnly) 'Content-Type': 'application/xml; charset=utf-8',
+        },
+        data: namesOnly
+            ? '<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>'
+            : null,
         responseType: ResponseType.plain,
       );
       final data = response.data;
@@ -179,6 +185,7 @@ class WebDavClient {
     required String method,
     required ResponseType responseType,
     Map<String, Object?> headers = const {},
+    String? data,
     Duration? requestTimeout,
     CancelToken? cancelToken,
   }) async {
@@ -196,6 +203,7 @@ class WebDavClient {
       }
       final response = await _dio.request<T>(
         current.toString(),
+        data: data,
         options: Options(
           method: method,
           headers: requestHeaders,

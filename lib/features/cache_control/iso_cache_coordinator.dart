@@ -94,6 +94,13 @@ class IsoCacheCoordinator {
   static const int _maximumPrefetchBlocks = 12;
 
   final CachePolicyService _policyService;
+  IsoCacheCoordinator forFilmLibrary() => IsoCacheCoordinator(
+    policyService: _policyService,
+    intelligence: _intelligence,
+    memoryProvider: _memoryProvider,
+    monitorFactory: _monitorFactory,
+    logger: _logger,
+  );
   final CacheIntelligenceProvider? _intelligence;
   final SystemMemoryProvider _memoryProvider;
   final PlaybackMonitor Function()? _monitorFactory;
@@ -124,8 +131,10 @@ class IsoCacheCoordinator {
         knownFileSizeBytes: totalBytes,
       );
     } catch (error) {
-      _log('Menu policy calculation failed; retaining base ISO cache '
-          '(error-type=${error.runtimeType})');
+      _log(
+        'Menu policy calculation failed; retaining base ISO cache '
+        '(error-type=${error.runtimeType})',
+      );
       return (bridgeBlockCount: 128, prefetchBlocks: 96, cacheSecs: 60);
     }
     if (result.skipped) {
@@ -136,8 +145,10 @@ class IsoCacheCoordinator {
       CachePolicyEngine.fallbackMemoryBudgetBytes,
       math.min(result.demuxerMaxBytes, result.memoryBudgetBytes - mpvBytes),
     );
-    final blocks = (budget ~/ CachePolicyEngine.isoBlockSizeBytes)
-        .clamp(4, 256);
+    final blocks = (budget ~/ CachePolicyEngine.isoBlockSizeBytes).clamp(
+      4,
+      256,
+    );
     final prefetch = math.max(4, blocks * 3 ~/ 4);
     final seconds = result.cacheSecs.clamp(10, 600);
     _log(

@@ -7,6 +7,7 @@ import 'package:streampath/core/utils/app_paths.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
+import 'package:streampath/data/models/external_audio_track.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/subtitle_item.dart';
@@ -87,6 +88,7 @@ void main() {
   Future<(ExternalPlayerService, Directory)> makeService({
     String executable = 'mpv',
     bool subtitleInjectionEnabled = true,
+    bool externalAudioInjectionEnabled = true,
     bool webDavFontCacheEnabled = false,
     bool subtitleAutoSelectEnabled = true,
     bool resumeEnabled = true,
@@ -110,6 +112,7 @@ void main() {
           executable: resolvedExecutable,
           args: const ['--sub-file={subfile}', '{url}', '--start={start}'],
           subtitleInjectionEnabled: subtitleInjectionEnabled,
+          externalAudioInjectionEnabled: externalAudioInjectionEnabled,
           webDavFontCacheEnabled: webDavFontCacheEnabled,
           subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
           resumeEnabled: resumeEnabled,
@@ -130,6 +133,84 @@ void main() {
       dir,
     );
   }
+
+  test('远程音轨独立于字幕开关，使用同源凭据与逐季脚本', () async {
+    final (service, dir) = await makeService(
+      subtitleInjectionEnabled: false,
+      autoSeasonTransitionEnabled: true,
+    );
+    addTearDown(() => dir.delete(recursive: true));
+    const entry = MediaEntry(
+      url: 'http://h/dav/01.mkv',
+      externalAudioTracks: [
+        ExternalAudioTrack(name: '01.zh.flac', url: 'http://h/dav/01.zh.flac'),
+        ExternalAudioTrack(
+          name: '01.en.flac',
+          url: 'http://other/dav/01.en.flac',
+        ),
+      ],
+    );
+    final result = await service.launch(
+      entries: const [entry],
+      username: 'viewer',
+      password: '',
+      nextSeason: const SeasonPlaybackEntries(entries: [entry]),
+    );
+    final audioScripts = result.args
+        .where(
+          (arg) =>
+              arg.startsWith('--script=') &&
+              arg.contains('streampath-external-audio'),
+        )
+        .toList();
+    expect(audioScripts, hasLength(2));
+    final script = await File(
+      audioScripts.first.substring('--script='.length),
+    ).readAsString();
+    expect(script, contains('http://viewer:@h/dav/01.zh.flac'));
+    expect(script, contains('http://other/dav/01.en.flac'));
+    expect(script, isNot(contains('viewer:@other')));
+    expect(script, contains('local PLAYLIST = '));
+    expect(result.args, isNot(anyElement(startsWith('--http-header-fields'))));
+    await service.waitForExitSync(result.sessionId);
+    service.releaseSession(result.sessionId);
+    for (
+      var i = 0;
+      i < 100 &&
+          File(audioScripts.first.substring('--script='.length)).existsSync();
+      i++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(
+      File(audioScripts.first.substring('--script='.length)).existsSync(),
+      isFalse,
+    );
+  });
+
+  test('关闭开关、本地与非 MPV 入口不生成外挂音轨脚本', () async {
+    const entry = MediaEntry(
+      url: 'http://h/dav/01.mkv',
+      externalAudioTracks: [
+        ExternalAudioTrack(name: '01.flac', url: 'http://h/dav/01.flac'),
+      ],
+    );
+    for (final mode in ['disabled', 'local', 'other']) {
+      final (service, dir) = await makeService(
+        externalAudioInjectionEnabled: mode != 'disabled',
+        executable: mode == 'other' ? exe : 'mpv',
+      );
+      addTearDown(() => dir.delete(recursive: true));
+      final result = mode == 'local'
+          ? await service.launchLocal(entries: const [entry], sourceId: 'local')
+          : await service.launch(entries: const [entry]);
+      expect(
+        result.args.any((arg) => arg.contains('streampath-external-audio')),
+        isFalse,
+      );
+      await service.waitForExitSync(result.sessionId);
+    }
+  });
 
   test('自动切季开启时单集也保留 MPV 并允许稍后暂存下一季', () async {
     final (service, dir) = await makeService(autoSeasonTransitionEnabled: true);
@@ -1180,7 +1261,7 @@ void main() {
       // 防止启动瞬间（未加载文件）误写 -1 导致 UI 误清「继续播放」历史。
       final content = await File(currentPath!).readAsString();
       expect(content, contains('has_loaded'));
-      expect(content, contains('if val and has_loaded then'));
+      expect(content, contains('if val and has_loaded and QUEUE == "" then'));
       expect(content, contains('local PROGRESS ='));
       expect(content, contains('mp.register_event("end-file"'));
     });

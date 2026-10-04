@@ -1,39 +1,30 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'sp_icons.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../../data/models/appearance_config.dart';
 import '../theme/appearance_controller.dart';
-import '../theme/glass_tokens.dart';
+import 'sp_notice.dart';
 
 /// 无系统标题栏时的自绘窗口标题栏。
 ///
-/// 接管原 Windows 标题栏的职责：显示应用标识并提供最小化 / 最大化（还原）/
-/// 关闭按钮。拖动与双击最大化由原生标题栏命中测试处理，其余窗口控制通过
+/// 提供全屏、最小化、最大化（还原）和关闭按钮。
+/// 拖动与双击最大化由原生标题栏命中测试处理，其余窗口控制通过
 /// `streampath/appearance` 通道转发给原生 runner。
 ///
-/// 主内容区匹配页面 AppBar，左侧表面随侧边栏同步滑动。
+/// 普通页面匹配 AppBar，影视页面保持透明。
 class WindowTitleBar extends StatefulWidget {
-  const WindowTitleBar({
-    super.key,
-    this.sidebarMode = SidebarDisplayMode.pinned,
-    this.sidebarRevealProgress,
-  });
+  const WindowTitleBar({super.key, this.detailScrollProgress});
 
-  final SidebarDisplayMode sidebarMode;
-  final ValueListenable<double>? sidebarRevealProgress;
+  final double? detailScrollProgress;
 
   /// 标题栏高度，与 Windows 11 系统标题栏高度一致。
   static const double height = 32;
-  static const double sidebarWidth = 220;
-  static const double sidebarTriggerWidth = 12;
+  static const double compactSidebarWidth = 64;
   static const sidebarSlideDuration = Duration(milliseconds: 180);
 
   @visibleForTesting
@@ -53,6 +44,8 @@ class WindowTitleBar extends StatefulWidget {
 
   @visibleForTesting
   static const closeButtonKey = Key('window-close-button');
+  static const fullscreenButtonKey = Key('window-fullscreen-button');
+  static const fullscreenIconKey = Key('window-fullscreen-icon');
 
   @visibleForTesting
   static const minimizeIconKey = Key('window-minimize-icon');
@@ -70,9 +63,11 @@ class WindowTitleBar extends StatefulWidget {
 class _WindowTitleBarState extends State<WindowTitleBar>
     with WidgetsBindingObserver {
   static const MethodChannel _channel = MethodChannel('streampath/appearance');
+  static _WindowTitleBarState? _nativeHandlerOwner;
 
   /// 当前是否最大化（决定“最大化/还原”图标）。
   bool _maximized = false;
+  bool _fullscreen = false;
 
   /// 最近一次已推送给原生的窗口框架色。
   int? _lastFrameColor;
@@ -106,8 +101,11 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _nativeHandlerOwner = this;
     _channel.setMethodCallHandler(_handleNativeCall);
     _syncMaximizedState();
+    _syncFullscreenState();
+    HardwareKeyboard.instance.addHandler(_handleFullscreenKey);
   }
 
   @override
@@ -126,12 +124,21 @@ class _WindowTitleBarState extends State<WindowTitleBar>
 
   @override
   void dispose() {
+    if (identical(_nativeHandlerOwner, this)) {
+      _channel.setMethodCallHandler(null);
+      _nativeHandlerOwner = null;
+    }
+    HardwareKeyboard.instance.removeHandler(_handleFullscreenKey);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   /// 原生窗口大小变化时同步最大化状态。
   Future<void> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'fullscreenChanged') {
+      if (mounted) setState(() => _fullscreen = call.arguments == true);
+      return;
+    }
     if (call.method == 'accentChanged') {
       await context.read<AppearanceController>().refreshSystemAccent();
       return;
@@ -167,6 +174,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   }
 
   Future<void> _toggleMaximize() async {
+    if (_fullscreen) return _toggleFullscreen();
     try {
       final maximized = await _channel.invokeMethod<bool>('toggleMaximize');
       if (mounted && maximized != null && maximized != _maximized) {
@@ -179,46 +187,80 @@ class _WindowTitleBarState extends State<WindowTitleBar>
     }
   }
 
+  bool _handleFullscreenKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey == LogicalKeyboardKey.f11 ||
+        (_fullscreen && event.logicalKey == LogicalKeyboardKey.escape)) {
+      unawaited(_toggleFullscreen());
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _syncFullscreenState() async {
+    try {
+      final fullscreen = await _channel.invokeMethod<bool>('isFullscreen');
+      if (mounted && fullscreen != null) {
+        setState(() => _fullscreen = fullscreen);
+      }
+    } on MissingPluginException {
+      // 非 Windows 和组件测试不提供窗口通道。
+    }
+  }
+
+  Future<void> _toggleFullscreen() async {
+    try {
+      final fullscreen = await _channel.invokeMethod<bool>('toggleFullscreen');
+      if (mounted && fullscreen != null) {
+        setState(() => _fullscreen = fullscreen);
+      }
+    } on PlatformException {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SPNotice(content: AppText('无法切换全屏')));
+      }
+    } on MissingPluginException {
+      // 非 Windows 和组件测试不提供窗口通道。
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final backgroundColor = _titleBarColor(theme);
     // 主内容区与原生圆角填充沿用 AppBar 的合成色。
     _syncFrameColor(backgroundColor);
-    final progress = widget.sidebarRevealProgress;
-    if (progress == null) return _buildChrome(theme, backgroundColor, 0);
-    return ValueListenableBuilder<double>(
-      valueListenable: progress,
-      builder: (context, value, _) =>
-          _buildChrome(theme, backgroundColor, value),
-    );
+    return _buildChrome(backgroundColor);
   }
 
-  Widget _buildChrome(ThemeData theme, Color backgroundColor, double progress) {
-    final scheme = theme.colorScheme;
-    final reveal = widget.sidebarMode == SidebarDisplayMode.pinned
-        ? 1.0
-        : progress;
-    final visibleWidth =
-        WindowTitleBar.sidebarTriggerWidth +
-        (WindowTitleBar.sidebarWidth - WindowTitleBar.sidebarTriggerWidth) *
-            reveal;
-    return SizedBox(
+  Widget _buildChrome(Color backgroundColor) {
+    final immersive = widget.detailScrollProgress != null;
+    final chrome = SizedBox(
       height: WindowTitleBar.height,
       child: Stack(
         clipBehavior: Clip.hardEdge,
         children: [
           Positioned(
-            left: visibleWidth,
+            left: 0,
             right: 0,
             top: 0,
             bottom: 0,
             child: Material(
               key: WindowTitleBar.mainSurfaceKey,
-              color: backgroundColor,
+              color: immersive ? Colors.transparent : backgroundColor,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  _WindowButton(
+                    key: WindowTitleBar.fullscreenButtonKey,
+                    icon: _fullscreen
+                        ? _WindowControlIconType.exitFullscreen
+                        : _WindowControlIconType.fullscreen,
+                    iconKey: WindowTitleBar.fullscreenIconKey,
+                    tooltip: context.l10n.text(_fullscreen ? '退出全屏' : '全屏'),
+                    onPressed: _toggleFullscreen,
+                  ),
                   _WindowButton(
                     key: WindowTitleBar.minimizeButtonKey,
                     icon: _WindowControlIconType.minimize,
@@ -228,11 +270,17 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                   ),
                   _WindowButton(
                     key: WindowTitleBar.maximizeButtonKey,
-                    icon: _maximized
+                    icon: _maximized || _fullscreen
                         ? _WindowControlIconType.restore
                         : _WindowControlIconType.maximize,
                     iconKey: WindowTitleBar.maximizeIconKey,
-                    tooltip: context.l10n.text(_maximized ? '还原' : '最大化'),
+                    tooltip: context.l10n.text(
+                      _fullscreen
+                          ? '退出全屏'
+                          : _maximized
+                          ? '还原'
+                          : '最大化',
+                    ),
                     onPressed: _toggleMaximize,
                   ),
                   _WindowButton(
@@ -247,79 +295,16 @@ class _WindowTitleBarState extends State<WindowTitleBar>
               ),
             ),
           ),
-          Positioned(
-            left: visibleWidth - WindowTitleBar.sidebarWidth,
-            top: 0,
-            bottom: 0,
-            width: WindowTitleBar.sidebarWidth,
-            child: Material(
-              key: WindowTitleBar.sidebarSurfaceKey,
-              color: theme.sidebarSurfaceColor,
-              child: DecoratedBox(
-                key: WindowTitleBar.sidebarEdgeKey,
-                position: DecorationPosition.foreground,
-                decoration: BoxDecoration(
-                  border: Border(
-                    right: BorderSide(color: theme.glass.borderColor),
-                  ),
-                ),
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-          Positioned(
-            left: 20,
-            top: 0,
-            bottom: 0,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _TitleBarMark(color: scheme.primary),
-                const SizedBox(width: 8),
-                AppText(
-                  'StreamPath',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.1,
-                  ),
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );
+    return chrome;
   }
 
   Color _titleBarColor(ThemeData theme) => Color.alphaBlend(
     theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
     theme.scaffoldBackgroundColor,
   );
-}
-
-/// 复用应用图标的“文件夹 + 播放”构图，适配标题栏小尺寸显示。
-class _TitleBarMark extends StatelessWidget {
-  const _TitleBarMark({required this.color});
-
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return ExcludeSemantics(
-      child: SizedBox(
-        width: 16,
-        height: 16,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Icon(SPIcons.folder, size: 16, color: color),
-            Icon(SPIcons.play, size: 10, color: color),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// 标题栏右侧的最小化 / 最大化（还原）/ 关闭按钮，尺寸与系统标题栏按钮一致。
@@ -380,9 +365,16 @@ class _WindowButtonState extends State<_WindowButton> {
   }
 }
 
-enum _WindowControlIconType { minimize, maximize, restore, close }
+enum _WindowControlIconType {
+  minimize,
+  maximize,
+  restore,
+  close,
+  fullscreen,
+  exitFullscreen,
+}
 
-/// 使用 Windows 系统 Caption 字形，保持原生线条比例与 DPI 渲染。
+/// 窗口控制使用系统 Caption 字形，全屏使用同色的四角矢量线条。
 class _WindowsCaptionGlyph extends StatelessWidget {
   const _WindowsCaptionGlyph({
     super.key,
@@ -402,18 +394,28 @@ class _WindowsCaptionGlyph extends StatelessWidget {
       child: SizedBox.square(
         dimension: _size,
         child: Center(
-          child: AppText(
-            _glyph,
-            textScaler: TextScaler.noScaling,
-            style: TextStyle(
-              inherit: false,
-              color: color,
-              fontFamily: 'Segoe Fluent Icons',
-              fontFamilyFallback: const ['Segoe MDL2 Assets'],
-              fontSize: _fontSize,
-              height: 1,
-            ),
-          ),
+          child:
+              type == _WindowControlIconType.fullscreen ||
+                  type == _WindowControlIconType.exitFullscreen
+              ? CustomPaint(
+                  size: const Size.square(_size),
+                  painter: _FullscreenPainter(
+                    color: color,
+                    exit: type == _WindowControlIconType.exitFullscreen,
+                  ),
+                )
+              : AppText(
+                  _glyph,
+                  textScaler: TextScaler.noScaling,
+                  style: TextStyle(
+                    inherit: false,
+                    color: color,
+                    fontFamily: 'Segoe Fluent Icons',
+                    fontFamilyFallback: const ['Segoe MDL2 Assets'],
+                    fontSize: _fontSize,
+                    height: 1,
+                  ),
+                ),
         ),
       ),
     );
@@ -424,5 +426,61 @@ class _WindowsCaptionGlyph extends StatelessWidget {
     _WindowControlIconType.maximize => '\uE922',
     _WindowControlIconType.restore => '\uE923',
     _WindowControlIconType.close => '\uE8BB',
+    _WindowControlIconType.fullscreen => '\uE740',
+    _WindowControlIconType.exitFullscreen => '\uE73F',
   };
+}
+
+class _FullscreenPainter extends CustomPainter {
+  const _FullscreenPainter({required this.color, required this.exit});
+  final Color color;
+  final bool exit;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path();
+    if (exit) {
+      path
+        ..moveTo(1.5, 4.5)
+        ..lineTo(4.5, 4.5)
+        ..lineTo(4.5, 1.5)
+        ..moveTo(7.5, 1.5)
+        ..lineTo(7.5, 4.5)
+        ..lineTo(10.5, 4.5)
+        ..moveTo(1.5, 7.5)
+        ..lineTo(4.5, 7.5)
+        ..lineTo(4.5, 10.5)
+        ..moveTo(7.5, 10.5)
+        ..lineTo(7.5, 7.5)
+        ..lineTo(10.5, 7.5);
+    } else {
+      path
+        ..moveTo(4.5, 1.5)
+        ..lineTo(1.5, 1.5)
+        ..lineTo(1.5, 4.5)
+        ..moveTo(7.5, 1.5)
+        ..lineTo(10.5, 1.5)
+        ..lineTo(10.5, 4.5)
+        ..moveTo(1.5, 7.5)
+        ..lineTo(1.5, 10.5)
+        ..lineTo(4.5, 10.5)
+        ..moveTo(7.5, 10.5)
+        ..lineTo(10.5, 10.5)
+        ..lineTo(10.5, 7.5);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..isAntiAlias = true
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..strokeJoin = StrokeJoin.miter
+        ..strokeCap = StrokeCap.square,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FullscreenPainter oldDelegate) =>
+      color != oldDelegate.color || exit != oldDelegate.exit;
 }

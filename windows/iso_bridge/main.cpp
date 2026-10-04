@@ -472,6 +472,33 @@ class RemoteSource : public bridge::BlockSource {
   virtual std::uint64_t remote_transfer_active_microseconds() const = 0;
 };
 
+// 目录库探测专用预算；普通播放 helper 不启用。
+static bool catalog_probe_mode = false;
+static std::mutex catalog_probe_mutex;
+static std::chrono::steady_clock::time_point catalog_probe_started;
+static std::chrono::steady_clock::time_point catalog_probe_next;
+static std::uint64_t catalog_probe_bytes = 0;
+static std::uint64_t catalog_probe_requests = 0;
+
+static void guard_catalog_probe_request(
+    std::optional<std::uint64_t> start, std::optional<std::uint64_t> end,
+    const bridge::BlockSource::CancellationProbe& cancelled) {
+  if (!catalog_probe_mode) return;
+  std::unique_lock lock(catalog_probe_mutex);
+  const auto length = start && end ? *end - *start + 1 : 0;
+  if (++catalog_probe_requests > 128 ||
+      length > 64U * 1024U * 1024U - catalog_probe_bytes ||
+      std::chrono::steady_clock::now() - catalog_probe_started > std::chrono::seconds(90)) {
+    throw BridgeException("probe_budget_exceeded", "Catalog probe budget exceeded");
+  }
+  catalog_probe_bytes += length;
+  while (std::chrono::steady_clock::now() < catalog_probe_next) {
+    if (cancelled && cancelled()) throw bridge::FetchCancelled(0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  catalog_probe_next = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+}
+
 class WinHttpRangeSource final : public RemoteSource {
  private:
   class ActiveRequest;
@@ -1039,6 +1066,7 @@ class WinHttpRangeSource final : public RemoteSource {
     if (current != initial_url_) resolved_url_reuse_count_.fetch_add(1);
     bool redirected = false;
     for (int redirect = 0; redirect <= kMaximumRedirects; ++redirect) {
+      guard_catalog_probe_request(range_start, range_end, cancelled);
       if (cancelled && cancelled()) {
         throw bridge::FetchCancelled(0);
       }
@@ -3040,6 +3068,9 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
 
     const auto bridge_started = std::chrono::steady_clock::now();
     const bool bdmv = json_string(*open, "sourceKind") == "bdmv";
+    catalog_probe_mode = json_boolean(*open, "mediaProbe").value_or(false);
+    catalog_probe_started = std::chrono::steady_clock::now();
+    catalog_probe_next = catalog_probe_started;
     std::shared_ptr<RemoteSource> source;
     std::shared_ptr<BdmvSource> folder_source;
     std::optional<bridge::StructureCacheIdentity> structure_identity;

@@ -6,6 +6,7 @@ import '../../core/utils/url_utils.dart';
 import 'media_directory_entry.dart';
 import 'media_source.dart';
 import 'web_dav_file.dart';
+import 'video_playback_scope.dart';
 
 /// 个人媒体资产类型。
 enum MediaLibraryKind { directory, video, audio, strm, iso }
@@ -68,6 +69,7 @@ class MediaLibraryItem {
     this.discRootPath,
     this.sourceKind = MediaSourceKind.webdav,
     this.playbackMode = PlaybackMode.legacyTitle,
+    this.playbackScope = VideoPlaybackScope.directory,
   });
 
   final String sourceId;
@@ -77,6 +79,7 @@ class MediaLibraryItem {
   final String? discRootPath;
   final MediaSourceKind sourceKind;
   final PlaybackMode playbackMode;
+  final VideoPlaybackScope playbackScope;
 
   String get normalizedParentPath => normalizeLibraryPath(parentPath);
 
@@ -103,6 +106,7 @@ class MediaLibraryItem {
     if (discRootPath != null) 'discRootPath': discRootPath,
     'sourceKind': sourceKind.jsonValue,
     'playbackMode': playbackMode.jsonValue,
+    'playbackScope': playbackScope.name,
   };
 
   factory MediaLibraryItem.fromJson(Map<String, dynamic> json) {
@@ -129,6 +133,7 @@ class MediaLibraryItem {
       discRootPath: json['discRootPath'] as String?,
       sourceKind: MediaSourceKindJson.fromJson(json['sourceKind']),
       playbackMode: PlaybackModeJson.fromJson(json['playbackMode']),
+      playbackScope: parseVideoPlaybackScope(json['playbackScope']),
     );
   }
 }
@@ -247,6 +252,10 @@ class MediaLibraryRecord {
     this.continueDismissed = false,
     this.playbackBarDismissed = false,
     this.localDiscSession,
+    this.playlistIndex,
+    this.playlistCount,
+    this.strmPositionMs,
+    this.strmDurationMs,
   });
 
   final MediaLibraryItem item;
@@ -255,6 +264,12 @@ class MediaLibraryRecord {
   final bool continueDismissed;
   final bool playbackBarDismissed;
   final LocalDiscSessionSnapshot? localDiscSession;
+  final int? playlistIndex;
+  final int? playlistCount;
+
+  /// STRM 显示快照不保存解析后的媒体地址。
+  final int? strmPositionMs;
+  final int? strmDurationMs;
 
   /// 媒体中心内的记录标识；播放会话与具体文件相互独立。
   String get recordKey => playbackSessionId == null
@@ -272,6 +287,11 @@ class MediaLibraryRecord {
     bool? continueDismissed,
     bool? playbackBarDismissed,
     LocalDiscSessionSnapshot? localDiscSession,
+    int? playlistIndex,
+    int? playlistCount,
+    int? strmPositionMs,
+    int? strmDurationMs,
+    bool clearStrmProgress = false,
   }) => MediaLibraryRecord(
     item: item ?? this.item,
     updatedAt: updatedAt ?? this.updatedAt,
@@ -279,6 +299,14 @@ class MediaLibraryRecord {
     continueDismissed: continueDismissed ?? this.continueDismissed,
     playbackBarDismissed: playbackBarDismissed ?? this.playbackBarDismissed,
     localDiscSession: localDiscSession ?? this.localDiscSession,
+    playlistIndex: playlistIndex ?? this.playlistIndex,
+    playlistCount: playlistCount ?? this.playlistCount,
+    strmPositionMs: clearStrmProgress
+        ? null
+        : strmPositionMs ?? this.strmPositionMs,
+    strmDurationMs: clearStrmProgress
+        ? null
+        : strmDurationMs ?? this.strmDurationMs,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -289,6 +317,10 @@ class MediaLibraryRecord {
     if (playbackBarDismissed) 'playbackBarDismissed': true,
     if (localDiscSession != null)
       'localDiscSession': localDiscSession!.toJson(),
+    if (playlistIndex != null) 'playlistIndex': playlistIndex,
+    if (playlistCount != null) 'playlistCount': playlistCount,
+    if (strmPositionMs != null) 'strmPositionMs': strmPositionMs,
+    if (strmDurationMs != null) 'strmDurationMs': strmDurationMs,
   };
 
   factory MediaLibraryRecord.fromJson(Map<String, dynamic> json) {
@@ -307,6 +339,10 @@ class MediaLibraryRecord {
       localDiscSession: LocalDiscSessionSnapshot.tryFromJson(
         json['localDiscSession'],
       ),
+      playlistIndex: (json['playlistIndex'] as num?)?.toInt(),
+      playlistCount: (json['playlistCount'] as num?)?.toInt(),
+      strmPositionMs: (json['strmPositionMs'] as num?)?.toInt(),
+      strmDurationMs: (json['strmDurationMs'] as num?)?.toInt(),
     );
   }
 }

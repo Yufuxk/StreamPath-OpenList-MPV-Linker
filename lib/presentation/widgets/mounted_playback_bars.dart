@@ -1,3 +1,4 @@
+import '../../data/models/video_playlist_mode.dart';
 import 'package:flutter/material.dart';
 import 'sp_icons.dart';
 import 'sp_dialog.dart';
@@ -10,6 +11,7 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/playback_history.dart';
+import '../../data/models/video_playback_scope.dart';
 import '../../domain/services/player_process_controller.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -17,6 +19,7 @@ import '../pages/browser_page.dart';
 import '../state/app_state.dart';
 import 'glass_dialog.dart';
 import 'playback_bar.dart';
+import 'continue_playback_subtitle.dart';
 
 /// 挂载列表中展示对应来源的持久化续播会话。
 class MountedPlaybackBars extends StatefulWidget {
@@ -151,6 +154,7 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
     PlaybackHistory? videoHistory,
     bool openOnly = false,
     String? skipSeasonSessionId,
+    int? videoIndex,
   }) async {
     final appState = context.read<AppState>();
     try {
@@ -162,6 +166,7 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
             builder: (_) => BrowserPage(
               initialLibraryItem:
                   openOnly ||
+                      videoIndex != null ||
                       videoHistory != null ||
                       skipSeasonSessionId != null
                   ? null
@@ -169,6 +174,7 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
               initialVideoResumeHistory: openOnly ? null : videoHistory,
               resumeSessionId: openOnly ? null : sessionId,
               initialSkipSeasonSessionId: skipSeasonSessionId,
+              initialVideoSelectIndex: videoIndex,
             ),
           ),
         );
@@ -183,6 +189,7 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
               localRoot: root,
               initialLibraryItem:
                   openOnly ||
+                      videoIndex != null ||
                       videoHistory != null ||
                       skipSeasonSessionId != null
                   ? null
@@ -190,6 +197,7 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
               initialVideoResumeHistory: openOnly ? null : videoHistory,
               resumeSessionId: openOnly ? null : sessionId,
               initialSkipSeasonSessionId: skipSeasonSessionId,
+              initialVideoSelectIndex: videoIndex,
             ),
           ),
         );
@@ -198,6 +206,26 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
     } on AppException catch (error) {
       _showError(error.message);
     }
+  }
+
+  Future<void> _selectIndex(PlaybackHistory history, int index) async {
+    final path = history.playlistRelativePaths[index],
+        parent = history.playlistRelativePaths[index].split('/')..removeLast();
+    await _openItem(
+      MediaLibraryItem(
+        sourceId: history.sourceId!,
+        sourceKind: widget.network
+            ? MediaSourceKind.webdav
+            : MediaSourceKind.local,
+        parentPath: parent.join('/'),
+        name: history.playlistFileNames[index],
+        kind: path.endsWith('.strm')
+            ? MediaLibraryKind.strm
+            : MediaLibraryKind.video,
+      ),
+      sessionId: history.sessionId,
+      videoIndex: index,
+    );
   }
 
   Future<void> _removeVideo(PlaybackHistory history) async {
@@ -226,8 +254,11 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
     name: history.fileName,
     kind: history.kind == PlaybackHistoryKind.iso
         ? MediaLibraryKind.iso
+        : history.fileName.toLowerCase().endsWith('.strm')
+        ? MediaLibraryKind.strm
         : MediaLibraryKind.video,
     playbackMode: history.playbackMode,
+    playbackScope: history.playbackScope,
   );
 
   Future<void> _confirmSkipSeason(PlaybackHistory history) async {
@@ -307,6 +338,10 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
           key: ValueKey('mounted-audio-${history.sessionId}'),
           title: '继续播放音频：${history.fileName}',
           dirLabel: _directory(history.sourceId, history.dirCrumbs),
+          subtitle: ContinuePlaybackSubtitle.audio(
+            label: _directory(history.sourceId, history.dirCrumbs),
+            history: history,
+          ),
           icon: SPIcons.play,
           tooltip: '继续播放',
           deleting: false,
@@ -329,18 +364,35 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
       for (final history in _videos)
         PlaybackBar(
           key: ValueKey('mounted-video-${history.sessionId}'),
+          onPrevious:
+              history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+                  history.videoIndex > 0
+              ? () => _selectIndex(history, history.videoIndex - 1)
+              : null,
+          onNext:
+              history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+                  history.videoIndex + 1 < history.playlistRelativePaths.length
+              ? () => _selectIndex(history, history.videoIndex + 1)
+              : null,
           onSkipSeason:
               history.kind == PlaybackHistoryKind.video &&
+                  history.playbackScope == VideoPlaybackScope.directory &&
                   config.autoSeasonTransitionEnabled &&
                   ((history.playerPid == null && history.ipcPipeName == null) ||
                       (history.ipcPipeName != null &&
-                          history.seasonPlaylistPath != null))
+                          (history.seasonPlaylistPath != null ||
+                              history.videoPlaylistMode ==
+                                  VideoPlaylistMode.implicit)))
               ? () => _confirmSkipSeason(history)
               : null,
           title: history.kind == PlaybackHistoryKind.iso
               ? '继续播放 ISO：${history.fileName}'
               : '继续播放：${history.fileName}',
           dirLabel: _directory(history.sourceId, history.dirCrumbs),
+          subtitle: ContinuePlaybackSubtitle.video(
+            label: _directory(history.sourceId, history.dirCrumbs),
+            history: history,
+          ),
           icon: SPIcons.play,
           tooltip: '继续播放',
           deleting: false,
@@ -367,6 +419,12 @@ class _MountedPlaybackBarsState extends State<MountedPlaybackBars> {
           dirLabel: _directory(record.item.sourceId, [
             record.item.normalizedParentPath,
           ]),
+          subtitle: ContinuePlaybackSubtitle.disc(
+            label: _directory(record.item.sourceId, [
+              record.item.normalizedParentPath,
+            ]),
+            record: record,
+          ),
           icon: SPIcons.play,
           tooltip: '继续播放',
           deleting: false,

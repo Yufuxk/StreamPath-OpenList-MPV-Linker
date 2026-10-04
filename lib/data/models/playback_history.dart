@@ -1,4 +1,7 @@
+import 'video_queue.dart';
 import 'media_source.dart';
+import 'video_playback_scope.dart';
+import 'video_playlist_mode.dart';
 
 enum PlaybackHistoryKind { video, iso }
 
@@ -28,6 +31,11 @@ class PlaybackHistory {
     this.isoSessionDirectoryPath,
     this.sourceId,
     this.playbackMode = PlaybackMode.legacyTitle,
+    this.playbackScope = VideoPlaybackScope.directory,
+    this.pendingVideoIndex,
+    this.videoQueueRootPath,
+    this.queueItems = const [],
+    this.videoPlaylistMode = VideoPlaylistMode.legacy,
   }) : createdAt = createdAt ?? updatedAt;
 
   /// 稳定播放会话 ID；同一条下边栏续播时保持不变。
@@ -48,7 +56,7 @@ class PlaybackHistory {
   /// 下边栏创建时间（决定垂直顺序；不会随切集改变）。
   final DateTime createdAt;
 
-  /// 本会话播放列表文件名（与 mpv playlist-pos 一一对应）。
+  /// 本会话逻辑列表文件名；传统模式与 MPV 列表一一对应。
   final List<String> playlistFileNames;
 
   /// 与 playlistFileNames 同序；缺失时沿用旧版同目录记录。
@@ -90,6 +98,11 @@ class PlaybackHistory {
   /// 播放来源身份；旧记录为空时沿用当前 WebDAV 来源语义。
   final String? sourceId;
   final PlaybackMode playbackMode;
+  final VideoPlaybackScope playbackScope;
+  final int? pendingVideoIndex;
+  final String? videoQueueRootPath;
+  final List<VideoQueueItem> queueItems;
+  final VideoPlaylistMode videoPlaylistMode;
 
   PlaybackHistory copyWith({
     String? sessionId,
@@ -123,6 +136,12 @@ class PlaybackHistory {
     bool clearIsoSessionDirectoryPath = false,
     String? sourceId,
     PlaybackMode? playbackMode,
+    VideoPlaybackScope? playbackScope,
+    int? pendingVideoIndex,
+    String? videoQueueRootPath,
+    bool clearPendingVideoIndex = false,
+    List<VideoQueueItem>? queueItems,
+    VideoPlaylistMode? videoPlaylistMode,
   }) => PlaybackHistory(
     sessionId: sessionId ?? this.sessionId,
     dirCrumbs: dirCrumbs ?? this.dirCrumbs,
@@ -163,10 +182,23 @@ class PlaybackHistory {
         : (isoSessionDirectoryPath ?? this.isoSessionDirectoryPath),
     sourceId: sourceId ?? this.sourceId,
     playbackMode: playbackMode ?? this.playbackMode,
+    playbackScope: playbackScope ?? this.playbackScope,
+    pendingVideoIndex: clearPendingVideoIndex
+        ? null
+        : pendingVideoIndex ?? this.pendingVideoIndex,
+    videoQueueRootPath: videoQueueRootPath ?? this.videoQueueRootPath,
+    queueItems: queueItems ?? this.queueItems,
+    videoPlaylistMode: videoPlaylistMode ?? this.videoPlaylistMode,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'sessionId': sessionId,
+    'playbackScope': playbackScope.name,
+    'videoPlaylistMode': videoPlaylistMode.name,
+    if (videoQueueRootPath != null) 'videoQueueRootPath': videoQueueRootPath,
+    if (pendingVideoIndex != null) 'pendingVideoIndex': pendingVideoIndex,
+    if (queueItems.isNotEmpty)
+      'queueItems': queueItems.map((i) => i.toJson()).toList(),
     'dirCrumbs': dirCrumbs,
     'fileName': fileName,
     'videoIndex': videoIndex,
@@ -200,6 +232,14 @@ class PlaybackHistory {
   factory PlaybackHistory.fromJson(
     Map<String, dynamic> json,
   ) => PlaybackHistory(
+    videoQueueRootPath: json['videoQueueRootPath'] as String?,
+    pendingVideoIndex: json['pendingVideoIndex'] as int?,
+    queueItems: (json['queueItems'] as List? ?? [])
+        .map((i) => VideoQueueItem.fromJson(i as Map<String, dynamic>))
+        .toList(),
+    videoPlaylistMode: json['videoPlaylistMode'] == null
+        ? VideoPlaylistMode.legacy
+        : VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
     sessionId: (json['sessionId'] as String?) ?? 'legacy',
     dirCrumbs:
         (json['dirCrumbs'] as List?)?.whereType<String>().toList() ?? const [],
@@ -244,5 +284,6 @@ class PlaybackHistory {
     isoSessionDirectoryPath: json['isoSessionDirectoryPath'] as String?,
     sourceId: json['sourceId'] as String?,
     playbackMode: PlaybackModeJson.fromJson(json['playbackMode']),
+    playbackScope: parseVideoPlaybackScope(json['playbackScope']),
   );
 }

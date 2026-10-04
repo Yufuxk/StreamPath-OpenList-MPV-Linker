@@ -9,12 +9,28 @@ void main() {
   test('侧边栏与目录记忆模式有稳定默认值和配置往返', () {
     final defaults = AppearanceConfig.fromJson(null);
     expect(defaults.sidebarMode, SidebarDisplayMode.pinned);
+    expect(defaults.sidebarCompact, isFalse);
+    expect(
+      AppearanceConfig.fromJson({'sidebarMode': 'autoHide'}).sidebarCompact,
+      isFalse,
+    );
     expect(defaults.directoryMemoryMode, DirectoryMemoryMode.temporary);
-    final restored = AppearanceConfig.fromJson(defaults.copyWith(
-      sidebarMode: SidebarDisplayMode.autoHide,
-      directoryMemoryMode: DirectoryMemoryMode.persistent,
-    ).toJson());
+    final restored = AppearanceConfig.fromJson(
+      defaults
+          .copyWith(
+            sidebarMode: SidebarDisplayMode.autoHide,
+            sidebarCompact: true,
+            directoryMemoryMode: DirectoryMemoryMode.persistent,
+          )
+          .toJson(),
+    );
     expect(restored.sidebarMode, SidebarDisplayMode.autoHide);
+    expect(restored.sidebarCompact, isTrue);
+    expect(
+      restored.copyWith(sidebarMode: SidebarDisplayMode.pinned).sidebarCompact,
+      isTrue,
+    );
+    expect(restored.copyWith(sidebarCompact: false).sidebarCompact, isFalse);
     expect(restored.directoryMemoryMode, DirectoryMemoryMode.persistent);
   });
 

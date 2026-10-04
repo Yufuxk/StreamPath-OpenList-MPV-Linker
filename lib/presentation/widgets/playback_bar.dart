@@ -20,6 +20,9 @@ class PlaybackBar extends StatefulWidget {
     required this.onSecondaryTapDown,
     this.onSubtitles,
     this.onSkipSeason,
+    this.onPrevious,
+    this.onNext,
+    this.subtitle,
   });
 
   final String title;
@@ -32,6 +35,8 @@ class PlaybackBar extends StatefulWidget {
   final GestureTapDownCallback onSecondaryTapDown;
   final VoidCallback? onSubtitles;
   final VoidCallback? onSkipSeason;
+  final VoidCallback? onPrevious, onNext;
+  final Widget? subtitle;
 
   @override
   State<PlaybackBar> createState() => _PlaybackBarState();
@@ -72,14 +77,14 @@ class _PlaybackBarState extends State<PlaybackBar> {
                       ),
                     ),
                     const SizedBox(height: 2),
-                    AppText(
-                      widget.dirLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
+                    widget.subtitle ??
+                        AppText(
+                          widget.dirLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
                   ],
                 ),
               ),
@@ -90,6 +95,22 @@ class _PlaybackBarState extends State<PlaybackBar> {
                     icon: const Icon(SPIcons.subtitles),
                     tooltip: context.l10n.text('蓝光外挂字幕'),
                     onPressed: widget.deleting ? null : widget.onSubtitles,
+                  ),
+                ),
+              if (widget.onPrevious != null)
+                _actionSlot(
+                  IconButton(
+                    icon: const Icon(SPIcons.previous),
+                    tooltip: context.l10n.text('上一集'),
+                    onPressed: widget.deleting ? null : widget.onPrevious,
+                  ),
+                ),
+              if (widget.onNext != null)
+                _actionSlot(
+                  IconButton(
+                    icon: const Icon(SPIcons.next),
+                    tooltip: context.l10n.text('下一集'),
+                    onPressed: widget.deleting ? null : widget.onNext,
                   ),
                 ),
               if (widget.onSkipSeason != null)
@@ -103,7 +124,7 @@ class _PlaybackBarState extends State<PlaybackBar> {
               _actionSlot(
                 IconButton.filled(
                   icon: Icon(widget.icon),
-                  tooltip: widget.tooltip,
+                  tooltip: context.l10n.text(widget.tooltip),
                   onPressed: widget.deleting ? null : widget.onPressed,
                 ),
               ),

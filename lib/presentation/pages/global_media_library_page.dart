@@ -1,19 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/utils/url_utils.dart';
 import '../../data/models/media_library_item.dart';
-import '../../data/models/media_source.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import 'media_library_page.dart';
+import '../controllers/film_catalog_controller.dart';
 
 /// 从侧边栏查看全部已挂载来源的媒体记录。
 class GlobalMediaLibraryPage extends StatefulWidget {
-  const GlobalMediaLibraryPage({super.key, required this.onOpenItem});
+  const GlobalMediaLibraryPage({
+    super.key,
+    required this.onOpenItem,
+    this.filmCatalog,
+    this.onContinueSelected,
+    this.onContinueMenu,
+    this.filmCenter = false,
+    this.headerAction,
+    this.sidebarInset = 0,
+  });
 
   final ValueChanged<MediaLibraryItem> onOpenItem;
+  final FilmCatalogController? filmCatalog;
+  final ValueChanged<MediaLibraryRecord>? onContinueSelected;
+  final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
+  final bool filmCenter;
+  final Widget? headerAction;
+  final double sidebarInset;
 
   @override
   State<GlobalMediaLibraryPage> createState() => _GlobalMediaLibraryPageState();
@@ -21,51 +35,39 @@ class GlobalMediaLibraryPage extends StatefulWidget {
 
 class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
   String? _selectedSource;
-
-  String? _directTarget(AppState app, MediaLibraryItem item) {
-    if (item.kind == MediaLibraryKind.directory ||
-        item.kind == MediaLibraryKind.strm) {
-      return null;
-    }
-    if (item.sourceKind == MediaSourceKind.local) {
-      final root = app.localRoots
-          .where((root) => root.sourceId == item.sourceId && root.enabled)
-          .firstOrNull;
-      if (root == null) return null;
-      final source = app.localMediaSource(root);
-      final path =
-          item.kind == MediaLibraryKind.iso &&
-              item.parentPath.isEmpty &&
-              item.name == root.displayName
-          ? ''
-          : item.targetPath;
-      return source.lexicalPath(path);
-    }
-    final profile = app.configStore.current.profiles
-        .where((profile) => profile.profileId == item.sourceId)
-        .firstOrNull;
-    if (profile == null) return null;
-    if (item.discRootPath != null) {
-      return '${joinUrl(profile.serverUrl, item.discRootPath!).replaceAll(RegExp(r'/+$'), '')}/';
-    }
-    for (final snapshot in app.directoryCache.visitedDirectories(
-      item.sourceId,
-    )) {
-      if (normalizeLibraryPath(snapshot.path) != item.normalizedParentPath) {
-        continue;
-      }
-      final file = snapshot.entries.where(item.matches).firstOrNull;
-      if (file != null) {
-        return stripUserInfo(resolveHref(profile.serverUrl, file.href));
-      }
-    }
-    return null;
+  late final Future<void> _ready;
+  @override
+  void initState() {
+    super.initState();
+    _ready = widget.filmCatalog == null
+        ? Future.value()
+        : context.read<AppState>().initializeFilmPlayback();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (widget.filmCatalog != null) {
+      return FutureBuilder<void>(
+        future: _ready,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const Center(child: AppText('读取媒体资产失败'));
+          }
+          return snapshot.connectionState == ConnectionState.done
+              ? _content(context)
+              : const SizedBox.shrink();
+        },
+      );
+    }
+    return _content(context);
+  }
+
+  Widget _content(BuildContext context) {
     final app = context.watch<AppState>();
     final config = app.configStore.current;
+    final store = widget.filmCatalog == null
+        ? app.mediaLibraryStore
+        : app.filmMediaLibraryStore;
     final names = <String, String>{
       for (final root in app.localRoots.where((root) => root.enabled))
         root.sourceId: root.displayName,
@@ -74,29 +76,47 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
       ))
         profile.profileId: profile.name,
     };
-    if (names.isEmpty || app.mediaLibraryStore == null) {
-      return const Scaffold(body: Center(child: AppText('没有可用的媒体来源')));
+    if (store == null ||
+        (names.isEmpty && !widget.filmCenter && widget.headerAction == null)) {
+      return widget.filmCatalog != null && !widget.filmCenter
+          ? const SizedBox.shrink()
+          : const Scaffold(body: Center(child: AppText('没有可用的媒体来源')));
     }
     final selected = names.containsKey(_selectedSource)
         ? _selectedSource
         : null;
     final sourceIds = selected == null ? names.keys.toSet() : {selected};
-    final primary = sourceIds.first;
+    final primary = sourceIds.firstOrNull ?? '';
     final filterWidth = MediaQuery.sizeOf(context).width < 680 ? 180.0 : 280.0;
     return MediaLibraryPage(
       key: ValueKey(selected ?? 'all'),
+      filmCatalog: widget.filmCatalog,
+      filmCenter: widget.filmCenter,
+      headerAction: widget.headerAction,
+      sidebarInset: widget.sidebarInset,
+      onContinueSelected: widget.onContinueSelected,
+      onContinueMenu: widget.onContinueMenu,
       sourceId: primary,
       sourceIds: sourceIds,
       sourceNames: names,
-      store: app.mediaLibraryStore!,
-      config: config.mediaLibrary,
+      store: store,
+      config: widget.filmCatalog == null ? config.mediaLibrary : store.config,
       directoryCache: app.directoryCache,
-      videoProgressService: app.progressService,
+      videoProgressService: widget.filmCatalog == null
+          ? app.progressService
+          : app.filmProgressService,
       audioProgressService: app.audioProgressService,
-      isoProgressService: app.isoPlaybackService,
-      localIsoProgressService: app.localDiscPlaybackService,
+      isoProgressService: widget.filmCatalog == null
+          ? app.isoPlaybackService
+          : app.filmIsoPlaybackService,
+      localIsoProgressService: widget.filmCatalog == null
+          ? app.localDiscPlaybackService
+          : app.filmLocalDiscPlaybackService,
       resolveUrl: (href) => href,
-      resolveDirectTarget: (item) => _directTarget(app, item),
+      resolveDirectTarget: (item) => app.resolveMediaLibraryTarget(
+        item,
+        allowLogicalPath: widget.filmCatalog != null,
+      ),
       onVideoPlaybackRecordsChanged: app.scheduleWebDavFontCachePrune,
       onItemSelected: widget.onOpenItem,
       sourceFilter: SizedBox(

@@ -1,3 +1,4 @@
+import '../../data/models/video_playlist_mode.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/constants.dart';
@@ -65,6 +66,9 @@ class SettingsConfigDraft {
   bool scanSpecialSiblingFolders = false;
   bool sharePlaylistFonts = false;
   bool webDavFontCacheEnabled = true;
+  bool externalAudioInjectionEnabled = true;
+  VideoPlaylistMode videoPlaylistMode = VideoPlaylistMode.implicit;
+  bool videoPlaylistSimpleNaming = true;
   bool autoSeasonTransitionEnabled = true;
   bool allowSeasonGap = false;
   MediaLibrarySharingMode mediaLibrarySharingMode =
@@ -149,6 +153,9 @@ class SettingsConfigDraft {
     scanSpecialSiblingFolders = player.scanSpecialSiblingFolders;
     sharePlaylistFonts = player.sharePlaylistFonts;
     webDavFontCacheEnabled = player.webDavFontCacheEnabled;
+    externalAudioInjectionEnabled = player.externalAudioInjectionEnabled;
+    videoPlaylistMode = player.videoPlaylistMode;
+    videoPlaylistSimpleNaming = player.videoPlaylistSimpleNaming;
     autoSeasonTransitionEnabled = player.autoSeasonTransitionEnabled;
     allowSeasonGap = player.allowSeasonGap;
     hiddenExtensionsEnabled = player.hiddenExtensionsEnabled;
@@ -236,6 +243,9 @@ class SettingsConfigDraft {
     scanSpecialSiblingFolders: scanSpecialSiblingFolders,
     sharePlaylistFonts: sharePlaylistFonts,
     webDavFontCacheEnabled: webDavFontCacheEnabled,
+    externalAudioInjectionEnabled: externalAudioInjectionEnabled,
+    videoPlaylistMode: videoPlaylistMode,
+    videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
     allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,

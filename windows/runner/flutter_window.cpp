@@ -144,8 +144,8 @@ std::wstring Utf16FromUtf8(const std::string& value) {
   return converted;
 }
 
-HRESULT PickDirectory(HWND owner, const std::wstring& title,
-                      std::string* selected_path) {
+HRESULT PickPath(HWND owner, const std::wstring& title, bool image,
+                 std::string* selected_path) {
   Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
   HRESULT result = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr,
                                       CLSCTX_INPROC_SERVER,
@@ -159,10 +159,15 @@ HRESULT PickDirectory(HWND owner, const std::wstring& title,
   if (FAILED(result)) {
     return result;
   }
-  result = dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
-                              FOS_PATHMUSTEXIST);
+  result = dialog->SetOptions(options | FOS_FORCEFILESYSTEM |
+                              FOS_PATHMUSTEXIST | (image ? FOS_FILEMUSTEXIST : FOS_PICKFOLDERS));
   if (FAILED(result)) {
     return result;
+  }
+  if (image) {
+    const COMDLG_FILTERSPEC filters[] = {{L"JPG / PNG / WebP / BMP", L"*.jpg;*.jpeg;*.png;*.webp;*.bmp"}};
+    result = dialog->SetFileTypes(1, filters);
+    if (FAILED(result)) return result;
   }
   if (!title.empty()) {
     result = dialog->SetTitle(title.c_str());
@@ -236,7 +241,7 @@ bool FlutterWindow::OnCreate() {
           &flutter::StandardMethodCodec::GetInstance());
   folder_picker_channel_->SetMethodCallHandler(
       [this](const auto& call, auto result) {
-        if (call.method_name() != "pickDirectory") {
+        if (call.method_name() != "pickDirectory" && call.method_name() != "pickImage") {
           result->NotImplemented();
           return;
         }
@@ -254,7 +259,7 @@ bool FlutterWindow::OnCreate() {
         }
         std::string selected_path;
         const HRESULT picker_result =
-            PickDirectory(GetHandle(), Utf16FromUtf8(title), &selected_path);
+            PickPath(GetHandle(), Utf16FromUtf8(title), call.method_name() == "pickImage", &selected_path);
         if (picker_result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
           result->Success();
           return;
@@ -279,6 +284,7 @@ bool FlutterWindow::OnCreate() {
           return;
         }
         if (method == "toggleMaximize") {
+          if (fullscreen_) SetFullscreen(false);
           const HWND window = GetHandle();
           ::ShowWindow(window, ::IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
           const auto maximized =
@@ -290,6 +296,18 @@ bool FlutterWindow::OnCreate() {
           const auto maximized =
               flutter::EncodableValue(::IsZoomed(GetHandle()) != FALSE);
           result->Success(maximized);
+          return;
+        }
+        if (method == "toggleFullscreen") {
+          if (!SetFullscreen(!fullscreen_)) {
+            result->Error("fullscreen_failed", "Unable to change fullscreen window state");
+          } else {
+            result->Success(flutter::EncodableValue(fullscreen_));
+          }
+          return;
+        }
+        if (method == "isFullscreen") {
+          result->Success(flutter::EncodableValue(fullscreen_));
           return;
         }
         if (method == "close") {
@@ -427,6 +445,43 @@ void FlutterWindow::OnDestroy() {
   Win32Window::OnDestroy();
 }
 
+bool FlutterWindow::SetFullscreen(bool enabled) {
+  const HWND window = GetHandle();
+  if (enabled) {
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
+    if (!fullscreen_) {
+      if (!GetWindowPlacement(window, &windowed_placement_)) return false;
+      windowed_style_ = GetWindowLongPtr(window, GWL_STYLE);
+      if (IsZoomed(window)) ShowWindow(window, SW_RESTORE);
+      SetWindowLongPtr(window, GWL_STYLE, windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE));
+    }
+    fullscreen_ = true;
+    if (!SetWindowPos(window, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                      monitor.rcMonitor.right - monitor.rcMonitor.left,
+                      monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
+      fullscreen_ = false;
+      SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
+      SetWindowPlacement(window, &windowed_placement_);
+      return false;
+    }
+  } else if (fullscreen_) {
+    fullscreen_ = false;
+    SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
+    SetWindowPlacement(window, &windowed_placement_);
+    SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  }
+  constexpr DWORD kCornerPreference = 33;
+  const DWORD corner = fullscreen_ ? 1 : 2;
+  DwmSetWindowAttribute(window, static_cast<DWMWINDOWATTRIBUTE>(kCornerPreference), &corner, sizeof(corner));
+  if (appearance_channel_) {
+    appearance_channel_->InvokeMethod("fullscreenChanged", std::make_unique<flutter::EncodableValue>(fullscreen_));
+  }
+  return true;
+}
+
 LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
@@ -442,6 +497,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
+    case WM_DISPLAYCHANGE:
+      if (fullscreen_) SetFullscreen(true);
+      break;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;

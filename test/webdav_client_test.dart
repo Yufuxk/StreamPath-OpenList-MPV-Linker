@@ -47,6 +47,34 @@ void main() {
     expect(authorization, 'Basic ${base64Encode(utf8.encode('user:'))}');
   });
 
+  test('建库 PROPFIND 只请求名称和目录类型，重定向保留 XML 请求体', () async {
+    final bodies = <String>[];
+    late HttpServer server;
+    server = await serve((request) async {
+      expect(request.method, 'PROPFIND');
+      expect(request.headers.value('Depth'), '1');
+      bodies.add(await utf8.decoder.bind(request).join());
+      if (request.uri.path != '/final/') {
+        request.response.statusCode = HttpStatus.temporaryRedirect;
+        request.response.headers.set(HttpHeaders.locationHeader, '/final/');
+      } else {
+        request.response.statusCode = HttpStatus.multiStatus;
+        request.response.write('<multistatus/>');
+      }
+      await request.response.close();
+    });
+    await WebDavClient(
+      baseUrl: '${origin(server)}/dav',
+    ).propfind('', namesOnly: true);
+    expect(bodies, hasLength(2));
+    expect(bodies[0], bodies[1]);
+    expect(bodies[0], contains('<d:displayname/>'));
+    expect(bodies[0], contains('<d:resourcetype/>'));
+    expect(bodies[0], isNot(contains('allprop')));
+    expect(bodies[0], isNot(contains('getcontentlength')));
+    expect(bodies[0], isNot(contains('getlastmodified')));
+  });
+
   test('PROPFIND 同源重定向保留方法、Depth 与认证', () async {
     final methods = <String>[];
     String? depth;

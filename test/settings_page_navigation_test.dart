@@ -10,6 +10,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
+import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
@@ -19,6 +21,11 @@ import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/cache_cleanup_service.dart';
+import 'package:streampath/domain/services/film_catalog_image_cache.dart';
+import 'package:streampath/domain/services/tmdb_metadata_service.dart';
+import 'package:streampath/data/local/tmdb_credential_store.dart';
+import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
 import 'package:streampath/domain/services/openlist_index_service.dart';
 import 'package:streampath/domain/services/openlist_recovery_service.dart';
 import 'package:streampath/features/cache_control/models/cache_intelligence_config.dart';
@@ -41,6 +48,7 @@ import 'package:streampath/presentation/widgets/sp_font_picker.dart';
 void main() {
   late Directory tempDir;
   late AppState appState;
+  late FilmCatalogController filmCatalog;
   late StreamPathConfigStore configStore;
   late AppearanceController appearanceController;
   late _RecordingWindowAppearanceDriver appearanceDriver;
@@ -79,7 +87,16 @@ void main() {
       inMemoryDatabasePath,
       factory: databaseFactoryFfi,
     );
-    appState = AppState(
+    final filmStore = await FilmCatalogStore.open('${tempDir.path}/films.db');
+    final tmdb = TmdbMetadataService(credentials: _NoFilmCredentials());
+    filmCatalog = FilmCatalogController(
+      store: filmStore,
+      tmdb: tmdb,
+      images: FilmCatalogImageCache(Directory('${tempDir.path}/images'), tmdb),
+      sourceFor: (_) => throw const FilmCatalogException('sourceUnavailable'),
+    );
+    appState = _SettingsFilmApp(
+      filmCatalog,
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         '${tempDir.path}${Platform.pathSeparator}playback_history.json',
@@ -96,6 +113,7 @@ void main() {
   tearDown(() async {
     appearanceController.dispose();
     appState.dispose();
+    await filmCatalog.close();
     for (var attempt = 0; attempt < 10 && tempDir.existsSync(); attempt++) {
       try {
         await tempDir.delete(recursive: true);
@@ -142,6 +160,15 @@ void main() {
     );
   }
 
+  Future<void> settleFilmSettings(WidgetTester tester) async {
+    for (var i = 0; i < 8; i++) {
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+  }
+
   testWidgets('设置固定标签在四语言、明暗主题和 1280×720 文字缩放下正常布局', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
@@ -170,9 +197,11 @@ void main() {
             isNull,
             reason: '${language.name}, $brightness, $textScale, general',
           );
-          await tester.tap(
-            find.byKey(const Key('settings-section-appearance')),
+          final appearanceTab = find.byKey(
+            const Key('settings-section-appearance'),
           );
+          await tester.ensureVisible(appearanceTab);
+          await tester.tap(appearanceTab);
           await tester.pumpAndSettle();
           expect(
             tester.takeException(),
@@ -195,6 +224,35 @@ void main() {
     await tester.tap(toggle);
     await tester.pumpAndSettle();
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+  });
+
+  testWidgets('简洁命名开关默认开启，可保存关闭并重新加载', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('video-playlist-simple-naming'));
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    for (
+      var i = 0;
+      i < 20 && configStore.current.videoPlaylistSimpleNaming;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+    }
+    expect(configStore.current.videoPlaylistSimpleNaming, isFalse);
+    final saved = await tester.runAsync(configStore.load);
+    expect(saved!.videoPlaylistSimpleNaming, isFalse);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('深色设置按钮与导航图标沿用旧版配色', (tester) async {
@@ -242,6 +300,44 @@ void main() {
           .color,
       const Color(0xFFAEB9C7),
     );
+  });
+
+  testWidgets('保存设置草稿保留侧栏即时切换的简略和悬浮偏好', (tester) async {
+    await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('profile-name-field')), '简略侧栏');
+    await tester.runAsync(() async {
+      await appState.setSidebarCompact(true);
+      await appState.setSidebarMode(SidebarDisplayMode.autoHide);
+    });
+    await tester.pumpAndSettle();
+    final saveButton = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(() async {
+      saveButton.onPressed!();
+      for (var attempt = 0; attempt < 200; attempt++) {
+        await tester.pump();
+        if (configStore.current.activeProfile?.name == '简略侧栏' &&
+            tester
+                    .widget<FilledButton>(
+                      find.byKey(const Key('save-settings-button')),
+                    )
+                    .onPressed !=
+                null) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    await tester.pumpAndSettle();
+    expect(configStore.current.activeProfile?.name, '简略侧栏');
+    expect(configStore.current.appearance.sidebarCompact, isTrue);
+    expect(
+      configStore.current.appearance.sidebarMode,
+      SidebarDisplayMode.autoHide,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('界面页从系统字体列表选择字体并保存', (tester) async {
@@ -311,6 +407,9 @@ void main() {
           final tab = find.byKey(Key('settings-section-${section.name}'));
           await tester.ensureVisible(tab);
           await tester.tap(tab);
+          if (section == SettingsSection.films) {
+            await settleFilmSettings(tester);
+          }
           await tester.pumpAndSettle();
           expect(
             tester.takeException(),
@@ -345,6 +444,9 @@ void main() {
         final tab = find.byKey(Key('settings-section-${section.name}'));
         await tester.ensureVisible(tab);
         await tester.tap(tab);
+        if (section == SettingsSection.films) {
+          await settleFilmSettings(tester);
+        }
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull, reason: '$scale $section');
       }
@@ -1574,6 +1676,21 @@ void main() {
 
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
+
+    await tester.runAsync(
+      () => appState.filmPlaybackHistoryStore.upsert(
+        PlaybackHistory(
+          sessionId: 'film-cache-test',
+          sourceId: 'local:test',
+          kind: PlaybackHistoryKind.video,
+          dirCrumbs: const [],
+          fileName: 'Movie.mkv',
+          videoIndex: 0,
+          updatedAt: DateTime.now(),
+        ),
+      ),
+    );
+
     await tester.tap(find.byKey(const Key('settings-section-cache')));
     await tester.pumpAndSettle();
 
@@ -1586,21 +1703,30 @@ void main() {
     await tester.tap(find.byKey(const Key('cancel-clear-cache-button')));
     await tester.pumpAndSettle();
     expect(cacheCleaner.clearCalls, 0);
+    expect(
+      await tester.runAsync(appState.filmPlaybackHistoryStore.loadAll),
+      hasLength(1),
+    );
 
     await tester.tap(clearButton);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('confirm-clear-cache-button')));
     await tester.pump();
-    await tester.runAsync(() async {
-      for (var i = 0; i < 50 && cacheCleaner.clearCalls == 0; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-    });
+    for (var i = 0; i < 50 && find.text('缓存已清理').evaluate().isEmpty; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+    }
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(cacheCleaner.clearCalls, 1);
     expect(learningDataCleaner.clearCalls, 0);
     expect(find.text('缓存已清理'), findsOneWidget);
+    expect(
+      await tester.runAsync(appState.filmPlaybackHistoryStore.loadAll),
+      isEmpty,
+    );
 
     final learningButton = find.byKey(const Key('clear-learning-data-button'));
     await tester.ensureVisible(learningButton);
@@ -1620,11 +1746,12 @@ void main() {
       find.byKey(const Key('confirm-clear-learning-data-button')),
     );
     await tester.pump();
-    await tester.runAsync(() async {
-      for (var i = 0; i < 50 && learningDataCleaner.clearCalls == 0; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-    });
+    for (var i = 0; i < 50 && find.text('学习数据已清理').evaluate().isEmpty; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+    }
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(cacheCleaner.clearCalls, 1);
@@ -1659,6 +1786,33 @@ void main() {
     expect(tester.widget<TextFormField>(playbackField).controller?.text, '45');
     expect(tester.takeException(), isNull);
   });
+}
+
+class _NoFilmCredentials extends TmdbCredentialStore {
+  @override
+  Future<String?> read() async => null;
+}
+
+class _SettingsFilmApp extends AppState {
+  _SettingsFilmApp(
+    this.catalog, {
+    required super.configStore,
+    required super.playbackHistoryStore,
+    required super.progressService,
+    super.cachePolicyConfigStore,
+    super.cacheIntelligenceConfigStore,
+    super.cacheExpirationConfigStore,
+    super.cacheCleaner,
+    super.learningDataCleaner,
+  });
+
+  final FilmCatalogController catalog;
+
+  @override
+  Future<FilmCatalogStore> getFilmCatalogStore() async =>
+      (await getFilmCatalog()).store;
+  @override
+  Future<FilmCatalogController> getFilmCatalog() async => catalog;
 }
 
 class _RecordingCacheCleaner implements CacheCleaner {

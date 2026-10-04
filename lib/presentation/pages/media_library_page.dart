@@ -23,6 +23,13 @@ import '../theme/glass_tokens.dart';
 import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
+import '../widgets/film_favorites_wall.dart';
+import '../widgets/film_shelf.dart';
+import '../widgets/film_continue_card.dart';
+import '../widgets/film_library_background.dart';
+import '../controllers/film_catalog_controller.dart';
+
+enum _FavoriteLane { media, video, audio, iso }
 
 enum _MediaLane { video, audio, iso }
 
@@ -47,6 +54,14 @@ class MediaLibraryPage extends StatefulWidget {
     this.onVideoPlaybackRecordsChanged,
     this.onItemSelected,
     this.sourceFilter,
+    this.filmCatalog,
+    this.onContinueSelected,
+    this.loadFilmCatalog,
+    this.onContinueMenu,
+    this.filmContinueAll = false,
+    this.filmCenter = false,
+    this.headerAction,
+    this.sidebarInset = 0,
   });
 
   final String sourceId;
@@ -64,6 +79,14 @@ class MediaLibraryPage extends StatefulWidget {
   final VoidCallback? onVideoPlaybackRecordsChanged;
   final ValueChanged<MediaLibraryItem>? onItemSelected;
   final Widget? sourceFilter;
+  final FilmCatalogController? filmCatalog;
+  final bool filmContinueAll;
+  final bool filmCenter;
+  final Widget? headerAction;
+  final double sidebarInset;
+  final ValueChanged<MediaLibraryRecord>? onContinueSelected;
+  final Future<FilmCatalogController> Function()? loadFilmCatalog;
+  final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
 
   @override
   State<MediaLibraryPage> createState() => _MediaLibraryPageState();
@@ -107,7 +130,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   bool _loading = true;
   bool _loadingContinue = false;
   String? _error;
-  _MediaLane _favoriteLane = _MediaLane.video;
+  _FavoriteLane _favoriteLane = _FavoriteLane.media;
   _MediaLane _continueLane = _MediaLane.video;
   _MediaLane _recentLane = _MediaLane.video;
   _DirectoryLane _directoryLane = _DirectoryLane.favorites;
@@ -116,6 +139,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   List<MediaLibraryRecord> _videoHistory = const [];
   List<MediaLibraryRecord> _audioHistory = const [];
   List<MediaLibraryRecord> _isoHistory = const [];
+  Map<String, String> _filmTitles = {};
   List<VisitedDirectorySnapshot> _snapshots = const [];
   List<MediaLibrarySearchResult> _searchResults = const [];
   Map<String, PlaybackProgress> _videoContinue = const {};
@@ -175,6 +199,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           (id) => widget.store.playbackHistory(id, audio: false, iso: true),
         ),
       ]);
+      final titles = widget.filmCenter
+          ? await widget.filmCatalog!.store.playbackTitles([
+              ...records[2],
+              ...records[4],
+            ])
+          : <String, String>{};
       if (!mounted || libraryGeneration != _libraryGeneration) return;
       setState(() {
         _favorites = records[0];
@@ -182,6 +212,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         _videoHistory = records[2];
         _audioHistory = records[3];
         _isoHistory = records[4];
+        _filmTitles = titles;
         _snapshots = widget.directoryCache.visitedDirectories(widget.sourceId);
         _loading = false;
         _error = null;
@@ -530,7 +561,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       final url = _progressUrlFor(record);
       if (url == null || !urls.contains(url)) continue;
       recordsByUrl
-          .putIfAbsent('${record.item.sourceId}\u0000$url', () => [])
+          .putIfAbsent(
+            '${record.item.sourceId}\u0000$url\u0000${_canFilterCompletedProgress(record)}',
+            () => [],
+          )
           .add(record);
     }
     for (final entry in recordsByUrl.entries) {
@@ -556,11 +590,31 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     return refreshedKeys;
   }
 
+  /// 无列表信息的旧记录沿用单项完成过滤。
+  bool _canFilterCompletedProgress(MediaLibraryRecord record) =>
+      record.item.kind == MediaLibraryKind.audio ||
+      record.playlistIndex == null ||
+      record.playlistCount == null ||
+      record.playlistIndex == record.playlistCount! - 1;
+
   Future<PlaybackProgress?> _readProgress(
     MediaLibraryRecord record, {
     required PlaybackProgressReader service,
     required bool useTemporaryCheckpoint,
   }) async {
+    final canFilterCompleted = _canFilterCompletedProgress(record);
+    if (record.item.kind == MediaLibraryKind.strm) {
+      final positionMs = record.strmPositionMs;
+      if (positionMs == null || positionMs < 0) return null;
+      final progress = PlaybackProgress(
+        url: record.item.targetPath,
+        positionMs: positionMs,
+        durationMs: record.strmDurationMs,
+      );
+      return canFilterCompleted && progress.hasReachedFraction()
+          ? null
+          : progress;
+    }
     final url = _progressUrlFor(record);
     if (url == null) return null;
     try {
@@ -574,7 +628,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
           progress.positionMs < 0 ||
           (progress.positionMs == 0 &&
               record.item.kind == MediaLibraryKind.audio) ||
-          (progress.positionMs > 0 && progress.isFinishedNearEnd())) {
+          (canFilterCompleted &&
+              progress.positionMs > 0 &&
+              (record.item.kind == MediaLibraryKind.audio
+                  ? progress.isFinishedNearEnd()
+                  : progress.hasReachedFraction()))) {
         return null;
       }
       return progress;
@@ -621,6 +679,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   void _runSearch(String query) {
     if (!mounted) return;
+    if (widget.filmCenter) {
+      setState(() {});
+      return;
+    }
     final results = [
       for (final source in _sourceIds)
         ...searchVisitedMedia(
@@ -729,14 +791,18 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.filmCatalog != null && !widget.filmCenter) {
+      return _buildFilmContinue();
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final searchInToolbar = constraints.maxWidth >= 900;
         return DefaultTabController(
-          length: 4,
+          length: widget.filmCenter ? 3 : 4,
           child: Scaffold(
             appBar: AppBar(
               toolbarHeight: 48,
+              automaticallyImplyLeading: widget.headerAction == null,
               title: Row(
                 children: [
                   const Expanded(
@@ -746,6 +812,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (widget.headerAction != null) ...[
+                    widget.headerAction!,
+                    const SizedBox(width: 12),
+                  ],
                   if (searchInToolbar) ...[
                     SizedBox(
                       width: 340,
@@ -757,6 +827,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
                 ],
               ),
               bottom: TabBar(
+                dividerColor: Colors.transparent,
                 isScrollable: true,
                 tabAlignment: TabAlignment.start,
                 labelPadding: const EdgeInsets.symmetric(horizontal: 14),
@@ -764,7 +835,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
                   _compactNavigationTab(SPIcons.favorite, '收藏'),
                   _compactNavigationTab(SPIcons.play, '继续播放'),
                   _compactNavigationTab(SPIcons.history, '最近播放'),
-                  _compactNavigationTab(SPIcons.folderOpen, '目录'),
+                  if (!widget.filmCenter)
+                    _compactNavigationTab(SPIcons.folderOpen, '目录'),
                 ],
               ),
             ),
@@ -794,7 +866,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         contentPadding: inToolbar
             ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
             : null,
-        hintText: context.l10n.text('搜索已访问过的目录'),
+        hintText: context.l10n.text(widget.filmCenter ? '搜索库内作品' : '搜索已访问过的目录'),
         prefixIcon: const Icon(SPIcons.globe),
         suffixIcon: _searchController.text.isEmpty
             ? null
@@ -824,6 +896,20 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         ),
       );
     }
+    if (widget.filmCenter) {
+      return TabBarView(
+        children: [
+          FilmFavoritesWall(
+            loadCatalog: () async => widget.filmCatalog!,
+            onOpenItem: (item) async => _selectItem(item),
+            sourceIds: _sourceIds,
+            query: _searchController.text.trim(),
+          ),
+          _buildFilmContinue(center: true),
+          _buildFilmRecent(),
+        ],
+      );
+    }
     if (_searchController.text.trim().isNotEmpty) return _buildSearchResults();
     return TabBarView(
       children: [
@@ -836,32 +922,242 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   }
 
   Widget _buildFavorites() {
+    final selector = SegmentedButton<_FavoriteLane>(
+      key: const Key('favorite-media-lane'),
+      segments: const [
+        ButtonSegment(
+          value: _FavoriteLane.media,
+          label: AppText('媒体'),
+          icon: Icon(SPIcons.library),
+        ),
+        ButtonSegment(
+          value: _FavoriteLane.video,
+          label: AppText('视频'),
+          icon: Icon(SPIcons.video),
+        ),
+        ButtonSegment(
+          value: _FavoriteLane.audio,
+          label: AppText('音频'),
+          icon: Icon(SPIcons.music),
+        ),
+        ButtonSegment(
+          value: _FavoriteLane.iso,
+          label: AppText('ISO'),
+          icon: Icon(SPIcons.disc),
+        ),
+      ],
+      selected: {_favoriteLane},
+      onSelectionChanged: (value) =>
+          setState(() => _favoriteLane = value.single),
+    );
+    if (_favoriteLane == _FavoriteLane.media &&
+        widget.loadFilmCatalog != null) {
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Align(alignment: Alignment.centerLeft, child: selector),
+          ),
+          Expanded(
+            child: widget.loadFilmCatalog == null
+                ? const Center(child: AppText('还没有收藏媒体'))
+                : FilmFavoritesWall(
+                    loadCatalog: widget.loadFilmCatalog!,
+                    onOpenItem: (item) async => _selectItem(item),
+                    sourceIds: _sourceIds,
+                  ),
+          ),
+        ],
+      );
+    }
     final records = _favorites.where((record) {
       return switch (_favoriteLane) {
-        _MediaLane.video => record.item.kind.isVideoLane,
-        _MediaLane.audio => record.item.kind == MediaLibraryKind.audio,
-        _MediaLane.iso => record.item.kind == MediaLibraryKind.iso,
+        _FavoriteLane.media => record.item.kind != MediaLibraryKind.directory,
+        _FavoriteLane.video => record.item.kind.isVideoLane,
+        _FavoriteLane.audio => record.item.kind == MediaLibraryKind.audio,
+        _FavoriteLane.iso => record.item.kind == MediaLibraryKind.iso,
       };
     }).toList();
     return _buildLanePage(
       empty: records.isEmpty,
-      selector: _mediaLaneSelector(
-        key: const Key('favorite-media-lane'),
-        selected: _favoriteLane,
-        onChanged: (value) => setState(() => _favoriteLane = value),
-      ),
+      selector: selector,
       child: _recordList(
         records,
         emptyMessage: switch (_favoriteLane) {
-          _MediaLane.video => '还没有收藏视频',
-          _MediaLane.audio => '还没有收藏音频',
-          _MediaLane.iso => '还没有收藏 ISO',
+          _FavoriteLane.media => '还没有收藏媒体',
+          _FavoriteLane.video => '还没有收藏视频',
+          _FavoriteLane.audio => '还没有收藏音频',
+          _FavoriteLane.iso => '还没有收藏 ISO',
         },
         trailing: (record) => IconButton(
           tooltip: context.l10n.text('取消收藏'),
           onPressed: () => _toggleFavorite(record.item),
           icon: const Icon(SPIcons.favoriteFill),
         ),
+      ),
+    );
+  }
+
+  Widget _buildFilmContinue({bool center = false}) {
+    final records = [
+      ..._continueCandidates(
+        _videoHistory,
+      ).where((r) => _videoContinue.containsKey(r.recordKey)),
+      ..._continueCandidates(_isoHistory).where(
+        (r) =>
+            _isoContinue.containsKey(r.recordKey) ||
+            r.item.playbackMode == PlaybackMode.webdavHdmvMenu,
+      ),
+    ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final counts = <String, int>{};
+    records.removeWhere((record) {
+      final count = counts.update(
+        record.item.sourceId,
+        (value) => value + 1,
+        ifAbsent: () => 1,
+      );
+      return count > widget.config.normalized.maxContinuePerLane;
+    });
+    if (center) records.removeWhere((r) => !_matchesFilmQuery(r));
+    Widget card(int i) {
+      final record = records[i];
+      final video = _videoContinue[record.recordKey];
+      final iso = _isoContinue[record.recordKey];
+      return FilmContinueCard(
+        key: ValueKey(record.recordKey),
+        catalog: widget.filmCatalog!,
+        poster: center,
+        record: record,
+        positionMs: video?.positionMs ?? iso?.position.inMilliseconds,
+        durationMs: video?.durationMs ?? iso?.duration?.inMilliseconds,
+        onMenu: widget.onContinueMenu == null
+            ? null
+            : (position) => widget.onContinueMenu!(record, position),
+        onTap: () => widget.onContinueSelected != null
+            ? widget.onContinueSelected!(record)
+            : _selectItem(record.item),
+      );
+    }
+
+    if (widget.filmContinueAll || center) {
+      final grid = GridView.builder(
+        padding: const EdgeInsets.all(20),
+        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: center ? 220 : 340,
+          mainAxisExtent: center ? 400 : 220,
+          crossAxisSpacing: 16,
+          mainAxisSpacing: 16,
+        ),
+        itemCount: records.length,
+        itemBuilder: (_, i) => card(i),
+      );
+      if (center) return grid;
+      final catalog = widget.filmCatalog!;
+      return AnimatedBuilder(
+        animation: catalog,
+        builder: (context, _) => Stack(
+          children: [
+            Positioned.fill(
+              child: ExcludeSemantics(
+                child: IgnorePointer(
+                  child: FilmLibraryBackground(file: catalog.backgroundFile),
+                ),
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.only(left: widget.sidebarInset),
+              child: Scaffold(
+                backgroundColor: Colors.transparent,
+                appBar: AppBar(
+                  toolbarHeight: 48,
+                  backgroundColor: Colors.transparent,
+                  shape: const Border(),
+                  automaticallyImplyLeading: false,
+                  title: const AppText('继续播放'),
+                ),
+                body: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: SizedBox(
+                        height: 48,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const AppText('主页'),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(child: grid),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return FilmShelf(
+      title: '继续播放',
+      count: records.length,
+      height: 220,
+      itemWidth: 300,
+      onShowAll: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MediaLibraryPage(
+            sourceId: widget.sourceId,
+            sourceIds: widget.sourceIds,
+            sourceNames: widget.sourceNames,
+            store: widget.store,
+            config: widget.config,
+            directoryCache: widget.directoryCache,
+            videoProgressService: widget.videoProgressService,
+            audioProgressService: widget.audioProgressService,
+            isoProgressService: widget.isoProgressService,
+            localIsoProgressService: widget.localIsoProgressService,
+            resolveUrl: widget.resolveUrl,
+            resolveDirectTarget: widget.resolveDirectTarget,
+            onVideoPlaybackRecordsChanged: widget.onVideoPlaybackRecordsChanged,
+            onItemSelected: widget.onItemSelected,
+            filmCatalog: widget.filmCatalog,
+            onContinueSelected: widget.onContinueSelected,
+            onContinueMenu: widget.onContinueMenu,
+            filmContinueAll: true,
+            sidebarInset: widget.sidebarInset,
+          ),
+        ),
+      ),
+      builder: (_, i) => card(i),
+    );
+  }
+
+  bool _matchesFilmQuery(MediaLibraryRecord record) =>
+      (_filmTitles[record.recordKey] ?? record.item.name)
+          .toLowerCase()
+          .contains(_searchController.text.trim().toLowerCase());
+
+  Widget _buildFilmRecent() {
+    final records =
+        [..._videoHistory, ..._isoHistory].where(_matchesFilmQuery).toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return GridView.builder(
+      padding: const EdgeInsets.all(20),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 220,
+        mainAxisExtent: 400,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+      ),
+      itemCount: records.length,
+      itemBuilder: (_, i) => FilmContinueCard(
+        catalog: widget.filmCatalog!,
+        record: records[i],
+        poster: true,
+        onTap: () => _selectItem(records[i].item),
+        onMenu: (position) => widget.onContinueMenu?.call(records[i], position),
       ),
     );
   }
@@ -908,25 +1204,25 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
                     return record.item.parentPath;
                   }
                   final value = _isoContinue[record.recordKey]!;
-                  return context.l10n.format(
-                    '{path}  ·  第 {episode}/{total} 集  ·  已播放 {duration}',
-                    {
-                      'path': record.item.parentPath,
-                      'episode': '${value.episodeNumber}',
-                      'total': '${value.episodeCount}',
-                      'duration': _formatDuration(
-                        value.position.inMilliseconds,
-                      ),
-                    },
+                  return context.l10n.playbackDetails(
+                    record.item.parentPath,
+                    episodeNumber: value.episodeNumber,
+                    episodeCount: value.episodeCount,
+                    positionMs: value.position.inMilliseconds,
                   );
                 }
                 final value = _continueLane == _MediaLane.audio
                     ? _audioContinue[record.recordKey]!
                     : _videoContinue[record.recordKey]!;
-                return context.l10n.format('{path}  ·  已播放 {duration}', {
-                  'path': record.item.parentPath,
-                  'duration': _formatDuration(value.positionMs),
-                });
+                return context.l10n.playbackDetails(
+                  record.item.parentPath,
+                  episodeNumber: record.playlistIndex == null
+                      ? null
+                      : record.playlistIndex! + 1,
+                  episodeCount: record.playlistCount,
+                  positionMs: value.positionMs,
+                  audio: _continueLane == _MediaLane.audio,
+                );
               },
               trailing: (record) => IconButton(
                 tooltip: context.l10n.text('从历史中移除'),
@@ -1199,17 +1495,6 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final local = date.toLocal();
     String two(int value) => value.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
-  }
-
-  static String _formatDuration(int milliseconds) {
-    final totalSeconds = milliseconds ~/ 1000;
-    final hours = totalSeconds ~/ 3600;
-    final minutes = (totalSeconds % 3600) ~/ 60;
-    final seconds = totalSeconds % 60;
-    String two(int value) => value.toString().padLeft(2, '0');
-    return hours > 0
-        ? '$hours:${two(minutes)}:${two(seconds)}'
-        : '${two(minutes)}:${two(seconds)}';
   }
 }
 

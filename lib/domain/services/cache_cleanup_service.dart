@@ -145,7 +145,8 @@ class CacheCleanupService implements CacheCleaner {
     final targets = <FileSystemEntity>[];
     await for (final entity in cacheDir.list(followLinks: false)) {
       final name = p.basename(entity.path).toLowerCase();
-      if (_isOpenStoreFile(name) || _preservedCacheNames.contains(name) ||
+      if (_isOpenStoreFile(name) ||
+          _preservedCacheNames.contains(name) ||
           name == 'local_iso_subtitles') {
         continue;
       }
@@ -209,6 +210,7 @@ class CacheCleanupService implements CacheCleaner {
       name == 'directory_cache.hive' ||
       name == 'directory_cache.lock' ||
       name.startsWith('streampath.db') ||
+      name.startsWith('film_streampath.db') ||
       name.startsWith('audio_streampath.db');
 
   static bool _isLegacyCacheName(String name) {

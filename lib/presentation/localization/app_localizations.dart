@@ -1,8 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../core/utils/video_filename_parser.dart';
 import '../../data/models/app_language.dart';
 import 'app_translation_catalog.dart';
+import 'film_catalog_translations.dart';
 
 /// StreamPath 项目文案的本地化入口。
 class AppLocalizations {
@@ -18,6 +20,10 @@ class AppLocalizations {
       const AppLocalizations(AppLanguage.simplifiedChinese);
 
   String text(String source) {
+    final film = filmCatalogTranslations[source];
+    if (film != null && language != AppLanguage.simplifiedChinese) {
+      return film[language.index - 1];
+    }
     final translations = switch (language) {
       AppLanguage.simplifiedChinese => null,
       AppLanguage.traditionalChinese => traditionalChineseTranslations,
@@ -40,8 +46,108 @@ class AppLocalizations {
     return result;
   }
 
+  String playbackDetails(
+    String path, {
+    int? positionMs,
+    int? episodeNumber,
+    int? episodeCount,
+    bool audio = false,
+  }) {
+    final parts = <String>[
+      if (path.isNotEmpty) path,
+      if (episodeCount != null &&
+          episodeCount > 1 &&
+          episodeNumber != null &&
+          episodeNumber > 0 &&
+          episodeNumber <= episodeCount)
+        format(audio ? '第 {track}/{total} 首' : '第 {episode}/{total} 集', {
+          audio ? 'track' : 'episode': episodeNumber,
+          'total': episodeCount,
+        }),
+    ];
+    if (positionMs != null && positionMs >= 1000) {
+      final seconds = positionMs ~/ 1000;
+      String two(int value) => value.toString().padLeft(2, '0');
+      final duration = seconds >= 3600
+          ? '${seconds ~/ 3600}:${two(seconds % 3600 ~/ 60)}:${two(seconds % 60)}'
+          : '${two(seconds ~/ 60)}:${two(seconds % 60)}';
+      parts.add(format('已播放 {duration}', {'duration': duration}));
+    }
+    return parts.join('  ·  ');
+  }
+
+  String videoPlaylistTitle(String filename) =>
+      videoPlaylistTitles([filename]).single;
+
+  List<String> videoPlaylistTitles(List<String> filenames) {
+    final infos = filenames.map(const VideoFilenameParser().parse).toList();
+    final digitsBySeason = <(String, int?, int?), int>{};
+    // 缺集时仍按已收集的最大集号统一该季的显示位宽。
+    for (final info in infos) {
+      if (info == null || info.episodes == null) continue;
+      final key = (info.title, info.year, info.season);
+      var digits = digitsBySeason[key] ?? 1;
+      for (final match in _videoEpisodeNumber.allMatches(info.episodes!)) {
+        if (match[0]!.length > digits) digits = match[0]!.length;
+      }
+      digitsBySeason[key] = digits;
+    }
+    return [
+      for (var i = 0; i < filenames.length; i++)
+        if (infos[i] case final info?)
+          _formatVideoPlaylistTitle(
+            info,
+            digitsBySeason[(info.title, info.year, info.season)] ?? 1,
+          )
+        else
+          filenames[i],
+    ];
+  }
+
+  String _formatVideoPlaylistTitle(VideoFilenameInfo info, int episodeDigits) {
+    final parts = <String>[
+      info.title,
+      if (info.year != null) '${info.year}',
+      if (info.season == 0) text('特别篇'),
+      if (info.season != null && info.season != 0)
+        format('第{season}季', {
+          'season':
+              language == AppLanguage.simplifiedChinese ||
+                  language == AppLanguage.traditionalChinese
+              ? VideoFilenameParser.chineseOrdinal(info.season!)
+              : info.season,
+        }),
+      if (info.episodes != null)
+        format('第{episode}集', {
+          'episode': info.episodes!.replaceAllMapped(
+            _videoEpisodeNumber,
+            (match) => match[0]!.padLeft(episodeDigits, '0'),
+          ),
+        }),
+      if (info.date != null) info.date!,
+      if (info.special != null) info.special!,
+      if (info.description.isNotEmpty) info.description,
+    ];
+    return parts.join('·');
+  }
+
+  static final _videoEpisodeNumber = RegExp(r'\d+');
+
   String _translateDynamic(String source, Map<String, String>? translations) {
     if (translations == null) return source;
+    for (final template in _dynamicTemplates.entries) {
+      final match = template.value.firstMatch(source);
+      if (match == null) continue;
+      return format(template.key, {
+        for (final name in match.groupNames)
+          name: switch (name) {
+            'error' ||
+            'backupError' ||
+            'message' => text(match.namedGroup(name)!),
+            _ => match.namedGroup(name)!,
+          },
+      });
+    }
     var result = source;
     for (final fragment in _dynamicFragments) {
       final translated =
@@ -53,6 +159,77 @@ class AppLocalizations {
     }
     return result;
   }
+
+  // 完整匹配应用生成的模板，保留文件名、路径和数值等参数。
+  static final Map<String, RegExp> _dynamicTemplates = {
+    for (final source in const <String>[
+      "索引搜索不可用：当前后台缺少 {endpoint} 端点（版本 {version}）",
+      "索引状态不可用：当前后台缺少 {endpoint} 端点（版本 {version}）",
+      "索引增量更新不可用：当前后台缺少 {endpoint} 端点（版本 {version}）",
+      "存储恢复不可用：当前后台缺少 {endpoint} 端点（版本 {version}）",
+      "保存浏览位置失败：{error}",
+      "无法识别的文件后缀：「{extension}」（请使用英文逗号分隔，例如：.ass, .mkv）",
+      "媒体库版本 {version} 高于当前支持版本 {supported}，已禁止降级写入",
+      "初始化播放进度数据库失败：{error}",
+      "保存播放进度失败：{error}",
+      "读取播放进度失败：{error}",
+      "保存临时播放点失败：{error}",
+      "读取临时播放点失败：{error}",
+      "删除播放进度失败：{error}",
+      "删除临时播放点失败：{error}",
+      "清空播放进度失败：{error}",
+      "清理过期播放进度失败：{error}",
+      "SQLite 完整性检查失败：{error}",
+      "SQLite 非破坏性维护失败：{error}",
+      "{error}；恢复备份也不可用：{backupError}",
+      "配置版本 {version} 高于当前支持版本 {supported}",
+      "配置版本 {version} 高于当前支持版本",
+      "配置文件损坏：{error}",
+      "读取配置文件失败：{error}",
+      "配置字段值无效：{error}",
+      "保存配置文件失败：{error}",
+      "重置配置文件失败：{error}",
+      "文件内容超过 {limit} 字节限制",
+      "不支持的网络协议：{scheme}",
+      "服务器重定向次数超过 {count} 次",
+      "连接服务器超时（{timeout}）",
+      "无法连接到服务器：{error}",
+      "认证失败：请检查账号与密码（HTTP {code}）",
+      "服务器返回错误（HTTP {code}）",
+      "网络请求失败：{error}",
+      "服务器响应不是有效的 XML：{error}",
+      "拒绝清理非应用数据目录：{path}",
+      "拒绝清理无效目录：{path}",
+      "缓存目录不在应用数据目录内：{path}",
+      "拒绝删除缓存目录外的目标：{path}",
+      "拒绝删除重解析点：{path}",
+      "拒绝删除包含重解析点的目录：{path}",
+      "播放器启动失败：{error}（请检查可执行文件与系统 PATH）",
+      "文件不存在：{path}",
+      "[会话 {sessionId}] {message}",
+      "检测到 MPV 播放失败，正在恢复链接（{attempt}/3）…",
+      "第三次自动恢复失败：{message}，已保留继续播放记录",
+      "{message}，已停止自动恢复并保留继续播放记录",
+      "链接已恢复，但重新启动播放器失败：{message}",
+      "mpv IPC 请求超时: {command}",
+      "mpv IPC 写入失败: {error}",
+      "{command} 失败: Windows error {code}",
+      "mpv IPC 响应缺少 request_id={requestId}",
+      "mpv 错误: {error}",
+      "OpenList/AList 存储刷新失败：{error}",
+      "网络带宽不足以流畅播放（持续缓冲：缓存跟不上播放速度，实时速度 {speed}KB/s）。已加大缓冲目标，若仍卡顿请降低画质或检查网络。",
+      "网络带宽不足以流畅播放（实时速度 {speed}KB/s，需要 {required}KB/s 以上）。已加大缓冲，若持续卡顿请降低画质或检查网络。",
+      "FormatException: {message}",
+      "NetworkException: {message}",
+      "ParseException: {message}",
+      "ConfigException: {message}",
+      "PlayerLaunchException: {message}",
+      "StorageException: {message}",
+    ])
+      source: RegExp(
+        '^${RegExp.escape(source).replaceAllMapped(RegExp(r'\\\{(\w+)\\\}'), (match) => '(?<${match[1]}>[\\s\\S]*?)')}\$',
+      ),
+  };
 
   static const List<String> _dynamicFragments = <String>[
     '读取本地蓝光续播记录失败：',

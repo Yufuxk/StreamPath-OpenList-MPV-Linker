@@ -333,7 +333,7 @@ class _GlobalSearchPageState extends State<GlobalSearchPage> {
       });
     }
     return Scaffold(
-      appBar: AppBar(title: const AppText('搜索全部挂载')),
+      appBar: AppBar(toolbarHeight: 48, title: const AppText('搜索文件和文件夹')),
       body: Stack(
         children: [
           Column(

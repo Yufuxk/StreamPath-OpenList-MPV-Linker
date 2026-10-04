@@ -35,6 +35,7 @@ import 'presentation/state/app_state.dart';
 import 'presentation/theme/app_theme.dart';
 import 'presentation/theme/appearance_controller.dart';
 import 'presentation/widgets/window_title_bar.dart';
+import 'presentation/widgets/startup_overlay.dart';
 
 /// StreamPath 应用入口。
 ///
@@ -156,6 +157,7 @@ Future<void> main() async {
       () async => cachePolicy.clearRuntimeCache(),
       directoryCache.clear,
       progressService.clearAll,
+      if (mediaLibraryStore != null) mediaLibraryStore.clearStrmProgress,
       if (audioProgressService != null) audioProgressService.clearAll,
       playbackHistoryStore.clear,
       if (audioPlaybackHistoryStore != null) audioPlaybackHistoryStore.clear,
@@ -301,7 +303,12 @@ class StreamPathApp extends StatelessWidget {
               fontFamily: appearance.fontFamily,
               systemAccent: appearanceController.systemAccent,
             ),
-            builder: (context, navigator) => _buildWindowChrome(navigator),
+            builder: (context, navigator) => _buildWindowChrome(
+              StartupOverlay(
+                ready: appState.startupReady,
+                child: navigator ?? const SizedBox.shrink(),
+              ),
+            ),
             home: child,
           );
         },
@@ -310,9 +317,8 @@ class StreamPathApp extends StatelessWidget {
     );
   }
 
-  /// Windows 下用自绘标题栏替换系统标题栏：应用标识与最小化/最大化/关闭
-  /// 按钮由 [WindowTitleBar] 提供，其背景取当前主题 surface 色，与页面
-  /// AppBar 无缝衔接；非 Windows 构建保留系统窗口装饰。
+  /// Windows 下自绘窗口控件叠在沉浸背景上，其他页面与 AppBar 衔接。
+  /// 非 Windows 构建保留系统窗口装饰。
   ///
   /// 标题栏位于 Navigator 之上，而 Overlay 在 Navigator 内部，因此把标题栏
   /// 和页面内容整体放入一个 OverlayEntry，为标题栏按钮的 Tooltip 提供
@@ -325,15 +331,42 @@ class StreamPathApp extends StatelessWidget {
     return Overlay(
       initialEntries: [
         OverlayEntry(
-          builder: (context) => Column(
-            children: [
-              WindowTitleBar(
-                sidebarMode:
-                    appState.configStore.current.appearance.sidebarMode,
-                sidebarRevealProgress: appState.sidebarRevealProgress,
-              ),
-              Expanded(child: content),
-            ],
+          builder: (context) => Consumer<AppState>(
+            builder: (context, app, _) => ListenableBuilder(
+              listenable: Listenable.merge([
+                app.filmDetailChrome,
+                app.filmLibraryActive,
+              ]),
+              child: content,
+              builder: (context, child) {
+                final progress = app.filmDetailChrome.value;
+                final immersive =
+                    progress != null || app.filmLibraryActive.value;
+                return Stack(
+                  children: [
+                    Positioned.fill(
+                      top: immersive ? 0 : WindowTitleBar.height,
+                      child: MediaQuery(
+                        data: MediaQuery.of(context).copyWith(
+                          padding: MediaQuery.paddingOf(context).copyWith(
+                            top: immersive ? WindowTitleBar.height : 0,
+                          ),
+                        ),
+                        child: child!,
+                      ),
+                    ),
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: WindowTitleBar(
+                        detailScrollProgress: immersive ? progress ?? 0 : null,
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ],

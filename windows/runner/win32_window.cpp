@@ -5,6 +5,8 @@
 #include <flutter_windows.h>
 #include <windowsx.h>
 
+#include <algorithm>
+
 #include "resource.h"
 
 namespace {
@@ -17,8 +19,6 @@ namespace {
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
-
-constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
 /// Registry key for app theme preference.
 ///
@@ -54,7 +54,8 @@ int GetResizeMargin(HWND window) {
          GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
 }
 
-LRESULT HitTestCustomFrame(HWND window, LPARAM lparam) {
+LRESULT HitTestCustomFrame(HWND window, LPARAM lparam, bool fullscreen) {
+  if (fullscreen) return HTCLIENT;
   POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
   ScreenToClient(window, &point);
   RECT client_rect{};
@@ -78,7 +79,7 @@ LRESULT HitTestCustomFrame(HWND window, LPARAM lparam) {
 
   const UINT dpi = FlutterDesktopGetDpiForHWND(window);
   const int title_bar_height = MulDiv(32, dpi, 96);
-  const int window_controls_width = MulDiv(46 * 3, dpi, 96);
+  const int window_controls_width = MulDiv(46 * 4, dpi, 96);
   if (point.y < title_bar_height &&
       point.x < client_rect.right - window_controls_width) {
     return HTCAPTION;
@@ -96,7 +97,7 @@ LRESULT CALLBACK FlutterViewSubclassProc(HWND window,
                                          DWORD_PTR ref_data) {
   auto* host = reinterpret_cast<Win32Window*>(ref_data);
   if (message == WM_NCHITTEST && host != nullptr && host->GetHandle() != nullptr) {
-    const LRESULT result = HitTestCustomFrame(host->GetHandle(), lparam);
+    const LRESULT result = HitTestCustomFrame(host->GetHandle(), lparam, host->IsFullscreen());
     if (result != HTCLIENT) {
       return HTTRANSPARENT;
     }
@@ -159,7 +160,7 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
   if (!class_registered_) {
     WNDCLASS window_class{};
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    window_class.lpszClassName = kWindowClassName;
+    window_class.lpszClassName = Win32Window::kWindowClassName;
     // CS_DROPSHADOW gives the caption-less (WS_POPUP) window the standard
     // DWM shadow.
     window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
@@ -174,11 +175,11 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     RegisterClass(&window_class);
     class_registered_ = true;
   }
-  return kWindowClassName;
+  return Win32Window::kWindowClassName;
 }
 
 void WindowClassRegistrar::UnregisterWindowClass() {
-  UnregisterClass(kWindowClassName, nullptr);
+  UnregisterClass(Win32Window::kWindowClassName, nullptr);
   class_registered_ = false;
 }
 
@@ -204,6 +205,15 @@ bool Win32Window::Create(const std::wstring& title,
   HMONITOR monitor = MonitorFromPoint(target_point, MONITOR_DEFAULTTONEAREST);
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
+  MONITORINFO monitor_info{sizeof(MONITORINFO)};
+  if (!GetMonitorInfo(monitor, &monitor_info)) return false;
+  const RECT work = monitor_info.rcWork;
+  const int width = std::min(Scale(size.width, scale_factor),
+                            static_cast<int>(work.right - work.left));
+  const int height = std::min(Scale(size.height, scale_factor),
+                             static_cast<int>(work.bottom - work.top));
+  const int x = work.left + (work.right - work.left - width) / 2;
+  const int y = work.top + (work.bottom - work.top - height) / 2;
 
   // Custom-drawn title bar: use WS_POPUP instead of merely dropping
   // WS_CAPTION, because Windows forces WS_CAPTION back onto any non-child,
@@ -215,8 +225,7 @@ bool Win32Window::Create(const std::wstring& title,
       window_class, title.c_str(),
       WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX |
           WS_MAXIMIZEBOX,
-      Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
-      Scale(size.width, scale_factor), Scale(size.height, scale_factor),
+      x, y, width, height,
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
@@ -238,7 +247,24 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  first_frame_ready_ = true;
+  const bool shown = ShowWindow(window_handle_, SW_SHOWNORMAL);
+  if (activation_pending_) RequestActivation();
+  return shown;
+}
+
+void Win32Window::RequestActivation() {
+  if (!first_frame_ready_) {
+    activation_pending_ = true;
+    return;
+  }
+  activation_pending_ = false;
+  if (IsIconic(window_handle_)) ShowWindow(window_handle_, SW_RESTORE);
+  if (!IsWindowVisible(window_handle_)) ShowWindow(window_handle_, SW_SHOWNORMAL);
+  constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+  SetWindowPos(window_handle_, HWND_TOPMOST, 0, 0, 0, 0, flags);
+  SetForegroundWindow(window_handle_);
+  SetWindowPos(window_handle_, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
 }
 
 // static
@@ -279,7 +305,7 @@ Win32Window::MessageHandler(HWND hwnd,
 
     case WM_NCHITTEST:
       // Preserve native resize, drag and double-click maximize semantics.
-      return HitTestCustomFrame(hwnd, lparam);
+      return HitTestCustomFrame(hwnd, lparam, IsFullscreen());
 
     case WM_DESTROY:
       window_handle_ = nullptr;
@@ -291,6 +317,10 @@ Win32Window::MessageHandler(HWND hwnd,
 
     case WM_DPICHANGED: {
       auto newRectSize = reinterpret_cast<RECT*>(lparam);
+      MONITORINFO monitor{sizeof(MONITORINFO)};
+      if (IsFullscreen() && GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        newRectSize = &monitor.rcMonitor;
+      }
       LONG newWidth = newRectSize->right - newRectSize->left;
       LONG newHeight = newRectSize->bottom - newRectSize->top;
 

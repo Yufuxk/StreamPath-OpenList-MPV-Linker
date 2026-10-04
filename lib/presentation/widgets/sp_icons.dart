@@ -2,11 +2,21 @@ import 'package:flutter/widgets.dart';
 
 /// 系统 Fluent 字形；旧版 Windows 由 Segoe MDL2 Assets 补齐。
 abstract final class SPIcons {
+  static const back = IconData(
+    0xE72B,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
   static const _font = 'Segoe Fluent Icons';
   static const _fallback = ['Segoe MDL2 Assets'];
 
   static const add = IconData(
     0xE710,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const more = IconData(
+    0xE712,
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );
@@ -204,6 +214,11 @@ abstract final class SPIcons {
   );
   static const pause = IconData(
     0xE769,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const previous = IconData(
+    0xE892,
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );

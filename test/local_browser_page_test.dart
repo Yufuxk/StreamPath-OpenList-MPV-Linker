@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'helpers/shell_test_app_state.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -105,7 +106,7 @@ void main() {
         ),
       );
     });
-    final appState = AppState(
+    final appState = ShellTestAppState(
       configStore: configStore,
       playbackHistoryStore: playbackHistoryStore,
       progressService: progress,
@@ -122,6 +123,7 @@ void main() {
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
+      await tester.runAsync(appState.closeTestStores);
       appState.dispose();
       await tester.runAsync(() async {
         await progress.close();
@@ -146,8 +148,7 @@ void main() {
     }
 
     expect(find.text('继续播放本地蓝光：disc.iso'), findsOneWidget);
-    expect(find.text('根目录 · Title 2/4'), findsOneWidget);
-    expect(find.textContaining('已播放'), findsNothing);
+    expect(find.text('根目录  ·  第 2/4 集  ·  已播放 02:05'), findsOneWidget);
     await tester.tap(
       find.descendant(
         of: find.byKey(
@@ -195,7 +196,7 @@ void main() {
       await tester.pump();
     }
     expect(find.text('继续播放本地蓝光：disc.iso'), findsOneWidget);
-    expect(find.text('根目录 · Title 2/4'), findsOneWidget);
+    expect(find.text('根目录  ·  第 2/4 集'), findsOneWidget);
 
     final discBar = find.byKey(
       const ValueKey<String>(
@@ -309,15 +310,20 @@ void main() {
           ),
         );
       });
-      final state = AppState(
+      final state = ShellTestAppState(
         configStore: config,
         playbackHistoryStore: history,
         progressService: progress,
         mediaLibraryStore: library,
       );
+      await tester.runAsync(state.getFilmCatalog);
+      var stateDisposed = false;
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
-        state.dispose();
+        if (!stateDisposed) {
+          await tester.runAsync(state.closeTestStores);
+          state.dispose();
+        }
         await tester.runAsync(() async {
           await progress.close();
           temp.deleteSync(recursive: true);
@@ -338,6 +344,10 @@ void main() {
         }
       }
 
+      await settle();
+      await tester.tap(find.byKey(const Key('sidebar-folders')));
+      await settle();
+      await tester.tap(find.byKey(const Key('folders-local-tab')));
       await settle();
       await tester.tap(find.byKey(const ValueKey('local-root-a')));
       await settle();
@@ -361,8 +371,10 @@ void main() {
           mode == MediaLibrarySharingMode.allShared) {
         await tester.tap(find.byKey(const Key('sidebar-library')));
         await settle();
+        await tester.tap(find.text('旧媒体中心'));
+        await settle();
         await tester.tap(find.text('目录').first);
-        await tester.pumpAndSettle();
+        await settle();
         await tester.tap(find.text('Series'));
         await settle();
         for (
@@ -385,6 +397,10 @@ void main() {
         );
       }
       expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(state.closeTestStores);
+      state.dispose();
+      stateDisposed = true;
     });
   }
 
@@ -413,7 +429,7 @@ void main() {
         factory: databaseFactoryFfi,
       );
     });
-    final appState = AppState(
+    final appState = ShellTestAppState(
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         p.join(temporaryDirectory.path, 'history.json'),
@@ -423,6 +439,7 @@ void main() {
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
+      await tester.runAsync(appState.closeTestStores);
       appState.dispose();
       await tester.runAsync(() async {
         await progress.close();
@@ -565,7 +582,7 @@ void main() {
         profileId: root.sourceId,
       );
     });
-    final appState = AppState(
+    final appState = ShellTestAppState(
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         p.join(temporaryDirectory.path, 'history.json'),
@@ -573,10 +590,15 @@ void main() {
       progressService: progress,
       mediaLibraryStore: mediaLibraryStore,
     );
+    await tester.runAsync(appState.getFilmCatalog);
+    var stateDisposed = false;
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      appState.dispose();
+      if (!stateDisposed) {
+        await tester.runAsync(appState.closeTestStores);
+        appState.dispose();
+      }
       await tester.runAsync(() async {
         await progress.close();
         if (temporaryDirectory.existsSync()) {
@@ -601,9 +623,15 @@ void main() {
     }
 
     await settle();
+    await tester.tap(find.byKey(const Key('sidebar-folders')));
+    await settle();
+    await tester.tap(find.byKey(const Key('folders-local-tab')));
+    await settle();
     await tester.tap(find.byKey(const ValueKey('local-root-root-nested')));
     await settle();
     await tester.tap(find.byKey(const Key('sidebar-library')));
+    await settle();
+    await tester.tap(find.text('旧媒体中心'));
     await settle();
     await tester.tap(find.text('继续播放').first);
     await tester.pumpAndSettle();
@@ -637,5 +665,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('[BDMV] Series'), findsWidgets);
     expect(find.text('DISC_01'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(appState.closeTestStores);
+    appState.dispose();
+    stateDisposed = true;
   });
 }

@@ -123,6 +123,65 @@ class PlaybackProgressService implements PlaybackProgressReader {
     );
   }
 
+  Future<PlaybackProgressService> forFilmLibrary(
+    Set<(String, String)> media,
+  ) async {
+    final service = await open(
+      _dbPath == inMemoryDatabasePath
+          ? inMemoryDatabasePath
+          : p.join(p.dirname(_dbPath), 'film_streampath.db'),
+      now: _now,
+      policyProvider: _policyProvider,
+      legacyProfileId: _defaultProfileId,
+    );
+    try {
+      await service._db.execute(
+        'CREATE TABLE IF NOT EXISTS film_progress_migration (id INTEGER PRIMARY KEY CHECK(id = 1))',
+      );
+      if ((await service._db.query('film_progress_migration')).isEmpty) {
+        final progress = <Map<String, Object?>>[],
+            temporary = <Map<String, Object?>>[];
+        for (final (profile, url) in media) {
+          progress.addAll(
+            await _db.query(
+              _table,
+              where: 'profile_id = ? AND url = ?',
+              whereArgs: [profile, url],
+            ),
+          );
+          temporary.addAll(
+            await _db.query(
+              _temporaryTable,
+              where: 'profile_id = ? AND url = ?',
+              whereArgs: [profile, url],
+            ),
+          );
+        }
+        await service._db.transaction((txn) async {
+          for (final row in progress) {
+            await txn.insert(
+              _table,
+              row,
+              conflictAlgorithm: ConflictAlgorithm.ignore,
+            );
+          }
+          for (final row in temporary) {
+            await txn.insert(
+              _temporaryTable,
+              row,
+              conflictAlgorithm: ConflictAlgorithm.ignore,
+            );
+          }
+          await txn.insert('film_progress_migration', {'id': 1});
+        });
+      }
+      return service;
+    } on Object {
+      await service.close();
+      rethrow;
+    }
+  }
+
   /// 以指定数据库路径打开（测试可传 `inMemoryDatabasePath` 使用内存库）。
   @visibleForTesting
   static Future<PlaybackProgressService> open(
@@ -286,6 +345,29 @@ class PlaybackProgressService implements PlaybackProgressReader {
   }) async =>
       await getTemporaryProgress(url, profileId: profileId) ??
       await getProgress(url, profileId: profileId);
+
+  /// 旧进度迁移一次读取有效记录，临时播放点覆盖同来源的正式进度。
+  Future<Map<(String, String), PlaybackProgress>>
+  resumeProgressSnapshot() async {
+    final result = <(String, String), PlaybackProgress>{};
+    final cutoff = _expirationCutoffMs();
+    try {
+      for (final table in [_table, _temporaryTable]) {
+        final rows = await _db.query(
+          table,
+          where: 'updated_at >= ?',
+          whereArgs: [cutoff],
+        );
+        for (final row in rows) {
+          final progress = PlaybackProgress.fromRow(row);
+          result[(row['profile_id'] as String, progress.url)] = progress;
+        }
+      }
+      return result;
+    } on DatabaseException catch (error) {
+      throw AppException.storage('读取播放进度失败：$error', error);
+    }
+  }
 
   /// 删除指定媒体的进度记录。
   ///

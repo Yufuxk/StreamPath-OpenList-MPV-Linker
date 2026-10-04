@@ -248,6 +248,7 @@ class _MountManagementPageState extends State<MountManagementPage> {
           toolbarHeight: 48,
           title: const AppText('文件夹管理'),
           bottom: const TabBar(
+            dividerColor: Colors.transparent,
             isScrollable: true,
             tabAlignment: TabAlignment.start,
             labelPadding: EdgeInsets.symmetric(horizontal: 20),

@@ -98,6 +98,12 @@ class WebDAVService implements DirectoryRepository {
     return _loadAndCache(key, path);
   }
 
+  /// 建库仅请求名称与目录类型，不读取或写入浏览目录缓存。
+  Future<List<WebDavFile>> fetchCatalogDirectory(String path) async {
+    final xml = await _client.propfind(path, namesOnly: true);
+    return _parser.parse(xml, requestUrl: fullUrl(path));
+  }
+
   /// 强制从网络加载并刷新缓存（用户下拉/点击刷新时调用）。
   Future<List<WebDavFile>> refreshDirectory(String path) {
     final key = _key(path);

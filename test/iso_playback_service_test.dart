@@ -607,6 +607,7 @@ void main() {
         executable: 'mpv',
         args: [
           '--hwdec=auto',
+          '--fullscreen=no',
           '--http-header-fields=Authorization: Basic secret',
           '--cookies-file',
           r'C:\secret-cookies.txt',
@@ -643,6 +644,10 @@ void main() {
     final joined = args.join('\n');
 
     expect(args, contains('--hwdec=auto'));
+    expect(
+      args.lastIndexOf('--fullscreen=yes'),
+      greaterThan(args.lastIndexOf('--fullscreen=no')),
+    );
     expect(args, contains('--resume-playback=no'));
     expect(args, contains('--save-position-on-quit=no'));
     expect(args, contains('--idle=no'));

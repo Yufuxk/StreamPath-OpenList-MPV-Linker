@@ -7,6 +7,7 @@ import '../../core/utils/file_sort.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
+import '../../data/models/stream_path_config.dart';
 import '../../domain/services/media_library_search.dart';
 import '../../domain/services/openlist_index_service.dart';
 import '../../domain/repositories/media_directory_source.dart';
@@ -27,7 +28,14 @@ class DirectoryBrowserController extends ChangeNotifier {
     this.onDirectoryLoaded,
     this.onForcedRefresh,
     this.openListIndexSearch,
-  });
+    String? initialPath,
+  }) {
+    if (initialPath != null) {
+      _hasExplicitPath = true;
+      _crumbs.addAll(_splitPath(initialPath));
+    }
+    _applyInitialConfig(configStore.current);
+  }
 
   final MediaDirectorySource service;
   final StreamPathConfigStore configStore;
@@ -96,6 +104,19 @@ class DirectoryBrowserController extends ChangeNotifier {
     if (_disposed) return;
 
     final config = configStore.current;
+    final changed = _applyInitialConfig(config);
+    final displayConfigChanged =
+        previousConfig.hiddenExtensionsEnabled !=
+            config.hiddenExtensionsEnabled ||
+        !listEquals(previousConfig.hiddenExtensions, config.hiddenExtensions);
+    if (changed || displayConfigChanged) {
+      _invalidateVisibleFiles();
+      notifyListeners();
+    }
+    await load();
+  }
+
+  bool _applyInitialConfig(StreamPathConfig config) {
     final defaultDirectory = config.profiles
         .where((profile) => profile.profileId == service.descriptor.sourceId)
         .firstOrNull
@@ -121,15 +142,7 @@ class DirectoryBrowserController extends ChangeNotifier {
       _files = cachedFiles;
       changed = true;
     }
-    final displayConfigChanged =
-        previousConfig.hiddenExtensionsEnabled !=
-            config.hiddenExtensionsEnabled ||
-        !listEquals(previousConfig.hiddenExtensions, config.hiddenExtensions);
-    if (changed || displayConfigChanged) {
-      _invalidateVisibleFiles();
-      notifyListeners();
-    }
-    await load();
+    return changed;
   }
 
   Future<void> load({bool force = false}) async {

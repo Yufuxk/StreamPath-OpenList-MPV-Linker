@@ -108,6 +108,91 @@ void main() {
     'isoHistory': ?isoHistory,
   };
 
+  test('列表数量和 STRM 进度跨重启保存，切项及来源隔离拒绝旧快照', () async {
+    final first = item('第一集.strm', kind: MediaLibraryKind.strm);
+    await store.recordPlayback(
+      first,
+      playbackSessionId: 'playlist',
+      playlistIndex: 0,
+      playlistCount: 2,
+    );
+    await store.updateStrmProgress(
+      sourceId: 'source-a',
+      playbackSessionId: 'playlist',
+      fileName: first.name,
+      playlistIndex: 0,
+      positionMs: 123000,
+      durationMs: 600000,
+    );
+    final restarted = MediaLibraryStore.forPath(libraryFile.path);
+    final original = (await restarted.playbackHistory(
+      'source-a',
+      audio: false,
+    )).single;
+    expect(original.playlistIndex, 0);
+    expect(original.playlistCount, 2);
+    expect(original.strmPositionMs, 123000);
+    expect(original.strmDurationMs, 600000);
+    final second = item('第二集.strm', kind: MediaLibraryKind.strm);
+    await store.recordPlayback(
+      second,
+      playbackSessionId: 'playlist',
+      playlistIndex: 1,
+      playlistCount: 2,
+    );
+    await store.updateStrmProgress(
+      sourceId: 'source-a',
+      playbackSessionId: 'playlist',
+      fileName: first.name,
+      playlistIndex: 0,
+      positionMs: 999000,
+    );
+    await store.updateStrmProgress(
+      sourceId: 'source-b',
+      playbackSessionId: 'playlist',
+      fileName: second.name,
+      playlistIndex: 1,
+      positionMs: 999000,
+    );
+    final changed = (await store.playbackHistory(
+      'source-a',
+      audio: false,
+    )).single;
+    expect(changed.item.name, second.name);
+    expect(changed.playlistIndex, 1);
+    expect(changed.strmPositionMs, 0);
+    expect(changed.strmDurationMs, isNull);
+    await store.updateStrmProgress(
+      sourceId: 'source-a',
+      playbackSessionId: 'playlist',
+      fileName: second.name,
+      playlistIndex: 1,
+      positionMs: 32000,
+    );
+    await store.recordPlayback(
+      second,
+      playbackSessionId: 'playlist',
+      playlistIndex: 1,
+      playlistCount: 2,
+    );
+    expect(
+      (await store.playbackHistory(
+        'source-a',
+        audio: false,
+      )).single.strmPositionMs,
+      32000,
+    );
+    expect(await libraryFile.readAsString(), isNot(contains('https://')));
+    await store.clearStrmProgress();
+    final cleared = (await store.playbackHistory(
+      'source-a',
+      audio: false,
+    )).single;
+    expect(cleared.strmPositionMs, isNull);
+    expect(cleared.playlistCount, 2);
+    expect(cleared.item.name, second.name);
+  });
+
   test('收藏可切换、按来源隔离并在重启后恢复', () async {
     expect(await store.toggleFavorite(item('A.mkv')), isTrue);
     expect(

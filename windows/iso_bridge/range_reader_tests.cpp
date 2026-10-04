@@ -1544,10 +1544,43 @@ void test_bdmv_callbacks_and_version_identity() {
   modified->close(modified);
 }
 
+static void test_catalog_probe_limits() {
+  catalog_probe_mode = true;
+  catalog_probe_started = std::chrono::steady_clock::now();
+  catalog_probe_next = catalog_probe_started;
+  catalog_probe_bytes = 64U * 1024U * 1024U;
+  catalog_probe_requests = 0;
+  bool rejected = false;
+  try { guard_catalog_probe_request(0, 0, {}); }
+  catch (const BridgeException&) { rejected = true; }
+  expect_network(rejected, "catalog probe byte budget rejects additional reads");
+  catalog_probe_bytes = 0;
+  catalog_probe_requests = 128;
+  rejected = false;
+  try { guard_catalog_probe_request({}, {}, {}); }
+  catch (const BridgeException&) { rejected = true; }
+  expect_network(rejected, "catalog probe request budget rejects additional HEAD");
+  catalog_probe_requests = 0;
+  catalog_probe_started -= std::chrono::seconds(91);
+  rejected = false;
+  try { guard_catalog_probe_request({}, {}, {}); }
+  catch (const BridgeException&) { rejected = true; }
+  expect_network(rejected, "catalog probe deadline rejects additional reads");
+  catalog_probe_started = std::chrono::steady_clock::now();
+  catalog_probe_next = catalog_probe_started + std::chrono::seconds(30);
+  rejected = false;
+  try { guard_catalog_probe_request({}, {}, [] { return true; }); }
+  catch (const bridge::FetchCancelled&) { rejected = true; }
+  expect_network(rejected, "catalog probe cancels without waiting for request interval");
+  catalog_probe_mode = false;
+  guard_catalog_probe_request({}, {}, {});
+}
+
 int main() {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 1;
   try {
+    test_catalog_probe_limits();
     test_bdmv_manifest_cache_invalidation();
     test_bdmv_lazy_first_read();
     test_bdmv_lazy_header_failures();

@@ -109,9 +109,43 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
   }
 
   final StreamPathConfigStore _configStore;
+  LocalDiscPlaybackService forFilmLibrary(
+    PlaybackProgressService progress,
+    MediaLibraryStore? records,
+  ) => LocalDiscPlaybackService._(
+    _configStore,
+    progress,
+    records,
+    _processController,
+  );
   final PlaybackProgressService _progressService;
   final MediaLibraryStore? _mediaLibraryStore;
   final PlayerProcessController _processController;
+  bool get hasPlaybackSessions => _sessions.isNotEmpty;
+  Future<bool> anyPlayerRunning() async {
+    for (final id in _sessions.keys.toList()) {
+      if (await isPlayerRunning(id)) return true;
+    }
+    return false;
+  }
+
+  List<
+    ({
+      String sourceId,
+      String target,
+      String snapshotPath,
+      String? resourcePath,
+    })
+  >
+  get mediaProbeSnapshots => [
+    for (final runtime in _sessions.values)
+      (
+        sourceId: runtime.profileId,
+        target: runtime.result.devicePath,
+        snapshotPath: '${runtime.statusFilePath}.media.json',
+        resourcePath: null,
+      ),
+  ];
   final Map<String, _LocalDiscRuntime> _sessions = {};
   final Set<IsoLibraryProgressListener> _libraryProgressListeners = {};
   bool _disposed = false;
@@ -197,11 +231,19 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
           : null,
     );
     if (config.subtitleInjectionEnabled && subtitles != null) {
-      final directory = Directory(p.join(dataDirectory.path, 'local_iso_subtitles', sessionId));
-      args.insertAll(0, await subtitles.prepareArgs(directory,
-        sessionId: sessionId, pipeName: pipeName,
-        menu: mode == LocalDiscLaunchMode.menu,
-        autoSelect: config.subtitleAutoSelectEnabled));
+      final directory = Directory(
+        p.join(dataDirectory.path, 'local_iso_subtitles', sessionId),
+      );
+      args.insertAll(
+        0,
+        await subtitles.prepareArgs(
+          directory,
+          sessionId: sessionId,
+          pipeName: pipeName,
+          menu: mode == LocalDiscLaunchMode.menu,
+          autoSelect: config.subtitleAutoSelectEnabled,
+        ),
+      );
     }
     final Process process;
     try {
@@ -225,9 +267,14 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       final directory = await _subtitleDirectory(sessionId);
       if (await directory.exists()) {
         try {
-          await File(p.join(directory.path, 'owner.json')).writeAsString(jsonEncode({
-            'pid':identity.pid,'executable':identity.executablePath,'created':identity.creationTime,
-          }),flush:true);
+          await File(p.join(directory.path, 'owner.json')).writeAsString(
+            jsonEncode({
+              'pid': identity.pid,
+              'executable': identity.executablePath,
+              'created': identity.creationTime,
+            }),
+            flush: true,
+          );
         } on FileSystemException {
           // 无身份记录时保留资源，不能在播放器存活期间猜测清理。
           subtitles.issues.add('cleanup');
@@ -362,11 +409,13 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     if (!RegExp(r'^local_disc_\d+_\d+$').hasMatch(sessionId)) {
       throw ArgumentError.value(sessionId, 'sessionId');
     }
-    return Directory(p.join(
-      (await AppPaths.cacheDirectory()).path,
-      'local_iso_subtitles',
-      sessionId,
-    ));
+    return Directory(
+      p.join(
+        (await AppPaths.cacheDirectory()).path,
+        'local_iso_subtitles',
+        sessionId,
+      ),
+    );
   }
 
   Future<void> _deleteSubtitleDirectory(String sessionId) async {
@@ -378,8 +427,10 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       }
       // 只删除固定会话根内生成的目录，符号链接不能扩大清理范围。
       final root = Directory(p.dirname(directory.path));
-      if (!p.isWithin(await root.resolveSymbolicLinks(),
-          await directory.resolveSymbolicLinks())) {
+      if (!p.isWithin(
+        await root.resolveSymbolicLinks(),
+        await directory.resolveSymbolicLinks(),
+      )) {
         return;
       }
       await directory.delete(recursive: true);
@@ -390,8 +441,9 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
 
   Future<void> cleanupSubtitleSessions() async {
     try {
-      final root = Directory(p.join(
-        (await AppPaths.cacheDirectory()).path, 'local_iso_subtitles'));
+      final root = Directory(
+        p.join((await AppPaths.cacheDirectory()).path, 'local_iso_subtitles'),
+      );
       if (!await root.exists()) return;
       await for (final directory in root.list(followLinks: false)) {
         final id = p.basename(directory.path);
@@ -403,15 +455,20 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
           final owner = File(p.join(directory.path, 'owner.json'));
           if (!await owner.exists()) continue;
           final data = jsonDecode(await owner.readAsString());
-          if (data is! Map || data['pid'] is! int ||
-              data['created'] is! int || data['executable'] is! String) {
+          if (data is! Map ||
+              data['pid'] is! int ||
+              data['created'] is! int ||
+              data['executable'] is! String) {
             continue;
           }
           final identity = PlayerProcessIdentity.fromStored(
-            pid: data['pid'], executablePath: data['executable'],
-            creationTime: data['created']);
-          if (identity != null && await _processController.probeOwned(identity) ==
-              PlayerProcessLiveness.exited) {
+            pid: data['pid'],
+            executablePath: data['executable'],
+            creationTime: data['created'],
+          );
+          if (identity != null &&
+              await _processController.probeOwned(identity) ==
+                  PlayerProcessLiveness.exited) {
             await _deleteSubtitleDirectory(id);
           }
         } on FileSystemException {
@@ -681,6 +738,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     int? resumeEdition,
   }) => <String>[
     ...filterUserArgs(config.args),
+    '--fullscreen=yes',
     '--idle=no',
     '--keep-open=no',
     '--input-ipc-server=$ipcPipeName',

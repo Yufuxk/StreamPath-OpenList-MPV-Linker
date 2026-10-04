@@ -24,6 +24,7 @@ class PlaybackUiSession {
   bool recovering = false;
   final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
   double? lastReportedPositionSeconds;
+  String? lastReportedUrl;
   double? lastReportedDurationSeconds;
   DateTime? lastProgressPersistedAt;
 

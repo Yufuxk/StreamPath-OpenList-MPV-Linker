@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../data/models/app_language.dart';
 import '../../data/models/media_entry.dart';
 import '../../data/models/subtitle_item.dart';
 
@@ -15,6 +16,40 @@ import '../../data/models/subtitle_item.dart';
 ///
 /// 所有文件写入 [base] 目录，返回文件路径供播放器启动参数引用。
 class MpvScripts {
+  /// 普通视频、菜单与 MPLS 共用已解析轨道快照，不产生媒体读取。
+  static String mediaInfoSnapshotLua({
+    required String outputExpression,
+    required String pathExpression,
+    String epochExpression = 'nil',
+    String programmeExpression = 'nil',
+    String programmeTypeExpression = 'nil',
+  }) =>
+      '''
+local function write_media_info()
+    local sourcePath = ($pathExpression):gsub("^([%w+.-]+://)[^/]*@", "%1")
+    local fields = {"type", "codec", "lang", "title", "external", "albumart", "demux-w", "demux-h", "demux-fps", "demux-bitrate", "demux-samplerate", "demux-channel-count", "dolby-vision-profile", "dolby-vision-level"}
+    local tracks = {}
+    for _, track in ipairs(mp.get_property_native("track-list", {})) do
+        if not track.external and not track.albumart then
+            local entry = {}
+            for _, field in ipairs(fields) do entry[field] = track[field] end
+            table.insert(tracks, entry)
+        end
+    end
+    local record = {epoch = $epochExpression, path = sourcePath, programme = $programmeExpression, programmeType = $programmeTypeExpression, duration = mp.get_property_number("duration", nil), size = mp.get_property_number("file-size", nil), tracks = tracks, video = mp.get_property_native("video-dec-params", {})}
+    local ok, text = pcall(utils.format_json, record)
+    if not ok or not text then return end
+    local temporary = $outputExpression .. ".media.json.tmp"
+    local f = io.open(temporary, "w")
+    if not f then return end
+    f:write(text)
+    f:close()
+    os.remove($outputExpression .. ".media.json")
+    os.rename(temporary, $outputExpression .. ".media.json")
+end
+
+''';
+
   MpvScripts._();
 
   // ── 外挂字体目录注入 ───────────────────────────────────────
@@ -167,6 +202,132 @@ end)
     );
   }
 
+  /// 视频开始播放后，仅异步打开当前项的远程音轨。
+  static Future<String> ensureExternalAudioTracks(
+    List<MediaEntry> entries,
+    String Function(String) authUrl,
+    Directory base, {
+    String? playlistPath,
+    bool deferUntilPlaylistChange = false,
+    List<int>? initialPlaylistIds,
+    required AppLanguage language,
+    required String sessionId,
+  }) {
+    final rows = <String>[];
+    for (var i = 0; i < entries.length; i++) {
+      final tracks = entries[i].externalAudioTracks
+          .map(
+            (track) =>
+                '{url=${_luaQuote(authUrl(track.url))}, name=${_luaQuote(track.name)}}',
+          )
+          .join(',');
+      rows.add(
+        'FILES[$i] = {path=${_luaQuote(authUrl(entries[i].url))}, title=${_luaQuote(_sanitizeTitle(entries[i].title ?? fallbackTitleFromUrl(entries[i].url)))}, tracks={$tracks}}',
+      );
+    }
+    final failure = switch (language) {
+      AppLanguage.simplifiedChinese => '外挂音轨加载失败：{name}',
+      AppLanguage.traditionalChinese => '外掛音軌載入失敗：{name}',
+      AppLanguage.japanese => '外部音声の読み込みに失敗しました：{name}',
+      AppLanguage.english => 'External audio failed to load: {name}',
+    };
+    final script =
+        '''
+local FILES = {}
+${rows.join('\n')}
+local PLAYLIST = ${_luaQuote(playlistPath ?? '')}
+local COUNT = ${entries.length}
+local DEFER = $deferUntilPlaylistChange
+local FAILURE = ${_luaQuote(failure)}
+local generation, started, pending = 0, false, nil
+local function playlist_ids(list)
+    local ids = {}
+    for i, item in ipairs(list) do ids[i] = tostring(item.id) end
+    return table.concat(ids, ',')
+end
+local initial_ids = ${initialPlaylistIds == null ? "playlist_ids(mp.get_property_native('playlist') or {})" : _luaQuote(initialPlaylistIds.join(','))}
+local owned_ids = nil
+local function owns_file()
+    if PLAYLIST ~= '' then
+        local actual = mp.get_property('playlist-path', nil)
+        if actual then
+            if actual:gsub('\\\\', '/'):lower() ~= PLAYLIST:gsub('\\\\', '/'):lower() then return false end
+        else
+            local list = mp.get_property_native('playlist') or {}
+            if #list ~= COUNT then return false end
+            local ids = playlist_ids(list)
+            if DEFER and ids == initial_ids then return false end
+            if owned_ids and owned_ids ~= ids then return false end
+            for i, item in ipairs(list) do
+                local expected = FILES[i - 1]
+                if item.filename ~= expected.path or item.title ~= expected.title then return false end
+            end
+            owned_ids = ids
+        end
+    end
+    local entry = FILES[mp.get_property_number('playlist-pos', -1)]
+    return entry and entry.path == mp.get_property('path', '')
+end
+local function reset()
+    generation = generation + 1
+    started = false
+    local old = pending
+    pending = nil
+    if old then
+        old.timer:kill()
+        mp.abort_async_command(old.command)
+    end
+end
+local function failed(track)
+    mp.msg.warn('External audio load failed')
+    mp.osd_message(FAILURE:gsub('{name}', function() return track.name:gsub('%c', ' ') end), 3)
+end
+mp.register_event('start-file', function()
+    reset()
+    if DEFER and initial_ids == '' then
+        initial_ids = playlist_ids(mp.get_property_native('playlist') or {})
+    end
+end)
+mp.register_event('end-file', reset)
+mp.register_event('shutdown', reset)
+mp.register_event('playback-restart', function()
+    if started or not owns_file() then return end
+    started = true
+    local epoch = generation
+    local entry = FILES[mp.get_property_number('playlist-pos', -1)]
+    local index = 0
+    local function load_next()
+        if epoch ~= generation or not owns_file() then return end
+        index = index + 1
+        local track = entry.tracks[index]
+        if not track then return end
+        local attempt = {timed_out=false}
+        pending = attempt
+        attempt.command = mp.command_native_async({'audio-add', track.url, 'auto', track.name}, function(success)
+            if epoch ~= generation then return end
+            attempt.timer:kill()
+            pending = nil
+            if not owns_file() then return end
+            if not success and not attempt.timed_out then failed(track) end
+            load_next()
+        end)
+        attempt.timer = mp.add_timeout(10, function()
+            if epoch ~= generation or pending ~= attempt then return end
+            attempt.timed_out = true
+            failed(track)
+            mp.abort_async_command(attempt.command)
+        end)
+    end
+    load_next()
+end)
+''';
+    return _write(
+      base,
+      _sessionFileName('streampath-external-audio', 'lua', sessionId),
+      script,
+    );
+  }
+
   // ── 多集播放列表（m3u） ─────────────────────────────────────
 
   /// 写入多集 m3u 播放列表，每集三行：
@@ -214,13 +375,16 @@ end)
     required bool subtitleInjectionEnabled,
     required bool autoSelect,
     required String sessionId,
+    List<int>? initialPlaylistIds,
   }) async {
+    final paths = <String>[];
     final titles = <String>[];
     final subs = <String>[];
     final subTitles = <String>[];
     final langs = <String>[];
     final fonts = <String>[];
     for (var i = 0; i < entries.length; i++) {
+      paths.add('PATHS[$i] = ${_luaQuote(authUrl(entries[i].url))}');
       final title = entries[i].title ?? fallbackTitleFromUrl(entries[i].url);
       titles.add('TITLES[$i] = ${_luaQuote(title)}');
       final subtitle = entries[i].subtitle;
@@ -238,6 +402,11 @@ end)
     final script =
         '''
 local PLAYLIST = ${_luaQuote(playlistPath)}
+local PATHS = {}
+${paths.join('\n')}
+local COUNT = ${entries.length}
+local INITIAL_IDS = ${initialPlaylistIds == null ? 'nil' : _luaQuote(initialPlaylistIds.join(','))}
+local owned_ids = nil
 local TITLES = {}
 local SUBS = {}
 local SUB_TITLES = {}
@@ -250,8 +419,20 @@ ${subTitles.join('\n')}
 ${langs.join('\n')}
 ${fonts.join('\n')}
 local function owns_playlist()
-    local actual = mp.get_property("playlist-path", "")
-    return actual:gsub("\\\\", "/"):lower() == PLAYLIST:gsub("\\\\", "/"):lower()
+    local actual = mp.get_property("playlist-path", nil)
+    if actual then return actual:gsub("\\\\", "/"):lower() == PLAYLIST:gsub("\\\\", "/"):lower() end
+    local list = mp.get_property_native("playlist") or {}
+    if #list ~= COUNT then return false end
+    local ids = {}
+    for i, item in ipairs(list) do
+        if item.filename ~= PATHS[i - 1] then return false end
+        ids[i] = tostring(item.id)
+    end
+    local identity = table.concat(ids, ',')
+    if INITIAL_IDS and identity == INITIAL_IDS then return false end
+    if owned_ids and identity ~= owned_ids then return false end
+    owned_ids = identity
+    return true
 end
 mp.add_hook("on_load", 5, function()
     if not owns_playlist() then return end
@@ -388,6 +569,7 @@ end)
     Directory base, {
     String? sessionId,
     String? progressFile,
+    String? queueFile,
     String? launchEpoch,
     String? reportedPath,
   }) async {
@@ -409,7 +591,24 @@ local PROGRESS = ${_luaQuote(resolvedProgressFile)}
 local EPOCH = ${_luaQuote(launchEpoch ?? '')}
 local REPORTED_PATH = ${_luaQuote(reportedPath ?? '')}
 
+${mediaInfoSnapshotLua(outputExpression: 'OUT', pathExpression: 'REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")', epochExpression: 'EPOCH', programmeExpression: 'mp.get_property_number("edition", nil)', programmeTypeExpression: '"edition"')}
+
+local wall_clock_base = os.time() * 1000 - mp.get_time() * 1000
+mp.register_script_message("streampath-clock", function(value)
+    local wall = tonumber(value)
+    if wall then wall_clock_base = wall - mp.get_time() * 1000 end
+end)
 local has_loaded = false
+local QUEUE = ${_luaQuote(queueFile ?? '')}
+local queue_generation = nil
+local catalog_path = nil
+local logical_index = nil
+local queue_finished = false
+local file_loaded_current = false
+local file_generation = 0
+local function queue_position()
+    return logical_index or mp.get_property_number("playlist-pos", -1)
+end
 local last_playlist_pos = -1
 local last_loaded_playlist = ""
 local last_path = ""
@@ -432,6 +631,10 @@ local function append_progress(outcome, reason, file_error)
         epoch = EPOCH,
         outcome = outcome,
         playlist_pos = last_playlist_pos,
+        queue_generation = queue_generation,
+        file_generation = file_generation,
+        catalog_path = catalog_path,
+        recorded_at = math.floor(wall_clock_base + mp.get_time() * 1000),
         path = last_path,
     }
     if last_time_pos >= 0 then record["position"] = last_time_pos end
@@ -499,7 +702,8 @@ local function update_temporary_checkpoint()
 end
 
 local function write_status(use_cached_progress, skip_diagnostics)
-    local pos = mp.get_property_number("playlist-pos", -1)
+    if queue_finished then return end
+    local pos = queue_position()
     local path = REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")
     local paused = mp.get_property_bool("pause", false)
     local time_pos = mp.get_property_number("time-pos", -1)
@@ -633,12 +837,27 @@ local function write_status(use_cached_progress, skip_diagnostics)
             "\\n" .. tostring(current_edition) ..
             "\\n" .. tostring(editions) ..
             "\\n" .. last_loaded_playlist ..
-            "\\n" .. tostring(last_playlist_pos))
+            "\\n" .. tostring(last_playlist_pos) ..
+            "\\n" .. tostring(queue_generation or -1) ..
+            "\\n" .. (catalog_path or "") ..
+            "\\n" .. (file_loaded_current and "1" or "0"))
         f:close()
     end
 end
 
 mp.register_event("start-file", function()
+    file_loaded_current = false
+    file_generation = file_generation + 1
+    if QUEUE ~= "" then
+        local f = io.open(QUEUE, "r")
+        local plan = f and utils.parse_json(f:read("*a") or "") or nil
+        if f then f:close() end
+        if plan then
+            logical_index = plan.index
+            queue_generation = plan.generation
+            catalog_path = plan.catalog_path
+        end
+    end
     -- 当前曲目不得继承上一集缓存的时长/进度。
     has_loaded = false
     entry_started = true
@@ -653,18 +872,22 @@ mp.register_event("start-file", function()
     healthy_since = nil
     was_stalling = false
     restart_serial = 0
-    local pos = mp.get_property_number("playlist-pos", -1)
+    local pos = queue_position()
     local path = REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")
     if pos >= 0 then last_playlist_pos = pos end
     if path ~= "" then last_path = path end
 end)
 mp.register_event("file-loaded", function()
+    file_loaded_current = true
+    mp.set_property_native("fullscreen", true)
     has_loaded = true
     entry_started = true
+    write_media_info()
     last_loaded_playlist = mp.get_property("playlist-path", "")
     -- 起播阶段的瞬时缓冲不建立临时播放点；稳定窗口结束后才启用。
     checkpoint_armed_at = mp.get_time() + 5
     write_status(false, false)
+    if QUEUE ~= "" then append_progress("loaded", nil, nil) end
 end)
 mp.observe_property("pause", "bool", function()
     write_status(false, false)
@@ -683,6 +906,7 @@ end)
 -- 初次起播与 seek 完成后立即采样；尤其要及时保留用户主动跳回 0 秒。
 mp.register_event("playback-restart", function()
     if has_loaded and not mp.get_property_bool("idle-active", false) then
+        write_media_info()
         restart_serial = restart_serial + 1
         write_status(false, false)
     end
@@ -727,6 +951,17 @@ mp.add_periodic_timer(0.5, function()
     end
 end)
 
+mp.register_script_message("streampath-queue-finished", function()
+    if QUEUE == "" then return end
+    queue_finished = true
+    local f = io.open(OUT, "w")
+    if f then
+        f:write("-1\\n" .. tostring(last_playlist_pos) .. "\\n" .. EPOCH)
+        f:close()
+    end
+    mp.commandv("quit")
+end)
+
 -- 播放列表播完（idle）时写 -1 标记；仅当已加载过文件时写入。
 -- 播放中短暂 idle（缓冲/切集间隙）不写：延迟确认仍处于 idle 才写，
 -- 避免 UI 误清「继续播放」历史导致下边栏闪烁。
@@ -736,7 +971,7 @@ mp.observe_property("idle-active", "bool", function(name, val)
         idle_timer:kill()
         idle_timer = nil
     end
-    if val and has_loaded then
+    if val and has_loaded and QUEUE == "" then
         idle_timer = mp.add_timeout(1.0, function()
             idle_timer = nil
             if mp.get_property_bool("idle-active") then
