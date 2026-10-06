@@ -362,40 +362,58 @@ class AppState extends ChangeNotifier {
         }
       }
     }
-    for (final r in await store.resources()) {
-      if (r.availability != 'present' ||
-          r.workId == null ||
-          r.mediaKind != 'video' && r.mediaKind != 'strm' ||
-          r.type == FilmMediaType.tv &&
-              (r.season == null || r.episode == null)) {
-        continue;
-      }
-      final url =
-          paths['${r.sourceId}\u0000${r.path}'] ??
-          (r.mediaKind == 'strm'
-              ? null
-              : _resolveMediaLibraryTarget(
-                  r.playbackItem,
-                  allowLogicalPath: true,
-                  cachedDirectories: directories,
-                ));
-      if (url == null) continue;
-      for (final snapshot in snapshots) {
-        final sample = snapshot[(r.sourceId, url)];
-        if (sample != null &&
-            sample.positionMs > 0 &&
-            sample.updatedAt != null) {
-          await store.recordVideoProgress(
-            VideoProgressUpdate(
-              sourceId: r.sourceId,
-              path: r.path,
-              positionMs: sample.positionMs,
-              durationMs: sample.durationMs,
-              recordedAt: sample.updatedAt!,
-            ),
-          );
+    for (var offset = 0; ; offset += 128) {
+      final resources = await store.resources(limit: 128, offset: offset);
+      for (final r in resources) {
+        if (r.availability != 'present' ||
+            r.workId == null ||
+            r.mediaKind != 'video' && r.mediaKind != 'strm' ||
+            r.type == FilmMediaType.tv &&
+                (r.season == null || r.episode == null)) {
+          continue;
+        }
+        if (r.sourceKind == MediaSourceKind.webdav &&
+            !directories.containsKey(r.sourceId)) {
+          final index = <String, List<WebDavFile>>{};
+          for (final directory in await _directoryCache.visitedDirectoriesAsync(
+            r.sourceId,
+          )) {
+            index
+                .putIfAbsent(normalizeLibraryPath(directory.path), () => [])
+                .addAll(directory.entries);
+          }
+          directories[r.sourceId] = index;
+        }
+        final url =
+            paths['${r.sourceId}\u0000${r.path}'] ??
+            (r.mediaKind == 'strm'
+                ? null
+                : _resolveMediaLibraryTarget(
+                    r.playbackItem,
+                    allowLogicalPath: true,
+                    cachedDirectories: directories,
+                  ));
+        if (url == null) continue;
+        for (final snapshot in snapshots) {
+          final sample = snapshot[(r.sourceId, url)];
+          if (sample != null &&
+              sample.positionMs > 0 &&
+              sample.updatedAt != null) {
+            await store.recordVideoProgress(
+              VideoProgressUpdate(
+                sourceId: r.sourceId,
+                path: r.path,
+                positionMs: sample.positionMs,
+                durationMs: sample.durationMs,
+                recordedAt: sample.updatedAt!,
+              ),
+            );
+          }
         }
       }
+      if (resources.length < 128) break;
+      // 分批归还事件循环，加载遮罩与原生窗口消息继续推进。
+      await Future<void>.delayed(Duration.zero);
     }
   }
 
@@ -810,10 +828,8 @@ class AppState extends ChangeNotifier {
       });
       entries = directories[parent] ?? const [];
     } else {
-      entries = _directoryCache
-          .visitedDirectories(item.sourceId)
-          .where((snapshot) => normalizeLibraryPath(snapshot.path) == parent)
-          .expand((snapshot) => snapshot.entries);
+      final file = _directoryCache.visitedFile(item);
+      entries = file == null ? const [] : [file];
     }
     final file = entries.where(item.matches).firstOrNull;
     if (file != null) {

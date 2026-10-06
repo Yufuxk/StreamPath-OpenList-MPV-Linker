@@ -14,6 +14,7 @@ import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 
 class _CountingCache extends DirectoryCache {
@@ -25,12 +26,27 @@ class _CountingCache extends DirectoryCache {
     calls.update(sourceId, (count) => count + 1, ifAbsent: () => 1);
     return snapshots[sourceId] ?? const [];
   }
+
+  @override
+  Future<List<VisitedDirectorySnapshot>> visitedDirectoriesAsync(
+    String sourceId,
+  ) async => visitedDirectories(sourceId);
+
+  @override
+  WebDavFile? visitedFile(MediaLibraryItem item) =>
+      (snapshots[item.sourceId] ?? [])
+          .where(
+            (s) => normalizeLibraryPath(s.path) == item.normalizedParentPath,
+          )
+          .expand((s) => s.entries)
+          .where(item.matches)
+          .firstOrNull;
 }
 
 void main() {
   setUpAll(sqfliteFfiInit);
 
-  test('启动导入按来源复用目录快照，保留最新 href、路径回退和观看进度', () async {
+  test('启动导入按来源异步复用目录快照，保留最新 href、路径回退和观看进度', () async {
     final temp = await Directory.systemTemp.createTemp('startup_watch_');
     final store = await FilmCatalogStore.open(p.join(temp.path, 'catalog.db'));
     final progress = await PlaybackProgressService.open(
@@ -74,7 +90,7 @@ void main() {
         final root = (await store.root(id))!;
         final generation = await store.beginScan(id);
         await store.stage(root, generation, [
-          for (var i = 1; i <= 12; i++)
+          for (var i = 1; i <= 140; i++)
             FilmScanEntry(
               path: 'Shows/Season/e$i.mkv',
               parentPath: 'Shows/Season',
@@ -103,7 +119,7 @@ void main() {
             path: '/Shows\\Season/',
             lastAccessedAt: DateTime.utc(2026, 1, 2),
             entries: [
-              for (var i = 1; i <= 11; i++)
+              for (var i = 1; i <= 139; i++)
                 WebDavFile(
                   name: 'e$i.mkv',
                   href: '/canonical/e$i.mkv',
@@ -123,13 +139,13 @@ void main() {
             ],
           ),
         ];
-        for (var i = 1; i <= 12; i++) {
+        for (var i = 1; i <= 140; i++) {
           await progress.saveProgress(
-            url: i == 12
-                ? 'https://$source.invalid/dav/Shows/Season/e12.mkv'
+            url: i == 140
+                ? 'https://$source.invalid/dav/Shows/Season/e140.mkv'
                 : 'https://$source.invalid/canonical/e$i.mkv',
             profileId: source,
-            positionMs: (source == 'a' ? 1000 : 2000) * i,
+            positionMs: (source == 'a' ? 100 : 200) * i,
             durationMs: 60000,
           );
         }
@@ -141,7 +157,7 @@ void main() {
         expect(state.status, FilmWatchStatus.inProgress);
         expect(
           state.fraction,
-          (r.sourceId == 'a' ? 1000 : 2000) * r.episode! / 60000,
+          (r.sourceId == 'a' ? 100 : 200) * r.episode! / 60000,
         );
       }
       // 下一次导入使用新快照，单条解析也读取当前缓存。

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,7 @@ import 'package:streampath/core/constants.dart';
 import 'package:streampath/data/local/directory_cache.dart';
 import 'package:streampath/features/cache_expiration/models/cache_expiration_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/data/models/media_library_item.dart';
 
 void main() {
   late Directory tempDir;
@@ -107,6 +109,63 @@ void main() {
     expect(cache.visitedDirectories('unknown'), isEmpty);
   });
 
+  test('单项续播按来源、规范目录、类型和最新快照读取 href，不延长寿命', () async {
+    const item = MediaLibraryItem(
+      sourceId: 'a',
+      parentPath: 'Shows/Season',
+      name: 'e1.mkv',
+      kind: MediaLibraryKind.video,
+    );
+    cache.write(
+      'old',
+      const [
+        WebDavFile(name: 'e1.mkv', href: '/older/e1.mkv', isDirectory: false),
+      ],
+      sourceId: 'a',
+      path: 'Shows/Season',
+    );
+    await cache.purgeExpired(now: now);
+    now = now.add(const Duration(hours: 1));
+    cache.write(
+      'new',
+      const [
+        WebDavFile(name: 'e1.mkv', href: '/directory', isDirectory: true),
+        WebDavFile(
+          name: 'e1.mkv',
+          href: '/canonical/e1.mkv',
+          isDirectory: false,
+        ),
+      ],
+      sourceId: 'a',
+      path: '/Shows\\Season/',
+    );
+    cache.write(
+      'other',
+      const [
+        WebDavFile(name: 'e1.mkv', href: '/other-source', isDirectory: false),
+      ],
+      sourceId: 'b',
+      path: 'Shows/Season',
+    );
+    await cache.purgeExpired(now: now);
+    for (var i = 0; i < 20; i++) {
+      final expected = cache
+          .visitedDirectories('a')
+          .where(
+            (s) => normalizeLibraryPath(s.path) == item.normalizedParentPath,
+          )
+          .expand((s) => s.entries)
+          .where(item.matches)
+          .first;
+      expect(cache.visitedFile(item)!.toCacheMap(), expected.toCacheMap());
+      expect(cache.visitedFile(item)!.href, '/canonical/e1.mkv');
+    }
+    now = now
+        .add(AppConstants.directoryCacheRetention)
+        .add(const Duration(milliseconds: 1));
+    expect(cache.visitedFile(item), isNull);
+  });
+
   test('旧快照仍可浏览但不参与搜索，清理缓存会清空访问型索引', () async {
     const entry = WebDavFile(
       name: 'A.mkv',
@@ -123,6 +182,42 @@ void main() {
     await cache.clear();
     expect(cache.read('legacy'), isNull);
     expect(cache.visitedDirectories('source-a'), isEmpty);
+  });
+
+  test('批量目录快照归还事件循环，保持内容、排序、隔离与过期规则', () async {
+    cache.write(
+      'large',
+      [
+        for (var i = 0; i < 20000; i++)
+          WebDavFile(name: 'e$i.mkv', href: '/e$i.mkv', isDirectory: false),
+      ],
+      sourceId: 'a',
+      path: 'old',
+    );
+    await cache.purgeExpired(now: now);
+    now = now.add(const Duration(hours: 1));
+    cache.write('new', const [], sourceId: 'a', path: 'new');
+    cache.write('other', const [], sourceId: 'b', path: 'other');
+    await cache.purgeExpired(now: now);
+    final expected = cache.visitedDirectories('a');
+    var yielded = false;
+    final timer = Timer(Duration.zero, () => yielded = true);
+    final actual = await cache.visitedDirectoriesAsync('a');
+    timer.cancel();
+    expect(yielded, isTrue);
+    expect(actual.map((s) => s.path), expected.map((s) => s.path));
+    expect(
+      actual.expand((s) => s.entries).map((e) => e.toCacheMap()),
+      expected.expand((s) => s.entries).map((e) => e.toCacheMap()),
+    );
+    expect(
+      actual.map((s) => s.lastAccessedAt),
+      expected.map((s) => s.lastAccessedAt),
+    );
+    now = now
+        .add(AppConstants.directoryCacheRetention)
+        .add(const Duration(milliseconds: 1));
+    expect(await cache.visitedDirectoriesAsync('a'), isEmpty);
   });
 
   test('Hive openBox 失败时初始化降级为未命中', () async {

@@ -5,8 +5,9 @@ import 'package:flutter/material.dart';
 import 'film_artwork.dart';
 
 class FilmLibraryBackground extends StatelessWidget {
-  const FilmLibraryBackground({super.key, required this.file});
+  const FilmLibraryBackground({super.key, required this.file, this.onReady});
   final File? file;
+  final VoidCallback? onReady;
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +32,14 @@ class FilmLibraryBackground extends StatelessWidget {
           // 返回页面时保留当前图片，实际切换背景由路径 key 重建。
           gaplessPlayback: true,
           fit: BoxFit.cover,
-          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+          frameBuilder: (context, child, frame, synchronouslyLoaded) {
+            if (frame != null) onReady?.call();
+            return child;
+          },
+          errorBuilder: (_, _, _) {
+            onReady?.call();
+            return const SizedBox.shrink();
+          },
         ),
         DecoratedBox(
           decoration: BoxDecoration(

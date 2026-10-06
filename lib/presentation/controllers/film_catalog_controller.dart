@@ -95,6 +95,7 @@ class FilmCatalogController extends ChangeNotifier {
 
   Future<void> refresh({bool more = false}) async {
     if (_closed || (more && loading)) return;
+    if (!more) _refreshTimer?.cancel();
     final generation = ++_queryGeneration;
     final requestedFilter = (type, query, rootId, newest, sectionId);
     if (!more && _loadedFilter != requestedFilter) {

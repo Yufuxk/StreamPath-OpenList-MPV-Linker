@@ -63,6 +63,7 @@ class MediaLibraryPage extends StatefulWidget {
     this.filmCenter = false,
     this.headerAction,
     this.sidebarInset = 0,
+    this.onReadyChanged,
   });
 
   final String sourceId;
@@ -85,6 +86,7 @@ class MediaLibraryPage extends StatefulWidget {
   final bool filmCenter;
   final Widget? headerAction;
   final double sidebarInset;
+  final ValueChanged<bool>? onReadyChanged;
   final ValueChanged<MediaLibraryRecord>? onContinueSelected;
   final Future<FilmCatalogController> Function()? loadFilmCatalog;
   final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
@@ -150,6 +152,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   @override
   void initState() {
     super.initState();
+    widget.onReadyChanged?.call(false);
     widget.store.addListener(_onLibraryChanged);
     widget.videoProgressService.addListener(_onVideoProgressChanged);
     widget.audioProgressService?.addListener(_onAudioProgressChanged);
@@ -214,7 +217,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         _audioHistory = records[3];
         _isoHistory = records[4];
         _filmTitles = titles;
-        _snapshots = widget.directoryCache.visitedDirectories(widget.sourceId);
+        _snapshots =
+            widget.filmCatalog == null || widget.resolveDirectTarget == null
+            ? widget.directoryCache.visitedDirectories(widget.sourceId)
+            : const [];
         _loading = false;
         _error = null;
       });
@@ -223,8 +229,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         final progressGeneration = ++_progressGeneration;
         await _loadContinueProgress(progressGeneration);
       });
+      if (mounted && libraryGeneration == _libraryGeneration) {
+        widget.onReadyChanged?.call(true);
+      }
     } catch (error) {
       if (!mounted || libraryGeneration != _libraryGeneration) return;
+      widget.onReadyChanged?.call(true);
       if (showLoading) {
         setState(() {
           _loading = false;
@@ -238,6 +248,20 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   void _onLibraryChanged() {
     if (!mounted) return;
+    if (widget.filmCatalog != null) {
+      List<MediaLibraryRecord> snapshot({bool iso = false}) => [
+        for (final source in _sourceIds)
+          ...widget.store.playbackHistorySnapshot(
+            source,
+            audio: false,
+            iso: iso,
+          ),
+      ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      setState(() {
+        _videoHistory = snapshot();
+        _isoHistory = snapshot(iso: true);
+      });
+    }
     _libraryRefreshDebounce?.cancel();
     _libraryRefreshDebounce = Timer(const Duration(milliseconds: 100), () {
       unawaited(_loadAll(showLoading: false));

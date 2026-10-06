@@ -195,11 +195,21 @@ class MediaLibraryStore {
   }) => _enqueue(() async {
     assert(!audio || !iso);
     await _load();
+    return playbackHistorySnapshot(sourceId, audio: audio, iso: iso);
+  });
+
+  /// 已提交的播放记录；变更通知期间无需再排队读取文件。
+  List<MediaLibraryRecord> playbackHistorySnapshot(
+    String sourceId, {
+    required bool audio,
+    bool iso = false,
+  }) {
+    assert(_loaded && (!audio || !iso));
     return _forSource(
       iso ? _isoHistory : (audio ? _audioHistory : _videoHistory),
       sourceId,
     );
-  });
+  }
 
   Future<List<MediaLibraryItem>> playbackProgressItems({required bool audio}) =>
       _enqueue(() async {

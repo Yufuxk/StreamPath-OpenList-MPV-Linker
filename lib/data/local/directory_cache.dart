@@ -7,6 +7,7 @@ import '../../core/cache/cache_retention_policy.dart';
 import '../../core/constants.dart';
 import '../../core/utils/cache_expiration.dart';
 import '../models/web_dav_file.dart';
+import '../models/media_library_item.dart';
 
 typedef DirectoryCacheBoxOpener = Future<Box<Map>> Function(String boxName);
 
@@ -222,6 +223,108 @@ class DirectoryCache {
       (left, right) => right.lastAccessedAt.compareTo(left.lastAccessedAt),
     );
     return snapshots;
+  }
+
+  /// 启动批量导入按短时间片解码，保持快照顺序与过期规则。
+  Future<List<VisitedDirectorySnapshot>> visitedDirectoriesAsync(
+    String sourceId,
+  ) async {
+    final box = _box;
+    if (box == null || sourceId.isEmpty) return const [];
+    final now = _now();
+    final snapshots = <VisitedDirectorySnapshot>[];
+    final slice = Stopwatch()..start();
+    // 避免等待期间缓存写入使 Hive 的键迭代器失效。
+    for (final key in box.keys.toList(growable: false)) {
+      final raw = box.get(key);
+      if (raw is! Map || raw['sourceId'] != sourceId) continue;
+      final path = raw['path'];
+      final entriesRaw = raw['entries'];
+      final cachedAtMs = raw['cachedAt'];
+      final accessMs = raw['lastAccessedAt'] ?? cachedAtMs;
+      if (path is! String ||
+          entriesRaw is! List ||
+          cachedAtMs is! int ||
+          accessMs is! int) {
+        continue;
+      }
+      final entries = <WebDavFile>[];
+      try {
+        final lastAccessedAt = DateTime.fromMillisecondsSinceEpoch(accessMs);
+        if (CacheExpiration.isExpired(
+          lastUsedAt: lastAccessedAt,
+          retention: _policyProvider().directoryRetention,
+          now: now,
+        )) {
+          continue;
+        }
+        for (final entry in entriesRaw.whereType<Map>()) {
+          entries.add(WebDavFile.fromCacheMap(entry));
+          if (slice.elapsedMilliseconds >= 4) {
+            await Future<void>.delayed(Duration.zero);
+            slice.reset();
+          }
+        }
+        snapshots.add(
+          VisitedDirectorySnapshot(
+            path: path,
+            entries: entries,
+            lastAccessedAt: lastAccessedAt,
+          ),
+        );
+      } on TypeError {
+        continue;
+      } on RangeError {
+        continue;
+      }
+    }
+    snapshots.sort((a, b) => b.lastAccessedAt.compareTo(a.lastAccessedAt));
+    return snapshots;
+  }
+
+  /// 单项续播只解码同目录同名条目，按最新快照保留真实 href。
+  WebDavFile? visitedFile(MediaLibraryItem item) {
+    final box = _box;
+    if (box == null || item.sourceId.isEmpty) return null;
+    final now = _now();
+    final parent = item.normalizedParentPath;
+    final candidates = <(int, List)>[];
+    for (final key in box.keys) {
+      final raw = box.get(key);
+      if (raw is! Map || raw['sourceId'] != item.sourceId) continue;
+      final path = raw['path'];
+      final entries = raw['entries'];
+      final cachedAt = raw['cachedAt'];
+      final accessedAt = raw['lastAccessedAt'] ?? cachedAt;
+      if (path is! String ||
+          entries is! List ||
+          cachedAt is! int ||
+          accessedAt is! int) {
+        continue;
+      }
+      if (normalizeLibraryPath(path) != parent ||
+          CacheExpiration.isExpired(
+            lastUsedAt: DateTime.fromMillisecondsSinceEpoch(accessedAt),
+            retention: _policyProvider().directoryRetention,
+            now: now,
+          )) {
+        continue;
+      }
+      candidates.add((accessedAt, entries));
+    }
+    candidates.sort((a, b) => b.$1.compareTo(a.$1));
+    for (final candidate in candidates) {
+      try {
+        for (final raw in candidate.$2.whereType<Map>()) {
+          if (raw['name'] != item.name) continue;
+          final file = WebDavFile.fromCacheMap(raw);
+          if (item.matches(file)) return file;
+        }
+      } on TypeError {
+        // 损坏的缓存条目仍视为未命中。
+      }
+    }
+    return null;
   }
 
   /// 清空全部目录快照，并保持 Hive 箱可继续使用。

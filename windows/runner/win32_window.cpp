@@ -89,6 +89,13 @@ LRESULT HitTestCustomFrame(HWND window, LPARAM lparam, bool fullscreen) {
 
 constexpr UINT_PTR kFlutterViewSubclassId = 1;
 
+void ShowWindowMenu(HWND window, POINT point) {
+  const HMENU menu = GetSystemMenu(window, FALSE);
+  const UINT command = TrackPopupMenu(
+      menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, 0, window, nullptr);
+  if (command != 0) PostMessage(window, WM_SYSCOMMAND, command, 0);
+}
+
 LRESULT CALLBACK FlutterViewSubclassProc(HWND window,
                                          UINT message,
                                          WPARAM wparam,
@@ -96,7 +103,11 @@ LRESULT CALLBACK FlutterViewSubclassProc(HWND window,
                                          UINT_PTR subclass_id,
                                          DWORD_PTR ref_data) {
   auto* host = reinterpret_cast<Win32Window*>(ref_data);
-  if (message == WM_NCHITTEST && host != nullptr && host->GetHandle() != nullptr) {
+  if (message == WM_SYSKEYDOWN && wparam == VK_SPACE && host != nullptr &&
+      !host->IsFullscreen()) {
+    SendMessage(host->GetHandle(), WM_SYSCOMMAND, SC_KEYMENU, VK_SPACE);
+    return 0;
+  } else if (message == WM_NCHITTEST && host != nullptr && host->GetHandle() != nullptr) {
     const LRESULT result = HitTestCustomFrame(host->GetHandle(), lparam, host->IsFullscreen());
     if (result != HTCLIENT) {
       return HTTRANSPARENT;
@@ -161,8 +172,7 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     WNDCLASS window_class{};
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.lpszClassName = Win32Window::kWindowClassName;
-    // CS_DROPSHADOW gives the caption-less (WS_POPUP) window the standard
-    // DWM shadow.
+    // 保留自绘窗口的系统阴影。
     window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
     window_class.cbClsExtra = 0;
     window_class.cbWndExtra = 0;
@@ -215,16 +225,9 @@ bool Win32Window::Create(const std::wstring& title,
   const int x = work.left + (work.right - work.left - width) / 2;
   const int y = work.top + (work.bottom - work.top - height) / 2;
 
-  // Custom-drawn title bar: use WS_POPUP instead of merely dropping
-  // WS_CAPTION, because Windows forces WS_CAPTION back onto any non-child,
-  // non-popup window. The resizable frame, system menu and minimize/maximize
-  // support are kept so the window keeps native resize borders and taskbar
-  // commands; dragging and double-click maximize are delegated to Flutter
-  // through the window-controls channel using the native caption semantics.
+  // 保留标准窗口的合成动画，标题栏仍由 WM_NCCALCSIZE 与 Flutter 绘制。
   HWND window = CreateWindow(
-      window_class, title.c_str(),
-      WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX |
-          WS_MAXIMIZEBOX,
+      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
       x, y, width, height,
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
@@ -232,6 +235,13 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  // 系统菜单沿用原对象，Caption 样式保留合成动画，按钮由 Flutter 绘制。
+  GetSystemMenu(window, FALSE);
+  SetWindowLongPtr(window, GWL_STYLE,
+                   GetWindowLongPtr(window, GWL_STYLE) & ~WS_SYSMENU);
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                   SWP_FRAMECHANGED);
   UpdateTheme(window);
   DisableDwmBorder(window);
 
@@ -294,7 +304,15 @@ Win32Window::MessageHandler(HWND hwnd,
                             LPARAM const lparam) noexcept {
   switch (message) {
     case WM_NCCALCSIZE:
-      // Let Flutter paint the whole window, including the rounded top edge.
+      // 最大化的系统边框位于屏幕外，客户区只覆盖可见区域。
+      if (wparam && IsZoomed(hwnd)) {
+        MONITORINFO monitor{sizeof(MONITORINFO)};
+        if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                           &monitor)) {
+          auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+          params->rgrc[0] = IsFullscreen() ? monitor.rcMonitor : monitor.rcWork;
+        }
+      }
       return 0;
 
     case WM_NCACTIVATE:
@@ -306,6 +324,24 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_NCHITTEST:
       // Preserve native resize, drag and double-click maximize semantics.
       return HitTestCustomFrame(hwnd, lparam, IsFullscreen());
+
+    case WM_SYSCOMMAND:
+      if (!IsFullscreen() && (wparam & 0xFFF0) == SC_KEYMENU &&
+          lparam == VK_SPACE) {
+        RECT bounds{};
+        GetWindowRect(hwnd, &bounds);
+        const int title_height = MulDiv(32, FlutterDesktopGetDpiForHWND(hwnd), 96);
+        ShowWindowMenu(hwnd, {bounds.left, bounds.top + title_height});
+        return 0;
+      }
+      break;
+
+    case WM_NCRBUTTONUP:
+      if (wparam == HTCAPTION && !IsFullscreen()) {
+        ShowWindowMenu(hwnd, {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+        return 0;
+      }
+      break;
 
     case WM_DESTROY:
       window_handle_ = nullptr;
@@ -330,22 +366,18 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
     }
     case WM_GETMINMAXINFO: {
-      // A maximized WS_POPUP window would otherwise cover the whole monitor
-      // including the taskbar; constrain maximizing to the work area.
+      // 最大化使用工作区，全屏使用整个显示器。
       auto* min_max_info = reinterpret_cast<MINMAXINFO*>(lparam);
       MONITORINFO monitor_info{};
       monitor_info.cbSize = sizeof(MONITORINFO);
       if (::GetMonitorInfo(
               ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
               &monitor_info)) {
-        min_max_info->ptMaxPosition.x =
-            monitor_info.rcWork.left - monitor_info.rcMonitor.left;
-        min_max_info->ptMaxPosition.y =
-            monitor_info.rcWork.top - monitor_info.rcMonitor.top;
-        min_max_info->ptMaxSize.x =
-            monitor_info.rcWork.right - monitor_info.rcWork.left;
-        min_max_info->ptMaxSize.y =
-            monitor_info.rcWork.bottom - monitor_info.rcWork.top;
+        const RECT bounds = IsFullscreen() ? monitor_info.rcMonitor : monitor_info.rcWork;
+        min_max_info->ptMaxPosition.x = bounds.left - monitor_info.rcMonitor.left;
+        min_max_info->ptMaxPosition.y = bounds.top - monitor_info.rcMonitor.top;
+        min_max_info->ptMaxSize.x = bounds.right - bounds.left;
+        min_max_info->ptMaxSize.y = bounds.bottom - bounds.top;
       }
       return 0;
     }

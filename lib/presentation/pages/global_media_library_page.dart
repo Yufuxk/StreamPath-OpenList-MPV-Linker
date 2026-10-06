@@ -19,6 +19,7 @@ class GlobalMediaLibraryPage extends StatefulWidget {
     this.filmCenter = false,
     this.headerAction,
     this.sidebarInset = 0,
+    this.onReadyChanged,
   });
 
   final ValueChanged<MediaLibraryItem> onOpenItem;
@@ -28,6 +29,7 @@ class GlobalMediaLibraryPage extends StatefulWidget {
   final bool filmCenter;
   final Widget? headerAction;
   final double sidebarInset;
+  final ValueChanged<bool>? onReadyChanged;
 
   @override
   State<GlobalMediaLibraryPage> createState() => _GlobalMediaLibraryPageState();
@@ -39,6 +41,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
   @override
   void initState() {
     super.initState();
+    widget.onReadyChanged?.call(false);
     _ready = widget.filmCatalog == null
         ? Future.value()
         : context.read<AppState>().initializeFilmPlayback();
@@ -51,6 +54,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
         future: _ready,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
+            widget.onReadyChanged?.call(true);
             return const Center(child: AppText('读取媒体资产失败'));
           }
           return snapshot.connectionState == ConnectionState.done
@@ -78,6 +82,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
     };
     if (store == null ||
         (names.isEmpty && !widget.filmCenter && widget.headerAction == null)) {
+      widget.onReadyChanged?.call(true);
       return widget.filmCatalog != null && !widget.filmCenter
           ? const SizedBox.shrink()
           : const Scaffold(body: Center(child: AppText('没有可用的媒体来源')));
@@ -91,6 +96,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
     return MediaLibraryPage(
       key: ValueKey(selected ?? 'all'),
       filmCatalog: widget.filmCatalog,
+      onReadyChanged: widget.onReadyChanged,
       filmCenter: widget.filmCenter,
       headerAction: widget.headerAction,
       sidebarInset: widget.sidebarInset,

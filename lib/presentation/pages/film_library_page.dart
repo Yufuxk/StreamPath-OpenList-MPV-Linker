@@ -51,12 +51,16 @@ class _FilmLibraryPageState extends State<FilmLibraryPage> {
   bool _prefetchScheduled = false;
   bool _browse = false;
   bool _startupFrameScheduled = false;
+  bool _catalogReady = false;
+  bool _continueReady = true;
+  bool _backgroundReady = true;
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_loadMore);
     _catalog = context.read<AppState>().getFilmCatalog().then((c) async {
       await c.refresh();
+      _backgroundReady = c.backgroundFile == null;
       if (mounted) _controller = c;
       return c;
     });
@@ -95,16 +99,26 @@ class _FilmLibraryPageState extends State<FilmLibraryPage> {
     }
   }
 
+  void _scheduleStartupReady() {
+    if (_startupFrameScheduled || context.read<AppState>().startupReady.value) {
+      return;
+    }
+    _startupFrameScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startupFrameScheduled = false;
+      if (mounted && _catalogReady && _continueReady && _backgroundReady) {
+        context.read<AppState>().startupReady.value = true;
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) => FutureBuilder<FilmCatalogController>(
     future: _catalog,
     builder: (context, state) {
-      if (!_startupFrameScheduled &&
-          state.connectionState == ConnectionState.done) {
-        _startupFrameScheduled = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) context.read<AppState>().startupReady.value = true;
-        });
+      if (state.connectionState == ConnectionState.done) {
+        _catalogReady = true;
+        _scheduleStartupReady();
       }
       if (!state.hasData) {
         return Padding(
@@ -137,7 +151,14 @@ class _FilmLibraryPageState extends State<FilmLibraryPage> {
               Positioned.fill(
                 child: ExcludeSemantics(
                   child: IgnorePointer(
-                    child: FilmLibraryBackground(file: c.backgroundFile),
+                    child: FilmLibraryBackground(
+                      file: c.backgroundFile,
+                      onReady: () {
+                        if (_backgroundReady) return;
+                        _backgroundReady = true;
+                        _scheduleStartupReady();
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -441,6 +462,10 @@ class _FilmLibraryPageState extends State<FilmLibraryPage> {
         'continue' =>
           widget.continueShelf ??
               GlobalMediaLibraryPage(
+                onReadyChanged: (ready) {
+                  _continueReady = ready;
+                  _scheduleStartupReady();
+                },
                 filmCatalog: c,
                 sidebarInset: widget.sidebarInset,
                 onOpenItem: widget.onOpenItem,

@@ -37,6 +37,7 @@ import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.dart';
 import 'package:streampath/presentation/widgets/film_work_menu.dart';
+import 'package:streampath/presentation/widgets/startup_overlay.dart';
 
 import 'helpers/shell_test_app_state.dart';
 
@@ -319,6 +320,69 @@ void main() {
         'implicit_favorites_${dimensions.$1}_${dimensions.$2}',
       );
     }
+  });
+
+  testWidgets('隐藏主页的最后续播删除后，返回第一帧直接收起栏目', (tester) async {
+    await prepare(tester);
+    await seedContinue(tester);
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    expect(find.byType(FilmContinueCard), findsOneWidget);
+    final home = tester.element(find.byType(FilmLibraryPage));
+    Navigator.of(home).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(body: Text('Child page')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => app.filmMediaLibraryStore!.removePlayback(
+        resources.first.playbackItem,
+      ),
+    );
+    Navigator.of(home).pop();
+    await tester.pump();
+    expect(find.byType(FilmContinueCard), findsNothing);
+    expect(find.text('继续播放'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('启动遮罩等续播查询与背景解码就绪再释放', (tester) async {
+    await prepare(tester);
+    await seedContinue(tester);
+    await tester.runAsync(() async {
+      await c.store.setBackgroundPath(picture.path);
+    });
+    await tester.pumpWidget(
+      frame(
+        StartupOverlay(
+          ready: app.startupReady,
+          child: FilmLibraryPage(onOpenItem: (_) async {}),
+        ),
+      ),
+    );
+    var observedReady = false;
+    for (var i = 0; i < 80; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 2)),
+      );
+      await tester.pump(const Duration(milliseconds: 5));
+      if (!app.startupReady.value) continue;
+      observedReady = true;
+      expect(find.byType(FilmContinueCard), findsOneWidget);
+      final background = find.byKey(const Key('film-library-background'));
+      expect(
+        tester
+            .widget<RawImage>(
+              find.descendant(of: background, matching: find.byType(RawImage)),
+            )
+            .image,
+        isNotNull,
+      );
+      break;
+    }
+    expect(observedReady, true);
+    await settle(tester);
   });
 
   testWidgets('主页滚轮在内容和空白处只滚动一次，任务刷新保持控制器与位置', (tester) async {

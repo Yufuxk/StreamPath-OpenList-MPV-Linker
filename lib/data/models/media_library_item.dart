@@ -93,9 +93,9 @@ class MediaLibraryItem {
       '$sourceId\u0000${kind.name}\u0000$targetPath\u0000${playbackMode.name}';
 
   bool matches(MediaDirectoryEntry file) {
+    if (file.name != name) return false;
     final fileKind = MediaLibraryKindX.fromEntry(file);
-    return file.name == name &&
-        (fileKind == kind || (discRootPath != null && file.isDirectory));
+    return fileKind == kind || (discRootPath != null && file.isDirectory);
   }
 
   Map<String, dynamic> toJson() => <String, dynamic>{

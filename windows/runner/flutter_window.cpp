@@ -447,37 +447,40 @@ void FlutterWindow::OnDestroy() {
 
 bool FlutterWindow::SetFullscreen(bool enabled) {
   const HWND window = GetHandle();
+  MONITORINFO monitor{sizeof(MONITORINFO)};
+  if (!GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                      &monitor)) {
+    return false;
+  }
   if (enabled) {
-    MONITORINFO monitor{sizeof(MONITORINFO)};
-    if (!GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) return false;
     if (!fullscreen_) {
       if (!GetWindowPlacement(window, &windowed_placement_)) return false;
       windowed_style_ = GetWindowLongPtr(window, GWL_STYLE);
-      if (IsZoomed(window)) ShowWindow(window, SW_RESTORE);
-      SetWindowLongPtr(window, GWL_STYLE, windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE));
+      fullscreen_ = true;
+      if (!IsZoomed(window)) ShowWindow(window, SW_MAXIMIZE);
     }
-    fullscreen_ = true;
-    if (!SetWindowPos(window, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
-                      monitor.rcMonitor.right - monitor.rcMonitor.left,
-                      monitor.rcMonitor.bottom - monitor.rcMonitor.top,
-                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
-      fullscreen_ = false;
-      SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
-      SetWindowPlacement(window, &windowed_placement_);
-      return false;
-    }
+    // 全屏不采用最大化的工作区与边框约束。
+    SetWindowLongPtr(window, GWL_STYLE,
+                     (windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE)) |
+                         WS_POPUP);
+    SetWindowPos(window, nullptr, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                 monitor.rcMonitor.right - monitor.rcMonitor.left,
+                 monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   } else if (fullscreen_) {
     fullscreen_ = false;
-    SetWindowLongPtr(window, GWL_STYLE, windowed_style_);
+    SetWindowLongPtr(window, GWL_STYLE, windowed_style_ & ~WS_MAXIMIZE);
     SetWindowPlacement(window, &windowed_placement_);
-    SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
   }
   constexpr DWORD kCornerPreference = 33;
   const DWORD corner = fullscreen_ ? 1 : 2;
-  DwmSetWindowAttribute(window, static_cast<DWMWINDOWATTRIBUTE>(kCornerPreference), &corner, sizeof(corner));
+  DwmSetWindowAttribute(window,
+                        static_cast<DWMWINDOWATTRIBUTE>(kCornerPreference),
+                        &corner, sizeof(corner));
   if (appearance_channel_) {
-    appearance_channel_->InvokeMethod("fullscreenChanged", std::make_unique<flutter::EncodableValue>(fullscreen_));
+    appearance_channel_->InvokeMethod(
+        "fullscreenChanged",
+        std::make_unique<flutter::EncodableValue>(fullscreen_));
   }
   return true;
 }
