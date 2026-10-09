@@ -1,3 +1,6 @@
+import '../../data/models/film_playlist.dart';
+import '../../data/local/film_catalog_store.dart';
+import '../widgets/sp_menu.dart';
 import '../widgets/video_version_dialog.dart';
 import '../../data/models/video_queue.dart';
 import '../../data/models/video_playlist_mode.dart';
@@ -93,6 +96,7 @@ class BrowserPage extends StatefulWidget {
     this.initialRevealName,
     this.playbackOnly = false,
     this.webDavSource,
+    this.directorySource,
   });
 
   final LocalRootConfig? localRoot;
@@ -105,6 +109,7 @@ class BrowserPage extends StatefulWidget {
   final String? initialRevealName;
   final bool playbackOnly;
   final WebDAVService? webDavSource;
+  final MediaDirectorySource? directorySource;
 
   @override
   BrowserPageState createState() => BrowserPageState();
@@ -634,7 +639,10 @@ class BrowserPageState extends State<BrowserPage> {
     if (widget.playbackOnly && resumeSessionId == null) {
       session = _playbackSessions.where((candidate) {
         final history = candidate.history;
-        if (history.sourceId != item.sourceId) return false;
+        if (history.sourceId != item.sourceId ||
+            history.filmPlaylistId != null) {
+          return false;
+        }
         if (item.kind.isVideoLane &&
             history.kind == PlaybackHistoryKind.video) {
           return history.playlistRelativePaths.contains(item.targetPath) ||
@@ -744,14 +752,23 @@ class BrowserPageState extends State<BrowserPage> {
       bar = _buildLocalDiscPlaybackBar(discEntry) as PlaybackBar;
     }
     if (!mounted) return;
+    final watchResource =
+        await (await context.read<AppState>().getFilmCatalogStore()).resourceAt(
+          record.item.sourceId,
+          record.item.targetPath,
+        );
+    if (!mounted) return;
     final controls = bar;
     final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final selected = await showMenu<String>(
+        Overlay.of(context, rootOverlay: true).context.findRenderObject()!
+            as RenderBox;
+    final menuPosition = overlay.globalToLocal(position);
+    final selected = await showSPMenu<String>(
       context: context,
+      useRootNavigator: true,
       color: AppTheme.dropdownMenuColor(Theme.of(context)),
       position: RelativeRect.fromRect(
-        Rect.fromLTWH(position.dx, position.dy, 1, 1),
+        Rect.fromLTWH(menuPosition.dx, menuPosition.dy, 1, 1),
         Offset.zero & overlay.size,
       ),
       items: [
@@ -761,11 +778,33 @@ class BrowserPageState extends State<BrowserPage> {
           const PopupMenuItem(value: 'subtitles', child: AppText('蓝光外挂字幕')),
         if (controls?.onSkipSeason != null)
           const PopupMenuItem(value: 'skip', child: AppText('跳过本季')),
+        const PopupMenuItem(value: 'refresh', child: AppText('刷新播放状态')),
+        if (watchResource?.canMarkWatched == true)
+          const PopupMenuItem(value: 'watched', child: AppText('本集已看完')),
         const PopupMenuItem(value: 'delete', child: AppText('删除并关闭播放器')),
       ],
     );
     if (!mounted) return;
     switch (selected) {
+      case 'refresh':
+        if (record.playbackSessionId != null) {
+          await _playerService.refreshPlaybackStatus(record.playbackSessionId!);
+          if (session != null) {
+            if (session.history.kind == PlaybackHistoryKind.video) {
+              await _syncPlaybackSession(session);
+            } else {
+              await _syncIsoPlaybackSession(session);
+            }
+          }
+          if (discEntry != null) {
+            await _localDiscPlaybackService.refreshPlaybackStatus(
+              record.playbackSessionId!,
+            );
+          }
+        }
+        if (mounted) setState(() {});
+      case 'watched':
+        await context.read<AppState>().markFilmWatched([watchResource!], true);
       case 'play':
         controls!.onPressed!();
       case 'subtitles':
@@ -982,7 +1021,9 @@ class BrowserPageState extends State<BrowserPage> {
     final localRoot = widget.localRoot;
     if (localRoot == null) {
       _webDavSourceService = widget.webDavSource ?? appState.webDavService!;
-      _source = WebDavMediaSourceAdapter(_webDavSourceService!);
+      _source =
+          widget.directorySource ??
+          WebDavMediaSourceAdapter(_webDavSourceService!);
       _isoPlaybackService = widget.playbackOnly
           ? appState.filmIsoPlaybackService
           : appState.isoPlaybackService;
@@ -1556,9 +1597,14 @@ class BrowserPageState extends State<BrowserPage> {
       fontMatcher: app.webDavFontMatcher,
       titles: titles,
     );
-    await preparer.prepareSharedFonts(
-      history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
-    );
+    final prepare = history.filmPlaylistId != null
+        ? _customVideoPreparation(preparer, store)
+        : preparer.prepare;
+    if (history.filmPlaylistId == null) {
+      await preparer.prepareSharedFonts(
+        history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
+      );
+    }
     Future<void> target(
       int index,
       VideoQueueVersion version, {
@@ -1612,7 +1658,7 @@ class BrowserPageState extends State<BrowserPage> {
     final plan = ImplicitVideoPlan(
       items: items,
       index: history.videoIndex,
-      prepare: preparer.prepare,
+      prepare: prepare,
       chooseVersion: (item) async {
         if (!navigator.mounted) return null;
         return showVideoVersionDialog(navigator.context, item);
@@ -1912,7 +1958,8 @@ class BrowserPageState extends State<BrowserPage> {
     }
     if (!mounted) return;
     final resumeSnapshot = continueRecord?.localDiscSession;
-    final resumeEdition = resumeSnapshot?.currentEdition;
+    final resumeEdition =
+        resumeSnapshot?.currentEdition ?? continueRecord?.discResumeEdition;
     final selection = await showDialog<_LocalDiscLaunchSelection>(
       context: context,
       builder: (dialogContext) => SPDialog(
@@ -2160,7 +2207,8 @@ class BrowserPageState extends State<BrowserPage> {
               ],
               ...[
                 const SizedBox(height: 12),
-                const SelectableText(
+                SelectableText(
+                  contextMenuBuilder: buildSPTextSelectionMenu,
                   'WinFsp - Windows File System Proxy\nCopyright (C) Bill Zissimopoulos\nhttps://github.com/winfsp/winfsp',
                   style: TextStyle(fontSize: 11),
                 ),
@@ -2868,6 +2916,161 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  Future<PreparedVideoItem> Function(VideoQueueVersion) _customVideoPreparation(
+    VideoEntryPreparer base,
+    FilmCatalogStore store,
+  ) {
+    final preparers = <Object, Future<VideoEntryPreparer>>{};
+    final sourceId = base.source.descriptor.sourceId;
+    return (version) async {
+      final r = await store.resourceAt(sourceId, version.path);
+      final parent = p.posix
+          .dirname(version.path)
+          .replaceFirst(RegExp(r'^\.$'), '');
+      final key = r?.workId ?? parent;
+      final preparer = await (preparers[key] ??= (() async {
+        final value = VideoEntryPreparer(
+          source: base.source,
+          config: base.config,
+          subtitleMatcher: base.subtitleMatcher,
+          fontMatcher: base.fontMatcher,
+          titles: base.titles,
+        );
+        await value.prepareSharedFonts(parent);
+        return value;
+      })());
+      return preparer.prepare(version);
+    };
+  }
+
+  Future<void> playFilmPlaylist(
+    FilmPlaylistSnapshot snapshot,
+    int index,
+  ) async {
+    await _sessionsLoaded;
+    if (!mounted || snapshot.playlist.sourceId != _sourceId) return;
+    try {
+      if (!p
+          .basename(
+            context
+                .read<AppState>()
+                .configStore
+                .current
+                .toPlayerConfig()
+                .executable
+                .trim(),
+          )
+          .toLowerCase()
+          .contains('mpv')) {
+        throw AppException.config('自定义播放列表需要 MPV 播放器');
+      }
+      if (snapshot.entries.isEmpty) throw AppException.config('播放列表为空');
+      if (!snapshot.entries[index].available) {
+        throw AppException.config('播放列表条目不可用，请检查来源或资源');
+      }
+      if (_playbackSessions
+              .where((s) => s.history.sourceId == _sourceId)
+              .length >=
+          _historyStore.maxSessionsPerSource) {
+        throw AppException.config('播放位置已占满');
+      }
+      final item = snapshot.queueItems[index];
+      final version = item.versions.length == 1
+          ? item.versions.single
+          : await showVideoVersionDialog(context, item);
+      if (version == null || !mounted) return;
+      final parent = p.posix
+          .dirname(version.path)
+          .replaceFirst(RegExp(r'^\.$'), '');
+      await context.read<AppState>().withMediaPlaybackPriority(
+        () => _playImplicitVideo(
+          [],
+          version.path,
+          parent,
+          [],
+          null,
+          null,
+          VideoPlaybackScope.directory,
+          playlistSnapshot: snapshot,
+          playlistIndex: index,
+        ),
+      );
+    } on AppException catch (error) {
+      if (mounted) _showLibraryError(error.message);
+    }
+  }
+
+  Future<void> _launchFilmPlaylistHistory(
+    PlaybackHistory history,
+    int index,
+  ) async {
+    try {
+      final store = await context.read<AppState>().getFilmCatalogStore();
+      final resources = await store.resources(
+        sourceId: _sourceId,
+        enabledOnly: true,
+      );
+      final paths = resources
+          .where((r) => r.availability == 'present')
+          .map((r) => r.path)
+          .toSet();
+      history = history.copyWith(
+        queueItems: [
+          for (final item in history.queueItems)
+            VideoQueueItem(
+              versions: item.versions,
+              season: item.season,
+              episode: item.episode,
+              airDate: item.airDate,
+              unavailable: !item.versions.any((v) => paths.contains(v.path)),
+            ),
+        ],
+      );
+      if (!mounted) return;
+      final item = history.queueItems[index];
+      if (item.unavailable) throw AppException.config('播放列表条目不可用，请检查来源或资源');
+      if (!p
+          .basename(
+            context
+                .read<AppState>()
+                .configStore
+                .current
+                .toPlayerConfig()
+                .executable
+                .trim(),
+          )
+          .toLowerCase()
+          .contains('mpv')) {
+        throw AppException.config('自定义播放列表需要 MPV 播放器');
+      }
+      final path = history.playlistRelativePaths[index];
+      final version =
+          history.pendingVideoIndex != null && item.versions.length > 1
+          ? await showVideoVersionDialog(context, item)
+          : item.versions.where((v) => v.path == path).firstOrNull ??
+                item.versions.first;
+      if (version == null || !mounted) return;
+      final parent = p.posix
+          .dirname(version.path)
+          .replaceFirst(RegExp(r'^\.$'), '');
+      await context.read<AppState>().withMediaPlaybackPriority(
+        () => _playImplicitVideo(
+          [],
+          version.path,
+          parent,
+          [],
+          history.sessionId,
+          _sessionById(history.sessionId),
+          history.playbackScope,
+          playlistHistory: history,
+          playlistIndex: index,
+        ),
+      );
+    } on AppException catch (error) {
+      if (mounted) _showLibraryError(error.message);
+    }
+  }
+
   Future<void> _playImplicitVideo(
     List<SpecialVideoItem> ordered,
     String targetPath,
@@ -2875,8 +3078,11 @@ class BrowserPageState extends State<BrowserPage> {
     List<MediaDirectoryEntry> rootFiles,
     String? sessionId,
     PlaybackUiSession? existingSession,
-    VideoPlaybackScope scope,
-  ) async {
+    VideoPlaybackScope scope, {
+    FilmPlaylistSnapshot? playlistSnapshot,
+    PlaybackHistory? playlistHistory,
+    int? playlistIndex,
+  }) async {
     final app = context.read<AppState>();
     final source = _source;
     final sourceId = _sourceId;
@@ -2889,14 +3095,21 @@ class BrowserPageState extends State<BrowserPage> {
     final navigator = Navigator.of(context, rootNavigator: true);
     final config = app.configStore.current.toPlayerConfig();
     final store = await app.getFilmCatalogStore();
-    var items = [
-      for (final item in ordered)
-        VideoQueueItem(
-          versions: [VideoQueueVersion(path: item.path, name: item.entry.name)],
-        ),
-    ];
+    final custom = playlistSnapshot != null || playlistHistory != null;
+    var items =
+        playlistSnapshot?.queueItems ??
+        playlistHistory?.queueItems ??
+        [
+          for (final item in ordered)
+            VideoQueueItem(
+              versions: [
+                VideoQueueVersion(path: item.path, name: item.entry.name),
+              ],
+            ),
+        ];
     final mapped = await store.resourceAt(sourceId, targetPath);
-    if (scope == VideoPlaybackScope.directory &&
+    if (!custom &&
+        scope == VideoPlaybackScope.directory &&
         mapped?.type == FilmMediaType.tv &&
         mapped?.workId != null &&
         mapped?.season != null &&
@@ -2919,7 +3132,8 @@ class BrowserPageState extends State<BrowserPage> {
         allowGap: config.allowSeasonGap,
       );
     }
-    if (scope == VideoPlaybackScope.directory &&
+    if (!custom &&
+        scope == VideoPlaybackScope.directory &&
         config.autoSeasonTransitionEnabled &&
         !(mapped?.type == FilmMediaType.tv &&
             mapped?.season != null &&
@@ -2982,10 +3196,15 @@ class BrowserPageState extends State<BrowserPage> {
           ),
       ];
     }
-    final index = items.indexWhere(
-      (item) => item.versions.any((v) => v.path == targetPath),
-    );
+    final index =
+        playlistIndex ??
+        items.indexWhere(
+          (item) => item.versions.any((v) => v.path == targetPath),
+        );
     if (index < 0) throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
+    if (items[index].unavailable) {
+      throw AppException.config('播放列表条目不可用，请检查来源或资源');
+    }
     final titles = await _videoPlaylistTitles(ordered);
     final titleMap = {
       for (var i = 0; i < ordered.length; i++) ordered[i].path: titles[i],
@@ -3009,14 +3228,27 @@ class BrowserPageState extends State<BrowserPage> {
         for (final item in ordered) item.parentPath: item.siblings,
       },
     );
-    await preparer.prepareSharedFonts(rootPath, siblings: rootFiles);
+    final prepare = custom
+        ? _customVideoPreparation(preparer, store)
+        : preparer.prepare;
+    if (!custom) {
+      await preparer.prepareSharedFonts(rootPath, siblings: rootFiles);
+    }
     final version = items[index].versions.firstWhere(
       (v) => v.path == targetPath,
     );
-    final initial = await preparer.prepare(version);
+    final initial = await prepare(version);
     if (!mounted) return;
     final id = sessionId ?? _newSessionId();
     final now = DateTime.now();
+    final queuePaths = playlistHistory == null
+        ? [for (final item in items) item.versions.first.path]
+        : List<String>.of(playlistHistory.playlistRelativePaths);
+    final queueNames = playlistHistory == null
+        ? [for (final item in items) item.versions.first.name]
+        : List<String>.of(playlistHistory.playlistFileNames);
+    queuePaths[index] = version.path;
+    queueNames[index] = version.name;
     final history = PlaybackHistory(
       sessionId: id,
       sourceId: sourceId,
@@ -3024,13 +3256,20 @@ class BrowserPageState extends State<BrowserPage> {
       fileName: version.name,
       videoIndex: index,
       updatedAt: now,
-      createdAt: existingSession?.history.createdAt ?? now,
-      playlistFileNames: [for (final item in items) item.versions.first.name],
-      playlistRelativePaths: [
-        for (final item in items) item.versions.first.path,
-      ],
+      createdAt:
+          playlistHistory?.createdAt ??
+          existingSession?.history.createdAt ??
+          now,
+      playlistFileNames: queueNames,
+      playlistRelativePaths: queuePaths,
       videoQueueRootPath: rootPath,
       queueItems: items,
+      filmPlaylistId:
+          playlistSnapshot?.playlist.id ?? playlistHistory?.filmPlaylistId,
+      filmPlaylistEntryIds:
+          playlistSnapshot?.entries.map((e) => e.id).toList() ??
+          playlistHistory?.filmPlaylistEntryIds ??
+          const [],
       videoPlaylistMode: VideoPlaylistMode.implicit,
       playbackScope: scope,
     );
@@ -3107,7 +3346,7 @@ class BrowserPageState extends State<BrowserPage> {
     final plan = ImplicitVideoPlan(
       items: items,
       index: index,
-      prepare: preparer.prepare,
+      prepare: prepare,
       chooseVersion: (item) async {
         if (!navigator.mounted) return null;
         return showVideoVersionDialog(navigator.context, item);
@@ -3122,6 +3361,14 @@ class BrowserPageState extends State<BrowserPage> {
         }
       },
     );
+    if (playlistHistory != null) {
+      for (var i = 0; i <= playlistHistory.videoIndex; i++) {
+        final prior = items[i].versions
+            .where((v) => v.path == queuePaths[i])
+            .firstOrNull;
+        if (prior != null) plan.selected[i] = prior;
+      }
+    }
     plan.selected[index] = version;
     plan.prepared[version.path] = initial;
     try {
@@ -5280,6 +5527,14 @@ class BrowserPageState extends State<BrowserPage> {
 
   /// 「继续播放」：进入上次目录扫描并复用对应类型的常规播放入口。
   Future<void> _resumePlaybackSession(PlaybackUiSession session) async {
+    final latest = _historyStore.sessions
+        .where((history) => history.sessionId == session.history.sessionId)
+        .firstOrNull;
+    if (latest == null) {
+      _playbackPresenter.removeVideoSession(session);
+      return;
+    }
+    session.history = latest;
     if (widget.playbackOnly && session.paused != null) {
       if (session.history.kind == PlaybackHistoryKind.iso) {
         await _isoPlaybackService?.sendResume(
@@ -5401,6 +5656,10 @@ class BrowserPageState extends State<BrowserPage> {
     final index = history.pendingVideoIndex ?? history.videoIndex;
     if (index < 0 || index >= history.playlistRelativePaths.length) {
       _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
+      return;
+    }
+    if (history.filmPlaylistId != null) {
+      await _launchFilmPlaylistHistory(history, index);
       return;
     }
     var target = history.playlistRelativePaths[index];
@@ -5638,7 +5897,7 @@ class BrowserPageState extends State<BrowserPage> {
             : _buildTitle(),
         actions: [
           if (_directorySearchOpen && !_isLocal)
-            PopupMenuButton<DirectorySearchScope>(
+            SPPopupMenuButton<DirectorySearchScope>(
               key: const Key('browser-search-scope'),
               tooltip: context.l10n.text('搜索范围'),
               icon: const Icon(SPIcons.manageSearch),
@@ -5663,7 +5922,7 @@ class BrowserPageState extends State<BrowserPage> {
                 ),
               ],
             ),
-          PopupMenuButton<String>(
+          SPPopupMenuButton<String>(
             tooltip: context.l10n.format('排序：{mode} · {direction}', {
               'mode': context.l10n.text(_sortMode.label),
               'direction': context.l10n.text(_sortDirection.label),
@@ -5923,7 +6182,7 @@ class BrowserPageState extends State<BrowserPage> {
     Offset globalPosition,
   ) async {
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final selected = await showMenu<String>(
+    final selected = await showSPMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
@@ -6009,7 +6268,7 @@ class BrowserPageState extends State<BrowserPage> {
   ) async {
     if (session.deleting) return;
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final selected = await showMenu<String>(
+    final selected = await showSPMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
@@ -6198,7 +6457,7 @@ class BrowserPageState extends State<BrowserPage> {
   ) async {
     if (session.deleting) return;
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final selected = await showMenu<String>(
+    final selected = await showSPMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),

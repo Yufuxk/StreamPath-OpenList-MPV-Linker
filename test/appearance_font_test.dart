@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -68,10 +69,9 @@ void main() {
     await tester.tap(find.text('Microsoft YaHei UI').last);
     await tester.pumpAndSettle();
     expect(chosen, 'Microsoft YaHei UI');
-    final selector = tester.widget<DropdownButton<String>>(
+    final selector = tester.widget<SPDropdownButtonFormField<String>>(
       find.byKey(const Key('interface-font-selector')),
     );
-    expect(selector.focusColor, Colors.transparent);
     expect(selector.focusNode!.hasFocus, isFalse);
 
     await tester.tap(find.byKey(const Key('interface-font-selector')));

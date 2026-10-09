@@ -94,6 +94,7 @@ class FilmMediaProbeController extends ChangeNotifier {
   }
 
   Future<void> _tick() async {
+    if (_preparing > 0) return;
     try {
       final currentSnapshots = snapshots();
       final activePaths = currentSnapshots.map((s) => s.snapshotPath).toSet();

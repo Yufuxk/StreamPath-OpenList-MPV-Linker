@@ -1,3 +1,4 @@
+import 'sp_menu.dart';
 import 'directory_scroll_view.dart';
 import 'package:flutter/material.dart';
 
@@ -201,7 +202,7 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
           builder: (scrollController) => ListView(
             controller: scrollController,
             children: [
-              SelectableText(widget.resource.path),
+              SelectableText(contextMenuBuilder: buildSPTextSelectionMenu, widget.resource.path),
               if (_hint.conflicting) const AppText('文件与目录中的 TMDB ID 冲突，请人工确认'),
               const SizedBox(height: 12),
               TextField(
@@ -261,7 +262,7 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
                         },
                 ),
                 if (_folder)
-                  DropdownButtonFormField<String>(
+                  SPDropdownButtonFormField<String>(
                     dropdownColor: AppTheme.dropdownMenuColor(
                       Theme.of(context),
                     ),

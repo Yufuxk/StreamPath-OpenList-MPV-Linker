@@ -28,6 +28,8 @@ import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 
+import 'helpers/pump_until.dart';
+
 final _widgetPlayerIdentity = PlayerProcessIdentity(
   pid: 4242,
   executablePath: r'C:\Tools\mpv.exe',
@@ -438,7 +440,11 @@ void main() {
     expect((isoProvider.preparedFile! as WebDavBdmv).rootPath, '');
     expect(find.text('Title 0'), findsOneWidget);
     await tester.tap(find.widgetWithText(TextButton, '取消播放'));
-    await settleBrowser(tester);
+    await pumpUntil(
+      tester,
+      () => !isoPlaybackService.isBusy,
+      reason: 'Cancelled BDMV preparation must release its session',
+    );
     expect(isoPlaybackService.isBusy, isFalse);
   });
 

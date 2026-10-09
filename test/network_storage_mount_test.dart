@@ -121,6 +121,26 @@ void main() {
     expect(state.mediaSourceId, first.profileId);
     expect(requestCounts, {'a': 1, 'b': 1});
 
+    var notifications = 0;
+    state.addListener(() => notifications++);
+    final activeService = state.webDavService;
+    await state.activateMountedProfile(first.profileId);
+    expect(state.webDavService, same(activeService));
+    expect(notifications, 0);
+    expect(requestCounts, {'a': 1, 'b': 1});
+
+    await state.activateMountedProfile(second.profileId);
+    expect(notifications, 1);
+    await state.activateMountedProfile(first.profileId);
+    expect(notifications, 2);
+    await store.save(
+      store.current.upsertProfile(first.copyWith(password: 'changed')),
+    );
+    await state.activateMountedProfile(first.profileId);
+    expect(state.webDavService, isNot(same(activeService)));
+    expect(notifications, greaterThan(2));
+    expect(requestCounts, {'a': 2, 'b': 1});
+
     await state.unmountProfile(first.profileId);
     expect(store.current.mountedProfileIds, [second.profileId]);
     expect(state.mountedService(second.profileId), isNotNull);

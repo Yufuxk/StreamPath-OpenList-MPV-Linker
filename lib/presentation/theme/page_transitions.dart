@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 
-/// StreamPath 的轻量页面淡化转场。
-///
-/// 不缩放页面，也不对页面做模糊、快照或不透明遮罩。
+/// 相邻横向移动页面，避免半透明内容重叠。
 class StreamPathPageTransitionsBuilder extends PageTransitionsBuilder {
   const StreamPathPageTransitionsBuilder();
 
   @visibleForTesting
-  static const incomingFadeKey = Key('streampath-page-incoming-fade');
+  static const incomingSlideKey = Key('streampath-page-incoming-slide');
 
   @override
   Duration get transitionDuration => const Duration(milliseconds: 220);
@@ -23,15 +21,21 @@ class StreamPathPageTransitionsBuilder extends PageTransitionsBuilder {
         Animation<double> secondaryAnimation,
         bool allowSnapshotting,
         Widget? child,
-      ) => FadeTransition(
-        opacity: Tween<double>(begin: 1, end: 0).animate(
-          CurvedAnimation(
-            parent: secondaryAnimation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          ),
+      ) => _slideOut(secondaryAnimation, child);
+
+  static Widget _slideOut(Animation<double> animation, Widget? child) =>
+      ClipRect(
+        child: SlideTransition(
+          position: Tween<Offset>(begin: Offset.zero, end: const Offset(-1, 0))
+              .animate(
+                CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeOutCubic,
+                  reverseCurve: Curves.easeInCubic,
+                ),
+              ),
+          child: child,
         ),
-        child: child,
       );
 
   @override
@@ -42,25 +46,22 @@ class StreamPathPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    final incomingOpacity = CurvedAnimation(
+    final progress = CurvedAnimation(
       parent: animation,
       curve: Curves.easeOutCubic,
       reverseCurve: Curves.easeInCubic,
     );
-    final outgoingOpacity = Tween<double>(begin: 1, end: 0).animate(
-      CurvedAnimation(
-        parent: secondaryAnimation,
-        curve: Curves.easeOutCubic,
-        reverseCurve: Curves.easeInCubic,
-      ),
-    );
-
-    return FadeTransition(
-      opacity: outgoingOpacity,
-      child: FadeTransition(
-        key: StreamPathPageTransitionsBuilder.incomingFadeKey,
-        opacity: incomingOpacity,
-        child: child,
+    return _slideOut(
+      secondaryAnimation,
+      ClipRect(
+        child: SlideTransition(
+          key: StreamPathPageTransitionsBuilder.incomingSlideKey,
+          position: Tween<Offset>(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(progress),
+          child: child,
+        ),
       ),
     );
   }

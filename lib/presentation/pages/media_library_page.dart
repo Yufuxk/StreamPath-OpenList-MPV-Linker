@@ -1,6 +1,7 @@
 import '../widgets/directory_scroll_view.dart';
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_dialog.dart';
@@ -36,6 +37,23 @@ enum _MediaLane { video, audio, iso }
 
 enum _DirectoryLane { favorites, recent }
 
+/// 展开续播时复用当前已就绪的展示数据。
+class FilmContinueSnapshot {
+  FilmContinueSnapshot({
+    required List<MediaLibraryRecord> videos,
+    required List<MediaLibraryRecord> discs,
+    required Map<String, PlaybackProgress> videoProgress,
+    required Map<String, IsoLibraryProgress> discProgress,
+  }) : videos = List.of(videos),
+       discs = List.of(discs),
+       videoProgress = Map.of(videoProgress),
+       discProgress = Map.of(discProgress);
+
+  final List<MediaLibraryRecord> videos, discs;
+  final Map<String, PlaybackProgress> videoProgress;
+  final Map<String, IsoLibraryProgress> discProgress;
+}
+
 /// 收藏、继续播放、最近播放和访问型全局搜索入口。
 class MediaLibraryPage extends StatefulWidget {
   const MediaLibraryPage({
@@ -64,6 +82,7 @@ class MediaLibraryPage extends StatefulWidget {
     this.headerAction,
     this.sidebarInset = 0,
     this.onReadyChanged,
+    this.initialContinue,
   });
 
   final String sourceId;
@@ -87,6 +106,7 @@ class MediaLibraryPage extends StatefulWidget {
   final Widget? headerAction;
   final double sidebarInset;
   final ValueChanged<bool>? onReadyChanged;
+  final FilmContinueSnapshot? initialContinue;
   final ValueChanged<MediaLibraryRecord>? onContinueSelected;
   final Future<FilmCatalogController> Function()? loadFilmCatalog;
   final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
@@ -106,13 +126,29 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   }
 
   Set<String> get _sourceIds => widget.sourceIds ?? {widget.sourceId};
+  Set<(int, String, String)> _disabledRoots = {};
+
+  void _onCatalogChanged() {
+    final disabled =
+        widget.filmCatalog?.roots
+            .where((root) => !root.enabled)
+            .map((root) => (root.id, root.sourceId, root.path))
+            .toSet() ??
+        <(int, String, String)>{};
+    if (setEquals(disabled, _disabledRoots)) return;
+    _disabledRoots = disabled;
+    _onLibraryChanged();
+  }
 
   Future<List<MediaLibraryRecord>> _collectRecords(
     Future<List<MediaLibraryRecord>> Function(String) read,
   ) async {
-    final records = (await Future.wait(
-      _sourceIds.map(read),
-    )).expand((items) => items).toList();
+    final records = (await Future.wait(_sourceIds.map(read)))
+        .expand((items) => items)
+        .where(
+          (record) => widget.filmCatalog?.isItemEnabled(record.item) != false,
+        )
+        .toList();
     records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return records;
   }
@@ -131,6 +167,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   int _libraryGeneration = 0;
   int _progressGeneration = 0;
   bool _loading = true;
+  bool _sourcePending = false;
   bool _loadingContinue = false;
   String? _error;
   _FavoriteLane _favoriteLane = _FavoriteLane.media;
@@ -152,8 +189,22 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialContinue case final initial?) {
+      _videoHistory = initial.videos;
+      _isoHistory = initial.discs;
+      _videoContinue = initial.videoProgress;
+      _isoContinue = initial.discProgress;
+      _loading = false;
+    }
     widget.onReadyChanged?.call(false);
     widget.store.addListener(_onLibraryChanged);
+    widget.filmCatalog?.addListener(_onCatalogChanged);
+    _disabledRoots =
+        widget.filmCatalog?.roots
+            .where((root) => !root.enabled)
+            .map((root) => (root.id, root.sourceId, root.path))
+            .toSet() ??
+        <(int, String, String)>{};
     widget.videoProgressService.addListener(_onVideoProgressChanged);
     widget.audioProgressService?.addListener(_onAudioProgressChanged);
     widget.isoProgressService?.addLibraryProgressListener(
@@ -162,7 +213,27 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     widget.localIsoProgressService?.addLibraryProgressListener(
       _onIsoProgressChanged,
     );
-    _loadAll();
+    _loadAll(showLoading: widget.initialContinue == null);
+  }
+
+  @override
+  void didUpdateWidget(MediaLibraryPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filmCatalog != widget.filmCatalog) {
+      oldWidget.filmCatalog?.removeListener(_onCatalogChanged);
+      widget.filmCatalog?.addListener(_onCatalogChanged);
+    }
+    if (oldWidget.filmCatalog != widget.filmCatalog ||
+        !setEquals(oldWidget.sourceIds ?? {oldWidget.sourceId}, _sourceIds)) {
+      _sourcePending = widget.filmCatalog != null;
+      _disabledRoots =
+          widget.filmCatalog?.roots
+              .where((root) => !root.enabled)
+              .map((root) => (root.id, root.sourceId, root.path))
+              .toSet() ??
+          <(int, String, String)>{};
+      unawaited(_loadAll(showLoading: false));
+    }
   }
 
   @override
@@ -172,6 +243,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     _progressRefreshDebounce?.cancel();
     _isoProgressRefreshDebounce?.cancel();
     widget.store.removeListener(_onLibraryChanged);
+    widget.filmCatalog?.removeListener(_onCatalogChanged);
     widget.videoProgressService.removeListener(_onVideoProgressChanged);
     widget.audioProgressService?.removeListener(_onAudioProgressChanged);
     widget.isoProgressService?.removeLibraryProgressListener(
@@ -187,6 +259,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   Future<void> _loadAll({bool showLoading = true}) async {
     _libraryRefreshDebounce?.cancel();
     final libraryGeneration = ++_libraryGeneration;
+    if (widget.filmCatalog != null) ++_progressGeneration;
     if (mounted && showLoading) {
       setState(() {
         _loading = true;
@@ -210,7 +283,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             ])
           : <String, String>{};
       if (!mounted || libraryGeneration != _libraryGeneration) return;
-      setState(() {
+      void publishRecords() {
         _favorites = records[0];
         _recentDirectories = records[1];
         _videoHistory = records[2];
@@ -222,13 +295,22 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             ? widget.directoryCache.visitedDirectories(widget.sourceId)
             : const [];
         _loading = false;
+        _sourcePending = false;
         _error = null;
-      });
-      _runSearch(_searchController.text);
+      }
+
+      if (widget.filmCatalog == null) setState(publishRecords);
       await _enqueueProgressOperation(() async {
+        if (!mounted || libraryGeneration != _libraryGeneration) return;
         final progressGeneration = ++_progressGeneration;
-        await _loadContinueProgress(progressGeneration);
+        await _loadContinueProgress(
+          progressGeneration,
+          records: widget.filmCatalog == null ? null : records,
+          onLoaded: widget.filmCatalog == null ? null : publishRecords,
+        );
       });
+      if (!mounted || libraryGeneration != _libraryGeneration) return;
+      _runSearch(_searchController.text);
       if (mounted && libraryGeneration == _libraryGeneration) {
         widget.onReadyChanged?.call(true);
       }
@@ -248,17 +330,37 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   void _onLibraryChanged() {
     if (!mounted) return;
-    if (widget.filmCatalog != null) {
-      List<MediaLibraryRecord> snapshot({bool iso = false}) => [
-        for (final source in _sourceIds)
-          ...widget.store.playbackHistorySnapshot(
-            source,
-            audio: false,
-            iso: iso,
-          ),
-      ]..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    if (widget.filmCatalog != null && !_sourcePending) {
+      List<MediaLibraryRecord> snapshot({bool iso = false}) =>
+          [
+                for (final source in _sourceIds)
+                  ...widget.store.playbackHistorySnapshot(
+                    source,
+                    audio: false,
+                    iso: iso,
+                  ),
+              ]
+              .where((record) => widget.filmCatalog!.isItemEnabled(record.item))
+              .toList()
+            ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       setState(() {
+        final previous = {
+          for (final record in _videoHistory)
+            record.recordKey: record.item.stableKey,
+        };
         _videoHistory = snapshot();
+        for (final record in _videoHistory) {
+          if (previous[record.recordKey] != null &&
+              previous[record.recordKey] != record.item.stableKey &&
+              _videoContinue.containsKey(record.recordKey)) {
+            ++_progressGeneration;
+            _videoContinue[record.recordKey] = PlaybackProgress(
+              url: _progressUrlFor(record) ?? record.item.targetPath,
+              positionMs: record.strmPositionMs ?? 0,
+              durationMs: record.strmDurationMs,
+            );
+          }
+        }
         _isoHistory = snapshot(iso: true);
       });
     }
@@ -426,6 +528,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   Future<void> _loadContinueProgress(
     int generation, {
     bool showLoading = true,
+    List<List<MediaLibraryRecord>>? records,
+    VoidCallback? onLoaded,
   }) async {
     if (!mounted || generation != _progressGeneration) return;
     if (showLoading) setState(() => _loadingContinue = true);
@@ -433,7 +537,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final audio = <String, PlaybackProgress>{};
     final iso = <String, IsoLibraryProgress>{};
     await _loadProgressLane(
-      records: _continueCandidates(_videoHistory),
+      records: _continueCandidates(records?[2] ?? _videoHistory),
       service: widget.videoProgressService,
       useTemporaryCheckpoint: true,
       output: video,
@@ -442,7 +546,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final audioService = widget.audioProgressService;
     if (audioService != null) {
       await _loadProgressLane(
-        records: _continueCandidates(_audioHistory),
+        records: _continueCandidates(records?[3] ?? _audioHistory),
         service: audioService,
         useTemporaryCheckpoint: false,
         output: audio,
@@ -453,7 +557,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
         widget.isoProgressService ?? widget.localIsoProgressService;
     if (isoService != null) {
       await _loadIsoProgressLane(
-        records: _continueCandidates(_isoHistory),
+        records: _continueCandidates(records?[4] ?? _isoHistory),
         service: isoService,
         output: iso,
         generation: generation,
@@ -461,6 +565,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
     if (!mounted || generation != _progressGeneration) return;
     setState(() {
+      onLoaded?.call();
       _videoContinue = video;
       _audioContinue = audio;
       _isoContinue = iso;
@@ -817,7 +922,13 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   @override
   Widget build(BuildContext context) {
     if (widget.filmCatalog != null && !widget.filmCenter) {
-      return _buildFilmContinue();
+      return IgnorePointer(
+        ignoring: _sourcePending,
+        child: ExcludeFocus(
+          excluding: _sourcePending,
+          child: _buildFilmContinue(),
+        ),
+      );
     }
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1131,8 +1242,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     return FilmShelf(
       title: '继续播放',
       count: records.length,
-      height: 220,
-      itemWidth: 300,
+      height: FilmContinueCard.landscapeHeight,
+      itemWidth: FilmContinueCard.landscapeWidth,
       onShowAll: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => MediaLibraryPage(
@@ -1154,6 +1265,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             onContinueSelected: widget.onContinueSelected,
             onContinueMenu: widget.onContinueMenu,
             filmContinueAll: true,
+            initialContinue: FilmContinueSnapshot(
+              videos: _videoHistory,
+              discs: _isoHistory,
+              videoProgress: _videoContinue,
+              discProgress: _isoContinue,
+            ),
             sidebarInset: widget.sidebarInset,
           ),
         ),

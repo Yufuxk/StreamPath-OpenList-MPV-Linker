@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'support/legacy_film_catalog.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -276,6 +277,7 @@ void main() {
     final db = await databaseFactoryFfi.openDatabase(
       p.join(temp.path, 'catalog.db'),
     );
+    await restoreVersion6Fixture(db);
     for (final table in [
       'work_favorites',
       'resource_probes',

@@ -76,6 +76,42 @@ class PlaybackProgressService implements PlaybackProgressReader {
   final CacheRetentionPolicyProvider _policyProvider;
   String _defaultProfileId;
   final Set<void Function(PlaybackProgressChange)> _listeners = {};
+  final _sessionOrigins = <String, List<Uri>>{};
+  void registerSessionOrigin(String sourceId, String baseUrl) {
+    final origins = _sessionOrigins.putIfAbsent(sourceId, () => []);
+    final uri = Uri.parse(baseUrl);
+    if (!origins.contains(uri)) origins.add(uri);
+  }
+
+  static String logicalTarget(String sourceId, String path) => Uri(
+    scheme: 'streampath',
+    host: 'source',
+    pathSegments: [sourceId, ...path.split('/')],
+  ).toString();
+  String _persistentTarget(String sourceId, String target) {
+    final uri = Uri.tryParse(target);
+    if (uri == null) return target;
+    for (final origin in _sessionOrigins[sourceId] ?? const <Uri>[]) {
+      if (uri.scheme != origin.scheme ||
+          uri.host != origin.host ||
+          uri.port != origin.port) {
+        continue;
+      }
+      final root = origin.pathSegments.where((s) => s.isNotEmpty).toList();
+      final segments = uri.pathSegments;
+      if (segments.length < root.length) continue;
+      if (List.generate(
+        root.length,
+        (i) => root[i] == segments[i],
+      ).every((same) => same)) {
+        return logicalTarget(
+          sourceId,
+          segments.skip(root.length).where((s) => s.isNotEmpty).join('/'),
+        );
+      }
+    }
+    return target;
+  }
 
   /// 监听成功落库的播放进度变更。
   @override
@@ -240,6 +276,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
     String? profileId,
   }) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       await _db.insert(_table, {
         'profile_id': namespace,
@@ -260,6 +297,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
   @override
   Future<PlaybackProgress?> getProgress(String url, {String? profileId}) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       final cutoff = _expirationCutoffMs();
       final rows = await _db.query(
@@ -293,6 +331,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
     String? profileId,
   }) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       await _db.insert(_temporaryTable, {
         'profile_id': namespace,
@@ -315,6 +354,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
     String? profileId,
   }) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       final cutoff = _expirationCutoffMs();
       final rows = await _db.query(
@@ -375,6 +415,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
   /// `watch_later` 没有生成新记录时继续被当作续播点。
   Future<void> deleteProgress(String url, {String? profileId}) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       final removed = await _db.delete(
         _table,
@@ -392,6 +433,7 @@ class PlaybackProgressService implements PlaybackProgressReader {
   /// 删除指定媒体的缓冲临时播放点。
   Future<void> deleteTemporaryProgress(String url, {String? profileId}) async {
     final namespace = _profile(profileId);
+    url = _persistentTarget(namespace, url);
     try {
       final removed = await _db.delete(
         _temporaryTable,
@@ -463,6 +505,24 @@ class PlaybackProgressService implements PlaybackProgressReader {
   Duration get retention => _policyProvider().playbackRetention;
 
   String get databasePath => _dbPath;
+  Future<void> backupTo(String path) =>
+      _db.execute("VACUUM INTO '${path.replaceAll("'", "''")}'");
+  Future<void> restoreBackup(String path) async {
+    await _db.execute(
+      "ATTACH DATABASE '${path.replaceAll("'", "''")}' AS recovery",
+    );
+    try {
+      await _db.transaction((txn) async {
+        for (final table in [_table, _temporaryTable]) {
+          await txn.delete(table);
+          await txn.execute('INSERT INTO $table SELECT * FROM recovery.$table');
+        }
+      });
+    } finally {
+      await _db.execute('DETACH DATABASE recovery');
+    }
+    _notifyChanged(const PlaybackProgressChange.all());
+  }
 
   String get defaultProfileId => _defaultProfileId;
 

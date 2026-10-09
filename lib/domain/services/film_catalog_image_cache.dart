@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/film_image_reference.dart';
 import 'tmdb_metadata_service.dart';
 import 'tmdb_http_client.dart';
 
@@ -20,12 +22,14 @@ class FilmCatalogImageCache {
     this.maxImageBytes = 10 * 1024 * 1024,
     this.budgetBytes = 512 * 1024 * 1024,
     Future<void> Function(File)? validateImage,
+    this.readReference,
   }) : _dio = dio ?? createTmdbDio(),
        _validateImage = validateImage ?? _decode;
   final Directory directory;
   final TmdbMetadataService tmdb;
   final Dio _dio;
   final int maxImageBytes, budgetBytes;
+  final Future<Uint8List> Function(FilmImageReference, int)? readReference;
   final Future<void> Function(File) _validateImage;
   final Map<String, Future<File>> _pending = {};
   final Map<String, Future<File>> _downloads = {};
@@ -46,6 +50,7 @@ class FilmCatalogImageCache {
       sha256.convert(utf8.encode('$size\n$path')).toString();
 
   static void _checkPath(String path) {
+    if (FilmImageReference.parse(path) != null) return;
     if (!RegExp(
       r'^/[A-Za-z0-9_-]+\.(jpg|png|webp)$',
       caseSensitive: false,
@@ -164,6 +169,37 @@ class FilmCatalogImageCache {
       if (_closed) throw const FilmCatalogException('cancelled');
       final again = await cached(path, target);
       if (again != null) return again;
+      if (FilmImageReference.parse(path) case final reference?) {
+        if (readReference == null) {
+          throw const FilmCatalogException('sourceUnavailable');
+        }
+        final file = File(
+          p.join(directory.path, '${cacheKey(path, target)}.img'),
+        );
+        final partial = File('${file.path}.partial');
+        _protected.add(file.path);
+        try {
+          final bytes = await readReference!(reference, maxImageBytes);
+          if (_closed) throw const FilmCatalogException('cancelled');
+          if (bytes.length > maxImageBytes) {
+            throw const FilmCatalogException('imageTooLarge');
+          }
+          await directory.create(recursive: true);
+          await partial.writeAsBytes(bytes, flush: true);
+          await _validateImage(partial);
+          await partial.rename(file.path);
+          final prune = _pruneTail.then((_) => _prune());
+          _pruneTail = prune.then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {},
+          );
+          await prune;
+          return file;
+        } finally {
+          _protected.remove(file.path);
+          if (await partial.exists()) await partial.delete();
+        }
+      }
       if (_images == null) await (_configurationLoad ??= _loadConfiguration());
       if (_images!['secure_base_url'] != 'https://image.tmdb.org/t/p/') {
         throw const FilmCatalogException('invalidImage');
@@ -310,6 +346,7 @@ class FilmCatalogImageCache {
     }
   }
 
+  static Future<void> validatePortableImage(File file) => _decode(file);
   static Future<void> _decode(File file) async {
     final bytes = await file.readAsBytes();
     late ui.Codec codec;

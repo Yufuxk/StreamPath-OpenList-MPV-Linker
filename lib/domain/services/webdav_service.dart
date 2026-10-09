@@ -37,6 +37,9 @@ class WebDAVService implements DirectoryRepository {
     String? profileId,
     DirectoryCache? cache,
     WebDavXmlParser? parser,
+    this.strmUrlResolver,
+    this.persistentUrlResolver,
+    this.crossSessionStructureCache = true,
   }) : _cache = cache ?? DirectoryCache(),
        _parser = parser ?? const WebDavXmlParser(),
        // ignore: prefer_initializing_formals
@@ -46,6 +49,10 @@ class WebDAVService implements DirectoryRepository {
   final DirectoryCache _cache;
   final WebDavXmlParser _parser;
   final String? _profileId;
+  final String? Function(WebDavFile file, String target)? strmUrlResolver;
+  final String Function(String href)? persistentUrlResolver;
+  final bool crossSessionStructureCache;
+  String persistentUrl(String href) => persistentUrlResolver?.call(href) ?? resolveUrl(href);
 
   /// 正在进行的加载（key → Future），用于请求合并。
   final Map<String, Future<List<WebDavFile>>> _inFlight = {};
@@ -150,6 +157,7 @@ class WebDAVService implements DirectoryRepository {
       );
       final raw = parseStrmUrl(content);
       if (raw == null) return null;
+      if (strmUrlResolver != null) return strmUrlResolver!(strmFile, raw);
       final resolved = url_utils.resolveHref(baseUrl, raw);
       if (!url_utils.isSameOrigin(baseUrl, resolved)) return null;
       return resolved;
@@ -165,6 +173,9 @@ class WebDAVService implements DirectoryRepository {
     required int maxBytes,
     required Duration timeout,
   }) => _client.getFileBytes(url, maxBytes: maxBytes, timeout: timeout);
+
+  Future<void> createMissingFile(String path, List<int> bytes) =>
+      _client.createMissingFile(path, bytes);
 
   /// 将字体等较大的伴随文件流式写入播放会话目录。
   Future<int> downloadFile(

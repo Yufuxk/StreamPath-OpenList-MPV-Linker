@@ -186,7 +186,10 @@ class WebDavFile implements MediaDirectoryEntry {
     size: (map['size'] as num?)?.toInt() ?? 0,
     modified: map['modified'] == null
         ? null
-        : DateTime.fromMillisecondsSinceEpoch(map['modified'] as int),
+        : DateTime.fromMillisecondsSinceEpoch(
+            map['modified'] as int,
+            isUtc: true,
+          ),
     contentType: map['contentType'] as String?,
     etag: map['etag'] as String?,
     lastModifiedHeader: map['lastModifiedHeader'] as String?,

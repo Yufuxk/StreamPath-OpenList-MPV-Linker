@@ -1,3 +1,4 @@
+import '../widgets/sp_menu.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -35,7 +36,10 @@ class GlobalMediaLibraryPage extends StatefulWidget {
   State<GlobalMediaLibraryPage> createState() => _GlobalMediaLibraryPageState();
 }
 
-class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
+class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => widget.filmCatalog != null && !widget.filmCenter;
   String? _selectedSource;
   late final Future<void> _ready;
   @override
@@ -49,6 +53,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     if (widget.filmCatalog != null) {
       return FutureBuilder<void>(
         future: _ready,
@@ -59,6 +64,8 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
           }
           return snapshot.connectionState == ConnectionState.done
               ? _content(context)
+              : widget.filmCenter
+              ? const Scaffold()
               : const SizedBox.shrink();
         },
       );
@@ -73,6 +80,8 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
         ? app.mediaLibraryStore
         : app.filmMediaLibraryStore;
     final names = <String, String>{
+      for (final connection in app.mediaConnections.where((row) => row.enabled))
+        connection.id: connection.name,
       for (final root in app.localRoots.where((root) => root.enabled))
         root.sourceId: root.displayName,
       for (final profile in config.profiles.where(
@@ -80,6 +89,9 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
       ))
         profile.profileId: profile.name,
     };
+    if (widget.filmCatalog?.sourceId case final String source) {
+      names.removeWhere((id, _) => id != source);
+    }
     if (store == null ||
         (names.isEmpty && !widget.filmCenter && widget.headerAction == null)) {
       widget.onReadyChanged?.call(true);
@@ -128,7 +140,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage> {
       sourceFilter: SizedBox(
         key: const Key('media-library-source-filter'),
         width: filterWidth,
-        child: DropdownButtonFormField<String>(
+        child: SPDropdownButtonFormField<String>(
           key: ValueKey('source-$selected-${names.keys.join('|')}'),
           initialValue: selected ?? '',
           isExpanded: true,

@@ -4,7 +4,10 @@ import 'package:provider/provider.dart';
 import '../../core/errors/app_exception.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_source.dart';
+import '../../data/models/film_catalog_item.dart';
+import '../controllers/film_catalog_controller.dart';
 import '../../data/models/playback_history.dart';
+import '../../data/models/film_playlist.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../widgets/sp_notice.dart';
@@ -13,8 +16,9 @@ import 'film_library_page.dart';
 
 /// 详情导航与播放会话共存，来源各自持有原有播放链路。
 class FilmLibraryShell extends StatefulWidget {
-  const FilmLibraryShell({super.key, this.sidebarInset = 0});
+  const FilmLibraryShell({super.key, this.sidebarInset = 0, this.sourceId});
   final double sidebarInset;
+  final String? sourceId;
   @override
   State<FilmLibraryShell> createState() => FilmLibraryShellState();
 }
@@ -22,6 +26,7 @@ class FilmLibraryShell extends StatefulWidget {
 class FilmLibraryShellState extends State<FilmLibraryShell> {
   final _hosts = <String, BrowserPage>{};
   final _keys = <String, GlobalKey<BrowserPageState>>{};
+  bool _playbackMenuOpen = false;
 
   @override
   void initState() {
@@ -37,7 +42,11 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
               .where((r) => r.enabled && r.sourceId == sourceId)
               .firstOrNull
         : null;
-    final service = local ? null : app.mountedService(sourceId);
+    final native = app.nativeSource(sourceId);
+    final server = app.serverSource(sourceId);
+    final service = local
+        ? null
+        : native?.service ?? server?.service ?? app.mountedService(sourceId);
     if (local ? root == null : service == null) return null;
     if (_hosts[sourceId] case final host?) {
       if (host.localRoot?.path == root?.path && host.webDavSource == service) {
@@ -50,6 +59,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       key: key,
       localRoot: root,
       webDavSource: service,
+      directorySource: native ?? server,
       playbackOnly: true,
     );
   }
@@ -87,6 +97,18 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       }
     });
     restoreHosts();
+    for (final source in sources.where(
+      (id) =>
+          app.mediaSourceKind(id).isNativeStorage ||
+          app.mediaSourceKind(id).isMediaServer,
+    )) {
+      try {
+        await app.mountMediaConnection(source);
+      } on FilmCatalogException {
+        continue;
+      }
+    }
+    if (mounted) restoreHosts();
     if (sources.any(
       (source) =>
           !source.startsWith('local:') &&
@@ -107,13 +129,34 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   }
 
   Future<void> play(MediaLibraryItem item) => _play(item);
+  Future<void> playPlaylist(FilmPlaylistSnapshot snapshot, int index) async {
+    final entry = snapshot.entries[index];
+    final resource = entry.resource;
+    if (resource == null) return;
+    await context.read<AppState>().initializeFilmPlayback();
+    await _withHost(
+      resource.playbackItem,
+      (host) => host.playFilmPlaylist(snapshot, index),
+    );
+  }
+
   Future<void> continuePlaying(MediaLibraryRecord record) =>
       _play(record.item, resumeSessionId: record.playbackSessionId);
-  Future<void> showPlaybackMenu(MediaLibraryRecord record, Offset position) =>
-      _withHost(
+  Future<void> showPlaybackMenu(
+    MediaLibraryRecord record,
+    Offset position,
+  ) async {
+    if (_playbackMenuOpen) return;
+    _playbackMenuOpen = true;
+    try {
+      await _withHost(
         record.item,
         (host) => host.showLibraryPlaybackMenu(record, position),
       );
+    } finally {
+      _playbackMenuOpen = false;
+    }
+  }
 
   Future<void> _withHost(
     MediaLibraryItem item,
@@ -121,13 +164,19 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   ) async {
     final app = context.read<AppState>();
     try {
+      if ((item.sourceKind.isNativeStorage &&
+              app.nativeSource(item.sourceId) == null) ||
+          (item.sourceKind.isMediaServer &&
+              app.serverSource(item.sourceId) == null)) {
+        await app.mountMediaConnection(item.sourceId);
+      }
       if (item.sourceKind == MediaSourceKind.webdav &&
           app.mountedService(item.sourceId) == null) {
         await app.mountProfile(item.sourceId);
       }
       if (!mounted) return;
       final host = _hostFor(item.sourceId);
-      if (host == null) throw AppException.config('来源不可用，请在文件夹管理中重新挂载');
+      if (host == null) throw AppException.config('来源不可用，请在文件夹中重新挂载');
       setState(() {});
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted) return;
@@ -137,6 +186,12 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SPNotice(content: AppText(error.message)));
+      }
+    } on FilmCatalogException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SPNotice(content: AppText(filmCatalogErrorText(error.code))),
+        );
       }
     }
   }
@@ -150,12 +205,10 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
           child: Navigator(
             onGenerateRoute: (_) => MaterialPageRoute<void>(
               builder: (_) => FilmLibraryPage(
+                sourceId: widget.sourceId,
                 onOpenItem: _play,
                 sidebarInset: widget.sidebarInset,
-                onContinueMenu: (record, position) => _withHost(
-                  record.item,
-                  (host) => host.showLibraryPlaybackMenu(record, position),
-                ),
+                onContinueMenu: showPlaybackMenu,
                 onContinueSelected: (record) => _play(
                   record.item,
                   resumeSessionId: record.playbackSessionId,

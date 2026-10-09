@@ -139,10 +139,10 @@ void main() {
     expect(find.text('Same.ass · 根目录'), findsOneWidget);
     expect(find.text('Same.ass · Subtitles'), findsOneWidget);
     expect(find.textContaining('Subtitles/'), findsNothing);
-    final option = tester.widget<DropdownMenuItem<String>>(
+    final option = tester.widget<PopupMenuItem<String>>(
       find.ancestor(
         of: find.text('Same.ass · Subtitles'),
-        matching: find.byType(DropdownMenuItem<String>),
+        matching: find.byType(PopupMenuItem<String>),
       ),
     );
     expect(option.value, 'Subtitles/Same.ass');

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'helpers/shell_test_app_state.dart';
+import 'helpers/pump_until.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -247,17 +248,37 @@ void main() {
         await tester.pumpWidget(
           buildBrowser(home: BrowserPage(localRoot: root, playbackOnly: true)),
         );
-        for (var i = 0; i < 12; i++) {
-          await tester.pump(const Duration(milliseconds: 700));
-          await settleBrowser(tester);
-        }
+        final completed = !scenario.running && scenario.pos == 1;
+        final expectedName = scenario.season
+            ? 'Show.S02E01.$extension'
+            : names.last;
+        await pumpUntil(
+          tester,
+          () {
+            final histories = appState.filmPlaybackHistoryStore.sessions;
+            final records = appState.filmMediaLibraryStore!
+                .playbackHistorySnapshot(sourceId, audio: false);
+            return records.length == 1 &&
+                (completed
+                    ? histories.isEmpty && records.single.continueDismissed
+                    : histories.length == 1 &&
+                          histories.single.fileName == expectedName &&
+                          records.single.item.name == expectedName &&
+                          (mediaType != 'strm' ||
+                              !scenario.running ||
+                              records.single.strmPositionMs ==
+                                  scenario.position * 1000) &&
+                          (scenario.running ||
+                              histories.single.playerPid == null));
+          },
+          frameDuration: const Duration(milliseconds: 700),
+          reason: 'Film playback history and records must finish synchronizing',
+        );
         final histories = appState.filmPlaybackHistoryStore.sessions;
-        final records = (await tester.runAsync(
-          () => appState.filmMediaLibraryStore!.playbackHistory(
-            sourceId,
-            audio: false,
-          ),
-        ))!;
+        final records = appState.filmMediaLibraryStore!.playbackHistorySnapshot(
+          sourceId,
+          audio: false,
+        );
         expect(records, hasLength(1));
         expect(records.single.playbackSessionId, sessionId);
         if (!scenario.running && scenario.pos == 1) {
@@ -285,6 +306,17 @@ void main() {
         );
         await tester.pumpWidget(const SizedBox.shrink());
         await settleBrowser(tester);
+        var recordsDrained = false;
+        await tester.runAsync(() async {
+          appState.filmMediaLibraryStore!
+              .playbackHistory(sourceId, audio: false)
+              .then((_) => recordsDrained = true);
+        });
+        await pumpUntil(
+          tester,
+          () => recordsDrained,
+          reason: 'Unmounted playback must finish writing its film records',
+        );
       });
     }
   }
@@ -696,14 +728,17 @@ void main() {
             }
           });
           await tester.pumpWidget(buildBrowser(localRoot: localRoot));
-          for (var attempt = 0; attempt < 20; attempt++) {
-            await tester.pump(const Duration(milliseconds: 700));
-            await settleBrowser(tester);
-            final current = appState.playbackHistoryStore.sessions
-                .where((history) => history.sessionId == sessionId)
-                .firstOrNull;
-            if (current == null || current.playerPid == null) break;
-          }
+          await pumpUntil(
+            tester,
+            () {
+              final current = appState.playbackHistoryStore.sessions
+                  .where((history) => history.sessionId == sessionId)
+                  .firstOrNull;
+              return current == null || current.playerPid == null;
+            },
+            frameDuration: const Duration(milliseconds: 700),
+            reason: 'Stopped playback must commit its final history state',
+          );
           if (scenario.count == 4) {
             final stopped = appState.playbackHistoryStore.sessions.firstWhere(
               (history) => history.sessionId == sessionId,
@@ -723,9 +758,11 @@ void main() {
           libraryStore
               .playbackHistory(sourceId, audio: false)
               .then((value) => records = value);
-          for (var attempt = 0; attempt < 20 && records == null; attempt++) {
-            await settleBrowser(tester);
-          }
+          await pumpUntil(
+            tester,
+            () => records != null,
+            reason: 'Final playback records must finish loading',
+          );
           await tester.pumpWidget(const SizedBox.shrink());
           await settleBrowser(tester);
           final completed =
@@ -865,6 +902,11 @@ void main() {
     expect(changed.item.name, 'second.strm');
     expect(changed.playlistIndex, 1);
     expect(changed.playlistCount, 2);
+    await pumpUntil(
+      tester,
+      () => find.textContaining('第 2/2 集').evaluate().isNotEmpty,
+      reason: 'The synchronized STRM episode must reach the playback bar',
+    );
     expect(find.textContaining('第 2/2 集'), findsOneWidget);
     expect(find.textContaining('已播放 02:05'), findsNothing);
     player.running = false;

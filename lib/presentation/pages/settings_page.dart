@@ -1,3 +1,6 @@
+import '../widgets/sp_menu.dart';
+import '../../domain/services/app_update_service.dart';
+import '../widgets/app_update_settings_card.dart';
 import '../../data/models/video_playlist_mode.dart';
 import '../widgets/settings_group_card.dart';
 import 'dart:async';
@@ -130,7 +133,33 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => SettingsPageState();
 }
 
-class SettingsPageState extends State<SettingsPage> {
+class SettingsPageState extends State<SettingsPage>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _sectionSlide;
+  SettingsSection? _transitionTarget, _queuedSection;
+  bool _enteringSection = false;
+  double _slideDirection = 1;
+
+  void _advanceSectionSlide() {
+    if (!_enteringSection && _sectionSlide.value >= 0.5) {
+      setState(() {
+        _enteringSection = true;
+        _selectedSection = _transitionTarget!;
+      });
+      if (_selectedSection == SettingsSection.server) {
+        unawaited(_refreshOpenListIndexProgress());
+      }
+    }
+  }
+
+  void _finishSectionSlide(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    final next = _queuedSection;
+    _queuedSection = null;
+    _transitionTarget = null;
+    if (next != null && next != _selectedSection) _selectSection(next);
+  }
+
   final _navigationKey = GlobalKey();
 
   void _measureNavigation() {
@@ -305,6 +334,10 @@ class SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    _sectionSlide =
+        AnimationController(vsync: this, duration: kTabScrollDuration, value: 1)
+          ..addListener(_advanceSectionSlide)
+          ..addStatusListener(_finishSectionSlide);
     _selectedSection = SettingsPageMemory.selectedSection;
     _draft = SettingsConfigDraft();
     _loadConfig();
@@ -316,6 +349,7 @@ class SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    _sectionSlide.dispose();
     _openListIndexProgressTimer?.cancel();
     _openListIndexProgressGeneration++;
     _serverSectionRevision.dispose();
@@ -381,7 +415,7 @@ class SettingsPageState extends State<SettingsPage> {
       if (invalidSection == _selectedSection) {
         _formKeys[invalidSection]?.currentState?.validate();
       } else {
-        _selectSection(invalidSection);
+        _selectSection(invalidSection, animate: false);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _formKeys[invalidSection]?.currentState?.validate();
         });
@@ -999,13 +1033,30 @@ class SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  void _selectSection(SettingsSection section) {
+  void _selectSection(SettingsSection section, {bool animate = true}) {
     SettingsPageMemory.select(section);
+    if (!animate) {
+      _sectionSlide.stop();
+      _transitionTarget = null;
+      _queuedSection = null;
+    } else if (_sectionSlide.isAnimating) {
+      _queuedSection = section;
+      return;
+    }
     if (_selectedSection != section) {
       _stopOpenListIndexProgressPolling(clear: false);
-      setState(() => _selectedSection = section);
-      if (section == SettingsSection.server) {
-        unawaited(_refreshOpenListIndexProgress());
+      if (animate && _loaded) {
+        setState(() {
+          _transitionTarget = section;
+          _enteringSection = false;
+          _slideDirection = section.index > _selectedSection.index ? 1 : -1;
+        });
+        _sectionSlide.forward(from: 0);
+      } else {
+        setState(() => _selectedSection = section);
+        if (section == SettingsSection.server) {
+          unawaited(_refreshOpenListIndexProgress());
+        }
       }
     }
   }
@@ -1523,7 +1574,7 @@ class SettingsPageState extends State<SettingsPage> {
       _SettingsSectionDefinition(
         section: SettingsSection.films,
         label: '影视库',
-        description: '影视目录、刮削与媒体探测',
+        description: '刮削、背景与媒体探测',
         icon: 0xE714,
         builder: () => _observeSectionBuild(
           SettingsSection.films,
@@ -1602,7 +1653,7 @@ class SettingsPageState extends State<SettingsPage> {
                   if (_profiles.isNotEmpty)
                     _SettingsLabeledField(
                       label: context.l10n.text('编辑档案'),
-                      child: DropdownButtonFormField<String>(
+                      child: SPDropdownButtonFormField<String>(
                         key: const Key('settings-profile-selector'),
                         initialValue: _selectedProfileId,
                         dropdownColor: _dropdownMenuColor,
@@ -1884,7 +1935,7 @@ class SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 12),
                   _SettingsLabeledField(
                     label: context.l10n.text('本机服务重启目录'),
-                    child: DropdownButtonFormField<OpenListRestartDirectory>(
+                    child: SPDropdownButtonFormField<OpenListRestartDirectory>(
                       key: ValueKey(
                         'openlist-restart-directory-${_selectedProfileId ?? "new"}',
                       ),
@@ -2261,7 +2312,7 @@ class SettingsPageState extends State<SettingsPage> {
           description: '控制外挂字幕、外挂字体与 LRC 注入、轨道选择和续播。',
           child: Column(
             children: [
-              DropdownButtonFormField<VideoPlaylistMode>(
+              SPDropdownButtonFormField<VideoPlaylistMode>(
                 initialValue: _draft.videoPlaylistMode,
                 decoration: InputDecoration(
                   labelText: context.l10n.text('视频播放列表模式'),
@@ -2324,7 +2375,7 @@ class SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 12),
               _SettingsLabeledField(
                 label: context.l10n.text('特典播放列表'),
-                child: DropdownButtonFormField<SpecialPlaylistMode>(
+                child: SPDropdownButtonFormField<SpecialPlaylistMode>(
                   key: const Key('special-playlist-mode'),
                   initialValue: _draft.specialPlaylistMode,
                   dropdownColor: _dropdownMenuColor,
@@ -2414,7 +2465,7 @@ class SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 12),
               _SettingsLabeledField(
                 label: context.l10n.text('WebDAV 蓝光菜单进度'),
-                child: DropdownButtonFormField<bool>(
+                child: SPDropdownButtonFormField<bool>(
                   key: const Key('menu-progress-sharing'),
                   isExpanded: true,
                   initialValue: _draft.menuProgressSharingEnabled,
@@ -2890,7 +2941,7 @@ class SettingsPageState extends State<SettingsPage> {
           ),
           _SettingsLabeledField(
             label: context.l10n.text('策略模式'),
-            child: DropdownButtonFormField<CachePolicyMode>(
+            child: SPDropdownButtonFormField<CachePolicyMode>(
               key: const Key('cache-mode-dropdown'),
               initialValue: _cacheMode,
               dropdownColor: _dropdownMenuColor,
@@ -3613,9 +3664,14 @@ class SettingsPageState extends State<SettingsPage> {
 
   Widget _buildGeneralSettings() {
     final errorColor = Theme.of(context).colorScheme.error;
+    final updates = context.read<AppUpdateService?>();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (updates != null) ...[
+          AppUpdateSettingsCard(service: updates),
+          const SizedBox(height: 16),
+        ],
         SettingsGroupCard(
           key: const Key('language-settings-section'),
           icon: SPIcons.language,
@@ -3623,7 +3679,7 @@ class SettingsPageState extends State<SettingsPage> {
           description: '选择软件使用的显示语言；保存全部配置后立即切换。',
           child: _SettingsLabeledField(
             label: context.l10n.text('界面语言'),
-            child: DropdownButtonFormField<AppLanguage>(
+            child: SPDropdownButtonFormField<AppLanguage>(
               key: const Key('app-language-field'),
               initialValue: _language,
               dropdownColor: _dropdownMenuColor,
@@ -3689,7 +3745,7 @@ class SettingsPageState extends State<SettingsPage> {
               _buildFieldPair(
                 _SettingsLabeledField(
                   label: context.l10n.text('默认排序方式'),
-                  child: DropdownButtonFormField<FileSortMode>(
+                  child: SPDropdownButtonFormField<FileSortMode>(
                     key: const Key('default-sort-mode-field'),
                     initialValue: _defaultSortMode,
                     dropdownColor: _dropdownMenuColor,
@@ -3712,7 +3768,7 @@ class SettingsPageState extends State<SettingsPage> {
                 ),
                 _SettingsLabeledField(
                   label: context.l10n.text('默认排序顺序'),
-                  child: DropdownButtonFormField<FileSortDirection>(
+                  child: SPDropdownButtonFormField<FileSortDirection>(
                     key: const Key('default-sort-direction-field'),
                     initialValue: _defaultSortDirection,
                     dropdownColor: _dropdownMenuColor,
@@ -3917,7 +3973,14 @@ class SettingsPageState extends State<SettingsPage> {
                         size: 18,
                         color: theme.colorScheme.onPrimary,
                       ),
-                label: AppText(_saving ? '保存中…' : '保存全部配置'),
+                label: Tooltip(
+                  message: context.l10n.text(_saving ? '保存中…' : '保存全部配置'),
+                  child:
+                      MediaQuery.sizeOf(context).width < 900 &&
+                          MediaQuery.textScalerOf(context).scale(14) > 21
+                      ? const SizedBox.shrink()
+                      : AppText(_saving ? '保存中…' : '保存全部配置'),
+                ),
               ),
             ),
           ],
@@ -3928,8 +3991,41 @@ class SettingsPageState extends State<SettingsPage> {
                 children: [
                   _buildNavigationBar(context, sections),
                   Expanded(
-                    child: _buildPageShell(
-                      sections[selectedIndex < 0 ? 0 : selectedIndex],
+                    child: ClipRect(
+                      child: AnimatedBuilder(
+                        animation: _sectionSlide,
+                        child: RepaintBoundary(
+                          child: _buildPageShell(
+                            sections[selectedIndex < 0 ? 0 : selectedIndex],
+                          ),
+                        ),
+                        builder: (context, child) {
+                          final value = _sectionSlide.value;
+                          final offset = _transitionTarget == null
+                              ? 0.0
+                              : _enteringSection
+                              ? _slideDirection *
+                                    (1 -
+                                        Curves.easeOutCubic.transform(
+                                          ((value - .5) * 2).clamp(0, 1),
+                                        ))
+                              : -_slideDirection *
+                                    Curves.easeInCubic.transform(
+                                      (value * 2).clamp(0, 1),
+                                    );
+                          return IgnorePointer(
+                            ignoring: _sectionSlide.isAnimating,
+                            child: ExcludeFocus(
+                              excluding: _sectionSlide.isAnimating,
+                              child: FractionalTranslation(
+                                key: const Key('settings-section-slide'),
+                                translation: Offset(offset, 0),
+                                child: child,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ],

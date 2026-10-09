@@ -9,6 +9,8 @@ import 'sp_icons.dart';
 import 'film_play_icon.dart';
 
 class FilmContinueCard extends StatefulWidget {
+  static const landscapeWidth = 300.0;
+  static const landscapeHeight = 220.0;
   const FilmContinueCard({
     super.key,
     required this.catalog,
@@ -72,6 +74,10 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
       'season': resource?.season,
       'episode': resource?.episode,
       'episodeTitle': episode?['name'],
+      'spoilerSensitive':
+          !widget.poster &&
+          resource?.season != null &&
+          resource?.episode != null,
     };
   }
 
@@ -80,6 +86,51 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
     future: _metadata,
     builder: (_, snapshot) {
       final data = snapshot.data ?? {'title': widget.record.item.name};
+      final cover = Stack(
+        fit: StackFit.expand,
+        children: [
+          FilmWatchOverlay(
+            store: widget.catalog.store,
+            canReveal: false,
+            spoilerSensitive: data['spoilerSensitive'] == true,
+            fallbackFraction:
+                widget.positionMs != null && (widget.durationMs ?? 0) > 0
+                ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
+                : null,
+            sourceId: widget.record.item.sourceId,
+            path: widget.record.item.targetPath,
+            child: ClipRect(
+              child: FilmCoverZoom(
+                hovered: _hovered,
+                child: FilmArtwork(
+                  cache: widget.catalog.images,
+                  path: data['path'] as String?,
+                  width: double.infinity,
+                  borderRadius: 0,
+                  placeholder: const SizedBox.shrink(),
+                ),
+              ),
+            ),
+          ),
+          const Center(child: FilmPlayIcon()),
+          if (widget.onMenu != null)
+            Align(
+              alignment: Alignment.topRight,
+              child: Builder(
+                builder: (buttonContext) => IconButton(
+                  tooltip: context.l10n.text('更多操作'),
+                  icon: const Icon(SPIcons.more, color: Colors.white),
+                  onPressed: () {
+                    final box = buttonContext.findRenderObject()! as RenderBox;
+                    widget.onMenu!(
+                      box.localToGlobal(Offset(0, box.size.height)),
+                    );
+                  },
+                ),
+              ),
+            ),
+        ],
+      );
       return GestureDetector(
         onSecondaryTapDown: widget.onMenu == null
             ? null
@@ -95,66 +146,11 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: widget.poster ? 2 / 3 : 16 / 9,
-                      child: FilmWatchOverlay(
-                        store: widget.catalog.store,
-                        fallbackFraction:
-                            widget.positionMs != null &&
-                                (widget.durationMs ?? 0) > 0
-                            ? (widget.positionMs! / widget.durationMs!).clamp(
-                                0.0,
-                                1.0,
-                              )
-                            : null,
-                        sourceId: widget.record.item.sourceId,
-                        path: widget.record.item.targetPath,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            ClipRect(
-                              child: AnimatedScale(
-                                scale: _hovered ? 1.04 : 1,
-                                duration: const Duration(milliseconds: 160),
-                                child: FilmArtwork(
-                                  cache: widget.catalog.images,
-                                  path: data['path'] as String?,
-                                  width: double.infinity,
-                                  borderRadius: 0,
-                                  placeholder: const SizedBox.shrink(),
-                                ),
-                              ),
-                            ),
-                            const Center(child: FilmPlayIcon()),
-                            if (widget.onMenu != null)
-                              Align(
-                                alignment: Alignment.topRight,
-                                child: Builder(
-                                  builder: (buttonContext) => IconButton(
-                                    tooltip: context.l10n.text('更多操作'),
-                                    icon: const Icon(
-                                      SPIcons.more,
-                                      color: Colors.white,
-                                    ),
-                                    onPressed: () {
-                                      final box =
-                                          buttonContext.findRenderObject()!
-                                              as RenderBox;
-                                      widget.onMenu!(
-                                        box.localToGlobal(
-                                          Offset(0, box.size.height),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                  child: widget.poster
+                      ? Center(
+                          child: AspectRatio(aspectRatio: 2 / 3, child: cover),
+                        )
+                      : cover,
                 ),
                 Padding(
                   padding: const EdgeInsets.all(10),

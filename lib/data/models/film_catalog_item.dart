@@ -22,6 +22,7 @@ class FilmCatalogRoot {
       path = row['root_path'] as String,
       type = FilmMediaType.values.byName(row['media_type'] as String),
       displayName = row['display_name'] as String,
+      enabled = row['enabled'] != 0,
       generation = row['scan_generation'] as int,
       status = row['scan_status'] as String,
       lastSuccessAt = row['last_success_at'] as int?,
@@ -33,6 +34,7 @@ class FilmCatalogRoot {
   final String path;
   final FilmMediaType type;
   final String displayName;
+  final bool enabled;
   final int generation;
   final String status;
   final int? lastSuccessAt;
@@ -43,7 +45,9 @@ class FilmWork {
   const FilmWork({
     this.id = 0,
     required this.type,
-    required this.tmdbId,
+    this.tmdbId = 0,
+    this.identityKey,
+    this.metadataOrigin = 'network',
     required this.title,
     required this.originalTitle,
     required this.overview,
@@ -60,7 +64,9 @@ class FilmWork {
   factory FilmWork.fromRow(Map<String, Object?> row) => FilmWork(
     id: row['id'] as int,
     type: FilmMediaType.values.byName(row['media_type'] as String),
-    tmdbId: row['tmdb_id'] as int,
+    tmdbId: row['tmdb_id'] as int? ?? 0,
+    identityKey: row['identity_key'] as String?,
+    metadataOrigin: row['metadata_origin'] as String? ?? 'network',
     title: row['title'] as String,
     originalTitle: row['original_title'] as String,
     overview: row['overview'] as String,
@@ -79,6 +85,11 @@ class FilmWork {
   final int id;
   final FilmMediaType type;
   final int tmdbId;
+  final String? identityKey;
+  final String metadataOrigin;
+  String get identity => tmdbId > 0
+      ? 'tmdb:${type.name}:$tmdbId'
+      : identityKey ?? (throw const FilmCatalogException('invalidMetadata'));
   final String title;
   final String originalTitle;
   final String overview;
@@ -93,7 +104,9 @@ class FilmWork {
 
   Map<String, Object?> toRow() => {
     'media_type': type.name,
-    'tmdb_id': tmdbId,
+    'tmdb_id': tmdbId > 0 ? tmdbId : null,
+    'identity_key': identity,
+    'metadata_origin': metadataOrigin,
     'title': title,
     'original_title': originalTitle,
     'year': year,

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'support/legacy_film_catalog.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -121,6 +122,7 @@ void main() {
     await store.setCustomRootCover(r.id, 'fixture.png');
     await store.close();
     final db = await databaseFactoryFfi.openDatabase(store.path);
+    await restoreVersion6Fixture(db);
     await db.execute('DROP TABLE film_watch_state');
     await db.execute('DROP TABLE film_disc_watch_state');
     await db.insert('catalog_preferences', {
@@ -145,7 +147,7 @@ void main() {
       'true',
     );
     expect(await upgraded.query('film_watch_state'), isEmpty);
-    expect(await upgraded.getVersion(), 6);
+    expect(await upgraded.getVersion(), 8);
     expect(
       temp.listSync().where((f) => f.path.contains('.before-v5-')),
       hasLength(1),
@@ -160,6 +162,7 @@ void main() {
     await store.chooseRootCover(r.id);
     await store.close();
     final db = await databaseFactoryFfi.openDatabase(store.path);
+    await restoreVersion6Fixture(db);
     await db.execute('DROP TABLE catalog_preferences');
     await db.execute('DROP TABLE film_watch_state');
     await db.execute('DROP TABLE film_disc_watch_state');
@@ -174,7 +177,7 @@ void main() {
     );
     expect(await store.isFavorite(item.workId!), isTrue);
     expect(await store.probe(item.id), containsPair('duration', 7200));
-    expect(await store.homeSections(), hasLength(8));
+    expect(await store.homeSections(), hasLength(10));
     expect(
       temp.listSync().where((f) => f.path.contains('.before-v4-')),
       hasLength(1),

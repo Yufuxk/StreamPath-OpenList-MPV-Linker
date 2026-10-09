@@ -4,6 +4,8 @@ import '../../data/local/film_catalog_store.dart';
 import 'film_watch_overlay.dart';
 import 'dart:ui';
 import 'dart:math' as math;
+import 'dart:io';
+import '../../data/models/film_collection.dart';
 
 import 'package:flutter/material.dart';
 
@@ -148,6 +150,52 @@ class _FilmShelfState extends State<FilmShelf>
   }
 }
 
+class FilmCollectionCard extends StatelessWidget {
+  const FilmCollectionCard({
+    super.key,
+    required this.collection,
+    required this.cache,
+    required this.path,
+    required this.onTap,
+    this.onMenu,
+  });
+  final FilmCollection collection;
+  final FilmCatalogImageCache cache;
+  final String? path;
+  final VoidCallback onTap;
+  final ValueChanged<Offset>? onMenu;
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    onSecondaryTapUp: onMenu == null
+        ? null
+        : (details) => onMenu!(details.globalPosition),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: FilmCoverZoom(
+              child: collection.customPath == null
+                  ? FilmArtwork(cache: cache, path: path)
+                  : Image.file(
+                      File(collection.customPath!),
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      cacheWidth: 342,
+                      frameBuilder: filmCoverFrameBuilder,
+                    ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(collection.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ],
+    ),
+  );
+}
+
 class FilmWorkCard extends StatefulWidget {
   const FilmWorkCard({
     super.key,
@@ -240,9 +288,8 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                         child: Center(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: AnimatedScale(
-                              scale: _hovered ? 1.04 : 1,
-                              duration: const Duration(milliseconds: 160),
+                            child: FilmCoverZoom(
+                              hovered: _hovered,
                               child: FilmWatchOverlay(
                                 store: widget.store,
                                 workId: widget.work.id,

@@ -1,3 +1,8 @@
+import '../../data/models/film_playlist.dart';
+import '../widgets/film_playlist_dialog.dart';
+import '../widgets/sp_menu.dart';
+import '../widgets/film_continue_card.dart';
+import 'film_related_page.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/film_watch_menu.dart';
@@ -8,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/models/film_catalog_item.dart';
+import '../../data/local/media_library_store.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_source.dart';
 import '../controllers/film_catalog_controller.dart';
@@ -29,6 +35,8 @@ import '../widgets/film_work_menu.dart';
 String filmResourceState(AppState app, FilmResource resource) {
   final available = resource.sourceKind == MediaSourceKind.local
       ? app.localRoots.any((r) => r.sourceId == resource.sourceId && r.enabled)
+      : resource.sourceKind.isNativeStorage || resource.sourceKind.isMediaServer
+      ? app.mediaConnections.any((r) => r.id == resource.sourceId && r.enabled)
       : app.configStore.current.mountedProfileIds.contains(resource.sourceId) &&
             app.isProfileConnected(resource.sourceId);
   if (!available) return '来源不可用';
@@ -47,11 +55,15 @@ class FilmDetailPage extends StatefulWidget {
     required this.workId,
     required this.onOpenItem,
     this.initialWork,
+    this.onContinueSelected,
+    this.onContinueMenu,
   });
   final FilmCatalogController catalog;
   final int workId;
   final FilmWork? initialWork;
   final Future<void> Function(MediaLibraryItem) onOpenItem;
+  final ValueChanged<MediaLibraryRecord>? onContinueSelected;
+  final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
   @override
   State<FilmDetailPage> createState() => _FilmDetailPageState();
 }
@@ -65,6 +77,8 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
   final Set<int> _selected = {};
   int? _activeSeason;
   bool _expandedOverview = false;
+  MediaLibraryRecord? _continueRecord;
+  late final List<MediaLibraryStore> _playbackStores;
   bool _favorite = false;
   bool _loading = true;
   bool _refreshing = false;
@@ -75,6 +89,14 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     super.initState();
     _work = widget.initialWork;
     widget.catalog.store.addListener(_load);
+    final app = context.read<AppState>();
+    _playbackStores = [
+      app.filmMediaLibraryStore,
+      app.mediaLibraryStore,
+    ].whereType<MediaLibraryStore>().toList();
+    for (final store in _playbackStores) {
+      store.addListener(_load);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _load();
     });
@@ -83,6 +105,9 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
   @override
   void dispose() {
     widget.catalog.store.removeListener(_load);
+    for (final store in _playbackStores) {
+      store.removeListener(_load);
+    }
     _scroll.dispose();
     super.dispose();
   }
@@ -163,7 +188,32 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
       final favorite = await widget.catalog.store.isFavorite(widget.workId);
       final resources = await widget.catalog.store.resources(
         workId: widget.workId,
+        sourceId: widget.catalog.sourceId,
+        enabledOnly: true,
       );
+      if (!mounted) return;
+      final records = <MediaLibraryRecord>[];
+      final paths = {for (final r in resources) '${r.sourceId}\u0000${r.path}'};
+      for (final library in _playbackStores) {
+        for (final source in resources.map((r) => r.sourceId).toSet()) {
+          for (final iso in [false, true]) {
+            records.addAll(
+              (await library.playbackHistory(
+                source,
+                audio: false,
+                iso: iso,
+              )).where(
+                (record) =>
+                    !record.continueDismissed &&
+                    paths.contains(
+                      '${record.item.sourceId}\u0000${record.item.targetPath}',
+                    ),
+              ),
+            );
+          }
+        }
+      }
+      records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       final seasons = <int, Map<String, dynamic>>{};
       final probes = <int, Map<String, dynamic>?>{};
       for (final resource in resources) {
@@ -182,6 +232,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
           _work = work;
           _favorite = favorite;
           _resources = resources;
+          _continueRecord = records.firstOrNull;
           _seasons = seasons;
           _probes = probes;
           final numbers = resources.map((r) => r.season).toSet().toList()
@@ -197,7 +248,9 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
       }
       if (mounted && !_backdropChecked && work != null) {
         _backdropChecked = true;
-        if (work.metadata['presentation_version'] != 3 &&
+        if (work.tmdbId > 0 &&
+            work.metadataOrigin == 'network' &&
+            work.metadata['presentation_version'] != 3 &&
             await widget.catalog.tmdb.hasToken()) {
           await widget.catalog.store.refreshWork(
             await widget.catalog.matcher.lookup(
@@ -305,15 +358,39 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
         final person = people[i];
         return Column(
           children: [
-            _CreditAvatar(
-              child: ClipOval(
-                child: FilmArtwork(
-                  cache: c.images,
-                  path: person['profile_path'] as String?,
-                  target: 'w185',
-                  width: 68,
-                  height: 68,
-                  borderRadius: 0,
+            GestureDetector(
+              onTap: person['id'] == null
+                  ? null
+                  : () async {
+                      final chrome = context.read<ValueNotifier<double?>?>();
+                      final previous = chrome?.value;
+                      chrome?.value = null;
+                      await Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => FilmRelatedPage(
+                            catalog: c,
+                            title: person['name'] as String? ?? '',
+                            personId:
+                                person['identity'] as String? ??
+                                'tmdb:${person['id']}',
+                            onOpenItem: widget.onOpenItem,
+                            onContinueSelected: widget.onContinueSelected,
+                            onContinueMenu: widget.onContinueMenu,
+                          ),
+                        ),
+                      );
+                      if (mounted) chrome?.value = previous;
+                    },
+              child: _CreditAvatar(
+                child: ClipOval(
+                  child: FilmArtwork(
+                    cache: c.images,
+                    path: person['profile_path'] as String?,
+                    target: 'w185',
+                    width: 68,
+                    height: 68,
+                    borderRadius: 0,
+                  ),
                 ),
               ),
             ),
@@ -342,8 +419,66 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     );
   }
 
+  FilmResource? _recommended(AppState app, FilmWork work) {
+    final available = _resources
+        .where((r) => filmResourceState(app, r) == '可用')
+        .toList();
+    if (work.type == FilmMediaType.movie) return available.firstOrNull;
+    final episodes = available
+        .where((r) => (r.season ?? 0) > 0 && r.episode != null)
+        .toList();
+    episodes.sort((a, b) {
+      final season = a.season!.compareTo(b.season!);
+      return season != 0 ? season : a.episode!.compareTo(b.episode!);
+    });
+    return episodes.firstOrNull;
+  }
+
+  Widget _playEntry(AppState app, FilmWork work) {
+    final target = _recommended(app, work);
+    final record =
+        _continueRecord ??
+        (target == null
+            ? null
+            : MediaLibraryRecord(
+                item: target.playbackItem,
+                updatedAt: DateTime.now(),
+              ));
+    if (record == null) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AppText(
+          _continueRecord == null ? '开始播放' : '继续播放',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: FilmContinueCard.landscapeWidth,
+          height: FilmContinueCard.landscapeHeight,
+          child: FilmContinueCard(
+            catalog: widget.catalog,
+            record: record,
+            onMenu: widget.onContinueMenu == null
+                ? null
+                : (position) => widget.onContinueMenu!(record, position),
+            onTap: () =>
+                _continueRecord != null && widget.onContinueSelected != null
+                ? widget.onContinueSelected!(record)
+                : widget.onOpenItem(record.item),
+          ),
+        ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => FilmSpoilerScope(
+    key: ValueKey(widget.workId),
+    child: Builder(builder: _buildPage),
+  );
+  Widget _buildPage(BuildContext context) {
     final c = widget.catalog;
     final app = context.watch<AppState>();
     final work = _work;
@@ -381,17 +516,23 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
-                                    FilmArtwork(
-                                      key: const Key('film-detail-backdrop'),
-                                      cache: c.images,
-                                      path: work.backdropPath,
-                                      fallbackPath: work.posterPath,
-                                      target: 'original',
-                                      backdrop: true,
-                                      height: double.infinity,
-                                      width: double.infinity,
-                                      borderRadius: 0,
-                                      placeholder: const SizedBox.shrink(),
+                                    FilmWatchOverlay(
+                                      store: c.store,
+                                      workId: work.id,
+                                      showStatus: false,
+                                      canReveal: false,
+                                      child: FilmArtwork(
+                                        key: const Key('film-detail-backdrop'),
+                                        cache: c.images,
+                                        path: work.backdropPath,
+                                        fallbackPath: work.posterPath,
+                                        target: 'original',
+                                        backdrop: true,
+                                        height: double.infinity,
+                                        width: double.infinity,
+                                        borderRadius: 0,
+                                        placeholder: const SizedBox.shrink(),
+                                      ),
                                     ),
                                     Positioned.fill(
                                       child: DecoratedBox(
@@ -596,41 +737,49 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                           const SizedBox(height: 16),
                                           work.overview.isEmpty
                                               ? const AppText('暂无简介')
-                                              : Text(
-                                                  work.overview,
-                                                  maxLines: _expandedOverview
-                                                      ? null
-                                                      : 4,
-                                                  overflow: _expandedOverview
-                                                      ? TextOverflow.visible
-                                                      : TextOverflow.ellipsis,
-                                                  style: theme
-                                                      .textTheme
-                                                      .bodyMedium
-                                                      ?.copyWith(
-                                                        height: 1.55,
-                                                        fontWeight:
-                                                            FontWeight.w400,
-                                                      ),
+                                              : FilmWatchOverlay(
+                                                  store: c.store,
+                                                  workId: work.id,
+                                                  rootId: c.rootId,
+                                                  spoilerSensitive: true,
+                                                  showStatus: false,
+                                                  revealBelow: true,
+                                                  footer: TextButton(
+                                                    onPressed: () => setState(
+                                                      () => _expandedOverview =
+                                                          !_expandedOverview,
+                                                    ),
+                                                    child: AppText(
+                                                      _expandedOverview
+                                                          ? '收起简介'
+                                                          : '展开简介',
+                                                    ),
+                                                  ),
+                                                  child: Text(
+                                                    work.overview,
+                                                    maxLines: _expandedOverview
+                                                        ? null
+                                                        : 4,
+                                                    overflow: _expandedOverview
+                                                        ? TextOverflow.visible
+                                                        : TextOverflow.ellipsis,
+                                                    style: theme
+                                                        .textTheme
+                                                        .bodyMedium
+                                                        ?.copyWith(
+                                                          height: 1.55,
+                                                          fontWeight:
+                                                              FontWeight.w400,
+                                                        ),
+                                                  ),
                                                 ),
-                                          if (work.overview.isNotEmpty)
-                                            TextButton(
-                                              onPressed: () => setState(
-                                                () => _expandedOverview =
-                                                    !_expandedOverview,
-                                              ),
-                                              child: AppText(
-                                                _expandedOverview
-                                                    ? '收起简介'
-                                                    : '展开简介',
-                                              ),
-                                            ),
                                         ],
                                       ),
                                     ),
                                   ],
                                 ),
                                 const SizedBox(height: 28),
+                                _playEntry(app, work),
                                 _credits(work, c),
                                 AppText(
                                   '关联资源',
@@ -709,6 +858,14 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                                         details,
                                                       ) => showFilmWatchMenu(
                                                         context,
+                                                        catalog: c,
+                                                        playlistScope:
+                                                            FilmPlaylistScope.work(
+                                                              work.id,
+                                                              season: number,
+                                                            ),
+                                                        title:
+                                                            '${work.title} S${number.toString().padLeft(2, '0')}',
                                                         position: details
                                                             .globalPosition,
                                                         resources: _resources
@@ -856,6 +1013,8 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
 }
 
 enum _FilmFileAction {
+  playlist,
+  addPlaylist,
   watched,
   unwatched,
   source,
@@ -881,6 +1040,7 @@ class _FilmPlayButtonState extends State<_FilmPlayButton> {
     child: AnimatedScale(
       scale: _hovered ? 1.025 : 1,
       duration: const Duration(milliseconds: 120),
+      curve: Curves.easeOutCubic,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         decoration: BoxDecoration(
@@ -942,7 +1102,7 @@ class FilmEpisodeCard extends StatelessWidget {
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     position = overlay.globalToLocal(position);
-    final action = await showMenu<_FilmFileAction>(
+    final action = await showSPMenu<_FilmFileAction>(
       context: context,
       color: AppTheme.dropdownMenuColor(Theme.of(context)),
       shape: RoundedRectangleBorder(
@@ -985,10 +1145,31 @@ class FilmEpisodeCard extends StatelessWidget {
             value: _FilmFileAction.select,
             child: AppText(selected ? '取消选择' : '选择此集'),
           ),
+        PopupMenuItem(
+          value: _FilmFileAction.playlist,
+          enabled: !resource.isDisc && resource.availability == 'present',
+          child: AppText(
+            resource.type == FilmMediaType.tv ? '以本集创建播放列表' : '以本资源创建播放列表',
+          ),
+        ),
+        PopupMenuItem(
+          value: _FilmFileAction.addPlaylist,
+          enabled: !resource.isDisc && resource.availability == 'present',
+          child: const AppText('加入播放列表…'),
+        ),
       ],
     );
     if (!context.mounted || action == null) return;
     switch (action) {
+      case _FilmFileAction.playlist:
+      case _FilmFileAction.addPlaylist:
+        await showFilmPlaylistDialog(
+          context,
+          catalog,
+          FilmPlaylistScope.resource(resource),
+          create: action == _FilmFileAction.playlist,
+          title: displayTitle ?? resource.name,
+        );
       case _FilmFileAction.watched:
       case _FilmFileAction.unwatched:
         await markFilmWatch(context, [
@@ -1014,10 +1195,19 @@ class FilmEpisodeCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      SelectableText(resource.name),
+                      SelectableText(
+                        contextMenuBuilder: buildSPTextSelectionMenu,
+                        resource.name,
+                      ),
                       const SizedBox(height: 12),
-                      SelectableText(resource.rootName),
-                      SelectableText(resource.path),
+                      SelectableText(
+                        contextMenuBuilder: buildSPTextSelectionMenu,
+                        resource.rootName,
+                      ),
+                      SelectableText(
+                        contextMenuBuilder: buildSPTextSelectionMenu,
+                        resource.path,
+                      ),
                       const SizedBox(height: 12),
                       AppText(state),
                       const Divider(height: 24),
@@ -1082,6 +1272,8 @@ class FilmEpisodeCard extends StatelessWidget {
               FilmWatchOverlay(
                 store: catalog.store,
                 resource: resource,
+                spoilerSensitive: tv,
+                canReveal: false,
                 child: FilmArtwork(
                   cache: catalog.images,
                   path: still ?? artworkPath,
@@ -1150,19 +1342,40 @@ class FilmEpisodeCard extends StatelessWidget {
                           'date': episode!['air_date'],
                         }),
                       ),
-                    if (episode?['runtime'] != null)
+                    if ((probe?['duration'] is num &&
+                            (probe!['duration'] as num) > 0) ||
+                        (episode?['runtime'] is num &&
+                            (episode!['runtime'] as num) > 0))
                       Text(
-                        context.l10n.format('官方时长：{minutes} 分钟', {
-                          'minutes': episode!['runtime'],
-                        }),
+                        context.l10n.format(
+                          probe?['duration'] is num &&
+                                  (probe!['duration'] as num) > 0
+                              ? '影片时长：{minutes} 分钟'
+                              : '官方时长：{minutes} 分钟',
+                          {
+                            'minutes':
+                                probe?['duration'] is num &&
+                                    (probe!['duration'] as num) > 0
+                                ? ((probe!['duration'] as num) / 60).round()
+                                : episode!['runtime'],
+                          },
+                        ),
                       ),
-                    if ((episode?['overview'] as String?)?.isNotEmpty == true)
+                    if (tv)
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          episode!['overview'] as String,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
+                        child: FilmWatchOverlay(
+                          store: catalog.store,
+                          resource: resource,
+                          spoilerSensitive: true,
+                          showStatus: false,
+                          revealBelow: true,
+                          revealLabel: '展示封面',
+                          child: Text(
+                            episode?['overview'] as String? ?? '',
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ),
                     if (!tv)
@@ -1214,8 +1427,14 @@ class FilmResourceTile extends StatelessWidget {
               'S${resource.season}E${resource.episode} · ${episode?['name'] ?? ''}',
               style: Theme.of(context).textTheme.titleSmall,
             ),
-          SelectableText(resource.name),
-          SelectableText('${resource.rootName} · ${resource.path}'),
+          SelectableText(
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            resource.name,
+          ),
+          SelectableText(
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            '${resource.rootName} · ${resource.path}',
+          ),
           AppText(state),
           if (episode?['air_date'] != null)
             Text(
@@ -1224,7 +1443,15 @@ class FilmResourceTile extends StatelessWidget {
               }),
             ),
           if ((episode?['overview'] as String?)?.isNotEmpty == true)
-            Text(episode!['overview'] as String),
+            FilmWatchOverlay(
+              store: catalog.store,
+              resource: resource,
+              showStatus: false,
+              spoilerSensitive: true,
+              revealBelow: true,
+              revealLabel: '展示封面',
+              child: Text(episode!['overview'] as String),
+            ),
           Wrap(
             spacing: 12,
             runSpacing: 8,
@@ -1306,6 +1533,7 @@ class _FilmPendingPageState extends State<FilmPendingPage> {
     await widget.catalog.run(() async {
       final rows = await widget.catalog.store.resources(
         pending: true,
+        enabledOnly: true,
         rootId: widget.catalog.rootId,
         limit: 60,
         offset: more ? _resources.length : 0,
@@ -1464,8 +1692,9 @@ class _CreditAvatarState extends State<_CreditAvatar> {
     child: MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedScale(
-        scale: _hovered ? 1.08 : 1,
+      child: FilmCoverZoom(
+        hovered: _hovered,
+        scale: 1.08,
         duration: const Duration(milliseconds: 120),
         child: widget.child,
       ),

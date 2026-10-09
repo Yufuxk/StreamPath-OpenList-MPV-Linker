@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -44,6 +45,7 @@ import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.da
 import 'package:streampath/presentation/widgets/glass_surface.dart';
 import 'package:streampath/presentation/widgets/sp_controls.dart';
 import 'package:streampath/presentation/widgets/sp_font_picker.dart';
+import 'package:streampath/presentation/widgets/settings_group_card.dart';
 
 void main() {
   late Directory tempDir;
@@ -168,6 +170,85 @@ void main() {
       );
     }
   }
+
+  testWidgets('设置左右切页仅挂载一个表单，动画帧不重建内容，快速选择定位最后目标', (tester) async {
+    final builds = <SettingsSection, int>{};
+    await tester.pumpWidget(
+      buildSettings(
+        onSectionBuilt: (s) =>
+            builds.update(s, (n) => n + 1, ifAbsent: () => 1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final initial = builds[SettingsSection.server]!;
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pump();
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 30));
+      expect(find.byType(Form, skipOffstage: false), findsOneWidget);
+    }
+    expect(
+      tester
+          .widget<FractionalTranslation>(
+            find.byKey(const Key('settings-section-slide')),
+          )
+          .translation
+          .dx,
+      lessThan(0),
+    );
+    expect(builds[SettingsSection.server], initial + 1);
+    await tester.tap(find.byKey(const Key('settings-section-cache')));
+    await tester.tap(find.byKey(const Key('settings-section-general')));
+    await tester.pumpAndSettle();
+    expect(SettingsPageMemory.selectedSection, SettingsSection.general);
+    expect(find.byKey(const Key('reset-settings-button')), findsOneWidget);
+    expect(find.byType(Form, skipOffstage: false), findsOneWidget);
+    await tester.tap(find.byKey(const Key('settings-section-server')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(
+      tester
+          .widget<FractionalTranslation>(
+            find.byKey(const Key('settings-section-slide')),
+          )
+          .translation
+          .dx,
+      greaterThan(0),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('影视库设置宽窗双列，窄窗及四语言放大文字保留单列卡片', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsPageMemory.select(SettingsSection.films);
+    await tester.pumpWidget(buildSettings());
+    await settleFilmSettings(tester);
+    await tester.pumpAndSettle();
+    Finder card(String title) => find.byWidgetPredicate(
+      (w) => w is SettingsGroupCard && w.title == title,
+    );
+    expect(
+      tester.getTopLeft(card('影视库背景')).dx,
+      greaterThan(tester.getTopLeft(card('首页栏目')).dx),
+    );
+    for (final language in AppLanguage.values) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      tester.view.physicalSize = const Size(640, 700);
+      await tester.pumpWidget(buildSettings(language: language, textScale: 2));
+      await settleFilmSettings(tester);
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(card('影视库背景')).dx,
+        tester.getTopLeft(card('首页栏目')).dx,
+      );
+      expect(find.byType(SettingsGroupCard), findsNWidgets(5));
+      expect(tester.takeException(), isNull);
+    }
+  });
 
   testWidgets('设置固定标签在四语言、明暗主题和 1280×720 文字缩放下正常布局', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
@@ -489,11 +570,11 @@ void main() {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
     final field = find.byWidgetPredicate(
-      (w) => w is DropdownButtonFormField<OpenListRestartDirectory>,
+      (w) => w is SPDropdownButtonFormField<OpenListRestartDirectory>,
     );
     expect(
       tester
-          .widget<DropdownButtonFormField<OpenListRestartDirectory>>(field)
+          .widget<SPDropdownButtonFormField<OpenListRestartDirectory>>(field)
           .initialValue,
       OpenListRestartDirectory.userProfile,
     );
@@ -784,7 +865,7 @@ void main() {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
     tester
-        .widget<DropdownButtonFormField<String>>(
+        .widget<SPDropdownButtonFormField<String>>(
           find.byKey(const Key('settings-profile-selector')),
         )
         .onChanged!('profile-b');
@@ -849,7 +930,7 @@ void main() {
       }
     }
 
-    final selector = tester.widget<DropdownButtonFormField<String>>(
+    final selector = tester.widget<SPDropdownButtonFormField<String>>(
       find.byKey(const Key('settings-profile-selector')),
     );
     expect(selector.initialValue, 'profile-b');
@@ -922,7 +1003,7 @@ void main() {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
     tester
-        .widget<DropdownButtonFormField<String>>(
+        .widget<SPDropdownButtonFormField<String>>(
           find.byKey(const Key('settings-profile-selector')),
         )
         .onChanged!('profile-b');
@@ -955,7 +1036,7 @@ void main() {
     expect(appState.username, 'alice');
     expect(
       tester
-          .widget<DropdownButtonFormField<String>>(
+          .widget<SPDropdownButtonFormField<String>>(
             find.byKey(const Key('settings-profile-selector')),
           )
           .initialValue,
@@ -1510,11 +1591,8 @@ void main() {
     final languageField = find.byKey(const Key('app-language-field'));
     expect(languageField, findsOneWidget);
     await tester.ensureVisible(languageField);
-    final dropdown = tester.widget<DropdownButton<AppLanguage>>(
-      find.descendant(
-        of: languageField,
-        matching: find.byType(DropdownButton<AppLanguage>),
-      ),
+    final dropdown = tester.widget<SPDropdownButtonFormField<AppLanguage>>(
+      languageField,
     );
     dropdown.onChanged!(AppLanguage.english);
     await tester.pump();
@@ -1602,6 +1680,7 @@ void main() {
       );
     });
     await tester.tap(find.byKey(const Key('settings-section-general')));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
 
     final resetButton = find.byKey(const Key('reset-settings-button'));
@@ -1660,6 +1739,7 @@ void main() {
     expect(find.text('全部设置已恢复默认值'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('settings-section-server')));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     final serverField = tester.widget<TextFormField>(
       find.byKey(const Key('server-url-field')),

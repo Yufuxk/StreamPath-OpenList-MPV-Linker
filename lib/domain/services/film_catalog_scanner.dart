@@ -24,7 +24,13 @@ class FilmScanProgress {
   final bool cancelling;
 }
 
-/// 一次一个影视根，串行读取目录后原子提交；无媒体探测请求。
+class FilmScanScope {
+  const FilmScanScope(this.rootId, this.path);
+  final int rootId;
+  final String path;
+}
+
+/// 串行登记已发现资源，完整成功后确认缺失；无媒体探测请求。
 class FilmCatalogScanner {
   FilmCatalogScanner(
     this.store, {
@@ -52,15 +58,24 @@ class FilmCatalogScanner {
     void Function(FilmScanProgress)? onProgress,
     Future<void> Function(List<FilmScanEntry>)? onEntries,
     bool incremental = false,
+    FilmScanScope? scope,
   }) {
     if (_busy) throw const FilmCatalogException('scanBusy');
     if (source.descriptor.sourceId != root.sourceId ||
         source.descriptor.kind != root.sourceKind) {
       throw const FilmCatalogException('sourceUnavailable');
     }
+    if (scope != null &&
+        (scope.rootId != root.id ||
+            !filmPathWithin(
+              filmPathKey(scope.path, root.sourceKind),
+              filmPathKey(root.path, root.sourceKind),
+            ))) {
+      throw const FilmCatalogException('invalidPath');
+    }
     _busy = true;
     _cancelled = false;
-    final task = _scan(root, source, onProgress, onEntries, incremental)
+    final task = _scan(root, source, onProgress, onEntries, incremental, scope)
         .whenComplete(() {
           _busy = false;
         });
@@ -79,6 +94,7 @@ class FilmCatalogScanner {
     void Function(FilmScanProgress)? report,
     Future<void> Function(List<FilmScanEntry>)? onEntries,
     bool incremental,
+    FilmScanScope? scope,
   ) async {
     final generation = await store.beginScan(root.id);
     var directories = 0;
@@ -93,14 +109,14 @@ class FilmCatalogScanner {
           excludedDirectory(root.path.split('/').last)) {
         throw const FilmCatalogException('unsupportedDirectory');
       }
-      final queue = Queue<String>()..add(root.path);
+      final queue = Queue<String>()..add(scope?.path ?? root.path);
       final visited = <String>{};
       while (queue.isNotEmpty) {
         _checkCancelled();
         final path = queue.removeFirst();
         if (!visited.add(filmPathKey(path, root.sourceKind))) continue;
         report?.call(FilmScanProgress(root.id, directories, files, path));
-        if (source.descriptor.kind == MediaSourceKind.webdav &&
+        if (source.descriptor.kind != MediaSourceKind.local &&
             directories > 0) {
           await Future<void>.delayed(remoteInterval);
           _checkCancelled();
@@ -153,7 +169,7 @@ class FilmCatalogScanner {
               !entry.isDirectory &&
               (entry.isIso ||
                   entry.isVideo ||
-                  (root.sourceKind == MediaSourceKind.webdav && entry.isStrm));
+                  (root.sourceKind != MediaSourceKind.local && entry.isStrm));
           if (!entry.isDirectory && !playable) continue;
           final child = SpecialVideoPlaylistCollector.directChildPath(
             source,
@@ -201,6 +217,7 @@ class FilmCatalogScanner {
         generation,
         cancelled: () => _cancelled,
         incremental: incremental,
+        scopePath: scope?.path,
       );
     } on FilmCatalogException catch (error) {
       await store.finishScan(

@@ -96,7 +96,7 @@ void main() {
     expect(c.retainedScrapeEntryCount, 0);
   });
 
-  test('刮削先完成时缓存资料，清单提交后关联已有结果', () async {
+  test('扫描未结束时逐项发布资源与刮削作品', () async {
     final entered = Completer<void>();
     final release = Completer<void>();
     final fixture = await _Fixture.create((path) async {
@@ -111,11 +111,17 @@ void main() {
       return [];
     });
     addTearDown(fixture.close);
+    addTearDown(() {
+      if (!release.isCompleted) release.complete();
+    });
     final c = fixture.controller;
     final scan = c.scan(fixture.root);
     await entered.future;
     await _until(() => c.scrapeProcessed == 1);
-    expect(await c.store.resources(), isEmpty);
+    expect((await c.store.resources()).single.workId, isNotNull);
+    await _until(() => c.recentWorks.any((work) => work.tmdbId == 1));
+    expect(c.busy, isTrue);
+    expect((await c.store.root(fixture.root.id))!.status, 'running');
     expect(await c.store.cachedWork(FilmMediaType.movie, 1), isNotNull);
     expect(c.retainedScrapeSessionCount, 1);
     expect(c.retainedScrapeEntryCount, 1);
@@ -130,7 +136,7 @@ void main() {
   });
 
   for (final cancel in [true, false]) {
-    test('扫描取消或失败不终止刮削，不提交半份清单 cancel=$cancel', () async {
+    test('扫描取消或失败保留已发现资源与旧记录，刮削继续 cancel=$cancel', () async {
       final nextDirectory = Completer<void>();
       final directoryRelease = Completer<void>();
       final metadataEntered = Completer<void>();
@@ -166,13 +172,17 @@ void main() {
       await scan;
       expect(c.error, cancel ? 'cancelled' : 'directoryReadFailed');
       expect(c.scraping, isTrue);
-      expect((await c.store.resources()).single.id, old.id);
+      expect(await c.store.resources(), hasLength(2));
+      expect((await c.store.resource(old.id))!.availability, 'present');
       metadataRelease.complete();
       await c.waitForScraping().timeout(const Duration(seconds: 10));
       expect(c.scrapeProcessed, 2);
       expect(c.retainedScrapeSessionCount, 0);
       expect(c.retainedScrapeEntryCount, 0);
-      expect((await c.store.resources()).single.workId, isNotNull);
+      expect(
+        (await c.store.resources()).every((r) => r.workId != null),
+        isTrue,
+      );
       expect(await c.store.cachedWork(FilmMediaType.movie, 2), isNotNull);
       expect(
         (await c.store.root(fixture.root.id))!.status,
@@ -180,6 +190,27 @@ void main() {
       );
     });
   }
+
+  test('连续刮削结果持续刷新主页，不等待队列全部结束', () async {
+    final fixture = await _Fixture.create(
+      (_) async => [
+        for (var i = 0; i < 12; i++)
+          _file('Movies/${String.fromCharCode(65 + i)}.2020.mkv'),
+      ],
+      api: (options) async {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        return _response(options);
+      },
+    );
+    addTearDown(fixture.close);
+    final c = fixture.controller;
+    await c.scan(fixture.root);
+    await _until(() => c.recentWorks.isNotEmpty);
+    expect(c.scraping, isTrue);
+    expect(c.scrapeProcessed, lessThan(12));
+    await c.waitForScraping();
+    await _until(() => c.recentWorks.length == 12);
+  });
 
   test('刮削故障保留队列，另一个扫描不恢复暂停，用户继续后完整处理', () async {
     final fixture = await _Fixture.create(
@@ -365,12 +396,19 @@ void main() {
       releaseDirectory.complete();
       await scan;
       expect(c.error, cancel ? 'cancelled' : 'directoryReadFailed');
-      expect((await c.store.resources()).single.id, original.id);
+      expect(await c.store.resources(), hasLength(2));
+      expect((await c.store.resource(original.id))!.availability, 'present');
       expect(c.scraping, isTrue);
       releaseMetadata.complete();
       await c.waitForScraping();
       expect(c.scrapeProcessed, 1);
-      expect((await c.store.resources()).single.workId, isNull);
+      expect((await c.store.resource(original.id))!.workId, isNull);
+      expect(
+        (await c.store.resources())
+            .singleWhere((r) => r.id != original.id)
+            .workId,
+        isNotNull,
+      );
       expect(await c.store.cachedWork(FilmMediaType.movie, 2), isNotNull);
     });
   }

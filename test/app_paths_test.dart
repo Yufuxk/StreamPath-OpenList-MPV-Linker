@@ -5,6 +5,27 @@ import 'package:streampath/core/utils/app_paths.dart';
 
 /// AppPaths 布局迁移测试（config/ 与 cache/ 子目录）。
 void main() {
+  test('安装目录含 build 段时仍固定使用 Windows 用户数据根', () {
+    final userData = Directory.systemTemp.path;
+    final result = AppPaths.resolveDataRoot(
+      executable:
+          '$userData${Platform.pathSeparator}build${Platform.pathSeparator}installed${Platform.pathSeparator}streampath.exe',
+      installed: true,
+      localAppData: userData,
+    );
+    expect(
+      result,
+      '$userData${Platform.pathSeparator}StreamPath${Platform.pathSeparator}stream_path_data',
+    );
+    expect(
+      () => AppPaths.resolveDataRoot(
+        executable: 'streampath.exe',
+        installed: true,
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+  });
+
   late Directory tempRoot;
 
   setUp(() {

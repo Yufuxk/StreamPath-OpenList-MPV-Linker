@@ -9,6 +9,22 @@ List<VideoQueueItem> buildFilmVideoTimeline(
   required bool autoSeason,
   required bool allowGap,
 }) {
+  final ordered = buildFilmVideoOrder(resources, seasons);
+  return _filterFilmVideoTimeline(
+    ordered,
+    resources,
+    seasons,
+    selectedPath: selectedPath,
+    autoSeason: autoSeason,
+    allowGap: allowGap,
+  );
+}
+
+/// 自定义范围与隐式队列共用季集分组和首播顺序。
+List<VideoQueueItem> buildFilmVideoOrder(
+  List<FilmResource> resources,
+  Map<int, Map<String, dynamic>> seasons,
+) {
   final groups = <(int, int), List<FilmResource>>{};
   for (final r in resources) {
     if (r.availability != 'present' ||
@@ -28,6 +44,50 @@ List<VideoQueueItem> buildFilmVideoTimeline(
     return parseAirDate(value);
   }
 
+  final result = <VideoQueueItem>[];
+  for (final entry in groups.entries) {
+    final (s, e) = entry.key;
+    final versions =
+        entry.value
+            .map((r) => VideoQueueVersion(path: r.path, name: r.name))
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
+    result.add(
+      VideoQueueItem(
+        versions: versions,
+        season: s,
+        episode: e,
+        airDate: date(s, e),
+      ),
+    );
+  }
+  result.sort((a, b) {
+    if (a.airDate == null && b.airDate != null) return 1;
+    if (a.airDate != null && b.airDate == null) return -1;
+    final dated = a.airDate == null ? 0 : a.airDate!.compareTo(b.airDate!);
+    if (dated != 0) return dated;
+    if (a.airDate == null && a.season != b.season) {
+      if (a.season == 0) return 1;
+      if (b.season == 0) return -1;
+    }
+    final season = a.season!.compareTo(b.season!);
+    return season != 0 ? season : a.episode!.compareTo(b.episode!);
+  });
+  return result;
+}
+
+List<VideoQueueItem> _filterFilmVideoTimeline(
+  List<VideoQueueItem> ordered,
+  List<FilmResource> resources,
+  Map<int, Map<String, dynamic>> seasons, {
+  required String selectedPath,
+  required bool autoSeason,
+  required bool allowGap,
+}) {
+  final groups = {
+    for (final item in ordered) (item.season!, item.episode!): item,
+  };
+  DateTime? date(int s, int e) => groups[(s, e)]?.airDate;
   final starts = <int, DateTime>{};
   for (final key in groups.keys.where((k) => k.$1 > 0)) {
     final value = date(key.$1, key.$2);
@@ -70,30 +130,14 @@ List<VideoQueueItem> buildFilmVideoTimeline(
       }
     }
   }
-  final result = <VideoQueueItem>[];
-  for (final entry in groups.entries) {
-    final (s, e) = entry.key;
-    final d = date(s, e);
-    if (s > 0 && !allowed.contains(s)) continue;
-    if (s == 0 && d != null && !allowed.contains(specialSeason(d))) continue;
-    final versions =
-        entry.value
-            .map((r) => VideoQueueVersion(path: r.path, name: r.name))
-            .toList()
-          ..sort((a, b) => a.path.compareTo(b.path));
-    result.add(
-      VideoQueueItem(versions: versions, season: s, episode: e, airDate: d),
-    );
-  }
-  result.sort((a, b) {
-    if (a.airDate == null && b.airDate != null) return 1;
-    if (a.airDate != null && b.airDate == null) return -1;
-    final dated = a.airDate == null ? 0 : a.airDate!.compareTo(b.airDate!);
-    if (dated != 0) return dated;
-    final season = a.season!.compareTo(b.season!);
-    return season != 0 ? season : a.episode!.compareTo(b.episode!);
-  });
-  return result;
+  return ordered
+      .where(
+        (item) => item.season! > 0
+            ? allowed.contains(item.season)
+            : item.airDate == null ||
+                  allowed.contains(specialSeason(item.airDate)),
+      )
+      .toList();
 }
 
 DateTime? parseAirDate(Object? value) {

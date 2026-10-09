@@ -27,6 +27,7 @@ dependencies:
 
   # ── 依赖 ───────────────────────────────────────────────────
   crypto: ^3.0.6
+  archive: ^4.3.0
   meta: ^1.15.0
   path_provider: ^2.1.4
   provider: ^6.1.2
@@ -57,3 +58,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/tmdb_logo.png
+    - assets/icon/app_icon.png

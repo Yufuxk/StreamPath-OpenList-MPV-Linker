@@ -1,14 +1,22 @@
 /// 媒体来源类型。
-enum MediaSourceKind { webdav, local }
+enum MediaSourceKind { webdav, local, smb, ftp, nfs, jellyfin, emby }
 
 extension MediaSourceKindJson on MediaSourceKind {
   String get jsonValue => name;
 
-  static MediaSourceKind fromJson(Object? value) => switch (value) {
-    'local' => MediaSourceKind.local,
-    'webdav' || null => MediaSourceKind.webdav,
-    _ => throw const FormatException('媒体来源类型无效'),
-  };
+  static MediaSourceKind fromJson(Object? value) => value == null
+      ? MediaSourceKind.webdav
+      : MediaSourceKind.values
+                .where((kind) => kind.name == value)
+                .firstOrNull ??
+            (throw const FormatException('Invalid media source kind'));
+
+  bool get isMediaServer =>
+      this == MediaSourceKind.jellyfin || this == MediaSourceKind.emby;
+  bool get isNativeStorage =>
+      this == MediaSourceKind.smb ||
+      this == MediaSourceKind.ftp ||
+      this == MediaSourceKind.nfs;
 }
 
 /// 播放链路使用的显式模式。

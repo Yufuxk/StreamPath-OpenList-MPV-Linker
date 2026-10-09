@@ -13,10 +13,12 @@ class VideoQueueItem {
     this.season,
     this.episode,
     this.airDate,
+    this.unavailable = false,
   });
   final List<VideoQueueVersion> versions;
   final int? season, episode;
   final DateTime? airDate;
+  final bool unavailable;
   Map<String, dynamic> toJson() => {
     'versions': [
       for (final v in versions) {'path': v.path, 'name': v.name},
@@ -24,6 +26,7 @@ class VideoQueueItem {
     'season': season,
     'episode': episode,
     'airDate': airDate?.toIso8601String(),
+    if (unavailable) 'unavailable': true,
   };
   factory VideoQueueItem.fromJson(Map<String, dynamic> json) => VideoQueueItem(
     versions: [
@@ -33,6 +36,7 @@ class VideoQueueItem {
     season: json['season'] as int?,
     episode: json['episode'] as int?,
     airDate: DateTime.tryParse(json['airDate'] as String? ?? ''),
+    unavailable: json['unavailable'] == true,
   );
 }
 
@@ -77,10 +81,13 @@ class VideoProgressUpdate {
     required this.recordedAt,
     this.durationMs,
     this.completed = false,
+    this.paused = false,
+    this.stopped = false,
   });
   final String sourceId, path;
   final int positionMs;
   final int? durationMs;
   final DateTime recordedAt;
   final bool completed;
+  final bool paused, stopped;
 }

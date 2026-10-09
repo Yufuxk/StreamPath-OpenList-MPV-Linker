@@ -148,7 +148,8 @@ void main() {
     await tester.tap(find.byType(FilmWorkCard), buttons: kSecondaryMouseButton);
     await settle();
     expect(opened, 0);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
+    expect(find.text('加入合集'), findsOneWidget);
     final surface = tester
         .widgetList<Material>(find.byType(Material))
         .singleWhere(

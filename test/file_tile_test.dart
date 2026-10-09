@@ -1,13 +1,60 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
-import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/file_tile.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
 import 'package:streampath/presentation/widgets/sp_icons.dart';
 
 void main() {
+  for (final dark in [false, true]) {
+    for (final glass in [false, true]) {
+      testWidgets('目录正文与侧栏留白使用相同背景 dark=$dark glass=$glass', (tester) async {
+        const frameKey = Key('directory-surface-frame');
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: dark
+                ? AppTheme.dark(glass: glass)
+                : AppTheme.light(glass: glass),
+            builder: (_, child) => RepaintBoundary(
+              key: frameKey,
+              child: ColoredBox(color: const Color(0xFF6080A0), child: child!),
+            ),
+            home: const Scaffold(
+              body: Row(
+                children: [
+                  SizedBox(width: 64),
+                  Expanded(child: FileListSurface(child: SizedBox.expand())),
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.runAsync(() async {
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(frameKey),
+          );
+          final image = await boundary.toImage();
+          final bytes = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!.buffer.asUint8List();
+          for (final y in [16, 100, 200]) {
+            final left = (y * image.width + 24) * 4;
+            final right = (y * image.width + 500) * 4;
+            expect(
+              bytes.sublist(left, left + 4),
+              bytes.sublist(right, right + 4),
+            );
+          }
+          image.dispose();
+        });
+      });
+    }
+  }
+
   testWidgets('音频使用独立图标而非视频图标', (tester) async {
     const audio = WebDavFile(
       name: 'song.flac',
@@ -144,17 +191,16 @@ void main() {
 
       expect(foundMaterial, isTrue);
       expect(opaqueLayerBeforeMaterial, isFalse);
-      final surface = tester.widget<GlassSurface>(
+      expect(
         find.descendant(
           of: find.byType(FileListSurface),
           matching: find.byType(GlassSurface),
         ),
+        findsNothing,
       );
-      expect(surface.level, GlassSurfaceLevel.raised);
-      expect(surface.showShadow, isFalse);
       final material = tester.widget<Material>(
         find.descendant(
-          of: find.byType(GlassSurface),
+          of: find.byType(FileListSurface),
           matching: find.byType(Material),
         ),
       );

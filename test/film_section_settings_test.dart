@@ -23,7 +23,8 @@ class _GatedCatalog extends FilmCatalogController {
   Completer<void>? saveGate;
   bool failSave = false;
   @override
-  Future<void> refresh({bool more = false}) => refreshGate.future;
+  Future<void> refresh({bool more = false, bool home = true}) =>
+      refreshGate.future;
   @override
   Future<bool> run(Future<void> Function() action, {bool clearError = true}) =>
       super.run(() async {

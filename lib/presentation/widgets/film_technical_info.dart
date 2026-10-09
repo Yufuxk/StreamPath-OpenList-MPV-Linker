@@ -1,3 +1,4 @@
+import 'sp_menu.dart';
 import 'package:flutter/material.dart';
 
 import '../controllers/film_catalog_controller.dart';
@@ -36,7 +37,7 @@ class FilmTechnicalInfo extends StatelessWidget {
     final l10n = context.l10n;
     Widget field(String label, Object? value) => Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: SelectableText('${l10n.text(label)}：${value ?? l10n.text('未知')}'),
+      child: SelectableText(contextMenuBuilder: buildSPTextSelectionMenu, '${l10n.text(label)}：${value ?? l10n.text('未知')}'),
     );
     String? bitrate(Object? value) =>
         value is num ? '${(value / 1000000).toStringAsFixed(2)} Mb/s' : null;

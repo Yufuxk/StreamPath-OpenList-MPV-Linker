@@ -15,10 +15,10 @@ import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/presentation/pages/app_shell_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
-import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
 import 'package:streampath/presentation/widgets/directory_breadcrumbs.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
@@ -185,13 +185,7 @@ void main() {
       ),
     );
 
-    for (final section in [
-      'films',
-      'folders',
-      'library',
-      'mounts',
-      'settings',
-    ]) {
+    for (final section in ['films', 'folders', 'library', 'settings']) {
       expect(find.byKey(Key('sidebar-$section')), findsOneWidget);
     }
     Finder pageTitle(String text) =>
@@ -199,7 +193,8 @@ void main() {
     await tester.tap(find.byKey(const Key('sidebar-folders')));
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('本地文件夹'), findsOneWidget);
-    expect(find.text('网络文件夹'), findsOneWidget);
+    expect(find.text('网络存储'), findsOneWidget);
+    expect(find.text('媒体服务器'), findsOneWidget);
     expect(find.byKey(const Key('folders-search')), findsOneWidget);
     await tester.tap(find.byKey(const Key('folders-local-tab')));
     await tester.pump();
@@ -210,46 +205,45 @@ void main() {
       tester.element(localTitle),
     ).style;
     expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
-    for (final (section, title) in [('mounts', '文件夹管理')]) {
-      await tester.tap(find.byKey(Key('sidebar-$section')));
-      await tester.pump(const Duration(milliseconds: 250));
-      final currentTitle = pageTitle(title);
-      final currentPosition = tester.getTopLeft(currentTitle);
-      final currentStyle = DefaultTextStyle.of(
-        tester.element(currentTitle),
-      ).style;
-      expect(currentPosition.dx, closeTo(localTitlePosition.dx, 0.1));
-      expect(currentPosition.dy, closeTo(localTitlePosition.dy, 0.1));
-      expect(currentStyle.fontSize, localTitleStyle.fontSize);
-      expect(currentStyle.fontWeight, localTitleStyle.fontWeight);
-      expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
-    }
-    await tester.tap(find.byKey(const Key('sidebar-folders')));
-    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const Key('folders-server-tab')));
+    await tester.pumpAndSettle();
+    final currentTitle = pageTitle('文件夹');
+    final currentStyle = DefaultTextStyle.of(
+      tester.element(currentTitle),
+    ).style;
+    expect(tester.getTopLeft(currentTitle), localTitlePosition);
+    expect(currentStyle.fontSize, localTitleStyle.fontSize);
+    expect(currentStyle.fontWeight, localTitleStyle.fontWeight);
+    expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
+    await tester.tap(find.byKey(const Key('folders-local-tab')));
+    await tester.pumpAndSettle();
     expect(
-      tester.getTopLeft(find.byKey(const Key('sidebar-mounts'))).dy,
+      tester.getTopLeft(find.byKey(const Key('sidebar-folders'))).dy,
       lessThan(tester.getTopLeft(find.byKey(const Key('sidebar-library'))).dy),
     );
-    expect(find.byTooltip('文件夹管理'), findsOneWidget);
+    expect(find.byTooltip('文件夹管理'), findsNothing);
+    expect(find.byKey(const Key('sidebar-mounts')), findsNothing);
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(
+              of: find.byKey(const Key('sidebar-folders')),
+              matching: find.byType(Icon),
+            ),
+          )
+          .icon,
+      SPIcons.folder,
+    );
     expect(find.text('StreamPath'), findsNothing);
     expect(find.text('本地影视'), findsOneWidget);
-    final localSurface = find.ancestor(
-      of: find.byKey(const ValueKey('local-root-root-test')),
-      matching: find.byType(GlassSurface),
-    );
     expect(
-      tester.widget<GlassSurface>(localSurface).borderRadius,
-      BorderRadius.circular(14),
+      find.ancestor(
+        of: find.byKey(const ValueKey('local-root-root-test')),
+        matching: find.byType(GlassSurface),
+      ),
+      findsNothing,
     );
-    expect(
-      tester.widget<GlassSurface>(localSurface).level,
-      GlassSurfaceLevel.content,
-    );
-    expect(
-      tester.widget<GlassSurface>(localSurface).clipBehavior,
-      Clip.antiAlias,
-    );
-    expect(find.byKey(const Key('add-local-root-button')), findsNothing);
+    expect(find.byKey(const Key('add-local-root-button')), findsOneWidget);
     for (
       var attempt = 0;
       attempt < 12 && find.text('1.5 KiB').evaluate().isEmpty;
@@ -268,6 +262,73 @@ void main() {
           .map((text) => text.data)
           .join(' | '),
     );
+
+    Future<void> waitForConfig(bool Function() ready) async {
+      for (var attempt = 0; attempt < 30 && !ready(); attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 30)),
+        );
+        await tester.pump();
+      }
+      expect(ready(), isTrue);
+      await tester.pumpAndSettle();
+    }
+
+    final addedDirectory = Directory(p.join(temporaryDirectory.path, 'Added'))
+      ..createSync();
+    await tester.tap(find.byKey(const Key('add-local-root-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('local-root-name-field')),
+      '新挂载',
+    );
+    await tester.enterText(
+      find.byKey(const Key('local-root-path-field')),
+      addedDirectory.path,
+    );
+    await tester.tap(find.text('确定'));
+    await waitForConfig(() => appState.localRoots.length == 2);
+    final added = appState.localRoots.firstWhere(
+      (root) => root.displayName == '新挂载',
+    );
+    final addedRow = find.byKey(ValueKey('local-root-${added.rootId}'));
+    Finder rowAction(String tooltip) =>
+        find.descendant(of: addedRow, matching: find.byTooltip(tooltip));
+    await tester.tap(rowAction('编辑'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('local-root-name-field')),
+      '重命名挂载',
+    );
+    await tester.tap(find.text('确定'));
+    await waitForConfig(
+      () => appState.localRoots.any((root) => root.displayName == '重命名挂载'),
+    );
+    final toggle = find.descendant(of: addedRow, matching: find.byType(Switch));
+    await tester.tap(toggle);
+    await waitForConfig(
+      () => !appState.localRoots
+          .firstWhere((root) => root.rootId == added.rootId)
+          .enabled,
+    );
+    expect(tester.widget<ListTile>(addedRow).onTap, isNull);
+    await tester.tap(toggle);
+    await waitForConfig(
+      () => appState.localRoots
+          .firstWhere((root) => root.rootId == added.rootId)
+          .enabled,
+    );
+    expect(tester.widget<ListTile>(addedRow).onTap, isNotNull);
+    await tester.tap(rowAction('移除挂载'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(appState.localRoots, hasLength(2));
+    await tester.tap(rowAction('移除挂载'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '移除挂载'));
+    await waitForConfig(() => appState.localRoots.length == 1);
+    expect(addedDirectory.existsSync(), isTrue);
 
     await tester.tap(find.byKey(const ValueKey('local-root-root-test')));
     for (
@@ -292,7 +353,7 @@ void main() {
       await tester.pump();
     }
     expect(find.text('episode.mp4'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('sidebar-mounts')));
+    await tester.tap(find.byKey(const Key('sidebar-library')));
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.byKey(const Key('sidebar-folders')));
     await tester.pump(const Duration(milliseconds: 250));
@@ -303,7 +364,7 @@ void main() {
     expect(find.byKey(const Key('sidebar-compact-toggle')), findsNothing);
     expect(tester.getSize(find.byKey(const Key('sidebar-rail'))).width, 64);
     expect(tester.getSize(find.byKey(const Key('sidebar-surface'))).width, 56);
-    for (final label in ['影视库', '文件夹', '文件夹管理', '媒体中心', '设置']) {
+    for (final label in ['影视库', '文件夹', '媒体中心', '设置']) {
       expect(find.byTooltip(label), findsOneWidget);
     }
     expect(find.byKey(const Key('sidebar-search')), findsNothing);

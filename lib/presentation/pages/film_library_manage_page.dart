@@ -1,18 +1,17 @@
+import '../widgets/sp_menu.dart';
+import '../../data/local/film_catalog_store.dart';
+import '../../domain/services/film_catalog_scanner.dart';
+import '../widgets/film_directory_dialog.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/settings_group_card.dart';
-import 'dart:io';
+import '../widgets/settings_columns.dart';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/models/film_catalog_item.dart';
-import '../../core/errors/app_exception.dart';
-import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
 import '../../domain/repositories/media_directory_source.dart';
-import '../../domain/services/film_catalog_scanner.dart';
-import '../../domain/services/local_media_source.dart';
-import '../../domain/services/special_video_playlist_collector.dart';
 import '../../domain/services/webdav_media_source_adapter.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
@@ -26,6 +25,8 @@ import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/film_artwork_picker.dart';
 import '../widgets/film_section_settings.dart';
+import '../widgets/film_transfer_dialog.dart';
+import '../widgets/sp_controls.dart';
 
 Future<void> showFilmRootEditor(
   BuildContext context,
@@ -44,30 +45,66 @@ class FilmLibraryManagePage extends StatefulWidget {
     super.key,
     required this.catalog,
     this.embedded = false,
+    this.directories = false,
   });
   final FilmCatalogController catalog;
   final bool embedded;
+  final bool directories;
   @override
   State<FilmLibraryManagePage> createState() => _FilmLibraryManagePageState();
 }
 
-class _FilmLibraryManagePageState extends State<FilmLibraryManagePage> {
+class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => widget.directories;
+
   final _token = TextEditingController();
   String _language = 'zh-CN';
   String _probeMode = 'playback';
   bool _hasToken = false;
+  bool _scanEnabled = true, _spoilers = false;
+  int _scanHours = 24;
   bool _saving = false;
+  final _sourceSettings = <String, List<bool>>{};
+  final _rootEnabled = <int, bool>{};
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _loadSettings(refreshCatalog: widget.catalog.roots.isEmpty);
   }
 
-  Future<void> _loadSettings() async {
+  Future<void> _loadSettings({bool refreshCatalog = true}) async {
     await widget.catalog.run(() async {
+      if (widget.directories && refreshCatalog) await widget.catalog.refresh();
       final language = await widget.catalog.store.language();
       final token = await widget.catalog.tmdb.hasToken();
       final probeMode = await widget.catalog.store.probeMode();
+      for (final root in await widget.catalog.store.roots()) {
+        _rootEnabled[root.id] =
+            await widget.catalog.store.preference('root_enabled:${root.id}') !=
+            false;
+        _sourceSettings[root.sourceId] = [
+          await widget.catalog.store.preference(
+                'local_metadata:${root.sourceId}',
+              ) ==
+              true,
+          await widget.catalog.store.preference(
+                'write_back:${root.sourceId}',
+              ) ==
+              true,
+          await widget.catalog.store.preference('read_only:${root.sourceId}') ==
+              true,
+        ];
+      }
+      _scanEnabled =
+          await widget.catalog.store.preference('scan_enabled') != false;
+      _spoilers =
+          await widget.catalog.store.preference('spoiler_protection') == true;
+      _scanHours =
+          (await widget.catalog.store.preference('scan_interval_hours')
+              as int?) ??
+          24;
       if (mounted) {
         setState(() {
           _language = language;
@@ -194,6 +231,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final c = widget.catalog;
     return AnimatedBuilder(
       animation: c,
@@ -201,347 +239,612 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage> {
         final content = DirectoryScrollView(
           builder: (scrollController) => ListView(
             controller: scrollController,
-            shrinkWrap: widget.embedded,
-            physics: widget.embedded
+            shrinkWrap: widget.embedded && !widget.directories,
+            physics: widget.embedded && !widget.directories
                 ? const NeverScrollableScrollPhysics()
                 : null,
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.all(
+              widget.embedded && !widget.directories ? 0 : 24,
+            ),
             children: [
-              SettingsGroupCard(
-                icon: SPIcons.folderOpen,
-                title: '管理影视目录',
-                description: '递归视频、ISO 与 BDMV，包含特别篇；播放沿用已有播放器',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 8),
-                    const AppText('温和扫描：逐目录串行读取名称，网盘请求间隔至少一秒，不探测媒体内容'),
-                    const SizedBox(height: 8),
-                    const AppText('增量扫描收录新增和重新出现的文件；增量刮削只处理未匹配作品的剧集'),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 8,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: _addRoot,
-                          icon: const Icon(SPIcons.add),
-                          label: const AppText('添加影视目录'),
+              if (widget.directories)
+                SettingsGroupCard(
+                  icon: SPIcons.folderOpen,
+                  title: '管理影视目录',
+                  description: '递归视频、ISO 与 BDMV，包含特别篇；播放沿用已有播放器',
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 8),
+                      const AppText('温和扫描：逐目录串行读取名称，网盘请求间隔至少一秒，不探测媒体内容'),
+                      const SizedBox(height: 8),
+                      const AppText('增量扫描收录新增和重新出现的文件；增量刮削只处理未匹配作品的剧集'),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _addRoot,
+                            icon: const Icon(SPIcons.add),
+                            label: const AppText('添加影视目录'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: c.busy || c.roots.isEmpty
+                                ? null
+                                : _scanMultiple,
+                            icon: const Icon(SPIcons.refresh),
+                            label: const AppText('扫描多个来源'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      for (final root in c.roots)
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        root.displayName,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleMedium,
+                                      ),
+                                    ),
+                                    Tooltip(
+                                      message: context.l10n.text('启用影视库'),
+                                      child: Switch(
+                                        key: ValueKey(
+                                          'film-root-enabled-${root.id}',
+                                        ),
+                                        value: root.enabled,
+                                        onChanged: _saving
+                                            ? null
+                                            : (value) => _settingAction(
+                                                () => c.store.setRootEnabled(
+                                                  root.id,
+                                                  value,
+                                                ),
+                                              ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SelectableText(
+                                  contextMenuBuilder: buildSPTextSelectionMenu,
+                                  root.path.isEmpty ? '/' : root.path,
+                                ),
+                                AppText(
+                                  root.type == FilmMediaType.movie
+                                      ? '电影'
+                                      : '剧集',
+                                ),
+                                AppText(switch (root.status) {
+                                  'running' => '正在扫描…',
+                                  'completed' => '扫描完成',
+                                  'cancelled' => '扫描已取消',
+                                  'failed' => '扫描失败',
+                                  _ => '尚未扫描',
+                                }),
+                                if (root.lastSuccessAt != null)
+                                  Text(
+                                    context.l10n.format('上次成功：{time}', {
+                                      'time':
+                                          DateTime.fromMillisecondsSinceEpoch(
+                                            root.lastSuccessAt!,
+                                          ).toLocal(),
+                                    }),
+                                  ),
+                                if (root.lastError != null)
+                                  AppText(
+                                    filmCatalogErrorText(root.lastError!),
+                                  ),
+                                CheckboxListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const AppText('参与定时扫描'),
+                                  value: _rootEnabled[root.id] ?? true,
+                                  onChanged: _saving
+                                      ? null
+                                      : (value) => _settingAction(
+                                          () => c.store.setPreference(
+                                            'root_enabled:${root.id}',
+                                            value,
+                                          ),
+                                        ),
+                                ),
+                                if (root.sourceKind == MediaSourceKind.local ||
+                                    root.sourceKind == MediaSourceKind.webdav)
+                                  for (final setting in [
+                                    (0, 'local_metadata', '本地元数据模式'),
+                                    (1, 'write_back', '允许写回缺少的 NFO 和图片'),
+                                    (2, 'read_only', '只读来源'),
+                                  ])
+                                    CheckboxListTile(
+                                      contentPadding: EdgeInsets.zero,
+                                      title: AppText(setting.$3),
+                                      value:
+                                          _sourceSettings[root
+                                              .sourceId]?[setting.$1] ??
+                                          false,
+                                      onChanged:
+                                          _saving ||
+                                              (setting.$1 == 1 &&
+                                                  (_sourceSettings[root
+                                                          .sourceId]?[2] ??
+                                                      false))
+                                          ? null
+                                          : (value) => _settingAction(
+                                              () => c.store.setPreference(
+                                                '${setting.$2}:${root.sourceId}',
+                                                value,
+                                              ),
+                                            ),
+                                    ),
+                                Wrap(
+                                  spacing: 12,
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: c.busy || c.scraping
+                                          ? null
+                                          : () => showFilmRootEditor(
+                                              context,
+                                              c,
+                                              root: root,
+                                            ),
+                                      icon: const Icon(SPIcons.edit),
+                                      label: const AppText('编辑影视目录'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => showFilmArtworkPicker(
+                                        context,
+                                        c,
+                                        rootId: root.id,
+                                      ),
+                                      icon: const Icon(SPIcons.video),
+                                      label: const AppText('修改图片'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: c.busy
+                                          ? null
+                                          : () => c.scan(root),
+                                      icon: const Icon(SPIcons.refresh),
+                                      label: const AppText('手动扫描'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: c.busy
+                                          ? null
+                                          : () async {
+                                              final path =
+                                                  await showGlassDialog<String>(
+                                                    context: context,
+                                                    builder: (_) =>
+                                                        FilmDirectoryDialog(
+                                                          source: c.sourceFor(
+                                                            root,
+                                                          ),
+                                                          initialPath:
+                                                              root.path,
+                                                          boundaryPath:
+                                                              root.path,
+                                                        ),
+                                                  );
+                                              if (path != null && mounted) {
+                                                await c.scan(
+                                                  root,
+                                                  scope: FilmScanScope(
+                                                    root.id,
+                                                    path,
+                                                  ),
+                                                );
+                                              }
+                                            },
+                                      icon: const Icon(SPIcons.folder),
+                                      label: const AppText('指定扫描'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: c.busy
+                                          ? null
+                                          : () =>
+                                                c.scan(root, incremental: true),
+                                      icon: const Icon(SPIcons.add),
+                                      label: const AppText('增量扫描'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: c.isScrapingRoot(root.id)
+                                          ? null
+                                          : () => c.scrape(root),
+                                      icon: const Icon(SPIcons.refresh),
+                                      label: const AppText('刮削元数据'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed:
+                                          root.type != FilmMediaType.tv ||
+                                              c.isScrapingRoot(root.id)
+                                          ? null
+                                          : () => c.scrape(
+                                              root,
+                                              incremental: true,
+                                            ),
+                                      icon: const Icon(SPIcons.refresh),
+                                      label: const AppText('增量刮削'),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => _remove(root),
+                                      icon: const Icon(SPIcons.delete),
+                                      label: const AppText('移除'),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                        OutlinedButton.icon(
-                          onPressed: c.busy || c.roots.isEmpty
-                              ? null
-                              : _scanMultiple,
-                          icon: const Icon(SPIcons.refresh),
-                          label: const AppText('扫描多个来源'),
+                      const SizedBox(height: 12),
+                      FilmCatalogTasks(catalog: c, panel: true),
+                    ],
+                  ),
+                ),
+              if (!widget.directories) ...[
+                FilmCatalogTasks(catalog: c, panel: true),
+                const SizedBox(height: 16),
+                SettingsColumns(
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SettingsGroupCard(
+                          icon: SPIcons.apps,
+                          title: '首页栏目',
+                          description: '选择显示的分类，拖动调整从上到下的顺序',
+                          child: FilmSectionSettings(catalog: c),
+                        ),
+                        const SizedBox(height: 16),
+                        SettingsGroupCard(
+                          icon: SPIcons.settings,
+                          title: 'TMDB 元数据设置',
+                          description: '',
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const SizedBox(height: 12),
+                              AppText(
+                                _hasToken
+                                    ? '已保存 TMDB 凭据'
+                                    : '未保存 TMDB 凭据；仍可建库和播放文件',
+                              ),
+                              const SizedBox(height: 12),
+                              TextField(
+                                controller: _token,
+                                obscureText: true,
+                                enableSuggestions: false,
+                                autocorrect: false,
+                                onChanged: (_) => setState(() {}),
+                                decoration: const InputDecoration(
+                                  label: AppText('TMDB Read Access Token'),
+                                  helper: AppText('保存后输入框会清空；验证使用已保存的凭据'),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Wrap(
+                                spacing: 12,
+                                runSpacing: 8,
+                                children: [
+                                  FilledButton(
+                                    onPressed:
+                                        _saving || _token.text.trim().isEmpty
+                                        ? null
+                                        : () => _settingAction(() async {
+                                            await c.tmdb.saveToken(_token.text);
+                                            _token.clear();
+                                          }, successText: '已保存 TMDB 凭据'),
+                                    child: const AppText('保存凭据'),
+                                  ),
+                                  TextButton(
+                                    onPressed: _saving || !_hasToken
+                                        ? null
+                                        : () => _settingAction(
+                                            c.tmdb.verify,
+                                            successText: 'TMDB 凭据验证通过',
+                                          ),
+                                    child: const AppText('验证凭据'),
+                                  ),
+                                  TextButton(
+                                    onPressed: _saving || !_hasToken
+                                        ? null
+                                        : () =>
+                                              _settingAction(c.tmdb.clearToken),
+                                    child: const AppText('清除凭据'),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                width: 260,
+                                child: SPDropdownButtonFormField<String>(
+                                  dropdownColor: AppTheme.dropdownMenuColor(
+                                    Theme.of(context),
+                                  ),
+                                  borderRadius: AppTheme.dropdownBorderRadius,
+                                  isExpanded: true,
+                                  key: ValueKey(_language),
+                                  initialValue: _language,
+                                  decoration: const InputDecoration(
+                                    label: AppText('元数据语言'),
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'zh-CN',
+                                      child: Text('简体中文'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'zh-TW',
+                                      child: Text('繁體中文'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'ja-JP',
+                                      child: Text('日本語'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'en-US',
+                                      child: Text('English'),
+                                    ),
+                                  ],
+                                  onChanged: _saving
+                                      ? null
+                                      : (value) => _settingAction(
+                                          () => c.store.setLanguage(value!),
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const AppText('语言更改用于后续请求；已有作品可在详情页手动刷新'),
+                              const SizedBox(height: 16),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () => _settingAction(c.images.clear),
+                                  child: const AppText('清理影视图片缓存'),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    for (final root in c.roots)
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SettingsGroupCard(
+                          icon: SPIcons.video,
+                          title: '影视库背景',
+                          description: '默认背景跟随软件界面样式，也可选择本地图片或已缓存封面',
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton(
+                              onPressed: () =>
+                                  showFilmArtworkPicker(context, c),
+                              child: const AppText('设置影视库背景'),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SettingsGroupCard(
+                          icon: SPIcons.settings,
+                          title: '影视库偏好',
+                          description: '',
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Text(
-                                root.displayName,
-                                style: Theme.of(context).textTheme.titleMedium,
+                              const SizedBox(height: 12),
+                              LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final wide =
+                                      constraints.maxWidth >=
+                                      560 *
+                                          MediaQuery.textScalerOf(
+                                            context,
+                                          ).scale(14) /
+                                          14;
+                                  return Wrap(
+                                    spacing: 16,
+                                    runSpacing: 12,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    children: [
+                                      SizedBox(
+                                        width: wide
+                                            ? constraints.maxWidth - 236
+                                            : constraints.maxWidth,
+                                        child: SPToggleTile(
+                                          contentPadding: EdgeInsets.zero,
+                                          title: const AppText('自动扫描'),
+                                          value: _scanEnabled,
+                                          onChanged: (value) => _settingAction(
+                                            () => c.store.setPreference(
+                                              'scan_enabled',
+                                              value,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: wide
+                                            ? 220
+                                            : constraints.maxWidth,
+                                        child: SPDropdownButtonFormField<int>(
+                                          isExpanded: true,
+                                          initialValue: _scanHours,
+                                          key: ValueKey(_scanHours),
+                                          decoration: InputDecoration(
+                                            labelText: context.l10n.text(
+                                              '扫描间隔',
+                                            ),
+                                          ),
+                                          items: [
+                                            for (final hours in [
+                                              6,
+                                              12,
+                                              24,
+                                              48,
+                                              168,
+                                            ])
+                                              DropdownMenuItem(
+                                                value: hours,
+                                                child: Text(
+                                                  context.l10n.format(
+                                                    '{hours} 小时',
+                                                    {'hours': hours},
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                          onChanged: (value) => _settingAction(
+                                            () => c.store.setPreference(
+                                              'scan_interval_hours',
+                                              value,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
                               ),
-                              SelectableText(
-                                root.path.isEmpty ? '/' : root.path,
-                              ),
-                              AppText(
-                                root.type == FilmMediaType.movie ? '电影' : '剧集',
-                              ),
-                              AppText(switch (root.status) {
-                                'running' => '正在扫描…',
-                                'completed' => '扫描完成',
-                                'cancelled' => '扫描已取消',
-                                'failed' => '扫描失败',
-                                _ => '尚未扫描',
-                              }),
-                              if (root.lastSuccessAt != null)
-                                Text(
-                                  context.l10n.format('上次成功：{time}', {
-                                    'time': DateTime.fromMillisecondsSinceEpoch(
-                                      root.lastSuccessAt!,
-                                    ).toLocal(),
-                                  }),
+                              const SizedBox(height: 12),
+                              SPToggleTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const AppText('防剧透'),
+                                value: _spoilers,
+                                onChanged: (value) => _settingAction(
+                                  () => c.store.setPreference(
+                                    'spoiler_protection',
+                                    value,
+                                  ),
                                 ),
-                              if (root.lastError != null)
-                                AppText(filmCatalogErrorText(root.lastError!)),
+                              ),
+                              const Divider(height: 24),
                               Wrap(
                                 spacing: 12,
+                                runSpacing: 8,
                                 children: [
                                   TextButton.icon(
-                                    onPressed: c.busy || c.scraping
-                                        ? null
-                                        : () => showFilmRootEditor(
-                                            context,
-                                            c,
-                                            root: root,
-                                          ),
-                                    icon: const Icon(SPIcons.edit),
-                                    label: const AppText('编辑影视目录'),
+                                    icon: const Icon(SPIcons.download),
+                                    onPressed: () =>
+                                        showFilmTransferDialog(context),
+                                    label: const AppText('导出影视库'),
                                   ),
                                   TextButton.icon(
-                                    onPressed: () => showFilmArtworkPicker(
+                                    icon: const Icon(SPIcons.restore),
+                                    onPressed: () => showFilmTransferDialog(
                                       context,
-                                      c,
-                                      rootId: root.id,
+                                      importing: true,
                                     ),
-                                    icon: const Icon(SPIcons.video),
-                                    label: const AppText('修改图片'),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: c.busy
-                                        ? null
-                                        : () => c.scan(root),
-                                    icon: const Icon(SPIcons.refresh),
-                                    label: const AppText('手动扫描'),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: c.busy
-                                        ? null
-                                        : () => c.scan(root, incremental: true),
-                                    icon: const Icon(SPIcons.add),
-                                    label: const AppText('增量扫描'),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: c.isScrapingRoot(root.id)
-                                        ? null
-                                        : () => c.scrape(root),
-                                    icon: const Icon(SPIcons.refresh),
-                                    label: const AppText('刮削元数据'),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed:
-                                        root.type != FilmMediaType.tv ||
-                                            c.isScrapingRoot(root.id)
-                                        ? null
-                                        : () =>
-                                              c.scrape(root, incremental: true),
-                                    icon: const Icon(SPIcons.refresh),
-                                    label: const AppText('增量刮削'),
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: () => _remove(root),
-                                    icon: const Icon(SPIcons.delete),
-                                    label: const AppText('移除'),
+                                    label: const AppText('导入影视库'),
                                   ),
                                 ],
                               ),
                             ],
                           ),
                         ),
-                      ),
-                    const SizedBox(height: 12),
-                    FilmCatalogTasks(catalog: c, panel: true),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              SettingsGroupCard(
-                icon: SPIcons.apps,
-                title: '首页栏目',
-                description: '选择显示的分类，拖动调整从上到下的顺序',
-                child: FilmSectionSettings(catalog: c),
-              ),
-              const SizedBox(height: 16),
-              SettingsGroupCard(
-                icon: SPIcons.video,
-                title: '影视库背景',
-                description: '默认背景跟随软件界面样式，也可选择本地图片或已缓存封面',
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    onPressed: () => showFilmArtworkPicker(context, c),
-                    child: const AppText('设置影视库背景'),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              SettingsGroupCard(
-                icon: SPIcons.diagnostic,
-                title: '视频信息探测',
-                description: '',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      key: ValueKey(_probeMode),
-                      borderRadius: AppTheme.dropdownBorderRadius,
-                      isExpanded: true,
-                      initialValue: _probeMode,
-                      dropdownColor: AppTheme.dropdownMenuColor(
-                        Theme.of(context),
-                      ),
-                      decoration: const InputDecoration(label: AppText('探测模式')),
-                      items: const [
-                        DropdownMenuItem(
-                          value: 'playback',
-                          child: AppText('播放时探测（默认）'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'full',
-                          child: AppText('媒体库完整探测'),
-                        ),
-                      ],
-                      onChanged: _saving
-                          ? null
-                          : (value) => _settingAction(
-                              () =>
-                                  c.mediaProbe?.setMode(value!) ??
-                                  c.store.setProbeMode(value!),
-                            ),
-                    ),
-                    const SizedBox(height: 8),
-                    const AppText(
-                      '警告：完整探测会读取所有媒体的部分内容，可能唤醒硬盘、消耗流量或触发服务器限流。任务仅在无播放时低频运行，开始播放会取消当前探测；STRM 在播放时获取参数。',
-                    ),
-                    if (c.mediaProbe != null) ...[
-                      const SizedBox(height: 8),
-                      if (c.mediaProbe!.busy) const LinearProgressIndicator(),
-                      if (_probeMode == 'full')
-                        AppText(
-                          c.mediaProbe!.pausedForPlayback
-                              ? '探测已暂停，播放优先'
-                              : '后台低频探测',
-                        ),
-                      if (c.mediaProbe!.error != null)
-                        AppText(filmCatalogErrorText(c.mediaProbe!.error!)),
-                      TextButton(
-                        onPressed: c.mediaProbe!.busy
-                            ? null
-                            : () => _settingAction(c.mediaProbe!.retryFailed),
-                        child: const AppText('重试失败或不完整的探测'),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              SettingsGroupCard(
-                icon: SPIcons.settings,
-                title: 'TMDB 元数据设置',
-                description: '',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 12),
-                    AppText(
-                      _hasToken ? '已保存 TMDB 凭据' : '未保存 TMDB 凭据；仍可建库和播放文件',
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _token,
-                      obscureText: true,
-                      enableSuggestions: false,
-                      autocorrect: false,
-                      onChanged: (_) => setState(() {}),
-                      decoration: const InputDecoration(
-                        label: AppText('TMDB Read Access Token'),
-                        helper: AppText('保存后输入框会清空；验证使用已保存的凭据'),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 8,
-                      children: [
-                        FilledButton(
-                          onPressed: _saving || _token.text.trim().isEmpty
-                              ? null
-                              : () => _settingAction(() async {
-                                  await c.tmdb.saveToken(_token.text);
-                                  _token.clear();
-                                }, successText: '已保存 TMDB 凭据'),
-                          child: const AppText('保存凭据'),
-                        ),
-                        TextButton(
-                          onPressed: _saving || !_hasToken
-                              ? null
-                              : () => _settingAction(
-                                  c.tmdb.verify,
-                                  successText: 'TMDB 凭据验证通过',
+                        const SizedBox(height: 16),
+                        SettingsGroupCard(
+                          icon: SPIcons.diagnostic,
+                          title: '视频信息探测',
+                          description: '',
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const SizedBox(height: 12),
+                              SPDropdownButtonFormField<String>(
+                                key: ValueKey(_probeMode),
+                                borderRadius: AppTheme.dropdownBorderRadius,
+                                isExpanded: true,
+                                initialValue: _probeMode,
+                                dropdownColor: AppTheme.dropdownMenuColor(
+                                  Theme.of(context),
                                 ),
-                          child: const AppText('验证凭据'),
-                        ),
-                        TextButton(
-                          onPressed: _saving || !_hasToken
-                              ? null
-                              : () => _settingAction(c.tmdb.clearToken),
-                          child: const AppText('清除凭据'),
+                                decoration: const InputDecoration(
+                                  label: AppText('探测模式'),
+                                ),
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: 'playback',
+                                    child: AppText('播放时探测（默认）'),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: 'full',
+                                    child: AppText('媒体库完整探测'),
+                                  ),
+                                ],
+                                onChanged: _saving
+                                    ? null
+                                    : (value) => _settingAction(
+                                        () =>
+                                            c.mediaProbe?.setMode(value!) ??
+                                            c.store.setProbeMode(value!),
+                                      ),
+                              ),
+                              const SizedBox(height: 8),
+                              const AppText(
+                                '警告：完整探测会读取所有媒体的部分内容，可能唤醒硬盘、消耗流量或触发服务器限流。任务仅在无播放时低频运行，开始播放会取消当前探测；STRM 在播放时获取参数。',
+                              ),
+                              if (c.mediaProbe != null) ...[
+                                const SizedBox(height: 8),
+                                if (c.mediaProbe!.busy)
+                                  const LinearProgressIndicator(),
+                                if (_probeMode == 'full')
+                                  AppText(
+                                    c.mediaProbe!.pausedForPlayback
+                                        ? '探测已暂停，播放优先'
+                                        : '后台低频探测',
+                                  ),
+                                if (c.mediaProbe!.error != null)
+                                  AppText(
+                                    filmCatalogErrorText(c.mediaProbe!.error!),
+                                  ),
+                                TextButton(
+                                  onPressed: c.mediaProbe!.busy
+                                      ? null
+                                      : () => _settingAction(
+                                          c.mediaProbe!.retryFailed,
+                                        ),
+                                  child: const AppText('重试失败或不完整的探测'),
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: 260,
-                      child: DropdownButtonFormField<String>(
-                        dropdownColor: AppTheme.dropdownMenuColor(
-                          Theme.of(context),
-                        ),
-                        borderRadius: AppTheme.dropdownBorderRadius,
-                        isExpanded: true,
-                        key: ValueKey(_language),
-                        initialValue: _language,
-                        decoration: const InputDecoration(
-                          label: AppText('元数据语言'),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 'zh-CN', child: Text('简体中文')),
-                          DropdownMenuItem(value: 'zh-TW', child: Text('繁體中文')),
-                          DropdownMenuItem(value: 'ja-JP', child: Text('日本語')),
-                          DropdownMenuItem(
-                            value: 'en-US',
-                            child: Text('English'),
-                          ),
-                        ],
-                        onChanged: _saving
-                            ? null
-                            : (value) => _settingAction(
-                                () => c.store.setLanguage(value!),
-                              ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const AppText('语言更改用于后续请求；已有作品可在详情页手动刷新'),
-                    const SizedBox(height: 16),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton(
-                        onPressed: _saving
-                            ? null
-                            : () => _settingAction(c.images.clear),
-                        child: const AppText('清理影视图片缓存'),
-                      ),
-                    ),
                   ],
                 ),
-              ),
-              if (c.error != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: AppText(
-                    filmCatalogErrorText(c.error!),
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                if (c.error != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: AppText(
+                      filmCatalogErrorText(c.error!),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
                   ),
+                const Divider(height: 40),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Image.asset('assets/tmdb_logo.png', width: 120),
                 ),
-              const Divider(height: 40),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Image.asset('assets/tmdb_logo.png', width: 120),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'This product uses the TMDB API but is not endorsed or certified by TMDB.',
-              ),
+                const SizedBox(height: 12),
+                const Text(
+                  'This product uses the TMDB API but is not endorsed or certified by TMDB.',
+                ),
+              ],
             ],
           ),
         );
@@ -550,7 +853,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage> {
             : Scaffold(
                 appBar: AppBar(
                   toolbarHeight: 48,
-                  title: const AppText('管理影视目录'),
+                  title: AppText(widget.directories ? '管理影视目录' : '影视库'),
                 ),
                 body: content,
               );
@@ -597,6 +900,9 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
 
   MediaDirectorySource _directorySource() {
     final app = context.read<AppState>();
+    if (_source!.kind.isNativeStorage) {
+      return app.directorySource(_source!.sourceId);
+    }
     if (_source!.kind == MediaSourceKind.local) {
       final root = app.localRoots
           .where((r) => r.sourceId == _source!.sourceId && r.enabled)
@@ -612,6 +918,9 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
   Future<void> _choose() async {
     MediaDirectorySource? source;
     final ok = await widget.catalog.run(() async {
+      if (_source!.kind.isNativeStorage) {
+        await context.read<AppState>().mountMediaConnection(_source!.sourceId);
+      }
       source = _directorySource();
     });
     if (!mounted) return;
@@ -621,7 +930,7 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
     }
     final path = await showGlassDialog<String>(
       context: context,
-      builder: (_) => _FilmDirectoryDialog(source: source!),
+      builder: (_) => FilmDirectoryDialog(source: source!),
     );
     if (path != null && mounted) setState(() => _path = path);
   }
@@ -669,6 +978,14 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final sources = <MediaSourceDescriptor>[
+      for (final connection in app.mediaConnections.where(
+        (row) => row.enabled && row.kind.isNativeStorage,
+      ))
+        MediaSourceDescriptor(
+          sourceId: connection.id,
+          kind: connection.kind,
+          displayName: connection.name,
+        ),
       for (final root in app.localRoots.where((r) => r.enabled))
         MediaSourceDescriptor(
           sourceId: root.sourceId,
@@ -698,7 +1015,7 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                DropdownButtonFormField<String>(
+                SPDropdownButtonFormField<String>(
                   initialValue: _source?.sourceId,
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
@@ -721,7 +1038,7 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                         }),
                 ),
                 const SizedBox(height: 16),
-                DropdownButtonFormField<FilmMediaType>(
+                SPDropdownButtonFormField<FilmMediaType>(
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
                   isExpanded: true,
@@ -760,7 +1077,10 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                   label: const AppText('选择来源内目录'),
                 ),
                 if (_path != null)
-                  SelectableText(_path!.isEmpty ? '/' : _path!),
+                  SelectableText(
+                    contextMenuBuilder: buildSPTextSelectionMenu,
+                    _path!.isEmpty ? '/' : _path!,
+                  ),
                 if (_error != null) AppText(filmCatalogErrorText(_error!)),
               ],
             ),
@@ -779,133 +1099,4 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
       ],
     );
   }
-}
-
-class _FilmDirectoryDialog extends StatefulWidget {
-  const _FilmDirectoryDialog({required this.source});
-  final MediaDirectorySource source;
-  @override
-  State<_FilmDirectoryDialog> createState() => _FilmDirectoryDialogState();
-}
-
-class _FilmDirectoryDialogState extends State<_FilmDirectoryDialog> {
-  String _path = '';
-  List<MediaDirectoryEntry> _directories = [];
-  bool _loading = true;
-  bool _unsupported = false;
-  String? _error;
-  @override
-  void initState() {
-    super.initState();
-    _load('');
-  }
-
-  Future<void> _load(String path) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final source = widget.source;
-      final entries = source is LocalMediaSource
-          ? await source.fetchCatalogDirectory(path)
-          : source is WebDavMediaSourceAdapter
-          ? await source.fetchCatalogDirectory(path)
-          : await source.fetchDirectory(path, forceRefresh: true);
-      if (mounted) {
-        setState(() {
-          _path = path;
-          _unsupported = entries.any(
-            (e) =>
-                e.isDirectory &&
-                !e.isSelfEntry &&
-                e.name.toLowerCase() == 'video_ts',
-          );
-          _directories = entries
-              .where(
-                (e) =>
-                    e.isDirectory &&
-                    !e.isSelfEntry &&
-                    !FilmCatalogScanner.excludedDirectory(e.name) &&
-                    SpecialVideoPlaylistCollector.directChildPath(
-                          source,
-                          path,
-                          e,
-                        ) !=
-                        null,
-              )
-              .toList();
-          _directories.sort((a, b) => a.name.compareTo(b.name));
-        });
-      }
-    } on AppException {
-      if (mounted) setState(() => _error = 'directoryReadFailed');
-    } on FileSystemException {
-      if (mounted) setState(() => _error = 'directoryReadFailed');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => SPDialog(
-    title: const AppText('选择来源内目录'),
-    content: SizedBox(
-      width: 560,
-      height: MediaQuery.sizeOf(context).height * 0.45,
-      child: Column(
-        children: [
-          SelectableText(_path.isEmpty ? '/' : _path),
-          if (_path.isNotEmpty)
-            TextButton(
-              onPressed: _loading
-                  ? null
-                  : () {
-                      final parts = _path.split('/')..removeLast();
-                      _load(parts.join('/'));
-                    },
-              child: const AppText('返回上级'),
-            ),
-          if (_unsupported) const AppText('影视库暂不收录 DVD 结构'),
-          if (_error != null) AppText(filmCatalogErrorText(_error!)),
-          if (_loading) const LinearProgressIndicator(),
-          Expanded(
-            child: DirectoryScrollView(
-              builder: (scrollController) => ListView.builder(
-                controller: scrollController,
-                itemCount: _directories.length,
-                itemBuilder: (context, i) => ListTile(
-                  leading: const Icon(SPIcons.folder),
-                  title: Text(_directories[i].name),
-                  onTap: _loading
-                      ? null
-                      : () {
-                          final path =
-                              SpecialVideoPlaylistCollector.directChildPath(
-                                widget.source,
-                                _path,
-                                _directories[i],
-                              );
-                          if (path != null) _load(path);
-                        },
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const AppText('取消'),
-      ),
-      FilledButton(
-        onPressed: _loading || _error != null || _unsupported
-            ? null
-            : () => Navigator.of(context).pop(_path),
-        child: const AppText('选择此目录'),
-      ),
-    ],
-  );
 }

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'dart:math';
 import 'package:streampath/core/utils/file_sort.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 
@@ -111,6 +112,64 @@ void main() {
   });
 
   group('文件排序规则', () {
+    test('批量排序与逐项比较保持相同顺序，且不修改输入列表', () {
+      final random = Random(42);
+      const names = [
+        '第十二集',
+        '第二集',
+        '二十话',
+        'Season II',
+        'Season X',
+        'Ｓ１Ｅ０２',
+        's1e2',
+        'S1E02',
+        'E001',
+        'E01',
+        'E1',
+        'Alpha_2.mp4',
+        'Beta_10.mp4',
+        '普通名称.mkv',
+        '甲片 - 2012.mkv',
+        '乙片 - 2013.mkv',
+        '1.10',
+        '1.2',
+        'n999999999999999999999999',
+        'n1000000000000000000000000',
+      ];
+      final entries = List.generate(
+        240,
+        (index) => file(
+          names[random.nextInt(names.length)],
+          directory: index % 3 == 0,
+          self: index == 0,
+          size: random.nextInt(5),
+          modified: index % 4 == 0
+              ? null
+              : DateTime.utc(2026, 1, 1, 0, index % 5),
+          href: '/dav/entry-$index',
+        ),
+      );
+      final original = entries.toList();
+      for (final mode in FileSortMode.values) {
+        for (final direction in FileSortDirection.values) {
+          final expected = entries.toList()
+            ..sort(
+              (a, b) =>
+                  compareMediaEntries(a, b, mode: mode, direction: direction),
+            );
+          expect(
+            sortedMediaEntries(entries, mode: mode, direction: direction),
+            expected,
+          );
+          expect(
+            sortedWebDavFiles(entries, mode: mode, direction: direction),
+            expected,
+          );
+          expect(entries, original);
+        }
+      }
+    });
+
     test('返回上级与目录优先级不受排序模式和方向影响', () {
       final entries = [
         file('large.mkv', size: 100),

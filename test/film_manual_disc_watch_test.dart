@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'support/legacy_film_catalog.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -155,6 +156,7 @@ void main() {
       await store.markWatched([video], true);
       await store.close();
       final old = await databaseFactoryFfi.openDatabase(path);
+      await restoreVersion6Fixture(old);
       await old.execute('DROP TABLE film_disc_watch_state');
       await old.setVersion(5);
       await old.close();

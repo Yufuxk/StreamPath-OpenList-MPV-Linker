@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'sp_icons.dart';
 import 'sp_dialog.dart';
+import 'sp_menu.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
@@ -289,45 +290,47 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  key: ValueKey('iso-subtitle-$id'),
-                  isExpanded: true,
-                  dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
-                  borderRadius: AppTheme.dropdownBorderRadius,
-                  menuMaxHeight: 320,
-                  value: selected,
-                  onChanged: _saving || !subtitles.writable
-                      ? null
-                      : (value) {
-                          if (value != null) unawaited(_bind(id, value));
-                        },
-                  items: [
+              child: SPDropdownButtonFormField<String>(
+                key: ValueKey('iso-subtitle-$id'),
+                isExpanded: true,
+                dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
+                borderRadius: AppTheme.dropdownBorderRadius,
+                menuMaxHeight: 320,
+                initialValue: selected,
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  filled: false,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                onChanged: _saving || !subtitles.writable
+                    ? null
+                    : (value) {
+                        if (value != null) unawaited(_bind(id, value));
+                      },
+                items: [
+                  DropdownMenuItem(
+                    value: '',
+                    child: Text(
+                      automaticLabel,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const DropdownMenuItem(value: '-', child: AppText('不使用外挂字幕')),
+                  for (final entry in labels.entries)
                     DropdownMenuItem(
-                      value: '',
+                      value: entry.key,
                       child: Text(
-                        automaticLabel,
+                        entry.value,
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const DropdownMenuItem(
-                      value: '-',
-                      child: AppText('不使用外挂字幕'),
-                    ),
-                    for (final entry in labels.entries)
-                      DropdownMenuItem(
-                        value: entry.key,
-                        child: Text(
-                          entry.value,
-                          maxLines: 1,
-                          softWrap: false,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
-                ),
+                ],
               ),
             ),
           ),

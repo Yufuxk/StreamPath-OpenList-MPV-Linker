@@ -35,6 +35,8 @@ class PlaybackHistory {
     this.pendingVideoIndex,
     this.videoQueueRootPath,
     this.queueItems = const [],
+    this.filmPlaylistId,
+    this.filmPlaylistEntryIds = const [],
     this.videoPlaylistMode = VideoPlaylistMode.legacy,
   }) : createdAt = createdAt ?? updatedAt;
 
@@ -102,6 +104,8 @@ class PlaybackHistory {
   final int? pendingVideoIndex;
   final String? videoQueueRootPath;
   final List<VideoQueueItem> queueItems;
+  final String? filmPlaylistId;
+  final List<String> filmPlaylistEntryIds;
   final VideoPlaylistMode videoPlaylistMode;
 
   PlaybackHistory copyWith({
@@ -141,6 +145,8 @@ class PlaybackHistory {
     String? videoQueueRootPath,
     bool clearPendingVideoIndex = false,
     List<VideoQueueItem>? queueItems,
+    String? filmPlaylistId,
+    List<String>? filmPlaylistEntryIds,
     VideoPlaylistMode? videoPlaylistMode,
   }) => PlaybackHistory(
     sessionId: sessionId ?? this.sessionId,
@@ -188,11 +194,16 @@ class PlaybackHistory {
         : pendingVideoIndex ?? this.pendingVideoIndex,
     videoQueueRootPath: videoQueueRootPath ?? this.videoQueueRootPath,
     queueItems: queueItems ?? this.queueItems,
+    filmPlaylistId: filmPlaylistId ?? this.filmPlaylistId,
+    filmPlaylistEntryIds: filmPlaylistEntryIds ?? this.filmPlaylistEntryIds,
     videoPlaylistMode: videoPlaylistMode ?? this.videoPlaylistMode,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'sessionId': sessionId,
+    if (filmPlaylistId != null) 'filmPlaylistId': filmPlaylistId,
+    if (filmPlaylistEntryIds.isNotEmpty)
+      'filmPlaylistEntryIds': filmPlaylistEntryIds,
     'playbackScope': playbackScope.name,
     'videoPlaylistMode': videoPlaylistMode.name,
     if (videoQueueRootPath != null) 'videoQueueRootPath': videoQueueRootPath,
@@ -232,6 +243,9 @@ class PlaybackHistory {
   factory PlaybackHistory.fromJson(
     Map<String, dynamic> json,
   ) => PlaybackHistory(
+    filmPlaylistId: json['filmPlaylistId'] as String?,
+    filmPlaylistEntryIds: (json['filmPlaylistEntryIds'] as List? ?? [])
+        .cast<String>(),
     videoQueueRootPath: json['videoQueueRootPath'] as String?,
     pendingVideoIndex: json['pendingVideoIndex'] as int?,
     queueItems: (json['queueItems'] as List? ?? [])

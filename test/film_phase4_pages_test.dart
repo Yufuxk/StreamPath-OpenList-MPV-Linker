@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/data/models/video_queue.dart';
@@ -586,13 +587,14 @@ void main() {
     await settle(tester);
     expect(await tester.runAsync(marks), everyElement(false));
     await tester.ensureVisible(find.byKey(const ValueKey('film-season-1')));
+    await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('film-season-1')),
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
     expect(find.byType(Dialog), findsNothing);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(2));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(4));
     await render(tester, 'minimal_season_watch_menu');
     await tester.tap(find.text('标记已看完'));
     await settle(tester);
@@ -619,12 +621,20 @@ void main() {
         final state = tester.state(
           find.byType(MediaLibraryPage, skipOffstage: false),
         );
-        final sourceTop = tester.getTopLeft(
-          find.widgetWithText(Card, 'Movies').last,
-        );
-        for (var i = 0; i < 3; i++) {
-          await tester.tap(find.widgetWithText(Card, 'Movies').last);
+        final continueTop = hasContinue
+            ? tester.getTopLeft(find.byType(FilmContinueCard))
+            : null;
+        Future<void> selectSource() async {
+          await tester.tap(
+            find.byWidgetPredicate((w) => w is SPDropdownButtonFormField<int>),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Movies').last);
           await settle(tester);
+        }
+
+        for (var i = 0; i < 3; i++) {
+          await selectSource();
           expect(find.byType(FilmContinueCard), findsNothing);
           await tester.tap(find.text('主页'));
           await tester.pump();
@@ -636,15 +646,16 @@ void main() {
             tester.state(find.byType(MediaLibraryPage, skipOffstage: false)),
             same(state),
           );
-          expect(
-            tester.getTopLeft(find.widgetWithText(Card, 'Movies').last),
-            sourceTop,
-          );
+          if (hasContinue) {
+            expect(
+              tester.getTopLeft(find.byType(FilmContinueCard)),
+              continueTop,
+            );
+          }
           await settle(tester);
         }
         if (hasContinue) {
-          await tester.tap(find.widgetWithText(Card, 'Movies').last);
-          await settle(tester);
+          await selectSource();
           await tester.runAsync(
             () => app.filmMediaLibraryStore!.removePlayback(
               resources.first.playbackItem,
@@ -684,7 +695,9 @@ void main() {
       );
       await settle(tester);
       final homeHeader = tester.getRect(find.byType(AppBar));
-      final homeTitle = tester.getTopLeft(find.text('影视库'));
+      final homeTitleLeft = tester
+          .getTopLeft(find.byType(SPDropdownButtonFormField<String>))
+          .dx;
       final continueShelf = find.byWidgetPredicate(
         (w) => w is FilmShelf && w.title == '继续播放',
       );
@@ -693,7 +706,8 @@ void main() {
       );
       await settle(tester);
       expect(tester.getRect(find.byType(AppBar)), homeHeader);
-      expect(tester.getTopLeft(find.text('继续播放')), homeTitle);
+      expect(tester.getTopLeft(find.text('继续播放')).dx, homeTitleLeft);
+      expect(tester.getCenter(find.text('继续播放')).dy, homeHeader.center.dy);
       expect(tester.getTopLeft(find.byType(FilmContinueCard)).dx, 84);
       expect(
         tester.widget<FilmContinueCard>(find.byType(FilmContinueCard)).poster,
@@ -772,7 +786,13 @@ void main() {
     }
     await tester.pumpWidget(frame(page));
     await settle(tester);
-    final card = find.byType(FilmWorkCard).first;
+    final card = find
+        .byWidgetPredicate(
+          (widget) =>
+              widget is FilmWorkCard &&
+              widget.work.title.startsWith('A long film'),
+        )
+        .first;
     final title = tester
         .widgetList<Text>(
           find.descendant(of: card, matching: find.byType(Text)),

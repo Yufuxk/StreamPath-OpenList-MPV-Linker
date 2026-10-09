@@ -10,6 +10,8 @@ class FilmHomeSection {
   String get value => id.substring(id.indexOf(':') + 1);
   String get label => switch (id) {
     'continue' => '继续播放',
+    'daily' => '每日精选',
+    'collections' => '合集',
     'sources' => '媒体来源',
     'recent' => '最近添加',
     'movies' => '电影',
@@ -25,6 +27,8 @@ class FilmHomeSection {
   };
   static const defaults = [
     FilmHomeSection('continue', enabled: true),
+    FilmHomeSection('daily', enabled: true),
+    FilmHomeSection('collections', enabled: true),
     FilmHomeSection('sources', enabled: true),
     FilmHomeSection('recent', enabled: true),
     FilmHomeSection('movies', enabled: true),

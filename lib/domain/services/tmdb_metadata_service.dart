@@ -405,6 +405,7 @@ class TmdbMetadataService {
         'vote_count': data['vote_count'],
         'runtime': type == FilmMediaType.movie ? data['runtime'] : null,
         if (detail) ...{
+          'belongs_to_collection': data['belongs_to_collection'],
           'logo_path': data['logo_path'],
           'credits': data['credits'],
           'presentation_version': data['presentation_version'],

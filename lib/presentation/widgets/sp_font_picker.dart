@@ -5,6 +5,7 @@ import '../localization/app_text.dart';
 import '../theme/app_theme.dart';
 import '../theme/installed_fonts.dart';
 import 'sp_controls.dart';
+import 'sp_menu.dart';
 
 /// 从系统字体列表选择界面字体，空值使用系统推荐字体。
 class SPFontPicker extends StatefulWidget {
@@ -79,39 +80,32 @@ class _SPFontPickerState extends State<SPFontPicker> {
             ),
             Semantics(
               label: context.l10n.text('软件字体'),
-              child: InputDecorator(
-                decoration: const InputDecoration(),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    key: const Key('interface-font-selector'),
-                    focusNode: _focusNode,
-                    focusColor: Colors.transparent,
-                    value: selected ?? '',
-                    isExpanded: true,
-                    menuMaxHeight: 420,
-                    dropdownColor: AppTheme.dropdownMenuColor(
-                      Theme.of(context),
-                    ),
-                    borderRadius: AppTheme.dropdownBorderRadius,
-                    items: [
-                      DropdownMenuItem<String>(
-                        value: '',
-                        child: const AppText('系统默认（Segoe UI）'),
-                      ),
-                      for (final name in options)
-                        DropdownMenuItem<String>(
-                          value: name,
-                          child: Text(name, overflow: TextOverflow.ellipsis),
-                        ),
-                    ],
-                    onChanged: snapshot.hasData
-                        ? (value) {
-                            _focusNode.unfocus();
-                            widget.onChanged(value == '' ? null : value);
-                          }
-                        : null,
+              child: SPDropdownButtonFormField<String>(
+                key: const Key('interface-font-selector'),
+                focusNode: _focusNode,
+                onMenuClosed: _focusNode.unfocus,
+                initialValue: selected ?? '',
+                isExpanded: true,
+                menuMaxHeight: 420,
+                dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
+                borderRadius: AppTheme.dropdownBorderRadius,
+                items: [
+                  DropdownMenuItem<String>(
+                    value: '',
+                    child: const AppText('系统默认（Segoe UI）'),
                   ),
-                ),
+                  for (final name in options)
+                    DropdownMenuItem<String>(
+                      value: name,
+                      child: Text(name, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: snapshot.hasData
+                    ? (value) {
+                        _focusNode.unfocus();
+                        widget.onChanged(value == '' ? null : value);
+                      }
+                    : null,
               ),
             ),
           ],

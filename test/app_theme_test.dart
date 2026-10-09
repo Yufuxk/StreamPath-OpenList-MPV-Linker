@@ -94,7 +94,7 @@ void main() {
     );
     expect(clearerGlass.colorScheme.primaryContainer, const Color(0xFF1E4D84));
     expect(clearerGlass.snackBarTheme.backgroundColor!.a, greaterThan(0.9));
-    expect(AppTheme.dropdownMenuColor(clearerGlass).a, greaterThan(0.95));
+    expect(AppTheme.dropdownMenuColor(clearerGlass), clearerTokens.modalSurface);
     expect(
       (clearerGlass.snackBarTheme.shape! as RoundedRectangleBorder)
           .side

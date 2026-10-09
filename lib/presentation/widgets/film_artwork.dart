@@ -9,6 +9,44 @@ import '../../domain/services/film_catalog_image_cache.dart';
 import '../localization/app_localizations.dart';
 import 'sp_icons.dart';
 
+/// 封面缩放独立合成，悬停不改变布局与图片解码身份。
+class FilmCoverZoom extends StatefulWidget {
+  const FilmCoverZoom({
+    super.key,
+    required this.child,
+    this.hovered,
+    this.scale = 1.04,
+    this.duration = const Duration(milliseconds: 160),
+  });
+  final Widget child;
+  final bool? hovered;
+  final double scale;
+  final Duration duration;
+  @override
+  State<FilmCoverZoom> createState() => _FilmCoverZoomState();
+}
+
+class _FilmCoverZoomState extends State<FilmCoverZoom> {
+  bool _hovered = false;
+  @override
+  Widget build(BuildContext context) {
+    final zoom = AnimatedScale(
+      scale: (widget.hovered ?? _hovered) ? widget.scale : 1,
+      duration: widget.duration,
+      curve: Curves.easeOutCubic,
+      filterQuality: FilterQuality.high,
+      child: RepaintBoundary(child: widget.child),
+    );
+    return widget.hovered != null
+        ? zoom
+        : MouseRegion(
+            onEnter: (_) => setState(() => _hovered = true),
+            onExit: (_) => setState(() => _hovered = false),
+            child: zoom,
+          );
+  }
+}
+
 ImageProvider<Object> filmArtworkProvider(
   File file, {
   String target = 'w342',
@@ -18,6 +56,20 @@ ImageProvider<Object> filmArtworkProvider(
   backdrop || target == 'original' ? null : int.parse(target.substring(1)),
   null,
   FileImage(file, scale: backdrop ? devicePixelRatio : 1),
+);
+
+/// 封面从首个已解码图片帧开始淡入，重建时保持当前透明度。
+Widget filmCoverFrameBuilder(
+  BuildContext context,
+  Widget child,
+  int? frame,
+  bool synchronouslyLoaded,
+) => TweenAnimationBuilder<double>(
+  tween: Tween(begin: 0, end: frame == null ? 0 : 1),
+  duration: const Duration(milliseconds: 280),
+  curve: Curves.easeOut,
+  child: child,
+  builder: (_, opacity, image) => Opacity(opacity: opacity, child: image),
 );
 
 final _detailPrecaches = Expando<_FilmDetailPrecache>();
@@ -301,20 +353,31 @@ class _FilmArtworkState extends State<FilmArtwork> {
     Alignment alignment = Alignment.center,
     FilterQuality filterQuality = FilterQuality.medium,
   }) => Image(
+    key: widget.backdrop || widget.transparent
+        ? null
+        : ValueKey((widget.cache, widget.path, widget.target)),
     image: provider,
     fit: fit,
     alignment: alignment,
     filterQuality: filterQuality,
-    frameBuilder: fallback == null
-        ? null
-        : (_, child, frame, _) => frame != null
-              ? child
-              : Image(
-                  image: fallback,
-                  fit: fit,
-                  alignment: alignment,
-                  filterQuality: filterQuality,
-                ),
+    frameBuilder: (context, child, frame, synchronouslyLoaded) {
+      final image = frame != null || fallback == null
+          ? child
+          : Image(
+              image: fallback,
+              fit: fit,
+              alignment: alignment,
+              filterQuality: filterQuality,
+            );
+      return widget.backdrop || widget.transparent
+          ? image
+          : filmCoverFrameBuilder(
+              context,
+              image,
+              frame ?? (fallback == null ? null : 0),
+              synchronouslyLoaded,
+            );
+    },
     errorBuilder: (_, _, _) => _placeholder(retry: true),
   );
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 
 import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
@@ -30,6 +31,9 @@ class MediaLibraryStore {
   final File _file;
   final DateTime Function() _now;
   Future<void> _pending = Future<void>.value();
+  final Object _migrationZone = Object();
+  Future<T> withWritesSuspended<T>(Future<T> Function() operation) =>
+      _enqueue(() => runZoned(operation, zoneValues: {_migrationZone: true}));
   bool _loaded = false;
   _MediaLibraryLoadState _loadState = _MediaLibraryLoadState.notLoaded;
   List<int>? _corruptOriginalBytes;
@@ -62,6 +66,95 @@ class MediaLibraryStore {
   Future<void> load() => _enqueue(_load);
 
   MediaLibraryConfig get config => _config;
+  String get storagePath => _file.path;
+  Future<Map<String, dynamic>> portableSnapshot() => _enqueue(() async {
+    await _load();
+    Map<String, dynamic> safe(MediaLibraryRecord record) =>
+        {
+            ...record.toJson(),
+            if (record.localDiscSession?.currentEdition != null)
+              'discResumeEdition': record.localDiscSession!.currentEdition,
+          }
+          ..remove('playbackSessionId')
+          ..remove('localDiscSession')
+          ..remove('playlistIndex')
+          ..remove('playlistCount');
+    return {
+      'favorites': _favorites
+          .where((r) => r.item.kind.isMedia)
+          .map(safe)
+          .toList(),
+      'videoHistory': _videoHistory.map(safe).toList(),
+      'audioHistory': _audioHistory.map(safe).toList(),
+      'isoHistory': _isoHistory.map(safe).toList(),
+    };
+  });
+  Future<void> reloadFromBackup(File? backup) => _enqueue(() async {
+    if (backup == null) {
+      if (await _file.exists()) await _file.delete();
+    } else {
+      await backup.copy(_file.path);
+    }
+    _loaded = false;
+    _loadState = _MediaLibraryLoadState.notLoaded;
+    _favorites = _recentDirectories = _videoHistory = _audioHistory =
+        _isoHistory = const [];
+    await _load();
+    _notifyChanged();
+  });
+  Future<int> importPortable(
+    Map<String, dynamic> data,
+    Set<String> categories,
+  ) => _enqueue(() async {
+    await _load();
+    var added = 0;
+    List<MediaLibraryRecord> merge(
+      List<MediaLibraryRecord> current,
+      String key,
+    ) {
+      final result = [...current];
+      final existing = current.map((row) => row.item.stableKey).toSet();
+      for (final value in data[key] as List? ?? []) {
+        final row = Map<String, dynamic>.from(value as Map)
+          ..remove('playbackSessionId')
+          ..remove('localDiscSession')
+          ..remove('playlistIndex')
+          ..remove('playlistCount');
+        final record = MediaLibraryRecord.fromJson(row);
+        if (!record.item.kind.isMedia || !existing.add(record.item.stableKey)) {
+          continue;
+        }
+        result.add(record);
+        added++;
+      }
+      return result;
+    }
+
+    final favorites = categories.contains('favorites')
+        ? merge(_favorites, 'favorites')
+        : _favorites;
+    final video = categories.contains('playback')
+        ? merge(_videoHistory, 'videoHistory')
+        : _videoHistory;
+    final audio = categories.contains('playback')
+        ? merge(_audioHistory, 'audioHistory')
+        : _audioHistory;
+    final iso = categories.contains('playback')
+        ? merge(_isoHistory, 'isoHistory')
+        : _isoHistory;
+    await _write(
+      favorites: favorites,
+      videoHistory: video,
+      audioHistory: audio,
+      isoHistory: iso,
+    );
+    _favorites = favorites;
+    _videoHistory = video;
+    _audioHistory = audio;
+    _isoHistory = iso;
+    _notifyChanged();
+    return added;
+  });
 
   /// 影视库播放记录独立保存，沿用现有会话更新与清除语义。
   MediaLibraryStore forFilmLibrary() => MediaLibraryStore._(
@@ -295,6 +388,25 @@ class MediaLibraryStore {
     _notifyChanged();
   });
 
+  /// 远端续播只补充当前缺少的记录，已有会话和排列保持原位。
+  Future<void> recordRemoteContinue(MediaLibraryItem item) =>
+      _enqueue(() async {
+        await _load();
+        if (_videoHistory.any(
+          (record) => record.item.stableKey == item.stableKey,
+        )) {
+          return;
+        }
+        final records = _boundPerSource(
+          _upsert(_videoHistory, item),
+          item.sourceId,
+          _config.maxRecentPlaybackPerLane,
+        );
+        await _write(videoHistory: records);
+        _videoHistory = records;
+        _notifyChanged();
+      });
+
   Future<void> updateStrmProgress({
     required String sourceId,
     required String playbackSessionId,
@@ -503,6 +615,35 @@ class MediaLibraryStore {
         _videoHistory = records;
         _notifyChanged();
       });
+
+  Future<void> advanceVideoRecord(
+    MediaLibraryItem item, {
+    required String sessionId,
+    required int playlistIndex,
+    required int playlistCount,
+  }) => _enqueue(() async {
+    await _load();
+    final index = _videoHistory.indexWhere(
+      (record) =>
+          record.item.sourceId == item.sourceId &&
+          record.playbackSessionId == sessionId,
+    );
+    if (index < 0) return;
+    final records = [..._videoHistory];
+    records[index] = records[index]
+        .copyWith(
+          item: item,
+          playlistIndex: playlistIndex,
+          playlistCount: playlistCount,
+          clearStrmProgress: true,
+        )
+        .copyWith(
+          strmPositionMs: item.kind == MediaLibraryKind.strm ? 0 : null,
+        );
+    await _write(videoHistory: records);
+    _videoHistory = records;
+    _notifyChanged();
+  });
 
   /// 清空当前来源的全部收藏，不影响最近目录和播放历史。
   Future<void> clearFavorites(String sourceId) => _enqueue(() async {
@@ -771,6 +912,7 @@ class MediaLibraryStore {
   }
 
   Future<T> _enqueue<T>(Future<T> Function() action) {
+    if (Zone.current[_migrationZone] == true) return action();
     final task = _pending.then((_) => action());
     _pending = task.then<void>((_) {}, onError: (_) {});
     return task;

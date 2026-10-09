@@ -1,9 +1,13 @@
 import 'package:path/path.dart' as p;
+import 'dart:typed_data';
+import 'dart:io';
+import '../../core/errors/app_exception.dart';
 
 import '../../core/utils/video_filename_parser.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import 'tmdb_metadata_service.dart';
+import 'film_file_metadata.dart';
 
 class FilmMatchHint {
   const FilmMatchHint(this.title, this.year, this.ids, this.episode);
@@ -16,9 +20,11 @@ class FilmMatchHint {
 
 /// 核验 ID、标题与相近名称，歧义保留人工确认。
 class FilmCatalogMatcher {
-  FilmCatalogMatcher(this.store, this.tmdb);
+  FilmCatalogMatcher(this.store, this.tmdb, {this.filesFor, this.artworkBytes});
   final FilmCatalogStore store;
   final TmdbMetadataService tmdb;
+  final Future<FilmFileMetadata?> Function(FilmCatalogRoot)? filesFor;
+  final Future<Uint8List> Function(String)? artworkBytes;
   static final _explicitId = RegExp(
     r'\{tmdb-(\d+)\}|\[tmdb-(\d+)\]|\[tmdbid-(\d+)\]',
     caseSensitive: false,
@@ -150,7 +156,14 @@ class FilmCatalogMatcher {
   }) async {
     final language = await store.language();
     final cached = await store.cachedWork(type, id);
-    if (!refresh && cached?.language == language) return cached!;
+    if (!refresh &&
+        cached?.language == language &&
+        (type != FilmMediaType.movie ||
+            cached!.metadataOrigin != 'network' ||
+            cached.metadata.containsKey('belongs_to_collection') ||
+            !await tmdb.hasToken())) {
+      return cached!;
+    }
     return tmdb.details(type, id, language);
   }
 
@@ -159,21 +172,25 @@ class FilmCatalogMatcher {
     required bool Function() cancelled,
   }) async {
     final resources = await store.resources(rootId: root.id);
+    final local = await filesFor?.call(root);
     var enabled = false;
     String? credentialError;
     try {
-      enabled = await tmdb.hasToken();
+      enabled = local?.localMode != true && await tmdb.hasToken();
     } on FilmCatalogException catch (cause) {
       credentialError = cause.code;
     }
     return FilmScanMetadataSession(
-      this,
-      root,
-      resources,
-      enabled,
-      await store.language(),
-      cancelled,
-    )..error = credentialError;
+        this,
+        root,
+        resources,
+        enabled || local != null,
+        await store.language(),
+        cancelled,
+      )
+      ..error = credentialError
+      ..files = local
+      ..networkEnabled = enabled;
   }
 
   Future<Map<String, dynamic>?> loadSeason(
@@ -183,6 +200,16 @@ class FilmCatalogMatcher {
   }) async {
     final language = await store.language();
     final cached = await store.season(work.id, number, language: language);
+    if (filesFor != null) {
+      final resources = await store.resources(workId: work.id, limit: 1);
+      if (resources.isNotEmpty) {
+        final root = (await store.root(resources.first.rootId))!;
+        if ((await filesFor!(root))?.localMode == true && !refresh) {
+          return cached;
+        }
+      }
+    }
+    if (work.tmdbId <= 0 || work.metadataOrigin != 'network') return cached;
     if (!refresh && cached != null) return cached;
     Map<String, dynamic> metadata;
     try {
@@ -270,6 +297,37 @@ class FilmCatalogMatcher {
   }) async {
     final work = await lookup(type, id);
     await store.bind(resources, work, directoryPath: directoryPath);
+    for (final resource in resources) {
+      final root = (await store.root(resource.rootId))!;
+      final files = await filesFor?.call(root);
+      if (files?.canWrite != true) continue;
+      try {
+        final current = (await store.resourceAt(
+          resource.sourceId,
+          resource.path,
+        ))!;
+        await files!.writeWork(
+          work,
+          current,
+          seriesDirectory: directoryPath,
+          seasonMetadata: current.season == null
+              ? null
+              : await store.season(current.workId!, current.season!),
+          poster: work.posterPath == null
+              ? null
+              : await artworkBytes?.call(work.posterPath!),
+          backdrop: work.backdropPath == null
+              ? null
+              : await artworkBytes?.call(work.backdropPath!),
+        );
+      } on FilmCatalogException {
+        throw const FilmCatalogException('metadataWriteFailed');
+      } on FileSystemException {
+        throw const FilmCatalogException('metadataWriteFailed');
+      } on AppException {
+        throw const FilmCatalogException('metadataWriteFailed');
+      }
+    }
     // 作品关联先保存，季资料请求错误由界面单独显示。
   }
 
@@ -355,6 +413,8 @@ class FilmScanMetadataSession {
   );
   String? error;
   bool _paused = false;
+  bool networkEnabled = true;
+  FilmFileMetadata? files;
   int scraped = 0;
   bool get paused => _paused;
 
@@ -415,7 +475,11 @@ class FilmScanMetadataSession {
   Future<FilmWork> _lookup(int id) async {
     if (_works[id] case final work?) return work;
     final cached = await matcher.store.cachedWork(root.type, id);
-    return _works[id] = cached?.language == language
+    return _works[id] =
+        cached?.language == language &&
+            (root.type != FilmMediaType.movie ||
+                cached!.metadataOrigin != 'network' ||
+                cached.metadata.containsKey('belongs_to_collection'))
         ? cached!
         : await matcher.tmdb.details(root.type, id, language);
   }
@@ -540,8 +604,15 @@ class FilmScanMetadataSession {
       var origin = existing?.workId != null
           ? existing!.bindingOrigin
           : 'search';
+      FilmLocalMetadata? local;
       try {
-        if (existing?.workId != null) {
+        if (files?.localMode == true) {
+          local = await files!.load(entry, language);
+        }
+        if (local != null && existing?.bindingOrigin != 'manual') {
+          work = local.work;
+          origin = 'nfo';
+        } else if (existing?.workId != null) {
           work = await matcher.store.work(existing!.workId!);
         } else {
           final folderWork = root.type == FilmMediaType.tv && existing != null
@@ -558,33 +629,56 @@ class FilmScanMetadataSession {
               hint.ids.single != folderWork.tmdbId) {
             continue;
           }
-          if (hint.ids.isNotEmpty) {
+          if (hint.ids.isNotEmpty && networkEnabled) {
             work = await _lookup(hint.ids.single);
             origin = 'explicit';
           } else if (folderWork != null) {
             work = folderWork;
             origin = 'folder';
-          } else {
+          } else if (networkEnabled) {
             work = await _search(hint);
           }
         }
-        if (work != null && work.language != language) {
+        if (work != null &&
+            (work.language != language ||
+                work.type == FilmMediaType.movie &&
+                    work.metadataOrigin == 'network' &&
+                    !work.metadata.containsKey('belongs_to_collection')) &&
+            networkEnabled &&
+            work.tmdbId > 0) {
           work = await _lookup(work.tmdbId);
         }
       } on FilmCatalogException catch (cause) {
         _failed(cause);
-        continue;
+        if (files == null) continue;
+        networkEnabled = false;
+        _paused = false;
+      }
+      if (work == null && files != null && !cancelled()) {
+        local = await files!.load(entry, language);
+        if (local != null) {
+          work = local.work;
+          origin = 'nfo';
+        }
       }
       if (work == null || cancelled()) continue;
       Map<String, dynamic>? metadata;
       final episode =
-          root.type == FilmMediaType.tv && existing?.mappingOrigin != 'manual'
-          ? hint.episode
-          : null;
-      final number = existing?.mappingOrigin == 'manual'
-          ? existing?.season
-          : hint.episode?.$1;
-      if (root.type == FilmMediaType.tv && number != null) {
+          local?.episode ??
+          (root.type == FilmMediaType.tv && existing?.mappingOrigin != 'manual'
+              ? hint.episode
+              : null);
+      final number =
+          local?.episode?.$1 ??
+          (existing?.mappingOrigin == 'manual'
+              ? existing?.season
+              : hint.episode?.$1);
+      metadata = local?.season;
+      if (root.type == FilmMediaType.tv &&
+          number != null &&
+          metadata == null &&
+          networkEnabled &&
+          work.tmdbId > 0) {
         try {
           final seasonKey = (work.tmdbId, number);
           if (!_seasons.containsKey(seasonKey)) {

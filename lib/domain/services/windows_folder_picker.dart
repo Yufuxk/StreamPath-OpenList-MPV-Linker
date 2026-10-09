@@ -33,4 +33,14 @@ class WindowsFolderPicker {
       throw AppException.storage('无法打开 Windows 图片选择器', error);
     }
   }
+
+  static Future<String?> pickArchive({required String title}) async {
+    try {
+      return await _channel.invokeMethod<String>('pickArchive', {
+        'title': title,
+      });
+    } on PlatformException catch (error) {
+      throw AppException.storage('无法打开 Windows 文件选择器', error);
+    }
+  }
 }

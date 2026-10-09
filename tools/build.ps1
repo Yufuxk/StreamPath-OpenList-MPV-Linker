@@ -1,6 +1,6 @@
 ﻿# =============================================================
 # StreamPath 通用构建工具
-# 一键完成：flutter analyze → flutter test → flutter build
+# 一键完成：flutter analyze → flutter build
 # windows → 打包便携版（可选）。便携交付默认使用 Release/AOT。
 #
 # 用法（在项目根目录执行）：
@@ -8,12 +8,12 @@
 #   # 打包到指定目录（不询问确认）：
 #   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -Target "D:\portable" -Yes
 #   # 跳过某一步（调试用）：
-#   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipTest -SkipPackage
+#   powershell -ExecutionPolicy Bypass -File .\tools\build.ps1 -SkipAnalyze -SkipPackage
 #
 # 参数：
 #   -Mode         release（默认）/ profile / debug
 #   -SkipAnalyze  跳过 flutter analyze
-#   -SkipTest     跳过 flutter test
+#   -SkipTest     兼容旧命令参数；当前构建流程不执行测试
 #   -SkipPackage  只构建，不打包便携版
 #   -Target       便携版目标目录（缺省自动探测
 #                 <项目根上一级>\StreamPath_Release\StreamPath 20260809 V0.1 test portable）
@@ -28,7 +28,9 @@ param(
     [switch]$SkipPackage,
     [string]$Target,
     [switch]$Yes,
-    [switch]$ValidateTargetOnly
+    [switch]$ValidateTargetOnly,
+    [string]$Version,
+    [int]$BuildNumber = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +41,7 @@ if (-not (Test-Path -LiteralPath $ProjectMarker -PathType Leaf)) {
     throw "无法确认 StreamPath 项目根：$ProjectRoot"
 }
 Set-Location -LiteralPath $ProjectRoot
+. (Join-Path $ScriptRoot 'release_common.ps1')
 
 function Resolve-SafePackageTarget {
     param(
@@ -169,6 +172,12 @@ if ($ValidateTargetOnly) {
     Write-Host "打包目标校验通过：$ValidatedTarget" -ForegroundColor Green
     exit 0
 }
+if (-not $Version) {
+    $PubVersion = (Select-String -LiteralPath $ProjectMarker -Pattern '^version: ([0-9.]+)\+([0-9]+)').Matches[0]
+    $Version = $PubVersion.Groups[1].Value
+    if (-not $PSBoundParameters.ContainsKey('BuildNumber')) { $BuildNumber = [int]$PubVersion.Groups[2].Value }
+}
+$ReleaseVersion = Get-StreamPathVersion $Version $BuildNumber
 Write-Host "=== StreamPath 通用构建（$ModeDirectory） ===" -ForegroundColor Cyan
 
 # ── 0. 检查 flutter ──
@@ -184,15 +193,10 @@ if (-not $SkipAnalyze) {
     Write-Host '（已跳过 flutter analyze）' -ForegroundColor Yellow
 }
 
-# ── 2. 测试 ──
-if (-not $SkipTest) {
-    Invoke-Step 'flutter test' { flutter test }
-} else {
-    Write-Host '（已跳过 flutter test）' -ForegroundColor Yellow
+# ── 2. 构建 ──
+Invoke-Step "flutter build windows --$Mode" {
+    flutter build windows "--$Mode" "--build-name=$($ReleaseVersion.Name)" "--build-number=$BuildNumber" "--dart-define=STREAMPATH_VERSION=$($ReleaseVersion.Full)"
 }
-
-# ── 3. 构建 ──
-Invoke-Step "flutter build windows --$Mode" { flutter build windows "--$Mode" }
 
 $exe = Join-Path $BuildOutput 'streampath.exe'
 if (-not (Test-Path $exe)) {
@@ -216,8 +220,18 @@ if ($Mode -eq 'debug') {
     }
 }
 Write-Host "构建完成：$exe" -ForegroundColor Green
+Repair-StreamPathReleaseIntegrity -Path $BuildOutput
+Copy-Item -LiteralPath (Join-Path $ScriptRoot 'streampath-updater.ps1') -Destination $BuildOutput -Force
+Write-StreamPathProgramManifest -Directory $BuildOutput -Version $ReleaseVersion.Name -BuildNumber $BuildNumber
+$ActualVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+if ($ActualVersion.FileMajorPart -ne [int]$ReleaseVersion.Name.Split('.')[0] -or
+    $ActualVersion.FileMinorPart -ne [int]$ReleaseVersion.Name.Split('.')[1] -or
+    $ActualVersion.FileBuildPart -ne [int]$ReleaseVersion.Name.Split('.')[2] -or
+    $ActualVersion.FilePrivatePart -ne $BuildNumber) {
+    throw 'Built EXE version does not match the requested release version.'
+}
 
-# ── 4. 打包便携版（可选） ──
+# ── 3. 打包便携版（可选） ──
 if (-not $SkipPackage) {
     # 目标目录：-Target 优先；只有 Release 缺省探测正式便携目录，
     # 防止 Debug/Profile 产物覆盖正式交付目录。
@@ -277,11 +291,23 @@ if (-not $SkipPackage) {
         # 清理旧构建产物；保留 使用说明.txt、stream_path_data/ 等用户文件。
         $TargetPrefix = $Target.TrimEnd([IO.Path]::DirectorySeparatorChar) +
             [IO.Path]::DirectorySeparatorChar
-        $OldArtifacts = @(Get-ChildItem -LiteralPath $Target -Force | Where-Object {
-            $_.Name -eq 'data' -or $_.Name -like '*.dll' -or
-            $_.Name -eq 'native_assets.json' -or $_.Name -like '*.exe' -or
-            $_.Name -like '*.pdb'
-        })
+        if (Test-Path -LiteralPath (Join-Path $Target 'streampath-installed')) {
+            throw 'Portable packaging cannot overwrite an installed application.'
+        }
+        $OwnedNames = @((Get-ChildItem -LiteralPath $BuildOutput -Force).Name)
+        $OldManifestPath = Join-Path $Target 'streampath-release.json'
+        if (Test-Path -LiteralPath $OldManifestPath) {
+            $OldManifest = Get-Content -LiteralPath $OldManifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+            foreach ($Entry in $OldManifest.files) {
+                $Name = $Entry.path.Split('/')[0]
+                if ($Name -notin @('data', 'include', 'lib', 'winfsp', 'licenses', 'COPYING', 'SOURCE.md', 'streampath.exe', 'streampath_iso_bridge.exe', 'native_assets.json', 'streampath-updater.ps1') -and
+                    $Name -notmatch '^[A-Za-z0-9_.-]+\.dll$') {
+                    throw 'Invalid previous program manifest.'
+                }
+                $OwnedNames += $Name
+            }
+        }
+        $OldArtifacts = @(Get-ChildItem -LiteralPath $Target -Force | Where-Object { $_.Name -in $OwnedNames })
         foreach ($Artifact in $OldArtifacts) {
             $ArtifactPath = [IO.Path]::GetFullPath($Artifact.FullName)
             if (-not $ArtifactPath.StartsWith(
@@ -303,6 +329,7 @@ if (-not $SkipPackage) {
             Copy-Item -LiteralPath $BuildChild.FullName -Destination $Target `
                 -Recurse -Force
         }
+        Repair-StreamPathReleaseIntegrity -Path $Target
 
         # 复制后再次校验正式便携包指纹，防止目标目录残留错误构建模式。
         $TargetKernelBlob = Join-Path $Target 'data\flutter_assets\kernel_blob.bin'

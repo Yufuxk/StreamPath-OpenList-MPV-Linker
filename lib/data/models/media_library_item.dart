@@ -256,6 +256,7 @@ class MediaLibraryRecord {
     this.playlistCount,
     this.strmPositionMs,
     this.strmDurationMs,
+    this.discResumeEdition,
   });
 
   final MediaLibraryItem item;
@@ -270,6 +271,7 @@ class MediaLibraryRecord {
   /// STRM 显示快照不保存解析后的媒体地址。
   final int? strmPositionMs;
   final int? strmDurationMs;
+  final int? discResumeEdition;
 
   /// 媒体中心内的记录标识；播放会话与具体文件相互独立。
   String get recordKey => playbackSessionId == null
@@ -292,6 +294,7 @@ class MediaLibraryRecord {
     int? strmPositionMs,
     int? strmDurationMs,
     bool clearStrmProgress = false,
+    int? discResumeEdition,
   }) => MediaLibraryRecord(
     item: item ?? this.item,
     updatedAt: updatedAt ?? this.updatedAt,
@@ -299,6 +302,7 @@ class MediaLibraryRecord {
     continueDismissed: continueDismissed ?? this.continueDismissed,
     playbackBarDismissed: playbackBarDismissed ?? this.playbackBarDismissed,
     localDiscSession: localDiscSession ?? this.localDiscSession,
+    discResumeEdition: discResumeEdition ?? this.discResumeEdition,
     playlistIndex: playlistIndex ?? this.playlistIndex,
     playlistCount: playlistCount ?? this.playlistCount,
     strmPositionMs: clearStrmProgress
@@ -312,6 +316,7 @@ class MediaLibraryRecord {
   Map<String, dynamic> toJson() => <String, dynamic>{
     ...item.toJson(),
     'updatedAt': updatedAt.millisecondsSinceEpoch,
+    if (discResumeEdition != null) 'discResumeEdition': discResumeEdition,
     if (playbackSessionId != null) 'playbackSessionId': playbackSessionId,
     if (continueDismissed) 'continueDismissed': true,
     if (playbackBarDismissed) 'playbackBarDismissed': true,
@@ -333,6 +338,7 @@ class MediaLibraryRecord {
     return MediaLibraryRecord(
       item: MediaLibraryItem.fromJson(json),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(updatedAt),
+      discResumeEdition: (json['discResumeEdition'] as num?)?.toInt(),
       playbackSessionId: playbackSessionId,
       continueDismissed: json['continueDismissed'] == true,
       playbackBarDismissed: json['playbackBarDismissed'] == true,

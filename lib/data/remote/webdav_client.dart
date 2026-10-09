@@ -86,6 +86,24 @@ class WebDavClient {
     return utf8.decode(bytes, allowMalformed: true);
   }
 
+  Future<void> createMissingFile(String path, List<int> bytes) async {
+    try {
+      await _requestFollowingRedirects<void>(
+        url: joinUrl(baseUrl, path),
+        method: 'PUT',
+        responseType: ResponseType.plain,
+        headers: {
+          'If-None-Match': '*',
+          'Content-Type': 'application/octet-stream',
+        },
+        data: bytes,
+      );
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 412) return;
+      throw _translateDioError(error);
+    }
+  }
+
   /// 获取文件原始字节，供需要保留源编码的小型伴随文件使用。
   Future<List<int>> getFileBytes(
     String href, {
@@ -185,7 +203,7 @@ class WebDavClient {
     required String method,
     required ResponseType responseType,
     Map<String, Object?> headers = const {},
-    String? data,
+    Object? data,
     Duration? requestTimeout,
     CancelToken? cancelToken,
   }) async {

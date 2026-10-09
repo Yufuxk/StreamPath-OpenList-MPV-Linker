@@ -468,6 +468,14 @@ class ExternalPlayerService {
     }
   }
 
+  /// 调用方确认播放器均已退出后，等待最终进度提交。
+  Future<void> finishStoppedSessions() async {
+    await Future.wait([
+      for (final runtime in _sessions.values)
+        if (runtime.exitSyncFuture != null) runtime.exitSyncFuture!,
+    ]);
+  }
+
   /// 在连接或用户刷新成功后更新本机 OpenList/AList 进程身份。
   Future<void> captureOpenListProcessIdentity() async {
     try {
@@ -2215,6 +2223,7 @@ class ExternalPlayerService {
     if (await _tryHandlePlaybackFailure(runtime)) return;
     // 只更新仍指向本 runtime 的会话；同 ID 已重新启动时不干预新进程。
     if (!identical(_sessions[runtime.sessionId], runtime)) return;
+    await _reportCurrentVideoProgress(runtime, stopped: true);
     // 会话退出：停止本会话的播放中动态监控并清理认证头与切集代际。
     _cleanupCacheRuntime(runtime);
     if (syncProgress) {
@@ -2681,6 +2690,12 @@ class ExternalPlayerService {
     return dir;
   }
 
+  Future<MpvWatchLaterRecord?> portableWatchLater(String target) async {
+    final directory = _watchLaterDir ?? Directory(p.join((await AppPaths.cacheDirectory()).path, 'mpv-watch-later'));
+    if (!await directory.exists()) return null;
+    return (await const MpvWatchLaterSync().buildIndex(directory, [target])).recordFor(target);
+  }
+
   /// 脚本/播放列表文件存放目录（watch_later 目录或数据目录）。
   Future<Directory> _scriptBase() async =>
       _watchLaterDir ?? await AppPaths.cacheDirectory(); // 脚本/播放列表产物
@@ -2836,6 +2851,7 @@ class ExternalPlayerService {
               plan.items[index + 1].versions.any((v) => v.path == path)),
     );
     if (index + 1 >= plan.items.length ||
+        plan.items[index + 1].unavailable ||
         plan.items[index + 1].versions.length != 1) {
       return;
     }
@@ -3040,8 +3056,9 @@ class ExternalPlayerService {
   }
 
   Future<void> _reportCurrentVideoProgress(
-    _PlayerSessionRuntime runtime,
-  ) async {
+    _PlayerSessionRuntime runtime, {
+    bool stopped = false,
+  }) async {
     if (onVideoProgress == null || runtime.statusFilePath == null) return;
     final file = File(runtime.statusFilePath!);
     try {
@@ -3074,6 +3091,8 @@ class ExternalPlayerService {
               ? (duration * 1000).round()
               : null,
           recordedAt: modified,
+          paused: lines[2] == 'yes' || lines[2] == 'true' || lines[2] == '1',
+          stopped: stopped,
         ),
       );
     } on FileSystemException {
@@ -3098,6 +3117,10 @@ class ExternalPlayerService {
     try {
       await plan.pending?.call(index);
       final item = plan.items[index];
+      if (item.unavailable) {
+        plan.failed?.call('播放列表条目不可用，请检查来源或资源');
+        return false;
+      }
       final version =
           (versionPath == null
               ? null
@@ -3594,6 +3617,24 @@ class ExternalPlayerService {
     final liveness = await runtime!.livenessTracker.sample();
     // unknown 不能降级为 false；否则 UI 会误删仍可能存活的会话。
     return liveness != PlayerProcessLiveness.exited;
+  }
+
+  Future<void> refreshPlaybackStatus(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return;
+    final liveness = await runtime.livenessTracker.sample();
+    if (liveness == PlayerProcessLiveness.unknown) return;
+    if (liveness == PlayerProcessLiveness.alive) {
+      await syncActiveProgress(sessionId);
+      return;
+    }
+    await runtime.exitSyncFuture;
+    if (!identical(_sessions[sessionId], runtime)) return;
+    await _watchExitAndSync(
+      runtime,
+      runtime.entries,
+      syncProgress: runtime.isMpv,
+    );
   }
 
   /// 缓存与 IPC 后台任务需要在探活未知重试耗尽时停止，

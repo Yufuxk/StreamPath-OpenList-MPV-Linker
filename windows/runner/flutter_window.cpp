@@ -7,6 +7,7 @@
 #include <shobjidl.h>
 #include <winternl.h>
 #include <wrl/client.h>
+#include <flutter/method_result_functions.h>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
@@ -144,7 +145,7 @@ std::wstring Utf16FromUtf8(const std::string& value) {
   return converted;
 }
 
-HRESULT PickPath(HWND owner, const std::wstring& title, bool image,
+HRESULT PickPath(HWND owner, const std::wstring& title, bool image, bool archive,
                  std::string* selected_path) {
   Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
   HRESULT result = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr,
@@ -160,12 +161,16 @@ HRESULT PickPath(HWND owner, const std::wstring& title, bool image,
     return result;
   }
   result = dialog->SetOptions(options | FOS_FORCEFILESYSTEM |
-                              FOS_PATHMUSTEXIST | (image ? FOS_FILEMUSTEXIST : FOS_PICKFOLDERS));
+                              FOS_PATHMUSTEXIST | (image || archive ? FOS_FILEMUSTEXIST : FOS_PICKFOLDERS));
   if (FAILED(result)) {
     return result;
   }
   if (image) {
     const COMDLG_FILTERSPEC filters[] = {{L"JPG / PNG / WebP / BMP", L"*.jpg;*.jpeg;*.png;*.webp;*.bmp"}};
+    result = dialog->SetFileTypes(1, filters);
+    if (FAILED(result)) return result;
+  } else if (archive) {
+    const COMDLG_FILTERSPEC filters[] = {{L"ZIP", L"*.zip"}};
     result = dialog->SetFileTypes(1, filters);
     if (FAILED(result)) return result;
   }
@@ -241,7 +246,7 @@ bool FlutterWindow::OnCreate() {
           &flutter::StandardMethodCodec::GetInstance());
   folder_picker_channel_->SetMethodCallHandler(
       [this](const auto& call, auto result) {
-        if (call.method_name() != "pickDirectory" && call.method_name() != "pickImage") {
+        if (call.method_name() != "pickDirectory" && call.method_name() != "pickImage" && call.method_name() != "pickArchive") {
           result->NotImplemented();
           return;
         }
@@ -259,7 +264,7 @@ bool FlutterWindow::OnCreate() {
         }
         std::string selected_path;
         const HRESULT picker_result =
-            PickPath(GetHandle(), Utf16FromUtf8(title), call.method_name() == "pickImage", &selected_path);
+            PickPath(GetHandle(), Utf16FromUtf8(title), call.method_name() == "pickImage", call.method_name() == "pickArchive", &selected_path);
         if (picker_result == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
           result->Success();
           return;
@@ -489,6 +494,29 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  constexpr UINT kCloseApproved = WM_APP + 61;
+  constexpr UINT kCloseFailed = WM_APP + 62;
+  if (message == kCloseApproved) {
+    close_approved_ = true;
+    PostMessage(hwnd, WM_CLOSE, 0, 0);
+    return 0;
+  }
+  if (message == kCloseFailed) {
+    close_requested_ = false;
+    return 0;
+  }
+  if (message == WM_CLOSE && appearance_channel_ && !close_approved_) {
+    if (!close_requested_) {
+      close_requested_ = true;
+      // 先等待 Dart 停止扫描和同步，再销毁窗口与引擎。
+      appearance_channel_->InvokeMethod("closeRequested", nullptr,
+          std::make_unique<flutter::MethodResultFunctions<flutter::EncodableValue>>(
+              [hwnd, kCloseApproved](const auto*) { PostMessage(hwnd, kCloseApproved, 0, 0); },
+              [hwnd, kCloseFailed](const auto&, const auto&, const auto*) { PostMessage(hwnd, kCloseFailed, 0, 0); },
+              [hwnd, kCloseApproved]() { PostMessage(hwnd, kCloseApproved, 0, 0); }));
+    }
+    return 0;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

@@ -22,10 +22,9 @@ import 'browser_page.dart';
 import 'film_media_center_page.dart';
 import 'film_library_shell.dart';
 import 'folders_page.dart';
-import 'mount_management_page.dart';
 import 'settings_page.dart';
 
-enum _Section { films, folders, mounts, library, settings }
+enum _Section { films, folders, library, settings }
 
 /// 浏览分支保持挂载，使切换侧边栏不会停止播放监控。
 class AppShellPage extends StatefulWidget {
@@ -182,6 +181,7 @@ class _AppShellPageState extends State<AppShellPage>
     _slideController.reverse();
     context.read<AppState>().filmLibraryActive.value =
         section == _Section.films;
+    context.read<AppState>().mediaSourcesVisible = section == _Section.folders;
     _detailChromeChanged();
   }
 
@@ -287,7 +287,6 @@ class _AppShellPageState extends State<AppShellPage>
       key: _filmShellKey,
       sidebarInset: WindowTitleBar.compactSidebarWidth,
     ),
-    _Section.mounts => const MountManagementPage(),
     _Section.settings => SettingsPage(
       key: _settingsKey,
       onNavigationHeight: (height) {
@@ -320,7 +319,7 @@ class _AppShellPageState extends State<AppShellPage>
   );
 
   static double _rootHeaderHeight(_Section section) => switch (section) {
-    _Section.folders || _Section.mounts || _Section.library => 96,
+    _Section.folders || _Section.library => 96,
     _Section.films || _Section.settings => 48,
   };
 
@@ -344,7 +343,6 @@ class _AppShellPageState extends State<AppShellPage>
     const entries = [
       (_Section.films, SPIcons.video, '影视库'),
       (_Section.folders, SPIcons.folder, '文件夹'),
-      (_Section.mounts, SPIcons.hardDrive, '文件夹管理'),
       (_Section.library, SPIcons.library, '媒体中心'),
       (_Section.settings, SPIcons.settings, '设置'),
     ];

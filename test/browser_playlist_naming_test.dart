@@ -35,6 +35,8 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 
+import 'helpers/pump_until.dart';
+
 const _video = '葬送的芙莉莲.2023.S01E29.BluRay.REMUX.1080p.mkv';
 const _firstVideo = '葬送的芙莉莲.2023.S01E01.BluRay.REMUX.1080p.mkv';
 const _nextVideo = '葬送的芙莉莲.2023.S02E01.BluRay.REMUX.1080p.mkv';
@@ -184,13 +186,12 @@ void main() {
                 .playLibraryItem(target)
                 .then((_) => done = true);
           });
-          for (var i = 0; i < 100 && !done; i++) {
-            await tester.runAsync(
-              () => Future<void>.delayed(const Duration(milliseconds: 20)),
-            );
-            await tester.pump(const Duration(milliseconds: 50));
-          }
-          expect(done, isTrue);
+          await pumpUntil(
+            tester,
+            () => done,
+            reason:
+                'Playback preparation must finish before checking the queue',
+          );
           await tester.runAsync(() => operation!);
         }
 

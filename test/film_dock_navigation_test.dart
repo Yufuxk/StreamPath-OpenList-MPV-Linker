@@ -18,6 +18,7 @@ import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/main.dart';
+import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/pages/film_detail_page.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
 import 'package:streampath/presentation/widgets/directory_breadcrumbs.dart';
@@ -45,7 +46,7 @@ void main() {
       }
     }
   });
-  testWidgets('五项胶囊默认影视库、文件夹搜索与详情沉浸状态往返', (tester) async {
+  testWidgets('四项胶囊默认影视库、文件夹搜索与详情沉浸状态往返', (tester) async {
     tester.view.physicalSize = const Size(1280, 720);
     tester.view.devicePixelRatio = 1;
     tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
@@ -225,7 +226,7 @@ void main() {
     await settle();
     expect(find.byKey(const Key('startup-overlay')), findsNothing);
     await saveStartupFrame('ready');
-    const sections = ['films', 'folders', 'mounts', 'library', 'settings'];
+    const sections = ['films', 'folders', 'library', 'settings'];
     expect(app.filmLibraryActive.value, isTrue);
     expect(
       tester.getRect(find.byKey(const Key('film-library-background'))),
@@ -373,16 +374,18 @@ void main() {
     expect(find.text('显示侧边栏'), findsNothing);
     await tester.tap(find.byKey(const Key('sidebar-folders')));
     await settle();
+    expect(app.mediaSourcesVisible, isTrue);
     expect(app.filmDetailChrome.value, isNull);
     expect(find.text('本地文件夹'), findsOneWidget);
-    expect(find.text('网络文件夹'), findsOneWidget);
+    expect(find.text('网络存储'), findsOneWidget);
+    expect(find.text('媒体服务器'), findsOneWidget);
     expect(tester.getRect(find.byKey(WindowTitleBar.mainSurfaceKey)).left, 0);
     expect(
       tester.getCenter(find.byKey(const Key('sidebar-surface'))),
       dockCenter,
     );
     expect(find.byKey(const ValueKey('local-root-dock')), findsNothing);
-    expect(find.text('在文件夹管理中添加服务器'), findsOneWidget);
+    expect(find.text('添加服务器以浏览文件夹'), findsOneWidget);
     expect(
       tester.getTopLeft(find.byKey(const Key('folders-network-tab'))).dx,
       84,
@@ -437,7 +440,7 @@ void main() {
     await tester.tap(find.byKey(const Key('folders-local-tab')));
     await settle();
     expect(find.byKey(const ValueKey('local-root-dock')), findsOneWidget);
-    expect(find.text('在文件夹管理中添加服务器'), findsNothing);
+    expect(find.text('添加服务器以浏览文件夹'), findsNothing);
     await tester.tap(find.byKey(const Key('folders-search')));
     await settle();
     expect(
@@ -478,6 +481,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     expect(find.byType(DirectoryBreadcrumbs), findsOneWidget);
+    await checkPagePixels();
     expect(
       tester.getRect(find.byKey(const Key('sidebar-header-extension'))).bottom,
       tester.getRect(find.byType(AppBar)).bottom,
@@ -503,16 +507,20 @@ void main() {
       tester.getRect(find.byKey(const Key('sidebar-header-extension'))).bottom,
       tester.getRect(find.byType(AppBar)).bottom,
     );
-    await tester.tap(find.byKey(const Key('sidebar-mounts')));
-    await settle();
-    expect(
-      tester.getCenter(find.byKey(const Key('sidebar-surface'))),
-      dockCenter,
+    final foldersNavigator = Navigator.of(tester.element(find.byType(AppBar)));
+    foldersNavigator.push(
+      MaterialPageRoute<void>(
+        builder: (_) => BrowserPage(localRoot: app.localRoots.single),
+      ),
     );
+    await settle();
     expect(
       tester.getRect(find.byKey(const Key('sidebar-header-extension'))).bottom,
       tester.getRect(find.byType(AppBar)).bottom,
     );
+    await checkPagePixels();
+    foldersNavigator.pop();
+    await settle();
     await tester.tap(find.byKey(const Key('sidebar-films')));
     await settle();
     expect(find.byType(FilmDetailPage), findsOneWidget);

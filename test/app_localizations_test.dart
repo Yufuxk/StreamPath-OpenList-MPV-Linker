@@ -6,6 +6,34 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_text.dart';
 
 void main() {
+  test('自定义播放列表的操作与动态数量覆盖四种语言', () {
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final text in [
+        '播放列表',
+        '以本作品创建播放列表',
+        '以本季创建播放列表',
+        '以本集创建播放列表',
+        '以本资源创建播放列表',
+        '加入播放列表…',
+        '自动追加范围：本作品',
+        '固定所选版本，不自动追加',
+        '只读镜像',
+        '复制为自定义播放列表',
+        '播放列表条目不可用，请检查来源或资源',
+        '自定义播放列表需要 MPV 播放器',
+        '拖动排序',
+      ]) {
+        expect(
+          l10n.text(text),
+          language == AppLanguage.simplifiedChinese ? text : isNot(text),
+          reason: '${language.name}: $text',
+        );
+      }
+      expect(l10n.format('成员数量：{count}', {'count': 7}), contains('7'));
+      expect(l10n.format('未映射资源未纳入：{count}', {'count': 2}), contains('2'));
+    }
+  });
   test('外挂音轨设置和加载失败提示覆盖四种语言', () {
     for (final language in AppLanguage.values) {
       final l10n = AppLocalizations(language);
@@ -27,9 +55,12 @@ void main() {
   test('侧边栏、平铺和索引文案覆盖四种语言', () {
     const sources = [
       '网络文件夹',
-      '文件夹管理',
-      '在文件夹管理中添加服务器',
-      '在文件夹管理中添加本地文件夹',
+      '文件夹',
+      '来源不可用，请在文件夹中重新挂载',
+      '启用影视库',
+      '刮削、背景与媒体探测',
+      '添加服务器以浏览文件夹',
+      '添加本地文件夹以开始浏览',
       '切换侧边栏显示模式',
       '简略模式',
       '展开侧边栏',

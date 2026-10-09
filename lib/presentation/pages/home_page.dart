@@ -1,3 +1,4 @@
+import '../widgets/sp_menu.dart';
 import 'package:flutter/material.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
@@ -285,7 +286,7 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 24),
             if (_profiles.isNotEmpty) ...[
-              DropdownButtonFormField<String>(
+              SPDropdownButtonFormField<String>(
                 key: const Key('server-profile-selector'),
                 initialValue: _selectedProfileId,
                 dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
@@ -374,9 +375,7 @@ class _HomePageState extends State<HomePage> {
                 prefixIcon: const Icon(SPIcons.lock),
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscurePassword ? SPIcons.hide : SPIcons.view,
-                  ),
+                  icon: Icon(_obscurePassword ? SPIcons.hide : SPIcons.view),
                   onPressed: () =>
                       setState(() => _obscurePassword = !_obscurePassword),
                 ),
@@ -404,29 +403,18 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// 复用应用图标的“文件夹 + 播放”构图，适配标题栏小尺寸显示。
+/// 与 Windows 应用图标共用原图。
 class _StreamPathMark extends StatelessWidget {
   const _StreamPathMark();
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return ExcludeSemantics(
-      child: SizedBox(
+      child: Image.asset(
+        'assets/icon/app_icon.png',
         width: 28,
         height: 28,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Icon(
-              SPIcons.folderFill,
-              size: 28,
-              color: scheme.surfaceContainerHighest,
-            ),
-            Icon(SPIcons.folder, size: 28, color: scheme.primary),
-            Icon(SPIcons.play, size: 15, color: scheme.primary),
-          ],
-        ),
+        filterQuality: FilterQuality.high,
       ),
     );
   }

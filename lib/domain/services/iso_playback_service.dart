@@ -479,14 +479,15 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final resolvedIsoUrl = webDavService.resolveUrl(file.href);
       final isoKey = _buildIsoKey(
         profileId: webDavService.sourceId,
-        resolvedUrl: resolvedIsoUrl,
+        resolvedUrl: webDavService.persistentUrl(file.href),
       );
+      final structureKey = webDavService.crossSessionStructureCache ? isoKey : _buildIsoKey(profileId: webDavService.sourceId, resolvedUrl: resolvedIsoUrl);
       final tempRoot = await _rootDirectory();
       final structureCachePath = p.normalize(
         p.absolute(
           tempRoot.parent.path,
           structureCacheDirectoryName,
-          '$isoKey.cache',
+          '$structureKey.cache',
         ),
       );
 
@@ -921,7 +922,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       if (owner == null) throw AppException.process('无法确认 StreamPath 进程身份');
       final titleKey = _buildIsoKey(
         profileId: webDavService.sourceId,
-        resolvedUrl: webDavService.resolveUrl(file.href),
+        resolvedUrl: webDavService.persistentUrl(file.href),
       );
       final key = _menuKey(titleKey);
       if (_runtimes.values.any((runtime) => runtime.isoKey == key)) {
@@ -1233,6 +1234,49 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   }) => playbackMode == PlaybackMode.webdavHdmvMenu
       ? _getMenuLibraryProgressByKey(isoKey)
       : _getLibraryProgressByKey(isoKey);
+
+  Future<Map<String, dynamic>> portableState({required String profileId, required String resolvedUrl, required PlaybackMode playbackMode}) async {
+    final key = libraryKey(profileId: profileId, resolvedUrl: resolvedUrl, playbackMode: playbackMode);
+    final selection = await (await _catalog()).load(key);
+    final directory = await _watchLaterDirectory(key, create: false);
+    final index = await const MpvWatchLaterSync().buildIndex(directory, selection.order.map((id) => 'bd://mpls/$id'));
+    final titles = <String, Map<String, num>>{};
+    for (final id in selection.order) {
+      final record = index.recordFor('bd://mpls/$id');
+      if ((record?.startSeconds ?? 0) > 0) titles[id] = {'position': record!.startSeconds!, if (record.durationSeconds != null) 'duration': record.durationSeconds!};
+    }
+    final menuFile = File(p.join(directory.path, 'menu-resume.json'));
+    final menu = await menuFile.exists() ? _parseMenuProgress(await menuFile.readAsString()) : null;
+    return {'selection': selection.toJson(_now()), 'titles': titles,
+      if (menu != null) 'menu': {for (final field in ['position', 'duration', 'edition', 'editions', 'completed']) field: menu[field]}};
+  }
+
+  /// 返回将要提交的文件，调用方统一建立恢复快照后再写入。
+  Future<void> planPortableState(Map<String, dynamic> state, {required String profileId, required String resolvedUrl, required PlaybackMode playbackMode, required Map<String, String> files}) async {
+    final key = libraryKey(profileId: profileId, resolvedUrl: resolvedUrl, playbackMode: playbackMode);
+    final catalog = await _catalog();
+    final all = files.containsKey(catalog.file.path)
+        ? <String, _IsoCatalogRecord>{for (final entry in (jsonDecode(files[catalog.file.path]!)['discs'] as Map).entries) entry.key as String: _IsoCatalogRecord.fromJson(entry.value)}
+        : await catalog._readAll();
+    if (!all.containsKey(key)) {
+      all[key] = _IsoCatalogRecord.fromJson(state['selection']);
+      files[catalog.file.path] = jsonEncode({'version': 1, 'discs': {for (final entry in all.entries) entry.key: entry.value.toJson(_now())}});
+    }
+    final directory = await _watchLaterDirectory(key, create: false);
+    for (final entry in (state['titles'] as Map).entries) {
+      final id = entry.key as String;
+      if (!RegExp(r'^\d{5}$').hasMatch(id)) throw const FormatException('Invalid Blu-ray title');
+      final path = p.join(directory.path, MpvWatchLaterSync.md5FileName('bd://mpls/$id'));
+      if (!await File(path).exists() && !files.containsKey(path)) {
+        final position = entry.value['position'] as num;
+        final duration = entry.value['duration'] as num?;
+        files[path] = '# bd://mpls/$id\nstart=$position\n${duration == null ? '' : 'duration=$duration\n'}';
+      }
+    }
+    final menu = state['menu'];
+    final path = p.join(directory.path, 'menu-resume.json');
+    if (menu != null && !await File(path).exists() && !files.containsKey(path)) files[path] = jsonEncode(menu);
+  }
 
   void dispose() {
     _disposed = true;

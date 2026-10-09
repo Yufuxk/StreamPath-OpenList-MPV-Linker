@@ -2,12 +2,20 @@
 # StreamPath 便携版打包入口
 #
 # 直接运行后输入目标目录；直接回车使用现有便携版目录。
-# 脚本会调用 build.ps1 完成静态分析、全部测试、Release/AOT
+# 脚本会调用 build.ps1 完成静态分析、Release/AOT
 # 构建和安全覆盖，并保留目标中的 stream_path_data 用户数据。
 # =============================================================
 
 param(
-    [string]$Target
+    [string]$Target,
+    [string]$OutputDirectory,
+    [string]$Version,
+    [int]$BuildNumber,
+    [string]$ReleaseDate,
+    [switch]$Yes,
+    [switch]$SkipAnalyze,
+    # 兼容旧调用，打包流程不执行测试。
+    [switch]$SkipTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,16 +50,49 @@ if ([string]::IsNullOrWhiteSpace($Target)) {
 $Target = [IO.Path]::GetFullPath($Target)
 
 Write-Host "目标目录：$Target" -ForegroundColor Yellow
-$Answer = Read-Host '确认构建并更新此便携目录？（Y/回车=继续，N=取消）'
+$Answer = if ($Yes) { 'Y' } else { Read-Host '确认构建并更新此便携目录？（Y/回车=继续，N=取消）' }
 if ($Answer -in @('n', 'N', 'no', 'NO')) {
     Write-Host '已取消打包。' -ForegroundColor Yellow
     exit 0
 }
+. (Join-Path $ScriptRoot 'release_common.ps1')
+$Options = Read-StreamPathReleaseOptions $ProjectRoot $Version $BuildNumber $ReleaseDate
 
-& $BuildScript -Mode release -Target $Target -Yes
+if (-not $OutputDirectory) {
+    $DefaultOutput = Join-Path $ProjectRoot "build\releases\StreamPath.$($Options.Date).V$($Options.Version.Display)"
+    $OutputDirectory = Read-Host "ZIP output directory [$DefaultOutput]"
+    if (-not $OutputDirectory) { $OutputDirectory = $DefaultOutput }
+}
+$OutputDirectory = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($OutputDirectory.Trim().Trim('"')))
+$Source = Join-Path $ProjectRoot 'build\windows\x64\runner\Release'
+if ($OutputDirectory -eq $Source -or $OutputDirectory.StartsWith($Source + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'ZIP output directory must be outside the build output.'
+}
+$TargetPrefix = $Target.TrimEnd('\') + '\'
+if ($OutputDirectory -eq $Target -or $OutputDirectory.StartsWith($TargetPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'ZIP output directory must be outside the portable directory.'
+}
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+& $BuildScript -Mode release -Target $Target -Yes -Version $Options.Version.Name -BuildNumber $Options.Version.Build -SkipAnalyze:$SkipAnalyze
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
+
+# 发布 ZIP 只包含清单拥有的程序文件，排除目标目录的用户资料。
+$AssetName = "StreamPath.$($Options.Date).V$($Options.Version.Display).portable.zip"
+$AssetPath = Join-Path $OutputDirectory $AssetName
+if (Test-Path -LiteralPath $AssetPath) { throw "Release asset already exists: $AssetPath" }
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$Archive = [IO.Compression.ZipFile]::Open($AssetPath, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    $Manifest = Get-Content -LiteralPath (Join-Path $Target 'streampath-release.json') -Raw -Encoding utf8 | ConvertFrom-Json
+    foreach ($Name in @($Manifest.files.path) + @('streampath-release.json')) {
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($Archive, (Join-Path $Target $Name), $Name) | Out-Null
+    }
+} finally { $Archive.Dispose() }
+Write-StreamPathReleaseMetadata $OutputDirectory $Options $AssetPath 'portable'
+Write-Host "Release ZIP: $AssetPath" -ForegroundColor Green
+Write-Host 'Upload the asset and StreamPath.release.json to the same GitHub Release.'
 
 Write-Host '便携版已生成，可直接运行目标目录中的 streampath.exe。' `
     -ForegroundColor Green

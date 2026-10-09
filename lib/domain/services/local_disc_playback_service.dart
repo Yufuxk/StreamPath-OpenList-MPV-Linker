@@ -83,6 +83,7 @@ class _LocalDiscRuntime {
   bool? lastPaused;
   DateTime? lastProgressPersistedAt;
   bool menuObserved = false;
+  Future<void>? exitSyncFuture;
 }
 
 /// 本地 ISO/BDMV 的受控 MPV 启动与播放进度服务。
@@ -331,6 +332,18 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     return (await sessionStatus(sessionId)).running;
   }
 
+  Future<void> refreshPlaybackStatus(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return;
+    final liveness = await runtime.tracker.sample();
+    if (liveness == PlayerProcessLiveness.unknown) return;
+    if (liveness == PlayerProcessLiveness.exited) {
+      await _finishExit(runtime);
+    } else {
+      await _saveLiveProgress(runtime);
+    }
+  }
+
   Future<LocalDiscSessionStatus> sessionStatus(String sessionId) async {
     final runtime = _sessions[sessionId];
     if (runtime == null) return const LocalDiscSessionStatus(running: false);
@@ -383,11 +396,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     while (identical(_sessions[runtime.result.sessionId], runtime)) {
       final liveness = await runtime.tracker.sample();
       if (liveness == PlayerProcessLiveness.exited) {
-        runtime.tracker.stop();
-        await _saveFinalProgress(runtime);
-        _sessions.remove(runtime.result.sessionId);
-        await _deleteSubtitleDirectory(runtime.result.sessionId);
-        _notifyLibraryProgress();
+        await _finishExit(runtime);
         return;
       }
       try {
@@ -404,6 +413,16 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       await Future<void>.delayed(delay);
     }
   }
+
+  Future<void> _finishExit(_LocalDiscRuntime runtime) =>
+      runtime.exitSyncFuture ??= () async {
+        runtime.tracker.stop();
+        await _saveFinalProgress(runtime);
+        if (!identical(_sessions[runtime.result.sessionId], runtime)) return;
+        _sessions.remove(runtime.result.sessionId);
+        await _deleteSubtitleDirectory(runtime.result.sessionId);
+        _notifyLibraryProgress();
+      }();
 
   static Future<Directory> _subtitleDirectory(String sessionId) async {
     if (!RegExp(r'^local_disc_\d+_\d+$').hasMatch(sessionId)) {

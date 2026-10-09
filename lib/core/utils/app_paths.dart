@@ -3,12 +3,13 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-/// 应用数据路径：**集中存放**配置、缓存、日志、数据库，追求高便携性。
+/// 应用数据路径：安装版采用 Windows 用户目录，便携版采用程序旁目录。
 ///
-/// 数据目录 = 项目根文件夹下的 `stream_path_data/`，内部按用途分三个
+/// 安装版根目录为 `%LOCALAPPDATA%/StreamPath/stream_path_data/`；
+/// 便携版根目录为程序旁的 `stream_path_data/`。内部按用途分三个
 /// 子目录（英文命名）：
 /// ```
-/// <项目根>/stream_path_data/
+/// stream_path_data/
 ///   ├── config/                    ← 用户配置文件
 ///   │   ├── stream_path_config.json  （连接 + 播放器 + 隐藏后缀）
 ///   │   ├── cache_policy.json        （基础缓存策略，常驻可编辑）
@@ -32,7 +33,7 @@ import 'package:path_provider/path_provider.dart';
 ///       ├── mpv.log / *.lua / *.m3u   （日志与脚本产物）
 ///       └── clipboard_history_fix.log （剪贴板诊断日志）
 /// ```
-/// 项目根由可执行文件路径推算（`<项目根>/build/windows/x64/runner/...`，
+/// 便携版开发构建的项目根由可执行文件路径推算（`<项目根>/build/windows/x64/runner/...`，
 /// 取 `build` 段之前的部分）；推算失败（便携版安装到任意目录）时回退
 /// **可执行文件所在目录**（`stream_path_data/` 生成在便携文件夹内）；
 /// exe 目录不可写时回退应用支持目录，保证应用始终可用且数据仍集中
@@ -55,10 +56,44 @@ class AppPaths {
   /// 个人媒体资产子目录名。
   static const String libraryDirName = 'library';
 
+  static bool get isInstalled => File(
+    p.join(p.dirname(Platform.resolvedExecutable), 'streampath-installed'),
+  ).existsSync();
+
+  /// 安装版使用 Windows 当前用户数据目录，便携版沿用原有根目录。
+  static String resolveDataRoot({
+    required String executable,
+    required bool installed,
+    String? localAppData,
+  }) {
+    if (installed) {
+      if (localAppData == null || !p.isAbsolute(localAppData)) {
+        throw const FileSystemException('Windows LOCALAPPDATA is unavailable');
+      }
+      return p.join(localAppData, 'StreamPath', dataDirName);
+    }
+    final parts = p.split(executable);
+    final buildIndex = parts.indexWhere((s) => s.toLowerCase() == 'build');
+    final root = buildIndex > 0
+        ? p.joinAll(parts.sublist(0, buildIndex))
+        : p.dirname(executable);
+    return p.join(root, dataDirName);
+  }
+
   /// 数据目录（不存在时自动创建）。
   static Future<Directory> dataDirectory() async {
-    final root = projectRoot();
-    final dir = Directory(p.join(root, dataDirName));
+    final installed = isInstalled;
+    final dir = Directory(
+      resolveDataRoot(
+        executable: Platform.resolvedExecutable,
+        installed: installed,
+        localAppData: Platform.environment['LOCALAPPDATA'],
+      ),
+    );
+    if (installed) {
+      await dir.create(recursive: true);
+      return dir;
+    }
     try {
       await dir.create(recursive: true);
       return dir;

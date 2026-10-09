@@ -110,6 +110,7 @@ void main() {
     await tester.ensureVisible(tab);
     await tester.tap(tab);
     await settleSettings(tester);
+    await tester.pumpAndSettle();
   }
 
   MediaLibraryItem item(
@@ -331,6 +332,7 @@ void main() {
       await tester.ensureVisible(tab);
       await tester.tap(tab);
       await settleSettings(tester);
+      await tester.pumpAndSettle();
       expect(
         find.byKey(const Key('media-library-capacity-section')),
         findsOneWidget,

@@ -18,8 +18,10 @@ import 'data/local/playback_progress_db.dart';
 import 'data/local/media_library_store.dart';
 import 'data/models/app_language.dart';
 import 'domain/services/cache_cleanup_service.dart';
+import 'domain/services/app_update_service.dart';
 import 'domain/services/iso_playback_service.dart';
 import 'domain/services/mpv_watch_later_sync.dart';
+import 'domain/services/film_library_transfer.dart';
 import 'features/cache_control/cache_policy_service.dart';
 import 'features/cache_control/iso_cache_coordinator.dart';
 import 'features/cache_control/intelligence/cache_intelligence_service.dart';
@@ -45,6 +47,7 @@ Future<void> main() async {
 
   // 数据迁移必须早于任何日志或数据库写入。
   await AppPaths.migrateLegacyLayout();
+  await FilmLibraryTransfer.recover(await AppPaths.dataDirectory());
   final clipboardInstall = ClipboardHistoryFix.install();
 
   // 目录缓存与配置均位于便携数据目录。
@@ -229,6 +232,7 @@ Future<void> main() async {
     print('Navigation location restore failed: $error');
   }
   appState.scheduleWebDavFontCachePrune();
+  appState.startFilmScanSchedule();
 
   // 地址与用户名完整时直接尝试自动连接，密码允许为空。
   final autoConnect =
@@ -242,11 +246,25 @@ Future<void> main() async {
   // 持久化为磨砂样式时先完成窗口合成，再绘制首帧，避免窗口先黑后亮。
   await appearanceController.restoreForStartup();
   await appearanceController.refreshSystemAccent();
+  final updates = AppUpdateService(
+    appDirectory: Directory(p.dirname(Platform.resolvedExecutable)),
+    version: AppReleaseVersion.parse(
+      const String.fromEnvironment(
+        'STREAMPATH_VERSION',
+        defaultValue: '1.0.0+1',
+      ),
+    ),
+    installed: AppPaths.isInstalled,
+  );
+  WidgetsBinding.instance.addPostFrameCallback(
+    (_) => unawaited(updates.start()),
+  );
   runApp(
     StreamPathApp(
       appState: appState,
       appearanceController: appearanceController,
       autoConnect: autoConnect,
+      updates: updates,
     ),
   );
 }
@@ -258,6 +276,7 @@ class StreamPathApp extends StatelessWidget {
     required this.appState,
     required this.appearanceController,
     required this.autoConnect,
+    this.updates,
   });
 
   final AppState appState;
@@ -265,6 +284,7 @@ class StreamPathApp extends StatelessWidget {
 
   /// 是否跳过登录页并自动尝试连接。
   final bool autoConnect;
+  final AppUpdateService? updates;
 
   @override
   Widget build(BuildContext context) {
@@ -272,6 +292,7 @@ class StreamPathApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider.value(value: appState),
         ChangeNotifierProvider.value(value: appearanceController),
+        Provider<AppUpdateService?>.value(value: updates),
       ],
       child: AnimatedBuilder(
         animation: Listenable.merge([appearanceController, appState]),
@@ -368,8 +389,41 @@ class StreamPathApp extends StatelessWidget {
                       right: 0,
                       child: WindowTitleBar(
                         detailScrollProgress: immersive ? progress ?? 0 : null,
+                        onCloseRequested: () async {
+                          if (updates?.status == AppUpdateStatus.installing) {
+                            try {
+                              if (!await app.prepareForUpdate()) {
+                                throw const AppUpdateBlocked();
+                              }
+                              await updates!.confirmClosePrepared();
+                            } catch (_) {
+                              await updates!.cancelRestart();
+                              rethrow;
+                            }
+                          } else {
+                            await app.prepareForClose();
+                          }
+                        },
                       ),
                     ),
+                    if (updates != null)
+                      Positioned.fill(
+                        child: ListenableBuilder(
+                          listenable: updates!,
+                          builder: (context, _) =>
+                              updates!.status == AppUpdateStatus.installing
+                              ? const Stack(
+                                  children: [
+                                    ModalBarrier(
+                                      dismissible: false,
+                                      color: Colors.black26,
+                                    ),
+                                    Center(child: CircularProgressIndicator()),
+                                  ],
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ),
                   ],
                 );
               },

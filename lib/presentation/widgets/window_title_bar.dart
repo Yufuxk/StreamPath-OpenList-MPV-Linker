@@ -18,9 +18,14 @@ import 'sp_notice.dart';
 ///
 /// 普通页面匹配 AppBar，影视页面保持透明。
 class WindowTitleBar extends StatefulWidget {
-  const WindowTitleBar({super.key, this.detailScrollProgress});
+  const WindowTitleBar({
+    super.key,
+    this.detailScrollProgress,
+    this.onCloseRequested,
+  });
 
   final double? detailScrollProgress;
+  final Future<void> Function()? onCloseRequested;
 
   /// 标题栏高度，与 Windows 11 系统标题栏高度一致。
   static const double height = 32;
@@ -135,6 +140,10 @@ class _WindowTitleBarState extends State<WindowTitleBar>
 
   /// 原生窗口大小变化时同步最大化状态。
   Future<void> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'closeRequested') {
+      await widget.onCloseRequested?.call();
+      return;
+    }
     if (call.method == 'fullscreenChanged') {
       if (mounted) setState(() => _fullscreen = call.arguments == true);
       return;

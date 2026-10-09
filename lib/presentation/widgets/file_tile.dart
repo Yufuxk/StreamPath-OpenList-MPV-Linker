@@ -4,8 +4,6 @@ import 'sp_icons.dart';
 import '../localization/app_text.dart';
 
 import '../../data/models/media_directory_entry.dart';
-import '../theme/glass_tokens.dart';
-import 'glass_surface.dart';
 import 'sp_controls.dart';
 
 const double _metadataBreakpoint = 680;
@@ -25,12 +23,7 @@ class FileListSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassSurface(
-      level: GlassSurfaceLevel.raised,
-      automaticBorder: false,
-      showShadow: false,
-      child: child,
-    );
+    return Material(type: MaterialType.transparency, child: child);
   }
 }
 

@@ -1,5 +1,8 @@
+import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'dart:async';
+
+import 'helpers/pump_until.dart';
 
 import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/server_profile.dart';
@@ -121,11 +124,11 @@ void main() {
     );
     expect(
       tester
-          .widget<DropdownButton<String>>(
+          .widget<SPDropdownButtonFormField<String>>(
             find.byWidgetPredicate(
               (widget) =>
-                  widget is DropdownButton<String> &&
-                  widget.value == 'playback',
+                  widget is SPDropdownButtonFormField<String> &&
+                  widget.initialValue == 'playback',
             ),
           )
           .borderRadius,
@@ -353,7 +356,7 @@ void main() {
         .first;
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
     await settle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
     expect(find.text('收藏'), findsOneWidget);
     expect(find.text('刷新元数据'), findsOneWidget);
     await tester.tap(find.text('收藏'));
@@ -362,17 +365,19 @@ void main() {
       await tester.runAsync(() => c.store.isFavorite(workIds.first)),
       isTrue,
     );
-    final filter = tester.widget<DropdownButtonFormField<int>>(
-      find.byType(DropdownButtonFormField<int>),
-    );
-    final dropdown = tester.widget<DropdownButton<int>>(
-      find.descendant(
-        of: find.byType(DropdownButtonFormField<int>),
-        matching: find.byType(DropdownButton<int>),
+    final filter = tester.widget<SPDropdownButtonFormField<int>>(
+      find.byWidgetPredicate(
+        (widget) => widget is SPDropdownButtonFormField<int>,
       ),
     );
+    final dropdown = filter;
     expect(dropdown.items!.map((i) => i.value), [0, ...rootIds]);
-    await tester.tap(find.text('查看全部').first);
+    await tester.tap(
+      find.descendant(
+        of: find.byWidgetPredicate((w) => w is FilmShelf && w.title == '最近添加'),
+        matching: find.text('查看全部'),
+      ),
+    );
     await settle();
     expect(c.works, hasLength(2));
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
@@ -394,7 +399,11 @@ void main() {
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
     await settle();
     await tester.tap(find.text('取消收藏'));
-    await settle();
+    await pumpUntil(
+      tester,
+      () => find.text('还没有收藏媒体').evaluate().isNotEmpty,
+      reason: 'Favorites must refresh after the removal is committed',
+    );
     expect(find.text('还没有收藏媒体'), findsOneWidget);
     expect(
       await tester.runAsync(() => c.store.isFavorite(workIds.first)),
@@ -423,13 +432,18 @@ void main() {
     await settle();
     await tester.pumpAndSettle();
     expect(find.text('刷新元数据'), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
     expect(find.text('标记已看完'), findsOneWidget);
     expect(find.text('标记未观看'), findsOneWidget);
     await tester.tapAt(const Offset(1100, 700));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('film-season-0')), findsOneWidget);
     expect(find.byKey(const ValueKey('film-season-1')), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('1. 常规第一集'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('1. 常规第一集'), findsOneWidget);
     await tester.ensureVisible(find.byKey(const ValueKey('film-season-0')));
     await tester.tap(
@@ -437,7 +451,7 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(2));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(4));
     expect(find.text('季观看状态'), findsNothing);
     expect(find.byType(Dialog), findsNothing);
     await tester.tapAt(const Offset(1100, 700));
@@ -613,6 +627,9 @@ void main() {
     expect(find.byType(PlaybackBar, skipOffstage: false), findsNWidgets(2));
     expect(find.byType(DirectoryBreadcrumbs), findsNothing);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await settle();
+    app.dispose();
   });
 
   testWidgets('海报墙提前自动加载、窗口补足、数据刷新保留范围且筛选重置分页', (tester) async {
@@ -717,7 +734,30 @@ void main() {
     );
     await settle();
     expect(c.works, hasLength(60));
-    await tester.tap(find.text('查看全部').first);
+    final homeScroll = tester
+        .widgetList<ListView>(find.byType(ListView))
+        .firstWhere((view) => view.padding == const EdgeInsets.all(20))
+        .controller!;
+    for (
+      var i = 0;
+      i < 15 &&
+          find
+              .byWidgetPredicate((w) => w is FilmShelf && w.title == '最近添加')
+              .evaluate()
+              .isEmpty;
+      i++
+    ) {
+      homeScroll.jumpTo(
+        (homeScroll.offset + 240).clamp(0, homeScroll.position.maxScrollExtent),
+      );
+      await tester.pump();
+    }
+    await tester.tap(
+      find.descendant(
+        of: find.byWidgetPredicate((w) => w is FilmShelf && w.title == '最近添加'),
+        matching: find.text('查看全部'),
+      ),
+    );
     await settle();
     expect(find.text('加载更多'), findsNothing);
     final scroll = tester.widget<GridView>(find.byType(GridView)).controller!;
@@ -754,7 +794,7 @@ void main() {
         value: app,
         child: MaterialApp(
           theme: AppTheme.dark(),
-          home: FilmLibraryManagePage(catalog: c),
+          home: FilmLibraryManagePage(catalog: c, directories: true),
         ),
       ),
     );
@@ -772,6 +812,7 @@ void main() {
       isNull,
     );
     expect(tester.takeException(), isNull);
+    app.dispose();
   });
 
   for (final language in AppLanguage.values) {
@@ -914,6 +955,7 @@ void main() {
           for (final page in <Widget>[
             FilmLibraryPage(onOpenItem: open),
             FilmLibraryManagePage(catalog: c),
+            FilmLibraryManagePage(catalog: c, directories: true),
             FilmDetailPage(catalog: c, workId: workId, onOpenItem: open),
             FilmPendingPage(catalog: c, onOpenItem: open),
           ]) {
@@ -930,7 +972,7 @@ void main() {
               expect(find.text('新海诚'), findsOneWidget);
               expect(tester.takeException(), isNull);
             }
-            if (page is FilmLibraryManagePage) {
+            if (page is FilmLibraryManagePage && page.directories) {
               final l10n = AppLocalizations(language);
               expect(find.text(l10n.text('增量扫描')), findsOneWidget);
               expect(find.text(l10n.text('增量刮削')), findsOneWidget);
@@ -975,6 +1017,9 @@ void main() {
           );
           await settle();
           expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox.shrink());
+          await settle();
+          app.dispose();
         });
       }
     }
@@ -1003,6 +1048,14 @@ class _FilmApp extends AppState {
     super.playerService,
   });
   final FilmCatalogController catalog;
+  bool disposed = false;
+  @override
+  void dispose() {
+    if (disposed) return;
+    disposed = true;
+    super.dispose();
+  }
+
   final restoredServices = <String, WebDAVService>{};
   Future<void> Function()? restoreSources;
   @override

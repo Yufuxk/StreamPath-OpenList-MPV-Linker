@@ -65,13 +65,7 @@ List<WebDavFile> sortedWebDavFiles(
   Iterable<WebDavFile> files, {
   FileSortMode mode = FileSortMode.name,
   FileSortDirection direction = FileSortDirection.ascending,
-}) {
-  final result = files.toList();
-  result.sort(
-    (a, b) => compareWebDavFiles(a, b, mode: mode, direction: direction),
-  );
-  return result;
-}
+}) => sortedMediaEntries(files, mode: mode, direction: direction);
 
 List<T> sortedMediaEntries<T extends MediaDirectoryEntry>(
   Iterable<T> files, {
@@ -79,8 +73,20 @@ List<T> sortedMediaEntries<T extends MediaDirectoryEntry>(
   FileSortDirection direction = FileSortDirection.ascending,
 }) {
   final result = files.toList();
+  // 名称键只在本次排序中复用，避免比较器反复解析同一名称。
+  final names = <String, _NaturalName>{};
+  int compareNames(String a, String b) => _compareNaturalNames(
+    names.putIfAbsent(a, () => _NaturalName(a)),
+    names.putIfAbsent(b, () => _NaturalName(b)),
+  );
   result.sort(
-    (a, b) => compareMediaEntries(a, b, mode: mode, direction: direction),
+    (a, b) => _compareMediaEntries(
+      a,
+      b,
+      mode: mode,
+      direction: direction,
+      compareNames: compareNames,
+    ),
   );
   return result;
 }
@@ -98,13 +104,27 @@ int compareMediaEntries(
   MediaDirectoryEntry b, {
   FileSortMode mode = FileSortMode.name,
   FileSortDirection direction = FileSortDirection.ascending,
+}) => _compareMediaEntries(
+  a,
+  b,
+  mode: mode,
+  direction: direction,
+  compareNames: naturalCompare,
+);
+
+int _compareMediaEntries(
+  MediaDirectoryEntry a,
+  MediaDirectoryEntry b, {
+  required FileSortMode mode,
+  required FileSortDirection direction,
+  required int Function(String, String) compareNames,
 }) {
   if (a.isSelfEntry != b.isSelfEntry) return a.isSelfEntry ? -1 : 1;
   if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
 
   // 网络目录没有可靠的总体积；体积模式下目录固定回退正序自然名称。
   if (mode == FileSortMode.size && a.isDirectory) {
-    final byDirectoryName = naturalCompare(a.name, b.name);
+    final byDirectoryName = compareNames(a.name, b.name);
     if (byDirectoryName != 0) return byDirectoryName;
     return a.entryKey.compareTo(b.entryKey);
   }
@@ -115,14 +135,14 @@ int compareMediaEntries(
   }
 
   final ascendingPrimary = switch (mode) {
-    FileSortMode.name => naturalCompare(a.name, b.name),
+    FileSortMode.name => compareNames(a.name, b.name),
     FileSortMode.modified => _compareModifiedByMinute(a.modified, b.modified),
     FileSortMode.size => a.size.compareTo(b.size),
   };
   final primary = _withDirection(ascendingPrimary, direction);
   if (primary != 0) return primary;
 
-  final byName = _withDirection(naturalCompare(a.name, b.name), direction);
+  final byName = _withDirection(compareNames(a.name, b.name), direction);
   if (byName != 0) return byName;
   return _withDirection(a.entryKey.compareTo(b.entryKey), direction);
 }
@@ -143,12 +163,27 @@ int _compareModifiedByMinute(DateTime? a, DateTime? b) {
 ///
 /// 数字块按数值语义比较且不转成固定宽度整数，因而兼容任意长度编号；
 /// 同时归一化全角字符，并把“第十二集”等常见中文序数转成数字后比较。
-int naturalCompare(String a, String b) {
+int naturalCompare(String a, String b) =>
+    _compareNaturalNames(_NaturalName(a), _NaturalName(b));
+
+class _NaturalName {
+  _NaturalName(this.original);
+
+  final String original;
+  late final explicitNumber = _explicitSortNumber(original);
+  late final significantNumber = explicitNumber == null
+      ? null
+      : _stripLeadingZeros(explicitNumber!);
+  late final normalized = _normalizeNaturalName(original);
+  late final caseInsensitive = original.toLowerCase();
+}
+
+int _compareNaturalNames(_NaturalName a, _NaturalName b) {
   final explicitNumberCompared = _compareExplicitSortNumbers(a, b);
   if (explicitNumberCompared != 0) return explicitNumberCompared;
 
-  final left = _normalizeNaturalName(a);
-  final right = _normalizeNaturalName(b);
+  final left = a.normalized;
+  final right = b.normalized;
   var leftIndex = 0;
   var rightIndex = 0;
   int? leadingZeroTie;
@@ -195,19 +230,19 @@ int naturalCompare(String a, String b) {
   if (byNormalizedLength != 0) return byNormalizedLength;
   if (leadingZeroTie != null) return leadingZeroTie;
 
-  final byCaseInsensitiveName = a.toLowerCase().compareTo(b.toLowerCase());
+  final byCaseInsensitiveName = a.caseInsensitive.compareTo(b.caseInsensitive);
   if (byCaseInsensitiveName != 0) return byCaseInsensitiveName;
-  return a.compareTo(b);
+  return a.original.compareTo(b.original);
 }
 
-int _compareExplicitSortNumbers(String a, String b) {
-  final left = _explicitSortNumber(a);
-  final right = _explicitSortNumber(b);
+int _compareExplicitSortNumbers(_NaturalName a, _NaturalName b) {
+  final left = a.explicitNumber;
+  final right = b.explicitNumber;
   if (left == null || right == null) {
     if (left == right) return 0;
     return left == null ? 1 : -1;
   }
-  return _compareDigitRuns(left, right);
+  return _compareSignificantDigits(a.significantNumber!, b.significantNumber!);
 }
 
 String? _explicitSortNumber(String value) {
@@ -297,8 +332,16 @@ int _textRunEnd(String value, int start) {
 bool _isAsciiDigit(int codeUnit) => codeUnit >= 0x30 && codeUnit <= 0x39;
 
 int _compareDigitRuns(String a, String b) {
-  final left = a.replaceFirst(RegExp(r'^0+(?=\d)'), '');
-  final right = b.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+  return _compareSignificantDigits(
+    _stripLeadingZeros(a),
+    _stripLeadingZeros(b),
+  );
+}
+
+String _stripLeadingZeros(String value) =>
+    value.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+
+int _compareSignificantDigits(String left, String right) {
   final byLength = left.length.compareTo(right.length);
   if (byLength != 0) return byLength;
   return left.compareTo(right);

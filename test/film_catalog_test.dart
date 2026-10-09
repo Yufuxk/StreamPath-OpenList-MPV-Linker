@@ -319,7 +319,7 @@ void main() {
     expect(await store.works(type: FilmMediaType.tv), hasLength(1));
   });
 
-  test('取消提交整体回滚，失败 staging 不影响旧清单', () async {
+  test('取消完成事务回滚 missing 判定，保留旧记录与已发现资源', () async {
     final root = await addRoot();
     await inventory(root, ['Movies/old.mkv']);
     final generation = await store.beginScan(root.id);
@@ -338,8 +338,11 @@ void main() {
     );
     await store.finishScan(root.id, generation, 'cancelled', 'cancelled');
     final resources = await store.resources(rootId: root.id);
-    expect(resources.single.name, 'old.mkv');
-    expect(resources.single.availability, 'present');
+    expect(
+      resources.map((r) => r.name),
+      unorderedEquals(['new.mkv', 'old.mkv']),
+    );
+    expect(resources.every((r) => r.availability == 'present'), isTrue);
   });
 
   test('删除根清理关联和 staging，过期提交不能重建根；保留作品缓存', () async {
@@ -1090,7 +1093,7 @@ void main() {
     );
   }, timeout: const Timeout(Duration(minutes: 3)));
 
-  test('逐目录准备名称刮削，清单与元数据分别提交', () async {
+  test('逐目录先登记资源，名称刮削与元数据独立关联', () async {
     final root = await addRoot();
     final events = <String>[];
     final dav = _Dav((path) async {
@@ -1104,7 +1107,7 @@ void main() {
     });
     final adapter = _ApiAdapter((options) async {
       events.add('tmdb:${options.uri.path}');
-      expect(await store.resources(rootId: root.id), isEmpty);
+      expect(await store.resources(rootId: root.id), isNotEmpty);
       final data = {
         ..._details(FilmMediaType.movie, 68721),
         'title': '钢铁侠3',
@@ -2135,7 +2138,7 @@ void main() {
     expect(metadata.error, 'invalidToken');
   });
 
-  test('刮削期间取消不保存作品或半份清单，后到结果不覆盖人工纠错', () async {
+  test('刮削迟到结果不覆盖人工纠错，扫描取消保留已发现资源', () async {
     final root = await addRoot();
     await inventory(root, ['Movies/A.2020.mkv']);
     final entered = Completer<void>();
@@ -2200,8 +2203,9 @@ void main() {
       ),
       throwsA(_code('cancelled')),
     );
-    expect((await store.resources()).single.id, resource.id);
-    expect((await store.resources()).single.availability, 'present');
+    expect(await store.resources(), hasLength(2));
+    expect((await store.resource(resource.id))!.availability, 'present');
+    expect((await store.resource(resource.id))!.workId, resource.workId);
   });
 
   test('同一来源三个影视根独立筛选，全部类型合并电影与剧集', () async {
@@ -2240,6 +2244,21 @@ void main() {
     await store.close();
     final path = p.join(temp.path, 'catalog.db');
     final legacy = await databaseFactoryFfi.openDatabase(path);
+    for (final table in [
+      'collection_members',
+      'work_people',
+      'server_items',
+      'server_sync_pending',
+      'film_collections',
+    ]) {
+      await legacy.execute('DROP TABLE $table');
+    }
+    await legacy.execute('PRAGMA foreign_keys=OFF');
+    await legacy.execute(
+      'CREATE TABLE legacy_works AS SELECT id,media_type,tmdb_id,title,original_title,year,overview,poster_path,backdrop_path,metadata_json,metadata_language,metadata_fetched_at FROM works',
+    );
+    await legacy.execute('DROP TABLE works');
+    await legacy.execute('ALTER TABLE legacy_works RENAME TO works');
     await legacy.execute('DROP TABLE work_favorites');
     await legacy.execute('DROP TABLE resource_probes');
     await legacy.execute('DROP TABLE root_covers');
@@ -2247,6 +2266,13 @@ void main() {
     await legacy.execute('DROP TABLE film_watch_state');
     await legacy.execute('DROP TABLE film_disc_watch_state');
     await legacy.execute('ALTER TABLE catalog_settings DROP COLUMN probe_mode');
+    for (final table in [
+      'film_playlist_scopes',
+      'film_playlist_items',
+      'film_playlists',
+    ]) {
+      await legacy.execute('DROP TABLE $table');
+    }
     await legacy.setVersion(1);
     await legacy.close();
     store = await FilmCatalogStore.open(path);

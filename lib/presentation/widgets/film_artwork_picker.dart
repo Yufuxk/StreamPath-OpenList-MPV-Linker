@@ -1,3 +1,4 @@
+import '../../data/local/film_catalog_store.dart';
 import 'directory_scroll_view.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -13,22 +14,29 @@ import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import 'glass_dialog.dart';
 import 'sp_dialog.dart';
+import 'film_artwork.dart';
 
 Future<void> showFilmArtworkPicker(
   BuildContext context,
   FilmCatalogController catalog, {
   int? rootId,
+  String? collectionId,
 }) async {
   await showGlassDialog<void>(
     context: context,
-    builder: (_) => _ArtworkPicker(catalog: catalog, rootId: rootId),
+    builder: (_) => _ArtworkPicker(
+      catalog: catalog,
+      rootId: rootId,
+      collectionId: collectionId,
+    ),
   );
 }
 
 class _ArtworkPicker extends StatefulWidget {
-  const _ArtworkPicker({required this.catalog, this.rootId});
+  const _ArtworkPicker({required this.catalog, this.rootId, this.collectionId});
   final FilmCatalogController catalog;
   final int? rootId;
+  final String? collectionId;
   @override
   State<_ArtworkPicker> createState() => _ArtworkPickerState();
 }
@@ -105,7 +113,9 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
         if (!await copy.exists()) await copy.writeAsBytes(bytes, flush: true);
         path = copy.path;
       }
-      if (widget.rootId case final id?) {
+      if (widget.collectionId case final id?) {
+        await c.store.setCollectionCover(id, path);
+      } else if (widget.rootId case final id?) {
         await c.store.setCustomRootCover(id, path);
       } else {
         await c.store.setBackgroundPath(path);
@@ -144,7 +154,9 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
 
   @override
   Widget build(BuildContext context) => SPDialog(
-    title: AppText(widget.rootId == null ? '影视库背景' : '修改图片'),
+    title: AppText(
+      widget.rootId == null && widget.collectionId == null ? '影视库背景' : '修改图片',
+    ),
     content: SizedBox(
       width: 760,
       height: MediaQuery.sizeOf(context).height * .55,
@@ -191,9 +203,11 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
                                 borderRadius: BorderRadius.circular(8),
                                 child: Image.file(
                                   _cached[i].$1,
+                                  key: ValueKey(_cached[i].$1.path),
                                   fit: BoxFit.cover,
                                   width: double.infinity,
                                   cacheWidth: 360,
+                                  frameBuilder: filmCoverFrameBuilder,
                                 ),
                               ),
                             ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,34 @@ import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
+  testWidgets('窗口关闭等待后台任务完成后回复原生', (tester) async {
+    final finished = Completer<void>();
+    var replied = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: WindowTitleBar(onCloseRequested: () => finished.future),
+        ),
+      ),
+    );
+    final response = TestDefaultBinaryMessengerBinding
+        .instance
+        .defaultBinaryMessenger
+        .handlePlatformMessage(
+          'streampath/appearance',
+          const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('closeRequested'),
+          ),
+          null,
+        )
+        .then((_) => replied = true);
+    await tester.pump();
+    expect(replied, false);
+    finished.complete();
+    await response;
+    expect(replied, true);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   testWidgets('标题栏销毁后注销原生回调', (tester) async {
     const codec = StandardMethodCodec();
     final messenger =

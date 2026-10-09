@@ -1,3 +1,13 @@
+import '../../domain/services/film_scan_scheduler.dart';
+import '../../data/local/media_connection_store.dart';
+import '../../data/models/media_connection.dart';
+import '../../domain/services/native_storage_source.dart';
+import '../../domain/services/media_server_api.dart';
+import '../../domain/services/media_server_source.dart';
+import '../../domain/services/media_server_library.dart';
+import '../../domain/services/media_server_sync.dart';
+import '../../domain/services/film_file_metadata.dart';
+import '../../domain/services/film_library_transfer.dart';
 import '../../data/models/video_playlist_mode.dart';
 import '../../domain/services/video_entry_preparer.dart';
 import 'dart:convert';
@@ -208,7 +218,17 @@ class AppState extends ChangeNotifier {
       final records = film ? _filmMediaLibraryStore : _mediaLibraryStore;
       for (final history in rows) {
         final sourceId = history.sourceId!;
+        if (mediaSourceKind(sourceId).isNativeStorage ||
+            mediaSourceKind(sourceId).isMediaServer) {
+          try {
+            await mountMediaConnection(sourceId);
+          } on FilmCatalogException {
+            continue;
+          }
+        }
         final service =
+            _nativeSources[sourceId]?.service ??
+            _serverSources[sourceId]?.service ??
             mountedService(sourceId) ??
             (_webDavService?.sourceId == sourceId ? _webDavService : null);
         final local = localRoots
@@ -217,7 +237,9 @@ class AppState extends ChangeNotifier {
         if (service == null && local == null) continue;
         final MediaDirectorySource source = local != null
             ? localMediaSource(local)
-            : WebDavMediaSourceAdapter(service!);
+            : _nativeSources[sourceId] ??
+                  _serverSources[sourceId] ??
+                  WebDavMediaSourceAdapter(service!);
         await player.restoreSession(
           sessionId: history.sessionId,
           profileId: sourceId,
@@ -418,8 +440,9 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _recordVideoWatch(VideoProgressUpdate update) async {
-    if (_disposed) return;
+    if (_disposed || catalogWritesSuspended) return;
     await (await getFilmCatalogStore()).recordVideoProgress(update);
+    await _serverSync[update.sourceId]?.progress(update);
   }
 
   Future<void> markFilmWatched(
@@ -459,6 +482,29 @@ class AppState extends ChangeNotifier {
     }
     final cutoff = DateTime.now();
     await store.markWatched(resources, watched, observedAt: cutoff);
+    for (final source
+        in resources
+            .where((r) => r.sourceKind.isMediaServer)
+            .map((r) => r.sourceId)
+            .toSet()) {
+      final sync = _serverSync[source];
+      if (sync != null) {
+        await sync.watched(
+          resources.where((r) => r.sourceId == source).toList(),
+          watched,
+        );
+      } else {
+        for (final resource in resources.where((r) => r.sourceId == source)) {
+          final row = await store.serverResource(source, resource.path);
+          if (row != null) {
+            await store.queueServerState(source, row['item_id'] as String, {
+              'watched': watched,
+              'positionMs': 0,
+            });
+          }
+        }
+      }
+    }
     // 光盘仅标记整片，不修改原有节目级续播点。
     if (resources.every((r) => r.isDisc)) return;
     await initializeFilmPlayback();
@@ -562,9 +608,30 @@ class AppState extends ChangeNotifier {
               await histories.upsert(updated);
               final resource = await store.resourceAt(group.key, path);
               if (resource != null) {
-                await records?.recordPlayback(
+                if (resource.mediaKind != 'strm') {
+                  final progress = identical(histories, _playbackHistoryStore)
+                      ? _progressService
+                      : _filmProgressService!;
+                  final target = _resolveMediaLibraryTarget(
+                    resource.playbackItem,
+                    allowLogicalPath: true,
+                  );
+                  if (target != null &&
+                      await progress.getResumeProgress(
+                            target,
+                            profileId: group.key,
+                          ) ==
+                          null) {
+                    await progress.saveProgress(
+                      url: target,
+                      profileId: group.key,
+                      positionMs: 0,
+                    );
+                  }
+                }
+                await records?.advanceVideoRecord(
                   resource.playbackItem,
-                  playbackSessionId: history.sessionId,
+                  sessionId: history.sessionId,
                   playlistIndex: next,
                   playlistCount: history.playlistRelativePaths.length,
                 );
@@ -577,14 +644,525 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  FilmScanScheduler? _filmScanScheduler;
+  bool catalogWritesSuspended = false;
+  Future<FilmLibraryTransfer> filmTransfer() async {
+    final catalog = await getFilmCatalog();
+    await initializeFilmPlayback();
+    return FilmLibraryTransfer(
+      store: catalog.store,
+      images: catalog.images,
+      records: {
+        if (_mediaLibraryStore != null) 'normal': _mediaLibraryStore,
+        if (_filmMediaLibraryStore != null) 'film': _filmMediaLibraryStore,
+      },
+      progress: {
+        'normal': _progressService,
+        'film': _filmProgressService!,
+        if (_audioProgressService != null) 'audio': _audioProgressService,
+      },
+      targetFor: (item) =>
+          _resolveMediaLibraryTarget(item, allowLogicalPath: true),
+      dataDirectory: await AppPaths.dataDirectory(),
+      players: {'normal': _playerService, 'film': _filmPlayerService!},
+      isoServices: {
+        'normal': ?_isoPlaybackService,
+        'film': ?_filmIsoPlaybackService,
+      },
+    );
+  }
+
+  Future<Map<String, int>> importFilmTransfer(
+    FilmTransferPreview preview,
+    Set<String> categories,
+    Map<String, String> sources,
+  ) async {
+    if (_closing) throw const FilmCatalogException('cancelled');
+    final catalog = await getFilmCatalog();
+    if (categories.contains('playback') && await anyPlaybackActive()) {
+      throw const FilmCatalogException('importPlaybackActive');
+    }
+    final transfer = await filmTransfer();
+    if (_closing) throw const FilmCatalogException('cancelled');
+    catalogWritesSuspended = true;
+    final finished = Completer<void>();
+    _filmImportFinished = finished.future;
+    try {
+      await Future.wait(_serverSync.values.map((sync) => sync.waitForIdle()));
+      await Future.wait(
+        _serverLibraries.values.map((library) => library.waitForIdle()),
+      );
+      return await catalog.withWritesSuspended(() async {
+        Future<Map<String, int>> operation() => transfer.import(
+          preview,
+          categories,
+          sources,
+          sourceKinds: {
+            for (final source in sources.values)
+              source: mediaSourceKind(source),
+          },
+          matches: (item) async {
+            if (await catalog.store.resourceAt(
+                  item.sourceId,
+                  item.targetPath,
+                ) !=
+                null) {
+              return true;
+            }
+            try {
+              await mountMediaConnectionIfConfigured(item.sourceId);
+              final rows = await directorySource(
+                item.sourceId,
+              ).fetchDirectory(item.parentPath, forceRefresh: true);
+              return rows.where(item.matches).length == 1;
+            } on FilmCatalogException {
+              return false;
+            } on AppException {
+              return false;
+            }
+          },
+        );
+        if (_mediaLibraryStore != null) {
+          return _mediaLibraryStore.withWritesSuspended(() async {
+            if (_filmMediaLibraryStore != null) {
+              return _filmMediaLibraryStore.withWritesSuspended(operation);
+            }
+            return operation();
+          });
+        }
+        return operation();
+      });
+    } finally {
+      catalogWritesSuspended = _closing;
+      try {
+        if (!_closing) await catalog.refresh();
+      } finally {
+        finished.complete();
+        _filmImportFinished = null;
+      }
+    }
+  }
+
+  Future<MediaConnectionStore>? _mediaConnections;
+  MediaConnectionStore? _mediaConnectionsValue;
+  final _nativeSources = <String, NativeStorageSource>{};
+  final _serverApis = <String, MediaServerApi>{};
+  final _serverSources = <String, MediaServerSource>{};
+  final _serverLibraries = <String, MediaServerLibrary>{};
+  final _serverSync = <String, MediaServerSync>{};
+  MediaServerSource? serverSource(String id) => _serverSources[id];
+  String? serverSyncError(String id) => _serverSync[id]?.error;
+  bool mediaSourcesVisible = false;
+  Future<void> refreshMediaServer(String id, {bool metadata = true}) async {
+    await mountMediaConnection(id);
+    if (catalogWritesSuspended) return;
+    if (metadata) {
+      await _serverSync[id]!.flushPending();
+      if (catalogWritesSuspended) return;
+      await _serverLibraries[id]!.refresh();
+      if (!catalogWritesSuspended) await _serverSync[id]!.refresh();
+    } else {
+      await _serverSync[id]!.refresh();
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  MediaServerApi? serverApi(String id) => _serverApis[id];
+  final _nativeMounting = <String, Future<void>>{};
+  final _nativeConnectingSources = <String, NativeStorageSource>{};
+  List<MediaConnection> get mediaConnections =>
+      _mediaConnectionsValue?.connections ?? const [];
+  NativeStorageSource? nativeSource(String id) => _nativeSources[id];
+  Future<void> mountMediaConnectionIfConfigured(String id) async {
+    await getMediaConnections();
+    if (mediaConnections.any((row) => row.id == id)) {
+      await mountMediaConnection(id);
+    } else if (!id.startsWith('local:') && mountedService(id) == null) {
+      await mountProfile(id);
+    }
+  }
+
+  Future<MediaConnectionStore> getMediaConnections() =>
+      _mediaConnections ??= () async {
+        final store = MediaConnectionStore(
+          File(
+            p.join(
+              p.dirname(_configStore.configFilePath),
+              'media_sources.json',
+            ),
+          ),
+        );
+        await store.load();
+        _mediaConnectionsValue = store;
+        if (!_disposed) notifyListeners();
+        return store;
+      }();
+  MediaSourceKind mediaSourceKind(String id) => id.startsWith('local:')
+      ? MediaSourceKind.local
+      : mediaConnections.where((row) => row.id == id).firstOrNull?.kind ??
+            MediaSourceKind.webdav;
+  MediaDirectorySource directorySource(String id) {
+    if (_nativeSources[id] case final source?) return source;
+    if (_serverSources[id] case final source?) return source;
+    final root = localRoots
+        .where((r) => r.sourceId == id && r.enabled)
+        .firstOrNull;
+    if (root != null) return localMediaSource(root);
+    if (mountedService(id) case final service?) {
+      return WebDavMediaSourceAdapter(service);
+    }
+    throw const FilmCatalogException('sourceUnavailable');
+  }
+
+  Future<void> mountMediaConnection(String id) => _nativeMounting.putIfAbsent(
+    id,
+    () =>
+        () async {
+          final store = await getMediaConnections();
+          final config = store.connections
+              .where((row) => row.id == id)
+              .firstOrNull;
+          if (config == null || !config.enabled) {
+            throw const FilmCatalogException('sourceUnavailable');
+          }
+          final secrets = await store.secrets(id);
+          if (config.kind.isMediaServer) {
+            if (_serverApis.containsKey(id)) return;
+            final api = mediaServerApi(config, credentials: secrets);
+            try {
+              if (api.token == null) {
+                final authenticated = await api.authenticate(
+                  secrets['password'] as String? ?? '',
+                );
+                if (!store.connections.contains(config)) {
+                  api.close();
+                  throw const FilmCatalogException('sourceUnavailable');
+                }
+                await store.save(config, secrets: authenticated);
+              } else {
+                await api.verify();
+              }
+              if (_disposed) {
+                api.close();
+                return;
+              }
+              if (!store.connections.contains(config)) {
+                api.close();
+                throw const FilmCatalogException('sourceUnavailable');
+              }
+              final catalog = await getFilmCatalogStore();
+              await catalog.rememberServerIdentity(
+                id,
+                '${api.serverId!}:${api.userId!}',
+              );
+              final source = await MediaServerSource.open(catalog, api);
+              if (_disposed || !store.connections.contains(config)) {
+                await source.close();
+                api.close();
+                if (!_disposed) {
+                  throw const FilmCatalogException('sourceUnavailable');
+                }
+                return;
+              }
+              _serverApis[id] = api;
+              _serverSources[id] = source;
+              _serverLibraries[id] = MediaServerLibrary(catalog, api);
+              _serverSync[id] = MediaServerSync(
+                catalog,
+                source,
+                onErrorChanged: () {
+                  if (!_disposed) notifyListeners();
+                },
+                onUserData: (item) async {
+                  if (catalogWritesSuspended) return;
+                  await initializeFilmPlayback();
+                  final userData = item['UserData'] as Map? ?? {};
+                  final position =
+                      ((userData['PlaybackPositionTicks'] as num? ?? 0) / 10000)
+                          .round();
+                  final watched = userData['Played'] == true;
+                  final duration = ((item['RunTimeTicks'] as num? ?? 0) / 10000)
+                      .round();
+                  final versions = await catalog.serverResources(
+                    id,
+                    itemId: item['Id'] as String,
+                  );
+                  for (final row in versions) {
+                    final resource = await catalog.resourceAt(
+                      id,
+                      row['relative_path'] as String,
+                    );
+                    if (resource == null) continue;
+                    final target = PlaybackProgressService.logicalTarget(
+                      id,
+                      resource.path,
+                    );
+                    final previous = await _filmProgressService!.getProgress(
+                      target,
+                      profileId: id,
+                    );
+                    if (watched || position <= 0) {
+                      if (previous != null) {
+                        await _filmProgressService!.deleteProgress(
+                          target,
+                          profileId: id,
+                        );
+                      }
+                    } else if (previous?.positionMs != position ||
+                        previous?.durationMs != duration) {
+                      await _filmProgressService!.saveProgress(
+                        url: target,
+                        profileId: id,
+                        positionMs: position,
+                        durationMs: duration > 0 ? duration : null,
+                      );
+                      await _filmMediaLibraryStore?.recordRemoteContinue(
+                        resource.playbackItem,
+                      );
+                    }
+                  }
+                },
+              );
+              _progressService.registerSessionOrigin(id, source.bridge.baseUrl);
+              _filmProgressService?.registerSessionOrigin(
+                id,
+                source.bridge.baseUrl,
+              );
+              notifyListeners();
+            } catch (_) {
+              api.close();
+              rethrow;
+            }
+            return;
+          }
+          if (_nativeSources.containsKey(id)) return;
+          if (_disposed || _closing) return;
+          if (!store.connections.contains(config)) {
+            throw const FilmCatalogException('sourceUnavailable');
+          }
+          final source = await NativeStorageSource.open(
+            config,
+            secrets['password'] as String? ?? '',
+          );
+          if (_disposed || _closing) {
+            await source.close();
+            return;
+          }
+          _nativeConnectingSources[id] = source;
+          try {
+            await source.fetchDirectory('', forceRefresh: true);
+            if (_disposed || _closing || !store.connections.contains(config)) {
+              await source.close();
+              if (!_disposed && !_closing) {
+                throw const FilmCatalogException('sourceUnavailable');
+              }
+              return;
+            }
+            _nativeSources[id] = source;
+            _progressService.registerSessionOrigin(id, source.bridge.baseUrl);
+            _filmProgressService?.registerSessionOrigin(
+              id,
+              source.bridge.baseUrl,
+            );
+            notifyListeners();
+          } catch (_) {
+            await source.close();
+            rethrow;
+          } finally {
+            _nativeConnectingSources.remove(id);
+          }
+        }().whenComplete(() {
+          _nativeMounting.remove(id);
+        }),
+  );
+  Future<void> saveMediaConnection(
+    MediaConnection config, {
+    Map<String, dynamic>? secrets,
+  }) async {
+    final store = await getMediaConnections();
+    if ((_nativeSources.containsKey(config.id) ||
+            _serverSources.containsKey(config.id)) &&
+        await anyPlaybackActive()) {
+      throw const FilmCatalogException('sourcePlaybackActive');
+    }
+    await store.save(config, secrets: secrets);
+    _nativeConnectingSources[config.id]?.reader.cancelCurrent();
+    _serverApis[config.id]?.close();
+    await _nativeSources.remove(config.id)?.close();
+    await _serverLibraries.remove(config.id)?.close();
+    await _serverSync.remove(config.id)?.close();
+    await _serverSources.remove(config.id)?.close();
+    _serverApis.remove(config.id)?.close();
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> removeMediaConnection(String id) async {
+    if ((_nativeSources.containsKey(id) || _serverSources.containsKey(id)) &&
+        await anyPlaybackActive()) {
+      throw const FilmCatalogException('sourcePlaybackActive');
+    }
+    final connections = await getMediaConnections();
+    final server = connections.connections.any(
+      (row) => row.id == id && row.kind.isMediaServer,
+    );
+    await connections.remove(id);
+    _nativeConnectingSources[id]?.reader.cancelCurrent();
+    _serverApis[id]?.close();
+    await _nativeSources.remove(id)?.close();
+    await _serverLibraries.remove(id)?.close();
+    await _serverSync.remove(id)?.close();
+    await _serverSources.remove(id)?.close();
+    _serverApis.remove(id)?.close();
+    if (server) await (await getFilmCatalogStore()).removeServerData(id);
+    if (!_disposed) notifyListeners();
+  }
+
+  void startFilmScanSchedule() {
+    startupReady.addListener(_startFilmSchedule);
+    _startFilmSchedule();
+  }
+
+  void _startFilmSchedule() {
+    if (!startupReady.value || _disposed || _closing) return;
+    unawaited(
+      getFilmCatalog().then((catalog) {
+        if (_disposed || _closing) return;
+        (_filmScanScheduler ??= FilmScanScheduler(
+          store: catalog.store,
+          isBusy: () => anyPlaybackActive(catalog: catalog),
+          scan: (roots) async {
+            await catalog.run(() async {
+              final enabled = roots
+                  .where(
+                    (root) =>
+                        root.sourceKind.isNativeStorage ||
+                            root.sourceKind.isMediaServer
+                        ? mediaConnections.any(
+                            (connection) =>
+                                connection.id == root.sourceId &&
+                                connection.enabled,
+                          )
+                        : root.sourceKind == MediaSourceKind.local
+                        ? localRoots.any(
+                            (local) =>
+                                local.sourceId == root.sourceId &&
+                                local.enabled,
+                          )
+                        : _configStore.current.mountedProfileIds.contains(
+                            root.sourceId,
+                          ),
+                  )
+                  .toList();
+              for (final root in enabled.where(
+                (r) => r.sourceKind.isNativeStorage,
+              )) {
+                await mountMediaConnection(root.sourceId);
+              }
+              await catalog.scanRoots(enabled);
+            });
+          },
+        )).start();
+      }),
+    );
+  }
+
+  Future<bool> anyPlaybackActive({FilmCatalogController? catalog}) async =>
+      catalogWritesSuspended ||
+      (catalog?.busy ?? false) ||
+      (catalog?.scraping ?? false) ||
+      await _hasRunningPlayback() ||
+      await _playerService.anyPlayerRunning() ||
+      (await _filmPlayerService?.anyPlayerRunning() ?? false) ||
+      await _localDiscPlaybackService.anyPlayerRunning() ||
+      (await _filmLocalDiscPlaybackService?.anyPlayerRunning() ?? false) ||
+      (await _isoPlaybackService?.hasActivePlayback() ?? false) ||
+      (await _filmIsoPlaybackService?.hasActivePlayback() ?? false);
   Future<FilmCatalogController>? _filmCatalog;
   FilmCatalogController? _filmCatalogValue;
   bool _disposed = false;
+  bool _closing = false;
+  Future<void>? _filmImportFinished;
+  Future<void>? _closePreparation;
+
+  Future<bool> updateBlocked() => anyPlaybackActive(catalog: _filmCatalogValue);
+
+  /// 更新关闭先等待播放器结束后的进度写入，不主动结束播放器。
+  Future<bool> prepareForUpdate() async {
+    if (await updateBlocked()) return false;
+    _playerService.stopImplicitPlaybackControl();
+    _filmPlayerService?.stopImplicitPlaybackControl();
+    await _playerService.finishStoppedSessions();
+    await _filmPlayerService?.finishStoppedSessions();
+    await _audioPlayerService?.finishStoppedSessions();
+    await prepareForClose();
+    return true;
+  }
+
+  Future<void> prepareForClose() => _closePreparation ??= () async {
+    _closing = true;
+    catalogWritesSuspended = true;
+    await _filmImportFinished;
+    _filmScanScheduler?.stop();
+    _playerService.stopImplicitPlaybackControl();
+    _filmPlayerService?.stopImplicitPlaybackControl();
+    _filmCatalogValue?.cancel();
+    _filmCatalogValue?.mediaProbe?.stop();
+    // 先解除服务器请求等待，再等待扫描提交取消状态。
+    for (final api in _serverApis.values) {
+      api.close();
+    }
+    for (final source in _nativeConnectingSources.values.toList()) {
+      source.reader.cancelCurrent();
+    }
+    await _filmScanScheduler?.close();
+    if (_filmCatalog != null) {
+      await (await _filmCatalog!).withWritesSuspended(() async {});
+    }
+    await _finishPendingNativeMounts();
+    for (final library in _serverLibraries.values) {
+      await library.close();
+    }
+    for (final sync in _serverSync.values) {
+      await sync.close();
+    }
+    for (final source in _nativeSources.values) {
+      await source.close();
+    }
+    for (final source in _serverSources.values) {
+      await source.close();
+    }
+  }();
+
+  Future<void> _finishPendingNativeMounts() => Future.wait([
+    for (final mounting in _nativeMounting.values.toList())
+      () async {
+        try {
+          await mounting;
+        } on FilmCatalogException {
+          // 挂载调用方接收连接错误，退出继续释放其他来源。
+        }
+      }(),
+  ]);
 
   Future<FilmCatalogController> getFilmCatalog() => _filmCatalog ??= () async {
+    await getMediaConnections();
     await initializeFilmPlayback();
     final cache = await AppPaths.cacheDirectory();
     final store = await getFilmCatalogStore();
+    final connections = await getMediaConnections();
+    final servers = connections.connections
+        .where((row) => row.kind.isMediaServer)
+        .toList();
+    await store.reconcileServerSources(servers.map((row) => row.id).toSet());
+    for (final server in servers) {
+      final identity = await connections.secrets(server.id);
+      if (identity['serverId'] is String && identity['userId'] is String) {
+        await store.rememberServerIdentity(
+          server.id,
+          '${identity['serverId']}:${identity['userId']}',
+        );
+      }
+    }
     final tmdb = TmdbMetadataService();
     final controller = FilmCatalogController(
       store: store,
@@ -592,6 +1170,50 @@ class AppState extends ChangeNotifier {
       images: FilmCatalogImageCache(
         Directory(p.join(cache.path, 'film_artwork')),
         tmdb,
+        readReference: (ref, maxBytes) async {
+          if (ref.origin == 'asset') {
+            if (!RegExp(
+              r'^imported_artwork/[a-f0-9]{64}\.bin$',
+            ).hasMatch(ref.path)) {
+              throw const FilmCatalogException('invalidImage');
+            }
+            final file = File(
+              p.join((await AppPaths.libraryDirectory()).path, ref.path),
+            );
+            if (await file.length() > maxBytes) {
+              throw const FilmCatalogException('imageTooLarge');
+            }
+            return file.readAsBytes();
+          }
+          await mountMediaConnectionIfConfigured(ref.sourceId);
+          if (ref.origin == 'server') {
+            return _serverApis[ref.sourceId]!.image(
+              ref.path,
+              ref.type!,
+              ref.tag!,
+              index: ref.index,
+            );
+          }
+          final source = directorySource(ref.sourceId);
+          if (source is NativeStorageSource) {
+            return source.readFile(ref.path, maxBytes: maxBytes);
+          }
+          if (source is LocalMediaSource) {
+            final file = File(await source.resolveRelativePath(ref.path));
+            if (await file.length() > maxBytes) {
+              throw const FilmCatalogException('imageTooLarge');
+            }
+            return file.readAsBytes();
+          }
+          final webdav = source as WebDavMediaSourceAdapter;
+          return Uint8List.fromList(
+            await webdav.service.fetchFileBytes(
+              webdav.service.resolveUrl(ref.path),
+              maxBytes: maxBytes,
+              timeout: const Duration(seconds: 30),
+            ),
+          );
+        },
       ),
       mediaProbe: FilmMediaProbeController(
         store: store,
@@ -614,6 +1236,24 @@ class AppState extends ChangeNotifier {
             (await _filmIsoPlaybackService?.hasActivePlayback() ?? false),
       ),
       sourceFor: _filmSource,
+      serverRefresh: (root) => refreshMediaServer(root.sourceId),
+      filesFor: (root) async {
+        if (root.sourceKind.isMediaServer) return null;
+        final config = mediaConnections
+            .where((row) => row.id == root.sourceId)
+            .firstOrNull;
+        return FilmFileMetadata(
+          _filmSource(root),
+          root,
+          localMode:
+              config?.localMetadata ??
+              await store.preference('local_metadata:${root.sourceId}') == true,
+          canWrite:
+              config?.canWrite ??
+              (await store.preference('write_back:${root.sourceId}') == true &&
+                  await store.preference('read_only:${root.sourceId}') != true),
+        );
+      },
     );
     _filmCatalogValue = controller;
     if (!_disposed) {
@@ -623,6 +1263,9 @@ class AppState extends ChangeNotifier {
   }();
 
   MediaDirectorySource _filmSource(FilmCatalogRoot root) {
+    if (root.sourceKind.isNativeStorage || root.sourceKind.isMediaServer) {
+      return directorySource(root.sourceId);
+    }
     if (root.sourceKind == MediaSourceKind.local) {
       final local = localRoots
           .where((r) => r.sourceId == root.sourceId && r.enabled)
@@ -654,7 +1297,10 @@ class AppState extends ChangeNotifier {
           ? p.relative(snapshot.target, from: root.path).replaceAll('\\', '/')
           : null;
     }
-    final service = mountedService(snapshot.sourceId);
+    final service =
+        nativeSource(snapshot.sourceId)?.service ??
+        serverSource(snapshot.sourceId)?.service ??
+        mountedService(snapshot.sourceId);
     final target = Uri.tryParse(snapshot.target);
     if (service == null || target == null) return null;
     final base = Uri.parse(service.baseUrl);
@@ -736,6 +1382,15 @@ class AppState extends ChangeNotifier {
       }
     }
     final progress = await _progressService.forFilmLibrary(media);
+    for (final source in _nativeSources.values) {
+      progress.registerSessionOrigin(source.config.id, source.bridge.baseUrl);
+    }
+    for (final source in _serverSources.values) {
+      progress.registerSessionOrigin(
+        source.api.config.id,
+        source.bridge.baseUrl,
+      );
+    }
     final player = _playerService.forFilmLibrary(
       progress,
       Directory(
@@ -790,6 +1445,13 @@ class AppState extends ChangeNotifier {
     if (item.kind == MediaLibraryKind.directory ||
         item.kind == MediaLibraryKind.strm) {
       return null;
+    }
+    if (item.sourceKind.isNativeStorage || item.sourceKind.isMediaServer) {
+      final target = PlaybackProgressService.logicalTarget(
+        item.sourceId,
+        item.targetPath,
+      );
+      return item.discRootPath == null ? target : '$target/';
     }
     if (item.sourceKind == MediaSourceKind.local) {
       final root = localRoots
@@ -936,11 +1598,42 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    startupReady.removeListener(_startFilmSchedule);
+    _filmScanScheduler?.stop();
+    for (final source in _nativeConnectingSources.values.toList()) {
+      source.reader.cancelCurrent();
+    }
+    if (_mediaConnections != null) {
+      unawaited(() async {
+        await _finishPendingNativeMounts();
+        for (final source in _nativeSources.values) {
+          await source.close();
+        }
+        for (final library in _serverLibraries.values) {
+          await library.close();
+        }
+        for (final sync in _serverSync.values) {
+          await sync.close();
+        }
+        for (final source in _serverSources.values) {
+          await source.close();
+        }
+        for (final api in _serverApis.values) {
+          api.close();
+        }
+        await (await _mediaConnections!).close();
+      }());
+    }
     _playerService.stopImplicitPlaybackControl();
     _filmPlayerService?.stopImplicitPlaybackControl();
     _filmCatalogValue?.mediaProbe?.stop();
     if (_filmCatalog != null) {
-      unawaited(_filmCatalog!.then((controller) => controller.close()));
+      unawaited(
+        _filmCatalog!.then((controller) async {
+          await _filmScanScheduler?.close();
+          await controller.close();
+        }),
+      );
     }
     if (_filmCatalog == null && _filmCatalogStore != null) {
       unawaited(_filmCatalogStore!.then((s) => s.close()));
@@ -1497,6 +2190,11 @@ class AppState extends ChangeNotifier {
     required String password,
     required String profileId,
   }) {
+    final changed =
+        !identical(_webDavService, service) ||
+        _username != username ||
+        _password != password ||
+        _mountErrors.containsKey(profileId);
     _webDavService = service;
     _mountedServices[profileId] = service;
     _mountErrors.remove(profileId);
@@ -1505,7 +2203,7 @@ class AppState extends ChangeNotifier {
     _progressService.useProfile(profileId);
     _audioProgressService?.useProfile(profileId);
     unawaited(_playerService.captureOpenListProcessIdentity());
-    notifyListeners();
+    if (changed) notifyListeners();
   }
 
   /// 断开连接并清空状态。

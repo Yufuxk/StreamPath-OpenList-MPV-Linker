@@ -1,3 +1,5 @@
+import '../../data/models/film_collection.dart';
+import '../../data/models/media_source.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
@@ -8,10 +10,12 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../core/errors/app_exception.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/media_library_item.dart';
 import '../../data/models/film_home_section.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../../domain/services/film_catalog_image_cache.dart';
 import '../../domain/services/film_catalog_matcher.dart';
+import '../../domain/services/film_file_metadata.dart';
 import '../../domain/services/film_catalog_scanner.dart';
 import '../../domain/services/tmdb_metadata_service.dart';
 import 'film_media_probe_controller.dart';
@@ -23,8 +27,18 @@ class FilmCatalogController extends ChangeNotifier {
     required this.images,
     required this.sourceFor,
     this.mediaProbe,
+    this.serverRefresh,
+    this.sourceId,
+    this.ownsResources = true,
+    Future<FilmFileMetadata?> Function(FilmCatalogRoot)? filesFor,
   }) : scanner = FilmCatalogScanner(store),
-       matcher = FilmCatalogMatcher(store, tmdb) {
+       matcher = FilmCatalogMatcher(
+         store,
+         tmdb,
+         filesFor: filesFor,
+         artworkBytes: (path) async =>
+             (await images.get(path, target: 'original')).readAsBytes(),
+       ) {
     store.addListener(_changed);
     mediaProbe?.addListener(_notify);
   }
@@ -35,8 +49,35 @@ class FilmCatalogController extends ChangeNotifier {
   final FilmCatalogScanner scanner;
   final FilmCatalogMatcher matcher;
   final FilmMediaProbeController? mediaProbe;
+  final Future<void> Function(FilmCatalogRoot)? serverRefresh;
+  final String? sourceId;
+  final bool ownsResources;
+  FilmCatalogController forSource(String id) => FilmCatalogController(
+    store: store,
+    tmdb: tmdb,
+    images: images,
+    sourceFor: sourceFor,
+    serverRefresh: serverRefresh,
+    filesFor: matcher.filesFor,
+    sourceId: id,
+    ownsResources: false,
+  );
   List<FilmWork> works = [];
   List<FilmCatalogRoot> roots = [];
+  List<FilmCatalogRoot> get enabledRoots =>
+      roots.where((root) => root.enabled).toList();
+
+  bool isItemEnabled(MediaLibraryItem item) => !roots.any(
+    (root) =>
+        !root.enabled &&
+        root.sourceId == item.sourceId &&
+        filmPathWithin(
+          filmPathKey(item.discRootPath ?? item.targetPath, root.sourceKind),
+          filmPathKey(root.path, root.sourceKind),
+        ),
+  );
+  List<FilmCollection> collections = [];
+  final Map<String, String?> collectionCovers = {};
   FilmMediaType? type;
   List<FilmWork> recentWorks = [], movies = [], series = [];
   final Map<int, FilmWork> rootCovers = {};
@@ -78,22 +119,43 @@ class FilmCatalogController extends ChangeNotifier {
   bool get scraping => _scrapeTask != null || _scrapeInputs > 0;
   bool isScrapingRoot(int id) => scraping && _scrapeSessions.containsKey(id);
   Timer? _refreshTimer;
+  bool _refreshPending = false;
   Future<void>? _scanTask;
+  bool _writesSuspended = false;
+  Completer<void>? _scrapeBarrier;
+  Future<T> withWritesSuspended<T>(Future<T> Function() operation) async {
+    _writesSuspended = true;
+    cancel();
+    try {
+      await _scanTask;
+      await _scrapeBarrier?.future;
+      if (mediaProbe != null) {
+        return await mediaProbe!.withPlaybackPriority(operation);
+      }
+      return await operation();
+    } finally {
+      _writesSuspended = false;
+      _wakeScraping();
+    }
+  }
 
   void _notify() {
     if (!_closed) notifyListeners();
   }
 
   void _changed() {
-    if (_closed) return;
-    _refreshTimer?.cancel();
-    _refreshTimer = Timer(
-      const Duration(milliseconds: 150),
-      () => unawaited(refresh()),
-    );
+    if (_closed || _writesSuspended) return;
+    if (_refreshTimer?.isActive == true) return;
+    _refreshTimer = Timer(const Duration(milliseconds: 150), () {
+      if (loading) {
+        _refreshPending = true;
+      } else {
+        unawaited(refresh());
+      }
+    });
   }
 
-  Future<void> refresh({bool more = false}) async {
+  Future<void> refresh({bool more = false, bool home = true}) async {
     if (_closed || (more && loading)) return;
     if (!more) _refreshTimer?.cancel();
     final generation = ++_queryGeneration;
@@ -106,15 +168,20 @@ class FilmCatalogController extends ChangeNotifier {
     _notify();
     final offset = more ? works.length : 0;
     try {
-      final rootList = await store.roots();
+      final rootList = (await store.roots())
+          .where((root) => sourceId == null || root.sourceId == sourceId)
+          .toList();
       if (_closed || generation != _queryGeneration) return;
-      if (rootId != null && !rootList.any((r) => r.id == rootId)) rootId = null;
+      if (rootId != null && !rootList.any((r) => r.id == rootId && r.enabled)) {
+        rootId = null;
+      }
       final filter = (type, query, rootId, newest, sectionId);
       final pages = (works.length + 59) ~/ 60;
       final limit = !more && _loadedFilter == filter && pages > 1
           ? pages * 60
           : 60;
       final page = await store.works(
+        sourceId: sourceId,
         type: type,
         query: query,
         rootId: rootId,
@@ -123,26 +190,54 @@ class FilmCatalogController extends ChangeNotifier {
         limit: limit,
         sectionId: sectionId,
       );
-      final count = await store.pendingCount(rootId: rootId);
-      final recent = await store.works(type: null, newest: true, limit: 30);
+      if (_closed || generation != _queryGeneration) return;
+      works = more ? [...works, ...page] : page;
+      _loadedFilter = filter;
+      roots = rootList;
+      hasMore = page.length == limit;
+      _notify();
+      // 海报墙翻页和筛选不等待主页栏目与来源封面。
+      if (more || !home) return;
+      final count = await store.pendingCount(
+        rootId: rootId,
+        sourceId: sourceId,
+      );
+      final recent = await store.works(
+        type: null,
+        newest: true,
+        limit: 30,
+        sourceId: sourceId,
+      );
       final filmMovies = await store.works(
+        sourceId: sourceId,
         type: FilmMediaType.movie,
         limit: 30,
       );
-      final filmSeries = await store.works(type: FilmMediaType.tv, limit: 30);
+      final filmSeries = await store.works(
+        type: FilmMediaType.tv,
+        limit: 30,
+        sourceId: sourceId,
+      );
       final sections = await store.homeSections();
       final extraWorks = <String, List<FilmWork>>{};
       for (final section in sections.where(
-        (s) => s.enabled && s.id.contains(':'),
+        (s) => s.enabled && (s.id.contains(':') || s.id == 'daily'),
       )) {
         extraWorks[section.id] = await store.works(
+          sourceId: sourceId,
           type: null,
           sectionId: section.id,
           limit: 30,
         );
       }
+      final filmCollections = await store.collections(sourceId: sourceId);
+      for (final collection in filmCollections) {
+        collectionCovers[collection.id] = await store.collectionArtwork(
+          collection,
+        );
+      }
       final background = await store.backgroundPath();
-      for (final root in rootList) {
+      for (final root in rootList.where((root) => root.enabled)) {
         final custom = await store.customRootCover(root.id);
         if (custom != null) {
           _customCovers[root.id] = custom;
@@ -183,18 +278,20 @@ class FilmCatalogController extends ChangeNotifier {
         }
       }
       if (_closed || generation != _queryGeneration) return;
-      final rootIds = rootList.map((root) => root.id).toSet();
+      final rootIds = rootList
+          .where((root) => root.enabled)
+          .map((root) => root.id)
+          .toSet();
       rootCovers.removeWhere((id, _) => !rootIds.contains(id));
       rootCoverFiles.removeWhere((id, _) => !rootIds.contains(id));
       _customCovers.removeWhere((id, _) => !rootIds.contains(id));
-      works = more ? [...works, ...page] : page;
-      _loadedFilter = filter;
       roots = rootList;
       pendingCount = count;
       recentWorks = recent;
       movies = filmMovies;
       series = filmSeries;
       homeSections = sections;
+      collections = filmCollections;
       sectionWorks = extraWorks;
       backgroundFile = background == null || background.isEmpty
           ? null
@@ -207,6 +304,10 @@ class FilmCatalogController extends ChangeNotifier {
       if (generation == _queryGeneration) {
         loading = false;
         _notify();
+        if (_refreshPending) {
+          _refreshPending = false;
+          _changed();
+        }
       }
     }
   }
@@ -240,14 +341,18 @@ class FilmCatalogController extends ChangeNotifier {
     }
   }
 
-  Future<void> scan(FilmCatalogRoot root, {bool incremental = false}) =>
-      scanRoots([root], incremental: incremental);
+  Future<void> scan(
+    FilmCatalogRoot root, {
+    bool incremental = false,
+    FilmScanScope? scope,
+  }) => scanRoots([root], incremental: incremental, scope: scope);
 
   Future<void> scanRoots(
     List<FilmCatalogRoot> roots, {
     bool incremental = false,
+    FilmScanScope? scope,
   }) async {
-    if (busy) {
+    if (busy || _writesSuspended) {
       error = 'scanBusy';
       _notify();
       return;
@@ -267,6 +372,10 @@ class FilmCatalogController extends ChangeNotifier {
           progress = FilmScanProgress(root.id, 0, 0, root.path);
           _notify();
           await run(() async {
+            if (root.sourceKind.isMediaServer) {
+              await serverRefresh!(root);
+              return;
+            }
             final source = sourceFor(root);
             final metadata = await _scrapeSession(root);
             if (cancelling || _closed) return;
@@ -274,6 +383,7 @@ class FilmCatalogController extends ChangeNotifier {
               root,
               source,
               incremental: incremental,
+              scope: scope,
               onProgress: (value) {
                 progress = value;
                 _notify();
@@ -282,8 +392,7 @@ class FilmCatalogController extends ChangeNotifier {
                 _queueScraping(metadata, entries);
               },
             );
-            // 清单提交后关联此前已完成的资料，不等待后续 TMDB 请求。
-            await store.applyMetadata(root.id, metadata.matches);
+            await store.reconcilePlaylists(sourceId: root.sourceId);
           }, clearError: false);
         }
       } finally {
@@ -393,14 +502,18 @@ class FilmCatalogController extends ChangeNotifier {
 
   Future<void> _scrape() async {
     while (!_closed) {
-      if (_scrapeQueue.isEmpty && _scrapeInputs == 0) return;
-      if (scrapePaused || _scrapeQueue.isEmpty) {
+      if (_scrapeQueue.isEmpty && _scrapeInputs == 0) {
+        await store.reconcilePlaylists();
+        return;
+      }
+      if (_writesSuspended || scrapePaused || _scrapeQueue.isEmpty) {
         _scrapeWake = Completer<void>();
         await _scrapeWake!.future;
         continue;
       }
       final job = _scrapeQueue.first;
       final key = filmPathKey(job.entry.path, job.session.root.sourceKind);
+      _scrapeBarrier = Completer<void>();
       try {
         await job.session.prepare([job.entry]);
         if (_closed) return;
@@ -423,6 +536,17 @@ class FilmCatalogController extends ChangeNotifier {
         scrapeError = 'catalogStorageFailed';
         scrapePaused = true;
         _notify();
+      } on FilmCatalogException catch (error) {
+        scrapeError = error.code;
+        scrapePaused = true;
+        _notify();
+      } on AppException {
+        scrapeError = 'nfoReadFailed';
+        scrapePaused = true;
+        _notify();
+      } finally {
+        _scrapeBarrier!.complete();
+        _scrapeBarrier = null;
       }
     }
   }
@@ -472,8 +596,10 @@ class FilmCatalogController extends ChangeNotifier {
     await mediaProbe?.close();
     cancel();
     _wakeScraping();
-    tmdb.close();
-    images.close();
+    if (ownsResources) {
+      tmdb.close();
+      images.close();
+    }
     try {
       await scanner.shutdown();
       await _scanTask;
@@ -482,7 +608,7 @@ class FilmCatalogController extends ChangeNotifier {
       _scrapeQueue.clear();
       _scrapeSessions.clear();
       _scrapeSeen.clear();
-      await store.close();
+      if (ownsResources) await store.close();
       super.dispose();
     }
   }
@@ -496,9 +622,25 @@ class _FilmScrapeJob {
 
 /// 错误键只在界面层翻译，不保存底层异常或敏感请求。
 String filmCatalogErrorText(String code) => switch (code) {
+  'playlistMissing' => '播放列表已删除',
+  'playlistEmpty' => '播放列表为空',
+  'invalidPlaylistName' => '请输入播放列表名称',
+  'serverPlaylistUnavailable' => '服务器播放列表不可访问，已保留原有成员',
   'overlappingRoot' => '同一来源的影视目录不能相同或互相包含',
   'invalidPath' => '目录条目路径无效或超出所选来源',
-  'sourceUnavailable' => '来源不可用，请在文件夹管理中重新挂载',
+  'sourceUnavailable' => '来源不可用，请在文件夹中重新挂载',
+  'connectionConfigFailed' => '来源配置无效或无法保存',
+  'sourceNativeUnavailable' => '原生存储组件不可用，请检查应用完整安装',
+  'sourceConnectionFailed' || 'serverConnectionFailed' => '来源连接失败，请检查地址和凭据',
+  'sourceRangeUnsupported' => '该来源不支持随机读取，无法播放',
+  'sourceReadOnly' => '来源为只读或尚未允许写回',
+  'sourceCreateUnsupported' => '该来源不支持安全创建文件，已禁用自动写回',
+  'sourceReadFailed' ||
+  'sourceFileMissing' ||
+  'sourceListingUnsupported' => '来源文件读取失败',
+  'serverAuthenticationFailed' => '服务器认证失败，请重新登录',
+  'serverDirectPlayUnavailable' => '服务器未提供可直接播放的版本',
+  'sourcePlaybackActive' => '来源正在播放，请结束播放后修改连接',
   'directoryReadFailed' => '读取目录失败，已保留上一份完整清单',
   'scanBusy' => '请等待当前影视目录扫描完成',
   'cancelled' => '扫描已取消，原清单保持不变',
@@ -513,6 +655,9 @@ String filmCatalogErrorText(String code) => switch (code) {
   'probeBudgetExceeded' => '蓝光探测达到读取上限，已停止读取',
   'probePlaybackOnly' => 'STRM 参数在播放时获取',
   'catalogStorageFailed' => '影视目录库操作失败',
+  'invalidImport' => '导入包无效、损坏或包含不安全路径',
+  'importRecoveryRequired' => '导入恢复尚未完成，请重新启动软件',
+  'importPlaybackActive' => '播放器运行期间不能导入播放状态',
   'noToken' => '请先保存 TMDB Read Access Token',
   'invalidToken' => 'TMDB 凭据无效，请修改后验证',
   'credentialStoreFailed' => '无法访问 Windows 凭据管理器',
@@ -524,6 +669,9 @@ String filmCatalogErrorText(String code) => switch (code) {
   'metadataTlsFailed' => 'TMDB 安全连接失败，请检查网络和证书',
   'systemProxyFailed' => '无法读取 Windows 系统代理设置',
   'invalidMetadata' => 'TMDB 返回的元数据无效',
+  'invalidNfo' => '本地 NFO 格式无效，请检查文件',
+  'nfoReadFailed' => '本地元数据读取失败，请检查来源权限',
+  'metadataWriteFailed' => '库内匹配已保存，但 NFO 或图片写回失败',
   'staleMatch' => '文件关联已更改，请重新打开纠错窗口',
   'wrongMediaType' => '作品类型与影视目录类型不一致',
   'invalidEpisode' => '季集编号无效或文件尚未匹配同一剧集',

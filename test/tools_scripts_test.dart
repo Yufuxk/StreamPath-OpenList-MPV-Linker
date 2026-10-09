@@ -21,6 +21,7 @@ void main() {
     final sourceTools = Directory(p.join(Directory.current.path, 'tools'));
     for (final name in const <String>[
       'build.ps1',
+      'release_common.ps1',
       'package.ps1',
       'cleanup.ps1',
       'run.ps1',
@@ -116,6 +117,40 @@ void main() {
     expect(result.exitCode, isNot(0), reason: result.output);
     expect(target.existsSync(), isFalse);
   });
+
+  test('发布工具修正继承和显式 Low 标签且保留文件内容与 DACL', () async {
+    fixtureFile(p.join('project', 'tools', 'integrity_fixture.ps1'), r'''
+$ErrorActionPreference = 'Stop'
+# 显式加载 Windows PowerShell 自带模块，隔离测试宿主的模块路径。
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'release_common.ps1')
+$Output = Join-Path (Split-Path $PSScriptRoot -Parent) 'release-fixture'
+New-Item -ItemType Directory -Path $Output | Out-Null
+& "$env:SystemRoot\System32\icacls.exe" $Output /setintegritylevel '(OI)(CI)L' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not create low integrity fixture.' }
+$Exe = Join-Path $Output 'probe.exe'
+Copy-Item -LiteralPath "$env:SystemRoot\System32\whoami.exe" -Destination $Exe
+$Contents = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Exe))
+$Dacl = (Get-Acl -LiteralPath $Exe).Sddl
+if ((& $Exe /groups | Out-String) -notmatch 'S-1-16-4096') { throw 'Expected low integrity process.' }
+Repair-StreamPathReleaseIntegrity -Path $Output
+if ((& $Exe /groups | Out-String) -notmatch 'S-1-16-8192') { throw 'Expected medium integrity process.' }
+if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($Exe)) -ne $Contents -or (Get-Acl -LiteralPath $Exe).Sddl -ne $Dacl) { throw 'File content or DACL changed.' }
+& "$env:SystemRoot\System32\icacls.exe" $Exe /setintegritylevel L | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not label executable fixture.' }
+Repair-StreamPathReleaseIntegrity -Path $Exe
+Repair-StreamPathReleaseIntegrity -Path $Exe
+if ((& $Exe /groups | Out-String) -notmatch 'S-1-16-8192') { throw 'Expected medium integrity executable.' }
+if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($Exe)) -ne $Contents -or (Get-Acl -LiteralPath $Exe).Sddl -ne $Dacl) { throw 'File content or DACL changed.' }
+Write-Output 'Integrity fixture passed.'
+''');
+
+    final result = await runScript('integrity_fixture.ps1');
+    expect(result.exitCode, 0, reason: result.output);
+    expect(result.output, contains('Integrity fixture passed.'));
+  }, skip: !Platform.isWindows);
 
   test('build 在项目标记缺失时失败关闭', () async {
     File(p.join(projectDir.path, 'pubspec.yaml')).deleteSync();

@@ -4,7 +4,7 @@ import '../../data/models/film_home_section.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
-import 'sp_icons.dart';
+import 'sp_reorderable.dart';
 import 'sp_notice.dart';
 
 String filmSectionTitle(BuildContext context, FilmHomeSection section) =>
@@ -52,6 +52,7 @@ class _FilmSectionSettingsState extends State<FilmSectionSettings> {
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       buildDefaultDragHandles: false,
+      proxyDecorator: spReorderProxy,
       itemCount: (_sections ?? catalog.homeSections).length,
       onReorderItem: (oldIndex, newIndex) {
         final sections = List<FilmHomeSection>.of(
@@ -81,12 +82,9 @@ class _FilmSectionSettingsState extends State<FilmSectionSettings> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          trailing: ReorderableDragStartListener(
+          trailing: SPReorderHandle(
             index: i,
-            child: Tooltip(
-              message: context.l10n.text('拖动调整栏目顺序'),
-              child: const Icon(SPIcons.sort),
-            ),
+            tooltip: context.l10n.text('拖动调整栏目顺序'),
           ),
         );
       },

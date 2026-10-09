@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -10,11 +11,47 @@ import '../models/film_home_section.dart';
 import '../models/media_library_item.dart';
 import '../models/film_watch_state.dart';
 import '../models/video_queue.dart';
+import '../models/film_collection.dart';
+import '../models/media_connection.dart';
+import '../models/film_image_reference.dart';
+import '../models/film_playlist.dart';
+import '../../domain/services/film_video_timeline.dart';
+
+part 'film_catalog_phase5.dart';
+part 'film_catalog_servers.dart';
+part 'film_catalog_portability.dart';
+part 'film_catalog_playlists.dart';
 
 /// 永久影视目录；远端操作始终在写事务外完成。
 class FilmCatalogStore extends ChangeNotifier {
   FilmCatalogStore._(this._db);
   final Database _db;
+  int _notificationDepth = 0;
+  bool _notificationPending = false;
+  Future<T> withBatchedChanges<T>(Future<T> Function() operation) async {
+    _notificationDepth++;
+    try {
+      return await operation();
+    } finally {
+      _notificationDepth--;
+      // 并行来源各自完成批次时发布已保存的变更。
+      if (_notificationPending) {
+        _notificationPending = false;
+        super.notifyListeners();
+      }
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    if (_notificationDepth > 0) {
+      _notificationPending = true;
+    } else {
+      super.notifyListeners();
+    }
+  }
+
+  bool spoilerProtection = false;
   static const _watchSchema = '''CREATE TABLE film_watch_state (
     source_id TEXT NOT NULL, work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     season_number INTEGER NOT NULL, episode_number INTEGER NOT NULL,
@@ -136,6 +173,7 @@ class FilmCatalogStore extends ChangeNotifier {
       AND v.episode_number=CASE WHEN w.media_type='movie' THEN -1 ELSE r.episode_number END
     LEFT JOIN film_disc_watch_state d ON d.resource_id=r.id AND d.work_id=r.work_id
     WHERE r.work_id IN (${List.filled(ids.length, '?').join(',')})
+      AND $_rootEnabledSql
       AND r.media_kind IN ('video','strm','iso','bdmv')
       AND (r.media_kind IN ('iso','bdmv') OR w.media_type='movie' OR r.season_number IS NOT NULL AND r.episode_number IS NOT NULL)
       ${rootId == null ? '' : 'AND r.root_id=?'} ${sourceId == null ? '' : 'AND c.source_id=?'}
@@ -265,16 +303,19 @@ class FilmCatalogStore extends ChangeNotifier {
         .openDatabase(
           path,
           options: OpenDatabaseOptions(
-            version: 6,
+            version: 8,
             onConfigure: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
               final version = await db.getVersion();
-              if (version > 0 && version < 6 && path != inMemoryDatabasePath) {
+              if (version > 0 && version < 8 && path != inMemoryDatabasePath) {
                 final backup =
                     '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
                 await db.execute(
                   "VACUUM INTO '${backup.replaceAll("'", "''")}'",
                 );
+              }
+              if (version > 0 && version < 7) {
+                await db.execute('PRAGMA foreign_keys = OFF');
               }
             },
             onCreate: (db, _) async {
@@ -283,6 +324,12 @@ class FilmCatalogStore extends ChangeNotifier {
               }
               await db.execute(_watchSchema);
               await db.execute(_discWatchSchema);
+              for (final statement in _phase5Schema) {
+                await db.execute(statement);
+              }
+              for (final statement in _playlistSchema) {
+                await db.execute(statement);
+              }
             },
             onUpgrade: (db, oldVersion, _) async {
               if (oldVersion < 5) await db.execute(_watchSchema);
@@ -363,6 +410,18 @@ class FilmCatalogStore extends ChangeNotifier {
                 );
               }
               if (oldVersion < 6) await db.execute(_discWatchSchema);
+              if (oldVersion < 7) await _upgradePhase5(db);
+              if (oldVersion < 8) {
+                for (final statement in _playlistSchema) {
+                  await db.execute(statement);
+                }
+              }
+            },
+            onOpen: (db) async {
+              await db.execute('PRAGMA foreign_keys = ON');
+              if ((await db.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
+                throw const FilmCatalogException('catalogStorageFailed');
+              }
             },
           ),
         );
@@ -373,7 +432,10 @@ class FilmCatalogStore extends ChangeNotifier {
       }, where: "scan_status = 'running'");
       await txn.delete('scan_entries');
     });
-    return FilmCatalogStore._(db);
+    final store = FilmCatalogStore._(db);
+    store.spoilerProtection =
+        await store.preference('spoiler_protection') == true;
+    return store;
   }
 
   Future<void> close() async {
@@ -381,19 +443,23 @@ class FilmCatalogStore extends ChangeNotifier {
     super.dispose();
   }
 
-  Future<List<FilmCatalogRoot>> roots() async => (await _db.query(
-    'catalog_roots',
-    orderBy: 'created_at, id',
+  static const _rootEnabledSql =
+      '''NOT EXISTS (SELECT 1 FROM catalog_preferences p
+    WHERE p.key='library_enabled:' || c.id AND p.value_json='false')''';
+  static const _rootSelect =
+      'SELECT c.*, ($_rootEnabledSql) AS enabled FROM catalog_roots c';
+
+  Future<List<FilmCatalogRoot>> roots() async => (await _db.rawQuery(
+    '$_rootSelect ORDER BY c.created_at, c.id',
   )).map(FilmCatalogRoot.fromRow).toList();
 
   Future<FilmCatalogRoot?> root(int id) async {
-    final rows = await _db.query(
-      'catalog_roots',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    final rows = await _db.rawQuery('$_rootSelect WHERE c.id = ?', [id]);
     return rows.isEmpty ? null : FilmCatalogRoot.fromRow(rows.single);
   }
+
+  Future<void> setRootEnabled(int id, bool enabled) =>
+      setPreference('library_enabled:$id', enabled);
 
   Future<int> addRoot({
     required String sourceId,
@@ -561,60 +627,94 @@ class FilmCatalogStore extends ChangeNotifier {
     FilmCatalogRoot root,
     int generation,
     List<FilmScanEntry> entries,
-  ) => _db.transaction((txn) async {
-    await _checkScan(txn, root.id, generation);
-    final batch = txn.batch();
-    for (final entry in entries) {
-      validateFilmPath(entry.path);
-      if (!filmPathWithin(
-        filmPathKey(entry.path, root.sourceKind),
-        filmPathKey(root.path, root.sourceKind),
-      )) {
-        throw const FilmCatalogException('invalidPath');
+  ) async {
+    await _db.transaction((txn) async {
+      await _checkScan(txn, root.id, generation);
+      final batch = txn.batch();
+      final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+      for (final entry in entries) {
+        validateFilmPath(entry.path);
+        if (!filmPathWithin(
+          filmPathKey(entry.path, root.sourceKind),
+          filmPathKey(root.path, root.sourceKind),
+        )) {
+          throw const FilmCatalogException('invalidPath');
+        }
+        batch.insert('scan_entries', {
+          'root_id': root.id,
+          'generation': generation,
+          'relative_path': entry.path,
+          'path_key': filmPathKey(entry.path, root.sourceKind),
+          'parent_path': entry.parentPath,
+          'name': entry.name,
+          'media_kind': entry.mediaKind,
+        });
+        batch.rawInsert(
+          '''INSERT INTO resources
+        (root_id, relative_path, path_key, parent_path, name, media_kind,
+         last_seen_generation, availability, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?)
+        ON CONFLICT(root_id, path_key) DO UPDATE SET
+          relative_path = excluded.relative_path, parent_path = excluded.parent_path,
+          name = excluded.name, media_kind = excluded.media_kind,
+          last_seen_generation = excluded.last_seen_generation, availability = 'present'
+        ''',
+          [
+            root.id,
+            entry.path,
+            filmPathKey(entry.path, root.sourceKind),
+            entry.parentPath,
+            entry.name,
+            entry.mediaKind,
+            generation,
+            now,
+          ],
+        );
       }
-      batch.insert('scan_entries', {
-        'root_id': root.id,
-        'generation': generation,
-        'relative_path': entry.path,
-        'path_key': filmPathKey(entry.path, root.sourceKind),
-        'parent_path': entry.parentPath,
-        'name': entry.name,
-        'media_kind': entry.mediaKind,
-      });
-    }
-    await batch.commit(noResult: true);
-  });
+      await batch.commit(noResult: true);
+    });
+    if (entries.isNotEmpty) notifyListeners();
+  }
 
   Future<void> commitScan(
     int id,
     int generation, {
     required bool Function() cancelled,
     bool incremental = false,
+    String? scopePath,
   }) async {
     await _db.transaction((txn) async {
       await _checkScan(txn, id, generation);
       if (cancelled()) throw const FilmCatalogException('cancelled');
       final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-      await txn.rawInsert(
-        '''INSERT INTO resources
-        (root_id, relative_path, path_key, parent_path, name, media_kind,
-         last_seen_generation, availability, created_at)
-        SELECT root_id, relative_path, path_key, parent_path, name, media_kind,
-          generation, 'present', ? FROM scan_entries
-        WHERE root_id = ? AND generation = ?
-        ON CONFLICT(root_id, path_key) DO UPDATE SET
-          relative_path = excluded.relative_path, parent_path = excluded.parent_path,
-          name = excluded.name, media_kind = excluded.media_kind,
-          last_seen_generation = excluded.last_seen_generation, availability = 'present'
-        ''',
-        [now, id, generation],
-      );
       if (!incremental) {
+        final roots = await txn.query(
+          'catalog_roots',
+          where: 'id=?',
+          whereArgs: [id],
+        );
+        final root = FilmCatalogRoot.fromRow(roots.single);
+        final scope = scopePath == null
+            ? null
+            : filmPathKey(scopePath, root.sourceKind);
+        if (scope != null &&
+            !filmPathWithin(scope, filmPathKey(root.path, root.sourceKind))) {
+          throw const FilmCatalogException('invalidPath');
+        }
         await txn.update(
           'resources',
           {'availability': 'missing'},
-          where: 'root_id = ? AND last_seen_generation <> ?',
-          whereArgs: [id, generation],
+          where:
+              'root_id = ? AND last_seen_generation <> ? ${scope == null || scope.isEmpty ? '' : "AND (path_key=? OR substr(path_key,1,?)=?)"}',
+          whereArgs: [
+            id,
+            generation,
+            if (scope != null && scope.isNotEmpty) ...[
+              scope,
+              scope.length + 1,
+              '$scope/',
+            ],
+          ],
         );
       }
       if (cancelled()) throw const FilmCatalogException('cancelled');
@@ -637,7 +737,7 @@ class FilmCatalogStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 刮削资料独立保存；资源尚未提交时先缓存作品，后续再应用关联。
+  /// 刮削资料逐项关联已登记资源，保留请求期间的人工纠错。
   Future<void> applyMetadata(int id, Map<String, FilmScanMatch> matches) async {
     if (matches.isEmpty) return;
     final prepared = Map<String, FilmScanMatch>.of(matches);
@@ -649,7 +749,7 @@ class FilmCatalogStore extends ChangeNotifier {
         whereArgs: [id],
       );
       if (roots.isEmpty) return;
-      final workIds = <(FilmMediaType, int), int>{};
+      final workIds = <String, int>{};
       final savedSeasons = <(int, int)>{};
       for (final entry in prepared.entries) {
         final match = entry.value;
@@ -663,13 +763,13 @@ class FilmCatalogStore extends ChangeNotifier {
         if (row != null && row['binding_version'] != match.bindingVersion) {
           continue;
         }
-        final workKey = (match.work.type, match.work.tmdbId);
+        final workKey = match.work.identity;
         var workId = workIds[workKey];
         if (workId == null) {
           final cached = await txn.query(
             'works',
-            where: 'media_type = ? AND tmdb_id = ?',
-            whereArgs: [match.work.type.name, match.work.tmdbId],
+            where: 'identity_key = ?',
+            whereArgs: [workKey],
           );
           workId =
               cached.isNotEmpty &&
@@ -680,13 +780,39 @@ class FilmCatalogStore extends ChangeNotifier {
           workIds[workKey] = workId;
         }
         if (match.seasonMetadata != null &&
-            savedSeasons.add((workId, match.seasonNumber!))) {
+            (match.origin == 'nfo' ||
+                savedSeasons.add((workId, match.seasonNumber!)))) {
+          var metadata = match.seasonMetadata!;
+          if (match.origin == 'nfo') {
+            final previous = await txn.query(
+              'season_metadata',
+              where: 'work_id=? AND season_number=?',
+              whereArgs: [workId, match.seasonNumber],
+            );
+            final old = previous.isEmpty
+                ? <String, dynamic>{}
+                : jsonDecode(previous.single['metadata_json'] as String)
+                      as Map<String, dynamic>;
+            final episodes = <Object?, Map>{
+              for (final episode
+                  in (old['episodes'] as List? ?? []).whereType<Map>())
+                episode['episode_number']: episode,
+              for (final episode
+                  in (metadata['episodes'] as List? ?? []).whereType<Map>())
+                episode['episode_number']: episode,
+            };
+            metadata = {
+              ...old,
+              ...metadata,
+              'episodes': episodes.values.toList(),
+            };
+          }
           await _saveSeason(
             txn,
             workId,
             match.seasonNumber!,
             match.work.language,
-            match.seasonMetadata!,
+            metadata,
           );
         }
         if (row == null) continue;
@@ -712,7 +838,9 @@ class FilmCatalogStore extends ChangeNotifier {
               {
                 'season_number': episode.$1,
                 'episode_number': episode.$2,
-                'episode_mapping_origin': 'filename',
+                'episode_mapping_origin': match.origin == 'nfo'
+                    ? 'nfo'
+                    : 'filename',
                 'binding_version': ++version,
               },
               where: 'id = ?',
@@ -756,10 +884,12 @@ class FilmCatalogStore extends ChangeNotifier {
     int? workId,
     String? sourceId,
     bool pending = false,
+    bool enabledOnly = false,
     int? limit,
     int offset = 0,
   }) async {
     final clauses = <String>[];
+    if (enabledOnly) clauses.add(_rootEnabledSql);
     final args = <Object?>[];
     if (rootId != null) {
       clauses.add('r.root_id = ?');
@@ -800,6 +930,7 @@ class FilmCatalogStore extends ChangeNotifier {
             '''SELECT COUNT(*) AS count FROM resources r
       JOIN catalog_roots c ON c.id = r.root_id
       WHERE (r.work_id IS NULL OR (c.media_type = 'tv' AND r.season_number IS NULL))
+      AND $_rootEnabledSql
       ${sourceId == null ? '' : 'AND c.source_id = ?'}
       ${rootId == null ? '' : 'AND c.id = ?'}''',
             [?sourceId, ?rootId],
@@ -815,9 +946,12 @@ class FilmCatalogStore extends ChangeNotifier {
     int offset = 0,
     int limit = 60,
     bool favoritesOnly = false,
+    String? collectionId,
+    String? personId,
     Set<String>? sourceIds,
     String? sectionId,
   }) async {
+    final daily = sectionId == 'daily' ? await dailySelection() : null;
     final rows = await _db.rawQuery(
       '''SELECT w.*, COUNT(r.id) AS resource_count,
       SUM(CASE WHEN r.availability = 'missing' THEN 1 ELSE 0 END) AS missing_count
@@ -825,12 +959,20 @@ class FilmCatalogStore extends ChangeNotifier {
       JOIN catalog_roots c ON c.id = r.root_id
       WHERE (? IS NULL OR w.media_type = ?) AND (instr(lower(w.title), lower(?)) > 0
         OR instr(lower(w.original_title), lower(?)) > 0)
+      AND $_rootEnabledSql
       ${sourceId == null ? '' : 'AND c.source_id = ?'}
       ${rootId == null ? '' : 'AND c.id = ?'}
       ${sectionId?.startsWith('genre:') == true ? "AND EXISTS (SELECT 1 FROM json_each(w.metadata_json, '\$.genres') WHERE value = ?)" : ''}
       ${sectionId?.startsWith('country:') == true ? "AND EXISTS (SELECT 1 FROM json_each(w.metadata_json, '\$.origin_country') WHERE value = ?)" : ''}
       ${sectionId?.startsWith('decade:') == true ? 'AND w.year >= ? AND w.year < ?' : ''}
       ${favoritesOnly ? 'AND EXISTS (SELECT 1 FROM work_favorites f WHERE f.work_id = w.id)' : ''}
+      ${collectionId == null ? '' : 'AND EXISTS (SELECT 1 FROM collection_members m WHERE m.work_id=w.id AND m.collection_id=?)'}
+      ${personId == null ? '' : 'AND EXISTS (SELECT 1 FROM work_people p WHERE p.work_id=w.id AND p.person_id=?)'}
+      ${daily == null
+          ? ''
+          : daily.isEmpty
+          ? 'AND 0'
+          : 'AND w.id IN (${List.filled(daily.length, '?').join(',')})'}
       ${sourceIds == null
           ? ''
           : sourceIds.isEmpty
@@ -852,12 +994,19 @@ class FilmCatalogStore extends ChangeNotifier {
           int.parse(sectionId!.substring(7)),
           int.parse(sectionId.substring(7)) + 10,
         ],
+        ?collectionId,
+        ?personId,
+        ...?daily,
         ...?sourceIds,
         limit,
         offset,
       ],
     );
-    return rows.map(FilmWork.fromRow).toList();
+    final result = rows.map(FilmWork.fromRow).toList();
+    if (daily != null) {
+      result.sort((a, b) => daily.indexOf(a.id).compareTo(daily.indexOf(b.id)));
+    }
+    return result;
   }
 
   Future<FilmWork?> work(int id) async {
@@ -971,6 +1120,13 @@ class FilmCatalogStore extends ChangeNotifier {
                 enabled: entry['enabled'] as bool,
               ),
           ];
+    if (!saved.any((section) => section.id == 'daily')) {
+      final index = saved.indexWhere((section) => section.id == 'continue');
+      saved.insert(
+        index < 0 ? 0 : index + 1,
+        const FilmHomeSection('daily', enabled: true),
+      );
+    }
     final options = <String>{...FilmHomeSection.defaults.map((s) => s.id)};
     final works = await _db.rawQuery(
       'SELECT DISTINCT w.metadata_json, w.year FROM works w JOIN resources r ON r.work_id = w.id',
@@ -1131,6 +1287,7 @@ class FilmCatalogStore extends ChangeNotifier {
     WHERE r.availability = ? AND (p.resource_id IS NULL OR
       (r.media_kind <> 'strm' AND json_extract(p.metadata_json, '\$.state') = 'playback'
        AND COALESCE(json_extract(p.metadata_json, '\$.fullProbed'), 0) = 0))
+    AND $_rootEnabledSql
     ORDER BY r.id LIMIT ?''',
         ['present', limit],
       )).map(FilmResource.fromRow).toList();
@@ -1178,20 +1335,34 @@ class FilmCatalogStore extends ChangeNotifier {
   }
 
   Future<int> _saveWork(DatabaseExecutor txn, FilmWork work) async {
-    if (work.tmdbId <= 0 || work.title.isEmpty || work.originalTitle.isEmpty) {
+    if (work.title.isEmpty || work.originalTitle.isEmpty) {
       throw const FilmCatalogException('invalidMetadata');
     }
     final rows = await txn.query(
       'works',
       columns: ['id'],
-      where: 'media_type = ? AND tmdb_id = ?',
-      whereArgs: [work.type.name, work.tmdbId],
+      where: 'identity_key = ?',
+      whereArgs: [work.identity],
     );
-    if (rows.isEmpty) return txn.insert('works', work.toRow());
-    final id = rows.single['id'] as int;
-    await txn.update('works', work.toRow(), where: 'id = ?', whereArgs: [id]);
+    final previous = work.id == 0
+        ? <Map<String, Object?>>[]
+        : await txn.query('works', where: 'id=?', whereArgs: [work.id]);
+    final localIdentity =
+        previous.isNotEmpty && previous.single['tmdb_id'] == null;
+    final id = rows.isNotEmpty
+        ? rows.single['id'] as int
+        : localIdentity
+        ? work.id
+        : await txn.insert('works', work.toRow());
+    if (localIdentity && id != work.id) await _mergeWork(txn, work.id, id);
+    if (rows.isNotEmpty || localIdentity) {
+      await txn.update('works', work.toRow(), where: 'id = ?', whereArgs: [id]);
+    }
+    await _indexPhase5Work(txn, id, work);
     return id;
   }
+
+  void _changed() => notifyListeners();
 
   Future<void> refreshWork(FilmWork work) async {
     await _db.transaction((txn) => _saveWork(txn, work));
@@ -1250,6 +1421,20 @@ class FilmCatalogStore extends ChangeNotifier {
         }
       }
       final workId = await _saveWork(txn, work);
+      if (work.tmdbId > 0) {
+        for (final oldId
+            in snapshots.map((r) => r.workId).whereType<int>().toSet()) {
+          if (oldId == workId) continue;
+          final old = await txn.query(
+            'works',
+            where: 'id=?',
+            whereArgs: [oldId],
+          );
+          if (old.isNotEmpty && old.single['tmdb_id'] == null) {
+            await _mergeWork(txn, oldId, workId);
+          }
+        }
+      }
       for (final resource in snapshots) {
         await txn.update(
           'resources',
@@ -1282,6 +1467,9 @@ class FilmCatalogStore extends ChangeNotifier {
         );
       }
     });
+    for (final source in snapshots.map((r) => r.sourceId).toSet()) {
+      await reconcilePlaylists(sourceId: source);
+    }
     notifyListeners();
   }
 
@@ -1393,6 +1581,9 @@ class FilmCatalogStore extends ChangeNotifier {
         );
       }
     });
+    for (final source in mappings.keys.map((r) => r.sourceId).toSet()) {
+      await reconcilePlaylists(sourceId: source);
+    }
     notifyListeners();
   }
 
@@ -1411,7 +1602,7 @@ class FilmCatalogStore extends ChangeNotifier {
 
   static const _schema = <String>[
     '''CREATE TABLE catalog_roots (id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_id TEXT NOT NULL, source_kind TEXT NOT NULL CHECK(source_kind IN ('local','webdav')),
+      source_id TEXT NOT NULL, source_kind TEXT NOT NULL CHECK(source_kind IN ('local','webdav','smb','ftp','nfs','jellyfin','emby')),
       root_path TEXT NOT NULL, root_path_key TEXT NOT NULL,
       media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')), display_name TEXT NOT NULL,
       scan_generation INTEGER NOT NULL DEFAULT 0, scan_status TEXT NOT NULL DEFAULT 'idle'
@@ -1419,7 +1610,8 @@ class FilmCatalogStore extends ChangeNotifier {
       last_success_at INTEGER, last_error TEXT, created_at INTEGER NOT NULL,
       UNIQUE(source_id, root_path_key))''',
     '''CREATE TABLE works (id INTEGER PRIMARY KEY AUTOINCREMENT,
-      media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')), tmdb_id INTEGER NOT NULL CHECK(tmdb_id > 0),
+      media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')), tmdb_id INTEGER CHECK(tmdb_id > 0),
+      identity_key TEXT NOT NULL UNIQUE, metadata_origin TEXT NOT NULL DEFAULT 'network',
       title TEXT NOT NULL, original_title TEXT NOT NULL, year INTEGER, overview TEXT NOT NULL,
       poster_path TEXT, backdrop_path TEXT, metadata_json TEXT NOT NULL,
       metadata_language TEXT NOT NULL, metadata_fetched_at INTEGER NOT NULL, UNIQUE(media_type, tmdb_id))''',
@@ -1430,9 +1622,9 @@ class FilmCatalogStore extends ChangeNotifier {
       size_bytes INTEGER, modified_at INTEGER, last_seen_generation INTEGER NOT NULL,
       availability TEXT NOT NULL DEFAULT 'present' CHECK(availability IN ('present','missing')),
       work_id INTEGER REFERENCES works(id), binding_origin TEXT NOT NULL DEFAULT 'unset'
-      CHECK(binding_origin IN ('unset','explicit','folder','search','manual')), binding_version INTEGER NOT NULL DEFAULT 0,
+      CHECK(binding_origin IN ('unset','explicit','folder','search','manual','nfo','server')), binding_version INTEGER NOT NULL DEFAULT 0,
       season_number INTEGER CHECK(season_number >= 0), episode_number INTEGER CHECK(episode_number > 0),
-      episode_mapping_origin TEXT NOT NULL DEFAULT 'unset' CHECK(episode_mapping_origin IN ('unset','filename','manual')),
+      episode_mapping_origin TEXT NOT NULL DEFAULT 'unset' CHECK(episode_mapping_origin IN ('unset','filename','manual','nfo','server')),
       created_at INTEGER NOT NULL, UNIQUE(root_id,path_key),
       CHECK((season_number IS NULL AND episode_number IS NULL) OR (season_number IS NOT NULL AND episode_number IS NOT NULL)),
       CHECK((work_id IS NULL AND binding_origin = 'unset') OR (work_id IS NOT NULL AND binding_origin <> 'unset')),

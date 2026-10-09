@@ -6,6 +6,7 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "update_bootstrap.h"
 
 namespace {
 
@@ -39,6 +40,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
+  if (!StreamPathUpdateBootstrap()) return EXIT_SUCCESS;
   SingleInstance app_instance;
   if (app_instance.ownership == WAIT_FAILED) {
     std::fprintf(stderr, "Single-instance initialization failed: %lu\n",

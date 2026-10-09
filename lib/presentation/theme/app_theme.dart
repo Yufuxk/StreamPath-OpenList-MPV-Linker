@@ -14,11 +14,7 @@ abstract final class AppTheme {
     final surface = theme.colorScheme.surfaceContainerLow;
     final glass = theme.glass;
     if (!glass.enabled) return surface.withValues(alpha: 1);
-    // 下拉菜单没有背景模糊，浮层底色需遮住后面的文字。
-    return Color.alphaBlend(
-      surface.withValues(alpha: 0.96),
-      glass.floatingSurface,
-    );
+    return glass.modalSurface;
   }
 
   static ThemeData light({
@@ -317,7 +313,7 @@ abstract final class AppTheme {
         ).copyWith(animationDuration: const Duration(milliseconds: 120)),
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: glassTokens.floatingSurface,
+        color: glass ? Colors.transparent : glassTokens.floatingSurface,
         surfaceTintColor: Colors.transparent,
         shadowColor: glassTokens.shadowColor,
         elevation: glass ? 6 : 4,

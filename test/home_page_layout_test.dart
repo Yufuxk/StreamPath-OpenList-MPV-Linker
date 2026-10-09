@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,7 +18,6 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
-import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
@@ -51,8 +51,16 @@ void main() {
       '',
     ]);
     expect(find.byIcon(Icons.route_outlined), findsNothing);
-    expect(find.byIcon(SPIcons.folder), findsOneWidget);
-    expect(find.byIcon(SPIcons.play), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Image &&
+            widget.image is AssetImage &&
+            (widget.image as AssetImage).assetName ==
+                'assets/icon/app_icon.png',
+      ),
+      findsOneWidget,
+    );
 
     final labelFinders = [
       find.text('服务器地址'),
@@ -260,7 +268,7 @@ void main() {
     await tester.pump();
 
     tester
-        .widget<DropdownButtonFormField<String>>(
+        .widget<SPDropdownButtonFormField<String>>(
           find.byKey(const Key('server-profile-selector')),
         )
         .onChanged!('profile-b');
@@ -362,7 +370,7 @@ void main() {
     expect(configStore.current.profileId, 'profile-b');
     expect(
       tester
-          .widget<DropdownButtonFormField<String>>(
+          .widget<SPDropdownButtonFormField<String>>(
             find.byKey(const Key('server-profile-selector')),
           )
           .initialValue,
@@ -453,7 +461,7 @@ void main() {
     expect(configStore.current.profileId, 'profile-a');
     expect(
       tester
-          .widget<DropdownButtonFormField<String>>(
+          .widget<SPDropdownButtonFormField<String>>(
             find.byKey(const Key('server-profile-selector')),
           )
           .initialValue,

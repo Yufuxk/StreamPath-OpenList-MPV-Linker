@@ -108,6 +108,55 @@ void main() {
     'isoHistory': ?isoHistory,
   };
 
+  test('下一集原位推进保留排序、recordKey 和会话并清除旧 STRM 进度', () async {
+    final first = item('E1.strm', kind: MediaLibraryKind.strm);
+    final second = item('E2.strm', kind: MediaLibraryKind.strm);
+    await store.recordPlayback(
+      first,
+      playbackSessionId: 'series',
+      playlistIndex: 0,
+      playlistCount: 2,
+    );
+    await store.updateStrmProgress(
+      sourceId: first.sourceId,
+      playbackSessionId: 'series',
+      fileName: first.name,
+      playlistIndex: 0,
+      positionMs: 30000,
+      durationMs: 120000,
+    );
+    await store.recordPlayback(item('Other.mkv'), playbackSessionId: 'other');
+    final before = await store.playbackHistory(first.sourceId, audio: false);
+    var changes = 0;
+    store.addListener(() {
+      changes++;
+    });
+    await store.advanceVideoRecord(
+      second,
+      sessionId: 'series',
+      playlistIndex: 1,
+      playlistCount: 2,
+    );
+    final after = await store.playbackHistory(first.sourceId, audio: false);
+    expect(after.map((r) => r.recordKey), before.map((r) => r.recordKey));
+    final updated = after.singleWhere((r) => r.playbackSessionId == 'series');
+    expect(updated.item, second);
+    expect(updated.updatedAt, before.last.updatedAt);
+    expect(updated.playlistIndex, 1);
+    expect(updated.strmPositionMs, 0);
+    expect(updated.strmDurationMs, isNull);
+    expect(changes, 1);
+    expect(after, hasLength(2));
+    final restarted = MediaLibraryStore.forPath(libraryFile.path);
+    expect(
+      (await restarted.playbackHistory(
+        first.sourceId,
+        audio: false,
+      )).map((r) => r.recordKey),
+      after.map((r) => r.recordKey),
+    );
+  });
+
   test('列表数量和 STRM 进度跨重启保存，切项及来源隔离拒绝旧快照', () async {
     final first = item('第一集.strm', kind: MediaLibraryKind.strm);
     await store.recordPlayback(

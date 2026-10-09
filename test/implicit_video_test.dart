@@ -147,6 +147,56 @@ void main() {
       {0, 1, 2, 4},
     );
   });
+  test(
+    'undated seasons keep episode order and place S00 after all regular seasons',
+    () {
+      final resources = [
+        resource(0, 2),
+        resource(4, 1),
+        resource(2, 1),
+        resource(1, 2),
+        resource(0, 1),
+        resource(3, 1),
+        resource(1, 1),
+      ];
+      final expected = [(1, 1), (1, 2), (2, 1), (3, 1), (4, 1), (0, 1), (0, 2)];
+      expect(
+        buildFilmVideoOrder(resources, {}).map((i) => (i.season, i.episode)),
+        expected,
+      );
+      expect(
+        buildFilmVideoTimeline(
+          resources,
+          {},
+          selectedPath: resources[3].path,
+          autoSeason: true,
+          allowGap: true,
+        ).map((i) => (i.season, i.episode)),
+        expected,
+      );
+      final dated = buildFilmVideoOrder(resources, {
+        0: {
+          'episodes': [
+            {'episode_number': 1, 'air_date': '2024-01-01'},
+          ],
+        },
+        1: {
+          'episodes': [
+            {'episode_number': 1, 'air_date': '2024-01-01'},
+          ],
+        },
+      });
+      expect(dated.map((i) => (i.season, i.episode)), [
+        (0, 1),
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (0, 2),
+      ]);
+    },
+  );
   test('人工季标记清理两媒体中心的全部版本续播，推进目标且新加入剧集默认未看', () async {
     final dir = await Directory.systemTemp.createTemp('implicit_manual_');
     final store = await FilmCatalogStore.open(p.join(dir.path, 'catalog.db'));

@@ -4,6 +4,7 @@ import '../../core/utils/clipboard_history_fix.dart';
 import '../../core/utils/clipboard_history_store.dart';
 import '../../core/utils/clipboard_service.dart';
 import '../localization/app_localizations.dart';
+import 'sp_menu.dart';
 
 /// 输入框右键菜单构建器：在系统默认菜单之前插入「剪贴板历史」区，
 /// 点击历史条目即可粘贴（不依赖系统 Win+V 注入，任何输入框可直接使用）：
@@ -19,21 +20,22 @@ Widget buildClipboardHistoryMenu(
   EditableTextState editableTextState,
 ) {
   final store = ClipboardHistoryStore.instance;
-  return AdaptiveTextSelectionToolbar.buttonItems(
-    anchors: editableTextState.contextMenuAnchors,
-    buttonItems: [
+  return buildSPSelectionToolbar(
+    context,
+    editableTextState.contextMenuAnchors,
+    [
       ...clipboardHistoryMenuItems(
         store,
         localizations: context.l10n,
         onPick: (text) {
-          Navigator.pop(context);
+          editableTextState.hideToolbar();
           ClipboardHistoryFix.injectPaste(text);
         },
         onPickCurrentClipboard: () {
-          _pasteCurrentClipboard(context);
+          _pasteCurrentClipboard(context, editableTextState);
         },
         onClearHistory: () {
-          Navigator.pop(context);
+          editableTextState.hideToolbar();
           store.clear();
         },
       ),
@@ -44,10 +46,10 @@ Widget buildClipboardHistoryMenu(
 }
 
 /// 读取系统剪贴板并粘贴到聚焦输入框（「粘贴当前剪贴板」兜底入口）。
-Future<void> _pasteCurrentClipboard(BuildContext context) async {
+Future<void> _pasteCurrentClipboard(BuildContext context, EditableTextState state) async {
   final text = await ClipboardService.instance.readPlainText();
   if (!context.mounted) return;
-  Navigator.pop(context);
+  state.hideToolbar();
   if (text != null && text.isNotEmpty) {
     ClipboardHistoryStore.instance.add(text);
     ClipboardHistoryFix.injectPaste(text);

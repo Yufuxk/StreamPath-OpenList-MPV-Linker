@@ -630,6 +630,14 @@ class AudioPlayerService {
     return liveness != PlayerProcessLiveness.exited;
   }
 
+  /// 调用方确认播放器均已退出后，等待最终进度提交。
+  Future<void> finishStoppedSessions() async {
+    await Future.wait([
+      for (final runtime in _sessions.values)
+        if (runtime.exitSyncFuture != null) runtime.exitSyncFuture!,
+    ]);
+  }
+
   Future<void> waitForExitSync(
     String sessionId, {
     Duration timeout = const Duration(seconds: 4),

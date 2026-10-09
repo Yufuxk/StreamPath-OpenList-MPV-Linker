@@ -89,7 +89,7 @@ class FilmCatalogTasks extends StatelessWidget {
                 size: 20,
               ),
               const SizedBox(width: 8),
-              const AppText('影视库任务进度'),
+              const Expanded(child: AppText('影视库任务进度')),
             ],
           ),
           const SizedBox(height: 12),
