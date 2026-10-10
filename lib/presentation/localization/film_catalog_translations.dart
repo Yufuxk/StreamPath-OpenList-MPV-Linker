@@ -1,5 +1,12 @@
 /// 影视库新增文案：繁体中文、日语、英语。
 const filmCatalogTranslations = <String, List<String>>{
+  '屏蔽文件夹名称': ['屏蔽資料夾名稱', '除外するフォルダー名', 'Excluded folder names'],
+  '使用英文逗号分隔，区分大小写；命中后跳过整个子目录': ['使用英文逗號分隔，區分大小寫；符合時略過所有子目錄', '半角コンマ区切り、大文字小文字を区別。一致するフォルダー以下を除外', 'Separate with commas; case-sensitive. Matching folders and their subfolders are skipped'],
+  '文件夹名称匹配模式': ['資料夾名稱比對模式', 'フォルダー名の一致モード', 'Folder name matching mode'],
+  '模糊匹配（包含连续关键字）': ['模糊比對（包含連續關鍵字）', '部分一致（連続した文字列を含む）', 'Partial match (contains keyword)'],
+  '精确匹配（完整名称相同）': ['精確比對（完整名稱相同）', '完全一致（名前全体が同じ）', 'Exact match (entire name)'],
+  '保存后，下次扫描或刮削时清理已入库及待整理的屏蔽资源': ['儲存後，下次掃描或刮削時清理已入庫及待整理的屏蔽資源', '保存後、次回のスキャンまたはメタデータ取得時に、登録済み・未整理の除外対象を削除', 'On the next scan or metadata scrape, remove excluded resources from the library and pending items'],
+  '保存文件夹屏蔽': ['儲存資料夾屏蔽', 'フォルダー除外を保存', 'Save folder exclusions'],
   "播放列表": ["播放清單", "プレイリスト", "Playlists"],
   "返回": ["返回", "戻る", "Back"],
   '以本列表创建播放列表': [

@@ -17,7 +17,12 @@ class FilmCatalogTasks extends StatelessWidget {
   final bool panel;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: catalog.taskChanges,
+    builder: (context, _) => _buildTasks(context),
+  );
+
+  Widget _buildTasks(BuildContext context) {
     final c = catalog;
     final tasks = Column(
       crossAxisAlignment: CrossAxisAlignment.start,

@@ -7,6 +7,8 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/data/local/directory_cache.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'dart:io';
+import 'package:streampath/core/errors/app_exception.dart';
+import 'package:streampath/data/models/media_entry.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -46,6 +48,138 @@ FilmResource resource(int season, int episode, {String? path}) =>
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
+  test('自动版本选择优先同根及同目录分支，旧快照仍可读取', () {
+    const previous = VideoQueueVersion(
+      path: 'B/Show/Season1/E1.mkv',
+      name: 'E1.mkv',
+      rootId: 2,
+    );
+    const same = VideoQueueVersion(
+      path: 'B/Show/Season2/E2.mkv',
+      name: 'E2.mkv',
+      rootId: 2,
+    );
+    const item = VideoQueueItem(
+      versions: [
+        VideoQueueVersion(
+          path: 'A/Show/Season2/E2.mkv',
+          name: 'E2.mkv',
+          rootId: 1,
+        ),
+        VideoQueueVersion(
+          path: 'B/Other/Season2/E2.mkv',
+          name: 'E2.mkv',
+          rootId: 2,
+        ),
+        same,
+      ],
+    );
+    expect(item.orderedVersions(previous).first, same);
+    expect(VideoQueueItem.fromJson(item.toJson()).versions.last.rootId, 2);
+    final old = VideoQueueItem.fromJson({
+      'versions': [
+        {'path': 'B/Show/Season1/E1.mkv', 'name': 'E1.mkv'},
+      ],
+    });
+    expect(old.versions.single.rootId, isNull);
+    expect(item.orderedVersions(old.versions.single).first, same);
+  });
+  test('自动选源仅在准备失败后尝试下一版本，并保留最后失败', () async {
+    const first = VideoQueueVersion(
+      path: 'A/E2.mkv',
+      name: 'E2.mkv',
+      rootId: 1,
+    );
+    const second = VideoQueueVersion(
+      path: 'B/E2.mkv',
+      name: 'E2.mkv',
+      rootId: 2,
+    );
+    const item = VideoQueueItem(versions: [first, second]);
+    final calls = <String>[];
+    Future<PreparedVideoItem> good(VideoQueueVersion v) async {
+      calls.add(v.path);
+      return PreparedVideoItem(entry: MediaEntry(url: v.path));
+    }
+
+    expect((await item.prepareVersion(good, preferred: second)).$1, second);
+    expect(calls, ['B/E2.mkv']);
+    calls.clear();
+    expect(
+      (await item.prepareVersion((v) async {
+        calls.add(v.path);
+        if (v == second) throw AppException.network('Connection failed');
+        return PreparedVideoItem(entry: MediaEntry(url: v.path));
+      }, preferred: second)).$1,
+      first,
+    );
+    expect(calls, ['B/E2.mkv', 'A/E2.mkv']);
+    await expectLater(
+      item.prepareVersion((v) async => throw AppException.network(v.path)),
+      throwsA(
+        isA<NetworkException>().having(
+          (e) => e.message,
+          'last failure',
+          'B/E2.mkv',
+        ),
+      ),
+    );
+    calls.clear();
+    await expectLater(
+      item.prepareVersion((v) async {
+        calls.add(v.path);
+        throw StateError('Broken invariant');
+      }),
+      throwsStateError,
+    );
+    expect(calls, ['A/E2.mkv']);
+  });
+  test('缓存准备结果不能绕过停用来源检查，全部不可用明确失败', () async {
+    const first = VideoQueueVersion(
+      path: 'A/E2.mkv',
+      name: 'E2.mkv',
+      rootId: 1,
+    );
+    const second = VideoQueueVersion(
+      path: 'B/E2.mkv',
+      name: 'E2.mkv',
+      rootId: 2,
+    );
+    const item = VideoQueueItem(versions: [first, second]);
+    final cached = {
+      'A/E2.mkv': const PreparedVideoItem(entry: MediaEntry(url: 'cached')),
+    };
+    final calls = <String>[];
+    Future<PreparedVideoItem> prepare(VideoQueueVersion v) async {
+      calls.add(v.path);
+      return PreparedVideoItem(entry: MediaEntry(url: v.path));
+    }
+
+    expect(
+      (await item.prepareVersion(
+        prepare,
+        preferred: first,
+        cached: cached,
+        isAvailable: (v) async => v.rootId == 2,
+      )).$1,
+      second,
+    );
+    expect(calls, ['B/E2.mkv']);
+    calls.clear();
+    await expectLater(
+      item.prepareVersion(
+        prepare,
+        cached: cached,
+        isAvailable: (_) async => false,
+      ),
+      throwsA(isA<ConfigException>()),
+    );
+    expect(calls, isEmpty);
+    expect(
+      (await item.prepareVersion(prepare, excluded: {'A/E2.mkv'})).$1,
+      second,
+    );
+  });
   test('新配置默认隐式，旧会话保持传统；队列快照与待播目标往返', () {
     expect(
       StreamPathConfig.fromJson({}).videoPlaylistMode,

@@ -19,6 +19,8 @@ import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/data/models/video_queue.dart';
+import 'package:streampath/data/models/video_playlist_mode.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/special_playlist_mode.dart';
 import 'package:streampath/data/models/server_profile.dart';
@@ -490,6 +492,95 @@ void main() {
         );
         expect(restoredApp.navigationLocations.pathFor(sourceId), 'Extras');
       }
+    });
+  }
+
+  for (final reportedIndex in [-1, 1]) {
+    testWidgets('待播下一集未打开时退出保留同源续播（状态 $reportedIndex）', (tester) async {
+      final sourceId = appState.mediaSourceId!;
+      final history = PlaybackHistory(
+        sessionId: 'pending-transition',
+        sourceId: sourceId,
+        dirCrumbs: const ['B'],
+        fileName: '第一集.mkv',
+        videoIndex: 0,
+        pendingVideoIndex: 1,
+        playlistFileNames: const ['第一集.mkv', '第二集.mkv'],
+        playlistRelativePaths: const ['B/第一集.mkv', 'A/第二集.mkv'],
+        queueItems: const [
+          VideoQueueItem(
+            versions: [
+              VideoQueueVersion(path: 'B/第一集.mkv', name: '第一集.mkv', rootId: 2),
+            ],
+          ),
+          VideoQueueItem(
+            versions: [
+              VideoQueueVersion(path: 'A/第二集.mkv', name: '第二集.mkv', rootId: 1),
+              VideoQueueVersion(path: 'B/第二集.mkv', name: '第二集.mkv', rootId: 2),
+            ],
+          ),
+        ],
+        videoPlaylistMode: VideoPlaylistMode.implicit,
+        updatedAt: DateTime.now().subtract(const Duration(seconds: 5)),
+        playerPid: 4242,
+        ipcPipeName: 'test-only',
+        launchEpoch: 'pending',
+      );
+      await tester.runAsync(() async {
+        await appState.playbackHistoryStore.upsert(history);
+        await libraryStore.recordPlayback(
+          MediaLibraryItem(
+            sourceId: sourceId,
+            parentPath: 'B',
+            name: history.fileName,
+            kind: MediaLibraryKind.video,
+          ),
+          playbackSessionId: history.sessionId,
+          playlistIndex: 0,
+          playlistCount: 2,
+        );
+        final cache = await AppPaths.cacheDirectory();
+        final status = File(
+          '${cache.path}${Platform.pathSeparator}${ExternalPlayerService.sessionStatusFileName(history.sessionId, launchEpoch: history.launchEpoch)}',
+        );
+        statusFiles.add(status);
+        final lines = List<String>.filled(26, '-1');
+        lines[0] = '$reportedIndex';
+        lines[1] = '';
+        lines[3] = reportedIndex == -1 ? '-1' : '119';
+        lines[4] = reportedIndex == -1 ? '-1' : '120';
+        lines[22] = '0';
+        lines[25] = '0';
+        await status.writeAsString(lines.join('\n'));
+      });
+      await tester.pumpWidget(buildBrowser());
+      await pumpUntil(
+        tester,
+        () =>
+            appState.playbackHistoryStore.sessions.isEmpty ||
+            appState.playbackHistoryStore.sessions.single.playerPid == null,
+        reason: 'Player exit must finish syncing',
+      );
+      final saved = appState.playbackHistoryStore.sessions.single;
+      expect(saved.pendingVideoIndex, 1);
+      expect(saved.videoIndex, 1);
+      expect(saved.fileName, '第二集.mkv');
+      expect(saved.playlistRelativePaths[1], 'B/第二集.mkv');
+      final persisted = await tester.runAsync(
+        () => PlaybackHistoryStore.forPath(
+          '${tempDir.path}${Platform.pathSeparator}history.json',
+        ).loadAll(),
+      );
+      expect(persisted!.single.pendingVideoIndex, 1);
+      final records = await tester.runAsync(
+        () => libraryStore.playbackHistory(sourceId, audio: false),
+      );
+      expect(records!.single.continueDismissed, false);
+      expect(records.single.item.targetPath, 'B/第二集.mkv');
+      expect(records.single.playlistIndex, 1);
+      expect(records.single.playbackSessionId, history.sessionId);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await settleBrowser(tester);
     });
   }
 

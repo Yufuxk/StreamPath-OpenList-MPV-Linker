@@ -49,7 +49,13 @@ List<VideoQueueItem> buildFilmVideoOrder(
     final (s, e) = entry.key;
     final versions =
         entry.value
-            .map((r) => VideoQueueVersion(path: r.path, name: r.name))
+            .map(
+              (r) => VideoQueueVersion(
+                path: r.path,
+                name: r.name,
+                rootId: r.rootId,
+              ),
+            )
             .toList()
           ..sort((a, b) => a.path.compareTo(b.path));
     result.add(

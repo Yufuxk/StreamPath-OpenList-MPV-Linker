@@ -100,6 +100,14 @@ class FilmCatalogScanner {
     var directories = 0;
     var files = 0;
     try {
+      final exclusions = await store.directoryExclusions();
+      _checkCancelled();
+      await store.pruneExcludedDirectories(
+        root,
+        exclusions,
+        scopePath: scope?.path,
+      );
+      _checkCancelled();
       final known = {
         if (incremental)
           for (final resource in await store.resources(rootId: root.id))
@@ -114,6 +122,7 @@ class FilmCatalogScanner {
       while (queue.isNotEmpty) {
         _checkCancelled();
         final path = queue.removeFirst();
+        if (exclusions.excludesPath(path)) continue;
         if (!visited.add(filmPathKey(path, root.sourceKind))) continue;
         report?.call(FilmScanProgress(root.id, directories, files, path));
         if (source.descriptor.kind != MediaSourceKind.local &&
@@ -164,7 +173,11 @@ class FilmCatalogScanner {
         }
         for (final entry in entries) {
           if (entry.isSelfEntry) continue;
-          if (entry.isDirectory && excludedDirectory(entry.name)) continue;
+          if (entry.isDirectory &&
+              (excludedDirectory(entry.name) ||
+                  exclusions.excludesName(entry.name))) {
+            continue;
+          }
           final playable =
               !entry.isDirectory &&
               (entry.isIso ||

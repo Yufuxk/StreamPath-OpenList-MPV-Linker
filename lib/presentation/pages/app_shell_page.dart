@@ -1,4 +1,3 @@
-import '../widgets/video_version_dialog.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -52,7 +51,7 @@ class _AppShellPageState extends State<AppShellPage>
       if (!mounted) return;
       _filmTasks = catalog;
       _filmCompletion = catalog.scrapeCompletion;
-      catalog.addListener(_filmTasksChanged);
+      catalog.taskChanges.addListener(_filmTasksChanged);
     } on FileSystemException {
       _watchingFilms = false;
       _notice('影视目录库操作失败');
@@ -117,12 +116,6 @@ class _AppShellPageState extends State<AppShellPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         final app = context.read<AppState>();
-        app.chooseVideoVersion = (item) async => mounted
-            ? showVideoVersionDialog(
-                Navigator.of(context, rootNavigator: true).context,
-                item,
-              )
-            : null;
         app.onImplicitVideoError = _notice;
         unawaited(app.restoreImplicitVideoControls());
         unawaited(_watchFilmTasks());
@@ -138,7 +131,7 @@ class _AppShellPageState extends State<AppShellPage>
     for (final chrome in _detailChrome.values) {
       chrome.dispose();
     }
-    _filmTasks?.removeListener(_filmTasksChanged);
+    _filmTasks?.taskChanges.removeListener(_filmTasksChanged);
     _hideTimer?.cancel();
     _slideProgress.dispose();
     _slideController.dispose();

@@ -288,13 +288,13 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                         child: Center(
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: FilmCoverZoom(
-                              hovered: _hovered,
-                              child: FilmWatchOverlay(
-                                store: widget.store,
-                                workId: widget.work.id,
-                                rootId: widget.rootId,
-                                sourceIds: widget.sourceIds,
+                            child: FilmWatchOverlay(
+                              store: widget.store,
+                              workId: widget.work.id,
+                              rootId: widget.rootId,
+                              sourceIds: widget.sourceIds,
+                              child: FilmCoverZoom(
+                                hovered: _hovered,
                                 child: FilmArtwork(
                                   cache: widget.cache,
                                   path: widget.work.posterPath,

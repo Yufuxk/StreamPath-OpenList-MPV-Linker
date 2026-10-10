@@ -196,10 +196,9 @@ class AppState extends ChangeNotifier {
         await importFilmWatchProgress(store);
         return store;
       }();
-  Future<VideoQueueVersion?> Function(VideoQueueItem)? chooseVideoVersion;
   void Function(String)? onImplicitVideoError;
   Future<void> restoreImplicitVideoControls() async {
-    if (_disposed || chooseVideoVersion == null) return;
+    if (_disposed) return;
     for (final film in [false, true]) {
       final histories = film
           ? _filmPlaybackHistoryStore
@@ -319,7 +318,9 @@ class AppState extends ChangeNotifier {
           items: items,
           index: history.videoIndex,
           prepare: preparer.prepare,
-          chooseVersion: (item) => chooseVideoVersion!(item),
+          isAvailable: film
+              ? (version) => store.playbackVersionAvailable(sourceId, version)
+              : null,
           activated: (i, v) => target(i, v, loaded: true),
           pending: (i) => target(i, items[i].versions.first),
           failed: (message) => onImplicitVideoError?.call(message),
@@ -1089,8 +1090,8 @@ class AppState extends ChangeNotifier {
   /// 更新关闭先等待播放器结束后的进度写入，不主动结束播放器。
   Future<bool> prepareForUpdate() async {
     if (await updateBlocked()) return false;
-    _playerService.stopImplicitPlaybackControl();
-    _filmPlayerService?.stopImplicitPlaybackControl();
+    await _playerService.stopImplicitPlaybackControl();
+    await _filmPlayerService?.stopImplicitPlaybackControl();
     await _playerService.finishStoppedSessions();
     await _filmPlayerService?.finishStoppedSessions();
     await _audioPlayerService?.finishStoppedSessions();
@@ -1103,8 +1104,8 @@ class AppState extends ChangeNotifier {
     catalogWritesSuspended = true;
     await _filmImportFinished;
     _filmScanScheduler?.stop();
-    _playerService.stopImplicitPlaybackControl();
-    _filmPlayerService?.stopImplicitPlaybackControl();
+    await _playerService.stopImplicitPlaybackControl();
+    await _filmPlayerService?.stopImplicitPlaybackControl();
     _filmCatalogValue?.cancel();
     _filmCatalogValue?.mediaProbe?.stop();
     // 先解除服务器请求等待，再等待扫描提交取消状态。
@@ -1624,8 +1625,8 @@ class AppState extends ChangeNotifier {
         await (await _mediaConnections!).close();
       }());
     }
-    _playerService.stopImplicitPlaybackControl();
-    _filmPlayerService?.stopImplicitPlaybackControl();
+    unawaited(_playerService.stopImplicitPlaybackControl());
+    unawaited(_filmPlayerService?.stopImplicitPlaybackControl());
     _filmCatalogValue?.mediaProbe?.stop();
     if (_filmCatalog != null) {
       unawaited(

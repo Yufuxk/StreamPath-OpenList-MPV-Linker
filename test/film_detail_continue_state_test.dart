@@ -65,6 +65,7 @@ void main() {
           ),
         );
         final catalog = await app.getFilmCatalog();
+        await app.initializeFilmPlayback();
         final rootId = await catalog.store.addRoot(
           sourceId: 'local:fixture',
           kind: MediaSourceKind.local,
@@ -127,6 +128,12 @@ void main() {
             playlistRelativePaths: const ['TV/E1.mkv', 'TV/E2.mkv'],
           ),
         );
+        await (film ? app.filmProgressService : progress).saveProgress(
+          url: app.resolveMediaLibraryTarget(resources.first.playbackItem)!,
+          positionMs: 30000,
+          durationMs: 120000,
+          profileId: 'local:fixture',
+        );
         return (dir, app, catalog, progress, records, resources);
       });
       final (dir, app, catalog, progress, records, resources) = prepared!;
@@ -148,6 +155,28 @@ void main() {
         );
         await settle(tester);
         expect(find.text('继续播放'), findsOneWidget);
+        final continueProgress = find.descendant(
+          of: find.byType(FilmContinueCard),
+          matching: find.byType(LinearProgressIndicator),
+        );
+        expect(continueProgress, findsOneWidget);
+        expect(
+          tester.widget<LinearProgressIndicator>(continueProgress).value,
+          .25,
+        );
+        await tester.runAsync(
+          () => (film ? app.filmProgressService : progress).saveProgress(
+            url: app.resolveMediaLibraryTarget(resources.first.playbackItem)!,
+            positionMs: 60000,
+            durationMs: 120000,
+            profileId: 'local:fixture',
+          ),
+        );
+        await settle(tester);
+        expect(
+          tester.widget<LinearProgressIndicator>(continueProgress).value,
+          .5,
+        );
         expect(
           tester
               .widget<FilmContinueCard>(find.byType(FilmContinueCard))
@@ -169,6 +198,7 @@ void main() {
           find.byType(FilmContinueCard),
         );
         expect(advanced.record.item.name, 'E2.mkv');
+        expect(continueProgress, findsNothing);
         advanced.onTap();
         expect(selected!.item.name, 'E2.mkv');
         expect(selected!.playbackSessionId, 'series');

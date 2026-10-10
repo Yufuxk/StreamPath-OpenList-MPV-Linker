@@ -107,7 +107,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
 
   void _bind(FilmCatalogStore value) {
     _store = value;
-    value.addListener(_scheduleLoad);
+    value.watchChanges.addListener(_scheduleLoad);
     _load();
   }
 
@@ -115,7 +115,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   void didUpdateWidget(FilmWatchOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.store != oldWidget.store && widget.store != null) {
-      _store?.removeListener(_scheduleLoad);
+      _store?.watchChanges.removeListener(_scheduleLoad);
       _bind(widget.store!);
       return;
     }
@@ -138,7 +138,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   void dispose() {
     ++_generation;
     _loadTimer?.cancel();
-    _store?.removeListener(_scheduleLoad);
+    _store?.watchChanges.removeListener(_scheduleLoad);
     super.dispose();
   }
 
@@ -201,6 +201,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    final fraction = widget.fallbackFraction ?? _state?.fraction;
     final blocked =
         widget.spoilerSensitive &&
         (_store?.spoilerProtection ?? false) &&
@@ -244,17 +245,15 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
             ),
           ),
         if (widget.showStatus &&
-            (_state?.status == FilmWatchStatus.inProgress ||
-                _state == null && (widget.fallbackFraction ?? 0) > 0))
+            (widget.fallbackFraction != null
+                ? fraction! > 0
+                : _state?.status == FilmWatchStatus.inProgress))
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: IgnorePointer(
-              child: LinearProgressIndicator(
-                value: _state?.fraction ?? widget.fallbackFraction,
-                minHeight: 4,
-              ),
+              child: LinearProgressIndicator(value: fraction, minHeight: 4),
             ),
           ),
       ],

@@ -210,9 +210,11 @@ end)
     String? playlistPath,
     bool deferUntilPlaylistChange = false,
     List<int>? initialPlaylistIds,
+    int? queueGeneration,
     required AppLanguage language,
     required String sessionId,
   }) {
+    final matchEntryId = queueGeneration != null;
     final rows = <String>[];
     for (var i = 0; i < entries.length; i++) {
       final tracks = entries[i].externalAudioTracks
@@ -245,9 +247,15 @@ local function playlist_ids(list)
     for i, item in ipairs(list) do ids[i] = tostring(item.id) end
     return table.concat(ids, ',')
 end
-local initial_ids = ${initialPlaylistIds == null ? "playlist_ids(mp.get_property_native('playlist') or {})" : _luaQuote(initialPlaylistIds.join(','))}
+local initial_ids = ${matchEntryId
+            ? _luaQuote((initialPlaylistIds ?? []).join(','))
+            : initialPlaylistIds == null
+            ? "playlist_ids(mp.get_property_native('playlist') or {})"
+            : _luaQuote(initialPlaylistIds.join(','))}
 local owned_ids = nil
+${matchEntryId ? _singleEntryIdentityLua(queueGeneration) : ''}
 local function owns_file()
+    if $matchEntryId then return owns_single_entry(FILES[0].path, initial_ids) end
     if PLAYLIST ~= '' then
         local actual = mp.get_property('playlist-path', nil)
         if actual then
@@ -265,7 +273,7 @@ local function owns_file()
             owned_ids = ids
         end
     end
-    local entry = FILES[mp.get_property_number('playlist-pos', -1)]
+    local entry = FILES[${matchEntryId ? '0' : "mp.get_property_number('playlist-pos', -1)"}]
     return entry and entry.path == mp.get_property('path', '')
 end
 local function reset()
@@ -294,7 +302,7 @@ mp.register_event('playback-restart', function()
     if started or not owns_file() then return end
     started = true
     local epoch = generation
-    local entry = FILES[mp.get_property_number('playlist-pos', -1)]
+    local entry = FILES[${matchEntryId ? '0' : "mp.get_property_number('playlist-pos', -1)"}]
     local index = 0
     local function load_next()
         if epoch ~= generation or not owns_file() then return end
@@ -329,6 +337,33 @@ end)
   }
 
   // ── 多集播放列表（m3u） ─────────────────────────────────────
+
+  static String _singleEntryIdentityLua(int generation) =>
+      '''
+local queue_utils = require 'mp.utils'
+local QUEUE_GENERATION = $generation
+local owned_entry_id = nil
+local function owns_single_entry(expected, initial_ids)
+    local list = mp.get_property_native('playlist') or {}
+    local item = list[mp.get_property_number('playlist-pos', -1) + 1]
+    if not item or item.filename ~= expected then return false end
+    if owned_entry_id and owned_entry_id ~= item.id then return false end
+    local options = mp.get_property_native('options/script-opts') or {}
+    local plan = queue_utils.parse_json(options['streampath-queue'] or '')
+    local entry = nil
+    for _, candidate in ipairs(plan and plan.entries or {}) do
+        if candidate.generation == QUEUE_GENERATION then entry = candidate; break end
+    end
+    if not entry then return false end
+    if entry.entry_id and entry.entry_id ~= item.id then return false end
+    if owned_entry_id then return item.id == owned_entry_id end
+    for id in (initial_ids or ''):gmatch('[^,]+') do
+        if tonumber(id) == item.id then return false end
+    end
+    owned_entry_id = item.id
+    return true
+end
+''';
 
   /// 写入多集 m3u 播放列表，每集三行：
   /// ```
@@ -376,7 +411,9 @@ end)
     required bool autoSelect,
     required String sessionId,
     List<int>? initialPlaylistIds,
+    int? queueGeneration,
   }) async {
+    final matchEntryId = queueGeneration != null;
     final paths = <String>[];
     final titles = <String>[];
     final subs = <String>[];
@@ -418,7 +455,9 @@ ${subs.join('\n')}
 ${subTitles.join('\n')}
 ${langs.join('\n')}
 ${fonts.join('\n')}
+${matchEntryId ? _singleEntryIdentityLua(queueGeneration) : ''}
 local function owns_playlist()
+    if $matchEntryId then return owns_single_entry(PATHS[0], INITIAL_IDS) end
     local actual = mp.get_property("playlist-path", nil)
     if actual then return actual:gsub("\\\\", "/"):lower() == PLAYLIST:gsub("\\\\", "/"):lower() end
     local list = mp.get_property_native("playlist") or {}
@@ -436,7 +475,7 @@ local function owns_playlist()
 end
 mp.add_hook("on_load", 5, function()
     if not owns_playlist() then return end
-    local pos = mp.get_property_number("playlist-pos", -1)
+    local pos = ${matchEntryId ? '0' : 'mp.get_property_number("playlist-pos", -1)'}
     local directory = FONT_DIRS[pos]
     if directory and mp.get_property("sub-fonts-dir", nil) ~= nil then
         mp.set_property("file-local-options/sub-fonts-dir", directory)
@@ -444,7 +483,7 @@ mp.add_hook("on_load", 5, function()
 end)
 mp.register_event("file-loaded", function()
     if not owns_playlist() then return end
-    local pos = mp.get_property_number("playlist-pos", -1)
+    local pos = ${matchEntryId ? '0' : 'mp.get_property_number("playlist-pos", -1)'}
     local title = TITLES[pos]
     if title then mp.set_property("force-media-title", title) end
     local subtitle = SUBS[pos]
@@ -606,6 +645,9 @@ local logical_index = nil
 local queue_finished = false
 local file_loaded_current = false
 local file_generation = 0
+local playlist_entry_id = nil
+local queued_entry, queue_hook = nil, nil
+local queue_suspended = false
 local function queue_position()
     return logical_index or mp.get_property_number("playlist-pos", -1)
 end
@@ -633,6 +675,7 @@ local function append_progress(outcome, reason, file_error)
         playlist_pos = last_playlist_pos,
         queue_generation = queue_generation,
         file_generation = file_generation,
+        playlist_entry_id = playlist_entry_id,
         catalog_path = catalog_path,
         recorded_at = math.floor(wall_clock_base + mp.get_time() * 1000),
         path = last_path,
@@ -845,14 +888,48 @@ local function write_status(use_cached_progress, skip_diagnostics)
     end
 end
 
-mp.register_event("start-file", function()
+if QUEUE ~= '' then
+    local f = assert(io.open(QUEUE, 'r'))
+    local initial = f:read('*a')
+    f:close()
+    mp.commandv('change-list', 'script-opts', 'set', 'streampath-queue=%' .. #initial .. '%' .. initial)
+end
+local function read_queue()
+    local options = mp.get_property_native('options/script-opts') or {}
+    return utils.parse_json(options['streampath-queue'] or '')
+end
+local function matches_queue_entry(entry, item)
+    if entry.entry_id then return entry.entry_id == item.id end
+    if entry.url ~= item.filename then return false end
+    for _, id in ipairs(entry.initial_ids or {}) do
+        if id == item.id then return false end
+    end
+    return true
+end
+mp.register_event("start-file", function(event)
     file_loaded_current = false
     file_generation = file_generation + 1
+    playlist_entry_id = event.playlist_entry_id
+    queued_entry = nil
     if QUEUE ~= "" then
-        local f = io.open(QUEUE, "r")
-        local plan = f and utils.parse_json(f:read("*a") or "") or nil
-        if f then f:close() end
-        if plan then
+        local plan = read_queue()
+        logical_index, queue_generation, catalog_path = nil, nil, nil
+        if plan and plan.version == 2 then
+            local list = mp.get_property_native('playlist') or {}
+            for _, item in ipairs(list) do
+                if item.id == playlist_entry_id then
+                    for _, entry in ipairs(plan.entries) do
+                        if matches_queue_entry(entry, item) then queued_entry = entry; break end
+                    end
+                    break
+                end
+            end
+            if queued_entry then
+                logical_index = queued_entry.index
+                queue_generation = queued_entry.generation
+                catalog_path = queued_entry.catalog_path
+            end
+        elseif plan then
             logical_index = plan.index
             queue_generation = plan.generation
             catalog_path = plan.catalog_path
@@ -877,9 +954,55 @@ mp.register_event("start-file", function()
     if pos >= 0 then last_playlist_pos = pos end
     if path ~= "" then last_path = path end
 end)
+local function continue_queue_hook()
+    local waiting = queue_hook
+    queue_hook = nil
+    if waiting then waiting.hook:cont() end
+end
+mp.add_hook('on_load', 0, function(hook)
+    if not queued_entry or not queued_entry.check_before_load then return end
+    if queue_suspended then mp.commandv('stop'); return end
+    hook:defer()
+    queue_hook = {hook=hook, generation=queue_generation, file_generation=file_generation}
+    append_progress('loading', nil, nil)
+end)
+mp.register_script_message('streampath-queue-continue', function(generation, file, start)
+    if not queue_hook or queue_hook.generation ~= tonumber(generation) or
+        queue_hook.file_generation ~= tonumber(file) then return end
+    mp.set_property('file-local-options/start', start)
+    continue_queue_hook()
+end)
+mp.register_script_message('streampath-queue-abort', function()
+    if not queue_hook then return end
+    mp.commandv('stop')
+    continue_queue_hook()
+end)
+mp.observe_property('playback-abort', 'bool', function(_, value)
+    if value then continue_queue_hook() end
+end)
+mp.register_script_message('streampath-queue-suspend', function()
+    queue_suspended = true
+    local keep = playlist_entry_id
+    if queue_hook then
+        keep = nil
+        mp.commandv('stop')
+        continue_queue_hook()
+    end
+    local plan = read_queue()
+    if not plan or plan.version ~= 2 then return end
+    local list = mp.get_property_native('playlist') or {}
+    for i = #list, 1, -1 do
+        if list[i].id ~= keep then
+            for _, entry in ipairs(plan.entries) do
+                if matches_queue_entry(entry, list[i]) then mp.commandv('playlist-remove', i - 1); break end
+            end
+        end
+    end
+end)
+mp.register_script_message('streampath-queue-resume', function() queue_suspended = false end)
 mp.register_event("file-loaded", function()
     file_loaded_current = true
-    mp.set_property_native("fullscreen", true)
+    if QUEUE == "" then mp.set_property_native("fullscreen", true) end
     has_loaded = true
     entry_started = true
     write_media_info()

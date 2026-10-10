@@ -201,6 +201,48 @@ class PlaybackRecoveryEvent {
   final PlayerLaunchResult? launchResult;
 }
 
+class _ImplicitQueueEntry {
+  _ImplicitQueueEntry({
+    required this.index,
+    required this.generation,
+    required this.catalogPath,
+    required this.url,
+    required this.playlist,
+    this.initialIds = const [],
+    this.checkBeforeLoad = false,
+    this.entryId,
+  });
+
+  final int index, generation;
+  final String catalogPath, url, playlist;
+  final List<int> initialIds;
+  final bool checkBeforeLoad;
+  int? entryId;
+
+  Map<String, dynamic> toJson() => {
+    'index': index,
+    'generation': generation,
+    'catalog_path': catalogPath,
+    'url': url,
+    'playlist': playlist,
+    'initial_ids': initialIds,
+    'check_before_load': checkBeforeLoad,
+    'entry_id': entryId,
+  };
+
+  factory _ImplicitQueueEntry.fromJson(Map<String, dynamic> json) =>
+      _ImplicitQueueEntry(
+        index: json['index'] as int,
+        generation: json['generation'] as int,
+        catalogPath: json['catalog_path'] as String,
+        url: json['url'] as String,
+        playlist: json['playlist'] as String,
+        initialIds: (json['initial_ids'] as List).cast<int>(),
+        checkBeforeLoad: json['check_before_load'] as bool,
+        entryId: json['entry_id'] as int?,
+      );
+}
+
 class _PlayerSessionRuntime {
   _PlayerSessionRuntime({
     required this.sessionId,
@@ -236,9 +278,14 @@ class _PlayerSessionRuntime {
   ImplicitVideoPlan? implicitPlan;
   String? queueFilePath;
   int queueGeneration = 0;
+  int queueSerial = 0;
+  bool rollingQueue = false;
+  final Map<int, _ImplicitQueueEntry> queueEntries = {};
   int queueOffset = 0;
   bool queueBusy = false;
+  bool queueWindowBusy = false;
   int? pendingQueueIndex;
+  final Set<String> queueAttemptedPaths = {};
   final Set<int> completedQueueGenerations = {};
   final String sessionId;
   final int? pid;
@@ -768,6 +815,15 @@ class ExternalPlayerService {
     final queueFile = implicit
         ? p.join(scriptBase!.path, 'mpv-queue-$artifactSessionId.json')
         : null;
+    final initialQueueEntry = implicit
+        ? _ImplicitQueueEntry(
+            index: implicitPlan.index,
+            generation: 0,
+            catalogPath: entries.first.catalogPath!,
+            url: authUrl(entries.first.url),
+            playlist: playlistPath!,
+          )
+        : null;
     if (queueFile != null) {
       await File(queueFile).writeAsString(
         jsonEncode({
@@ -775,6 +831,9 @@ class ExternalPlayerService {
           'generation': 0,
           'catalog_path': entries.first.catalogPath,
           'playlist': playlistPath,
+          'version': 2,
+          'serial': 0,
+          'entries': [initialQueueEntry!.toJson()],
         }),
         flush: true,
       );
@@ -1030,6 +1089,7 @@ class ExternalPlayerService {
           subtitleInjectionEnabled: subtitleInjectionEnabled,
           autoSelect: subtitleAutoSelectEnabled,
           sessionId: '${artifactSessionId}_current',
+          queueGeneration: implicit ? 0 : null,
         );
         artifactPaths.add(currentResources);
         args.add('--script=$currentResources');
@@ -1071,6 +1131,7 @@ class ExternalPlayerService {
             deferUntilPlaylistChange: audioSeason.id != artifactSessionId,
             language: launchContext.language,
             sessionId: audioSeason.id,
+            queueGeneration: implicit ? 0 : null,
           );
           artifactPaths.add(audioScript);
           await ensureOwned();
@@ -1348,6 +1409,8 @@ class ExternalPlayerService {
     if (implicit) {
       runtime.implicitPlan = implicitPlan;
       runtime.queueFilePath = queueFile;
+      runtime.rollingQueue = true;
+      runtime.queueEntries[0] = initialQueueEntry!;
       final first = entries.first;
       runtime.entries
         ..clear()
@@ -2772,8 +2835,18 @@ class ExternalPlayerService {
   bool _queueControlEnabled = true;
 
   /// 应用退出后保留当前 MPV，停止应用管理的后续切集。
-  void stopImplicitPlaybackControl() {
+  Future<void> stopImplicitPlaybackControl() async {
     _queueControlEnabled = false;
+    for (final runtime in _sessions.values.toList()) {
+      if (!runtime.rollingQueue) continue;
+      try {
+        await _sendQueueMessage(runtime, ['streampath-queue-suspend']);
+      } on StateError {
+        // 播放器已退出时无需再撤回后继。
+      } on TimeoutException {
+        // IPC 断开时播放器由原进程存活检测收尾。
+      }
+    }
   }
 
   Future<void> attachImplicitPlan(
@@ -2811,7 +2884,15 @@ class ExternalPlayerService {
     runtime.password = password;
     runtime.webDavFontLoader = fontLoader;
     runtime.webDavFontFileLoader = fontFileLoader;
-    // 重启只恢复控制入口，历史 EOF 不触发自动播放。
+    if (runtime.rollingQueue) {
+      await _sendQueueMessage(runtime, ['streampath-queue-resume']);
+      for (final entry in runtime.queueEntries.values) {
+        plan.selected[entry.index] = plan.items[entry.index].versions
+            .firstWhere((version) => version.path == entry.catalogPath);
+      }
+    }
+    // 历史 EOF 只恢复待播位置；存活的加载握手由新宿主接管。
+    Map<String, dynamic>? waitingLoad;
     if (runtime.progressFilePath != null &&
         await File(runtime.progressFilePath!).exists()) {
       final file = File(runtime.progressFilePath!);
@@ -2819,12 +2900,30 @@ class ExternalPlayerService {
       runtime.queueOffset = chunk.nextOffset;
       for (final line in chunk.lines) {
         final record = jsonDecode(line) as Map<String, dynamic>;
+        if (runtime.rollingQueue &&
+            record['epoch'] == runtime.launchEpoch &&
+            runtime.queueEntries.containsKey(record['queue_generation'])) {
+          if (record['outcome'] == 'loading') {
+            waitingLoad = record;
+          } else if (waitingLoad?['file_generation'] ==
+                  record['file_generation'] &&
+              (record['outcome'] == 'loaded' || record['reason'] != null)) {
+            waitingLoad = null;
+          }
+        }
         if (record['epoch'] != runtime.launchEpoch ||
             record['queue_generation'] != runtime.queueGeneration) {
           continue;
         }
         await _reportJournalProgress(runtime, record);
-        if (record['outcome'] == 'completed' && record['reason'] == 'eof') {
+        if (record['outcome'] == 'loaded') {
+          final index = (record['playlist_pos'] as num).toInt();
+          plan.index = index;
+          runtime.currentPlaylistPos = index;
+          runtime.pendingQueueIndex = null;
+          await plan.activated(index, plan.selected[index]!);
+        } else if (record['outcome'] == 'completed' &&
+            record['reason'] == 'eof') {
           final next = (record['playlist_pos'] as int) + 1;
           if (next < plan.items.length) {
             runtime.pendingQueueIndex = next;
@@ -2836,7 +2935,17 @@ class ExternalPlayerService {
         }
       }
     }
+    if (waitingLoad != null) {
+      final entry = runtime.queueEntries[waitingLoad['queue_generation']]!;
+      if (!await _allowQueuedVideo(runtime, entry, waitingLoad)) {
+        await _selectImplicitEntry(runtime, entry.index, retry: true);
+      }
+    }
     unawaited(_watchImplicitQueue(runtime));
+    if (runtime.rollingQueue && runtime.pendingQueueIndex == null) {
+      await _trimImplicitWindow(runtime);
+      unawaited(_prepareFollowingVideo(runtime, plan.index));
+    }
   }
 
   Future<void> _prepareFollowingVideo(
@@ -2844,21 +2953,24 @@ class ExternalPlayerService {
     int index,
   ) async {
     final plan = runtime.implicitPlan!;
+    final generation = runtime.queueGeneration;
     plan.prepared.removeWhere(
       (path, _) =>
           !plan.items[index].versions.any((v) => v.path == path) &&
           !(index + 1 < plan.items.length &&
               plan.items[index + 1].versions.any((v) => v.path == path)),
     );
-    if (index + 1 >= plan.items.length ||
-        plan.items[index + 1].unavailable ||
-        plan.items[index + 1].versions.length != 1) {
+    if (index + 1 >= plan.items.length || plan.items[index + 1].unavailable) {
       return;
     }
-    final version = plan.items[index + 1].versions.single;
-    if (plan.prepared.containsKey(version.path)) return;
     try {
-      var prepared = await plan.prepare(version);
+      final (version, ready) = await plan.items[index + 1].prepareVersion(
+        plan.prepare,
+        preferred: plan.selected[index],
+        isAvailable: plan.isAvailable,
+        cached: plan.prepared,
+      );
+      var prepared = ready;
       final fonts = await _queuedFontDirectory(
         runtime,
         prepared,
@@ -2873,8 +2985,16 @@ class ExternalPlayerService {
       }
       if (_queueControlEnabled &&
           identical(_sessions[runtime.sessionId], runtime) &&
-          plan.index == index) {
+          plan.index == index &&
+          runtime.queueGeneration == generation) {
         plan.prepared[version.path] = prepared;
+        if (runtime.rollingQueue) {
+          await _selectImplicitEntry(
+            runtime,
+            index + 1,
+            appendFromGeneration: generation,
+          );
+        }
       }
     } on AppException {
       return;
@@ -2951,14 +3071,23 @@ class ExternalPlayerService {
         );
         runtime.queueOffset = chunk.nextOffset;
         for (final line in chunk.lines) {
+          if (!_queueControlEnabled ||
+              !identical(_sessions[runtime.sessionId], runtime)) {
+            return;
+          }
           final record = jsonDecode(line) as Map<String, dynamic>;
+          final generation = (record['queue_generation'] as num?)?.toInt();
+          final queued = runtime.queueEntries[generation];
           if (record['epoch'] != runtime.launchEpoch ||
-              record['queue_generation'] != runtime.queueGeneration) {
+              (runtime.rollingQueue
+                  ? queued == null
+                  : generation != runtime.queueGeneration)) {
             continue;
           }
           final plan = runtime.implicitPlan!;
           final index = (record['playlist_pos'] as num).toInt();
           if (index < 0 || index >= plan.items.length) continue;
+          if (queued != null && queued.index != index) continue;
           final physical = record['path'] as String? ?? '';
           if (physical.isNotEmpty &&
               !_sameTrack(
@@ -2967,11 +3096,27 @@ class ExternalPlayerService {
               )) {
             continue;
           }
-          if (record['outcome'] == 'loaded') {
+          if (record['outcome'] == 'loading' && queued != null) {
+            if (!await _allowQueuedVideo(runtime, queued, record)) {
+              if (_queueControlEnabled &&
+                  identical(runtime.queueEntries[generation], queued)) {
+                await _selectImplicitEntry(runtime, index, retry: true);
+              }
+            }
+          } else if (record['outcome'] == 'loaded') {
+            if (queued != null) {
+              queued.entryId = (record['playlist_entry_id'] as num).toInt();
+              runtime.queueGeneration = queued.generation;
+              runtime.currentSeasonPlaylistPath = queued.playlist;
+              plan.selected[index] = plan.items[index].versions.firstWhere(
+                (version) => version.path == queued.catalogPath,
+              );
+            }
             plan.index = index;
             runtime.currentPlaylistPos = index;
             runtime.pendingQueueIndex = null;
             await plan.activated(index, plan.selected[index]!);
+            if (runtime.rollingQueue) await _trimImplicitWindow(runtime);
             unawaited(_prepareFollowingVideo(runtime, index));
           } else if (record['outcome'] == 'completed' &&
               record['reason'] == 'eof' &&
@@ -2980,12 +3125,25 @@ class ExternalPlayerService {
                     runtime.queueGeneration,
               )) {
             await _reportJournalProgress(runtime, record);
+            while (runtime.queueWindowBusy && _queueControlEnabled) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+            if (!_queueControlEnabled ||
+                (runtime.rollingQueue &&
+                    !identical(runtime.queueEntries[generation], queued))) {
+              continue;
+            }
             if (runtime.queueBusy) continue;
             final next = index + 1;
             if (next < plan.items.length) {
               runtime.pendingQueueIndex = next;
               await plan.pending?.call(next);
-              await _selectImplicitEntry(runtime, next);
+              if (!runtime.rollingQueue ||
+                  !runtime.queueEntries.values.any(
+                    (entry) => entry.index == next && entry.entryId != null,
+                  )) {
+                await _selectImplicitEntry(runtime, next);
+              }
             } else {
               await _finishImplicitQueue(runtime);
               return;
@@ -2994,7 +3152,15 @@ class ExternalPlayerService {
             if (record['reason'] == 'error') {
               runtime.pendingQueueIndex = index;
               await plan.pending?.call(index);
-              if (runtime.launchContext?.recovery.enabled != true) {
+              final failedVersion = plan.selected[index];
+              if (failedVersion != null) {
+                runtime.queueAttemptedPaths.add(failedVersion.path);
+              }
+              if (plan.items[index].versions.any(
+                (v) => !runtime.queueAttemptedPaths.contains(v.path),
+              )) {
+                await _selectImplicitEntry(runtime, index, retry: true);
+              } else if (runtime.launchContext?.recovery.enabled != true) {
                 plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
               }
             }
@@ -3020,6 +3186,171 @@ class ExternalPlayerService {
       }
     } finally {
       await controller.dispose();
+    }
+  }
+
+  Future<void> _sendQueueMessage(
+    _PlayerSessionRuntime runtime,
+    List<String> message,
+  ) async {
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (await controller.connect(timeout: const Duration(seconds: 2))) {
+        await controller.command(['script-message', ...message]);
+      }
+    } finally {
+      await controller.dispose();
+    }
+  }
+
+  Future<void> _writeImplicitQueue(
+    _PlayerSessionRuntime runtime,
+    MpvSessionController controller,
+  ) async {
+    final current = runtime.queueEntries[runtime.queueGeneration]!;
+    final file = File(runtime.queueFilePath!);
+    final temporary = File('${file.path}.tmp');
+    final payload = jsonEncode({
+      ...current.toJson(),
+      'version': 2,
+      'serial': runtime.queueSerial,
+      'entries': runtime.queueEntries.values
+          .map((entry) => entry.toJson())
+          .toList(),
+    });
+    await temporary.writeAsString(payload, flush: true);
+    await temporary.rename(file.path);
+    try {
+      await controller.command([
+        'change-list',
+        'script-opts',
+        'set',
+        'streampath-queue=%${utf8.encode(payload).length}%$payload',
+      ]);
+    } on TimeoutException {
+      // 队列可能包含认证地址，异常不携带完整参数。
+      throw TimeoutException('MPV queue mapping update timed out');
+    }
+  }
+
+  Future<bool> _allowQueuedVideo(
+    _PlayerSessionRuntime runtime,
+    _ImplicitQueueEntry entry,
+    Map<String, dynamic> record,
+  ) async {
+    while (runtime.queueBusy && _queueControlEnabled) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    if (!_queueControlEnabled ||
+        !identical(_sessions[runtime.sessionId], runtime) ||
+        !identical(runtime.queueEntries[entry.generation], entry)) {
+      return true;
+    }
+    runtime.queueBusy = true;
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    runtime.queueWindowBusy = true;
+    try {
+      final plan = runtime.implicitPlan!;
+      final version = plan.items[entry.index].versions.firstWhere(
+        (version) => version.path == entry.catalogPath,
+      );
+      runtime.pendingQueueIndex = entry.index;
+      runtime.queueAttemptedPaths
+        ..clear()
+        ..add(version.path);
+      plan.selected[entry.index] = version;
+      await plan.pending?.call(entry.index);
+      if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+        return true;
+      }
+      final list = await controller.getProperty('playlist') as List;
+      final pos = (await controller.getProperty('playlist-pos') as num).toInt();
+      if (pos < 0 || (list[pos] as Map)['id'] != record['playlist_entry_id']) {
+        return true;
+      }
+      if (plan.isAvailable != null && !await plan.isAvailable!(version)) {
+        await _sendQueueMessage(runtime, ['streampath-queue-abort']);
+        return false;
+      }
+      if (!_queueControlEnabled ||
+          !identical(_sessions[runtime.sessionId], runtime)) {
+        return true;
+      }
+      runtime.queueGeneration = entry.generation;
+      runtime.currentSeasonPlaylistPath = entry.playlist;
+      entry.entryId = (record['playlist_entry_id'] as num).toInt();
+      runtime.trackGeneration++;
+      runtime.currentTrackUrl = null;
+      await _writeImplicitQueue(runtime, controller);
+      await _writeSeasonEntries(runtime);
+      final progress = await _progressService?.getResumeProgress(
+        runtime.entries[entry.index].url,
+        profileId: runtime.profileId,
+      );
+      final start =
+          runtime.launchContext!.player.resumeEnabled &&
+              progress != null &&
+              !progress.isFinishedNearEnd()
+          ? (progress.resumeSeconds ?? 0)
+          : 0;
+      await _sendQueueMessage(runtime, [
+        'streampath-queue-continue',
+        '${entry.generation}',
+        '${record['file_generation']}',
+        '$start',
+      ]);
+      return true;
+    } on AppException catch (error) {
+      await _sendQueueMessage(runtime, ['streampath-queue-abort']);
+      runtime.implicitPlan!.failed?.call(error.message);
+      return true;
+    } on FileSystemException catch (error) {
+      await _sendQueueMessage(runtime, ['streampath-queue-abort']);
+      runtime.implicitPlan!.failed?.call(error.message);
+      return true;
+    } finally {
+      await controller.dispose();
+      runtime.queueBusy = false;
+      runtime.queueWindowBusy = false;
+    }
+  }
+
+  Future<void> _trimImplicitWindow(_PlayerSessionRuntime runtime) async {
+    if (runtime.queueBusy || !_queueControlEnabled) return;
+    runtime.queueBusy = true;
+    runtime.queueWindowBusy = true;
+    final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+    try {
+      if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+        return;
+      }
+      final list = await controller.getProperty('playlist') as List;
+      final pos = (await controller.getProperty('playlist-pos') as num).toInt();
+      final current = runtime.queueEntries[runtime.queueGeneration]!;
+      if (pos < 0 || (list[pos] as Map)['id'] != current.entryId) return;
+      final retired = runtime.queueEntries.values
+          .where(
+            (entry) =>
+                entry.generation != current.generation &&
+                (entry.index != current.index + 1 ||
+                    !list.any((item) => (item as Map)['id'] == entry.entryId)),
+          )
+          .toList();
+      final ids = retired.map((entry) => entry.entryId).toSet();
+      for (var i = list.length - 1; i >= 0; i--) {
+        if (ids.contains((list[i] as Map)['id'])) {
+          await controller.command(['playlist-remove', i]);
+        }
+      }
+      for (final entry in retired) {
+        runtime.queueEntries.remove(entry.generation);
+      }
+      await _writeImplicitQueue(runtime, controller);
+      await _writeSeasonEntries(runtime);
+    } finally {
+      await controller.dispose();
+      runtime.queueBusy = false;
+      runtime.queueWindowBusy = false;
     }
   }
 
@@ -3104,43 +3435,60 @@ class ExternalPlayerService {
     _PlayerSessionRuntime runtime,
     int index, {
     String? versionPath,
+    bool retry = false,
+    int? appendFromGeneration,
   }) async {
     final plan = runtime.implicitPlan!;
+    final append = appendFromGeneration != null;
+    while (!append && runtime.queueWindowBusy && _queueControlEnabled) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
     if (!_queueControlEnabled ||
         runtime.queueBusy ||
         index < 0 ||
-        index >= plan.items.length) {
+        index >= plan.items.length ||
+        (append &&
+            (runtime.queueGeneration != appendFromGeneration ||
+                plan.index + 1 != index ||
+                runtime.pendingQueueIndex != null ||
+                runtime.queueEntries.values.any(
+                  (entry) => entry.index == index,
+                )))) {
       return false;
     }
     runtime.queueBusy = true;
-    runtime.pendingQueueIndex = index;
+    runtime.queueWindowBusy = append;
+    if (!append) runtime.pendingQueueIndex = index;
+    if (!append && !retry) runtime.queueAttemptedPaths.clear();
     try {
-      await plan.pending?.call(index);
+      if (!append) await plan.pending?.call(index);
       final item = plan.items[index];
       if (item.unavailable) {
         plan.failed?.call('播放列表条目不可用，请检查来源或资源');
         return false;
       }
-      final version =
-          (versionPath == null
-              ? null
-              : item.versions.firstWhere((v) => v.path == versionPath)) ??
-          plan.selected[index] ??
-          (item.versions.length == 1
-              ? item.versions.single
-              : await plan.chooseVersion(item));
-      if (version == null) return false;
-      final prepared = plan.prepared[version.path] ??= await plan.prepare(
-        version,
+      final preferred = versionPath == null
+          ? plan.selected[plan.index]
+          : item.versions.firstWhere((v) => v.path == versionPath);
+      final (version, prepared) = await item.prepareVersion(
+        plan.prepare,
+        preferred: preferred,
+        isAvailable: plan.isAvailable,
+        cached: plan.prepared,
+        excluded: append ? const {} : runtime.queueAttemptedPaths,
       );
+      if (!append) runtime.queueAttemptedPaths.add(version.path);
       if (!_queueControlEnabled ||
           !identical(_sessions[runtime.sessionId], runtime)) {
         return false;
       }
+      plan.prepared[version.path] = prepared;
       final entry = prepared.entry;
-      await syncActiveProgress(runtime.sessionId);
+      if (!append) await syncActiveProgress(runtime.sessionId);
       final base = await _scriptBase();
-      final generation = runtime.queueGeneration + 1;
+      final generation = runtime.rollingQueue
+          ? ++runtime.queueSerial
+          : runtime.queueGeneration + 1;
       final id = '${runtime.artifactSessionId}_item$generation';
       final context = runtime.launchContext!;
       String auth(String url) =>
@@ -3174,6 +3522,7 @@ class ExternalPlayerService {
           initialPlaylistIds: [
             for (final item in oldPlaylist) (item as Map)['id'] as int,
           ],
+          queueGeneration: runtime.rollingQueue ? generation : null,
         );
         runtime.artifactPaths.addAll([playlist, resources]);
         await controller.command(['load-script', resources]);
@@ -3190,61 +3539,110 @@ class ExternalPlayerService {
             ],
             language: context.language,
             sessionId: id,
+            queueGeneration: runtime.rollingQueue ? generation : null,
           );
           runtime.artifactPaths.add(script);
           await controller.command(['load-script', script]);
         }
-        final progress = await _progressService?.getResumeProgress(
-          entry.url,
-          profileId: runtime.profileId,
-        );
-        await controller.setProperty(
-          'options/start',
-          context.player.resumeEnabled &&
-                  progress != null &&
-                  !progress.isFinishedNearEnd()
-              ? (progress.resumeSeconds ?? 0).toString()
-              : '0',
-        );
+        if (!append) {
+          final progress = await _progressService?.getResumeProgress(
+            entry.url,
+            profileId: runtime.profileId,
+          );
+          await controller.setProperty(
+            'options/start',
+            context.player.resumeEnabled &&
+                    progress != null &&
+                    !progress.isFinishedNearEnd()
+                ? (progress.resumeSeconds ?? 0).toString()
+                : '0',
+          );
+        }
         runtime.entries[index] = entry;
         runtime.watchLaterUrls[index] = auth(entry.url);
-        runtime.queueGeneration = generation;
-        runtime.trackGeneration++;
-        runtime.currentTrackUrl = null;
+        if (!append) {
+          runtime.queueGeneration = generation;
+          runtime.trackGeneration++;
+          runtime.currentTrackUrl = null;
+          runtime.currentSeasonPlaylistPath = playlist;
+        }
         plan.selected[index] = version;
-        runtime.currentSeasonPlaylistPath = playlist;
-        final queueFile = File(runtime.queueFilePath!);
-        await queueFile.writeAsString(
-          jsonEncode({
-            'index': index,
-            'generation': generation,
-            'catalog_path': version.path,
-            'playlist': playlist,
-          }),
-          flush: true,
-        );
-        await _writeSeasonEntries(runtime);
-        await controller.setProperty('fullscreen', true);
-        await controller.command(['loadlist', playlist, 'replace']);
-        await controller.setProperty('pause', false);
+        if (runtime.rollingQueue) {
+          if (!append) runtime.queueEntries.clear();
+          final queued = _ImplicitQueueEntry(
+            index: index,
+            generation: generation,
+            catalogPath: version.path,
+            url: auth(entry.url),
+            playlist: playlist,
+            initialIds: [
+              for (final item in oldPlaylist) (item as Map)['id'] as int,
+            ],
+            checkBeforeLoad: append,
+          );
+          runtime.queueEntries[generation] = queued;
+          await _writeImplicitQueue(runtime, controller);
+          await _writeSeasonEntries(runtime);
+          if (!_queueControlEnabled) return false;
+          if (!append) {
+            await controller.command([
+              'script-message',
+              'streampath-queue-abort',
+            ]);
+          }
+          await controller.command([
+            'loadlist',
+            playlist,
+            append ? 'append-play' : 'replace',
+          ]);
+          final list = await controller.getProperty('playlist') as List;
+          if (!_queueControlEnabled ||
+              !identical(_sessions[runtime.sessionId], runtime)) {
+            return false;
+          }
+          queued.entryId =
+              (list.singleWhere(
+                        (item) =>
+                            !queued.initialIds.contains((item as Map)['id']),
+                      )
+                      as Map)['id']
+                  as int;
+          await _writeImplicitQueue(runtime, controller);
+        } else {
+          final queueFile = File(runtime.queueFilePath!);
+          await queueFile.writeAsString(
+            jsonEncode({
+              'index': index,
+              'generation': generation,
+              'catalog_path': version.path,
+              'playlist': playlist,
+            }),
+            flush: true,
+          );
+          await _writeSeasonEntries(runtime);
+          await controller.command(['loadlist', playlist, 'replace']);
+        }
+        if (!append) await controller.setProperty('pause', false);
       } finally {
         await controller.dispose();
       }
       return true;
     } on AppException catch (error) {
-      plan.failed?.call(error.message);
+      if (!append) plan.failed?.call(error.message);
       return false;
     } on FileSystemException catch (error) {
-      plan.failed?.call(error.message);
+      if (!append) plan.failed?.call(error.message);
       return false;
     } on StateError catch (error) {
-      plan.failed?.call(error.message);
+      if (append) rethrow;
+      if (!append) plan.failed?.call(error.message);
       return false;
     } on TimeoutException {
-      plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
+      if (!append) plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
       return false;
     } finally {
       runtime.queueBusy = false;
+      runtime.queueWindowBusy = false;
     }
   }
 
@@ -3307,6 +3705,23 @@ class ExternalPlayerService {
     );
     runtime.queueFilePath = json['queueFile'] as String?;
     runtime.queueGeneration = (json['queueGeneration'] as num?)?.toInt() ?? 0;
+    runtime.queueSerial = runtime.queueGeneration;
+    if (runtime.queueFilePath != null) {
+      final queue =
+          jsonDecode(await File(runtime.queueFilePath!).readAsString())
+              as Map<String, dynamic>;
+      runtime.rollingQueue = queue['version'] == 2;
+      if (runtime.rollingQueue) {
+        runtime.queueGeneration = queue['generation'] as int;
+        runtime.queueSerial = queue['serial'] as int;
+        for (final value in queue['entries'] as List) {
+          final entry = _ImplicitQueueEntry.fromJson(
+            value as Map<String, dynamic>,
+          );
+          runtime.queueEntries[entry.generation] = entry;
+        }
+      }
+    }
     runtime.seasonStageNumber = (json['stageNumber'] as num?)?.toInt() ?? 1;
     runtime.restoredExternalAudioInjectionEnabled =
         json['externalAudioInjectionEnabled'] as bool?;

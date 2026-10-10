@@ -872,6 +872,47 @@ void main() {
     );
   });
 
+  test(
+    'image budget accounting resets after clear and directory recreation',
+    () async {
+      final tmdb = TmdbMetadataService(
+        credentials: _MemoryToken(),
+        dio: Dio()
+          ..httpClientAdapter = _ApiAdapter((_) async => _imageConfig()),
+      );
+      addTearDown(tmdb.close);
+      final directory = Directory(p.join(temp.path, 'accounted_images'));
+      final cache = FilmCatalogImageCache(
+        directory,
+        tmdb,
+        budgetBytes: 8,
+        dio: Dio()..httpClientAdapter = _ImageAdapter(bytes: [1, 2, 3, 4]),
+        validateImage: (_) async {},
+      );
+      addTearDown(cache.close);
+      await cache.get('/one.jpg');
+      await cache.get('/two.jpg');
+      await cache.clear();
+      final three = await cache.get('/three.jpg');
+      final four = await cache.get('/four.jpg');
+      expect(await three.exists(), isTrue);
+      expect(await four.exists(), isTrue);
+      await directory.delete(recursive: true);
+      final five = await cache.get('/five.jpg');
+      await five.setLastModified(DateTime.utc(2020));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      final six = await cache.get('/six.jpg');
+      await six.setLastModified(DateTime.utc(2021));
+      expect(await five.exists(), isTrue);
+      expect(await six.exists(), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      final seven = await cache.get('/seven.jpg');
+      expect(await five.exists(), isFalse);
+      expect(await six.exists(), isTrue);
+      expect(await seven.exists(), isTrue);
+    },
+  );
+
   test('旧 JSON 默认目录，新单项范围跨 copyWith 和 JSON 保存且 stableKey 不变', () {
     const old = MediaLibraryItem(
       sourceId: 'dav',

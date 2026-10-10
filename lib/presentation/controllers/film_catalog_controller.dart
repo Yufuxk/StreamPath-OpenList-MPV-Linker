@@ -19,6 +19,7 @@ import '../../domain/services/film_file_metadata.dart';
 import '../../domain/services/film_catalog_scanner.dart';
 import '../../domain/services/tmdb_metadata_service.dart';
 import 'film_media_probe_controller.dart';
+import '../../data/models/film_directory_exclusions.dart';
 
 class FilmCatalogController extends ChangeNotifier {
   FilmCatalogController({
@@ -64,18 +65,28 @@ class FilmCatalogController extends ChangeNotifier {
   );
   List<FilmWork> works = [];
   List<FilmCatalogRoot> roots = [];
+  FilmDirectoryExclusions _directoryExclusions =
+      const FilmDirectoryExclusions();
   List<FilmCatalogRoot> get enabledRoots =>
       roots.where((root) => root.enabled).toList();
 
-  bool isItemEnabled(MediaLibraryItem item) => !roots.any(
-    (root) =>
-        !root.enabled &&
-        root.sourceId == item.sourceId &&
-        filmPathWithin(
-          filmPathKey(item.discRootPath ?? item.targetPath, root.sourceKind),
-          filmPathKey(root.path, root.sourceKind),
-        ),
-  );
+  bool isItemEnabled(MediaLibraryItem item) =>
+      (item.sourceKind.isMediaServer ||
+          !_directoryExclusions.excludesPath(
+            item.discRootPath ?? item.parentPath,
+          )) &&
+      !roots.any(
+        (root) =>
+            !root.enabled &&
+            root.sourceId == item.sourceId &&
+            filmPathWithin(
+              filmPathKey(
+                item.discRootPath ?? item.targetPath,
+                root.sourceKind,
+              ),
+              filmPathKey(root.path, root.sourceKind),
+            ),
+      );
   List<FilmCollection> collections = [];
   final Map<String, String?> collectionCovers = {};
   FilmMediaType? type;
@@ -95,6 +106,8 @@ class FilmCatalogController extends ChangeNotifier {
   bool busy = false;
   bool cancelling = false;
   bool _closed = false;
+  final _taskChanges = ChangeNotifier();
+  Listenable get taskChanges => _taskChanges;
   int pendingCount = 0;
   int _queryGeneration = 0;
   (FilmMediaType?, String, int?, bool, String?)? _loadedFilter;
@@ -140,7 +153,13 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _notify() {
-    if (!_closed) notifyListeners();
+    if (_closed) return;
+    notifyListeners();
+    _taskChanges.notifyListeners();
+  }
+
+  void _notifyTaskProgress() {
+    if (!_closed) _taskChanges.notifyListeners();
   }
 
   void _changed() {
@@ -171,6 +190,7 @@ class FilmCatalogController extends ChangeNotifier {
       final rootList = (await store.roots())
           .where((root) => sourceId == null || root.sourceId == sourceId)
           .toList();
+      final exclusions = await store.directoryExclusions();
       if (_closed || generation != _queryGeneration) return;
       if (rootId != null && !rootList.any((r) => r.id == rootId && r.enabled)) {
         rootId = null;
@@ -194,6 +214,7 @@ class FilmCatalogController extends ChangeNotifier {
       works = more ? [...works, ...page] : page;
       _loadedFilter = filter;
       roots = rootList;
+      _directoryExclusions = exclusions;
       hasMore = page.length == limit;
       _notify();
       // 海报墙翻页和筛选不等待主页栏目与来源封面。
@@ -386,7 +407,7 @@ class FilmCatalogController extends ChangeNotifier {
               scope: scope,
               onProgress: (value) {
                 progress = value;
-                _notify();
+                _notifyTaskProgress();
               },
               onEntries: (entries) async {
                 _queueScraping(metadata, entries);
@@ -512,26 +533,60 @@ class FilmCatalogController extends ChangeNotifier {
         continue;
       }
       final job = _scrapeQueue.first;
-      final key = filmPathKey(job.entry.path, job.session.root.sourceKind);
       _scrapeBarrier = Completer<void>();
       try {
-        await job.session.prepare([job.entry]);
-        if (_closed) return;
-        if (job.session.paused) {
-          scrapeError = job.session.error;
-          scrapePaused = true;
-          _notify();
-          continue;
+        final jobs = <_FilmScrapeJob>[];
+        final matches = <String, FilmScanMatch>{};
+        final preparation = Stopwatch()..start();
+        final limit =
+            job.session.root.type == FilmMediaType.tv &&
+                job.session.files?.localMode != true
+            ? 12
+            : 1;
+        final candidates = _scrapeQueue.take(limit).toList();
+        try {
+          for (final next in candidates) {
+            if (next.session != job.session ||
+                next.entry.parentPath != job.entry.parentPath ||
+                (jobs.isNotEmpty &&
+                    (_closed ||
+                        _writesSuspended ||
+                        scrapePaused ||
+                        preparation.elapsedMilliseconds >= 16))) {
+              break;
+            }
+            final key = filmPathKey(
+              next.entry.path,
+              next.session.root.sourceKind,
+            );
+            await next.session.prepare([next.entry]);
+            if (_closed) break;
+            if (next.session.paused) {
+              scrapeError = next.session.error;
+              scrapePaused = true;
+              _notify();
+              break;
+            }
+            final match = next.session.matches[key];
+            // 每个 NFO 可能更新同一作品资料，保持逐项保存与合并顺序。
+            if (match?.origin == 'nfo' && jobs.isNotEmpty) break;
+            jobs.add(next);
+            if (match != null) matches[key] = match;
+            if (match?.origin == 'nfo') break;
+          }
+        } finally {
+          // 已准备好的前缀独立提交；错误项与剩余输入保留在队列中。
+          if (jobs.isNotEmpty) {
+            await store.applyMetadata(job.session.root.id, matches);
+            scrapedCount += matches.length;
+            for (var i = 0; i < jobs.length; i++) {
+              _scrapeQueue.removeFirst();
+            }
+            scrapeProcessed += jobs.length;
+            scrapeError ??= job.session.error;
+            _notifyTaskProgress();
+          }
         }
-        final match = job.session.matches[key];
-        if (match != null) {
-          await store.applyMetadata(job.session.root.id, {key: match});
-          scrapedCount++;
-        }
-        scrapeError ??= job.session.error;
-        _scrapeQueue.removeFirst();
-        scrapeProcessed++;
-        _notify();
       } on DatabaseException {
         scrapeError = 'catalogStorageFailed';
         scrapePaused = true;
@@ -560,6 +615,8 @@ class FilmCatalogController extends ChangeNotifier {
     }
     _beginScrapeInput();
     try {
+      final exclusions = await store.directoryExclusions();
+      await store.pruneExcludedDirectories(root, exclusions);
       final session = await _scrapeSession(root);
       final resources = await store.resources(
         rootId: root.id,
@@ -609,6 +666,7 @@ class FilmCatalogController extends ChangeNotifier {
       _scrapeSessions.clear();
       _scrapeSeen.clear();
       if (ownsResources) await store.close();
+      _taskChanges.dispose();
       super.dispose();
     }
   }

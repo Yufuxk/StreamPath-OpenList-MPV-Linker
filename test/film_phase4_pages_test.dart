@@ -21,6 +21,7 @@ import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/local_root_config.dart';
+import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
@@ -271,6 +272,147 @@ void main() {
       );
     });
   }
+
+  testWidgets(
+    'continue checkpoint stays above title with unchanged card geometry',
+    (tester) async {
+      await prepare(tester);
+      final record = MediaLibraryRecord(
+        item: resources.first.playbackItem,
+        updatedAt: DateTime.now(),
+      );
+      await tester.pumpWidget(
+        frame(
+          Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: FilmContinueCard.landscapeWidth,
+                height: FilmContinueCard.landscapeHeight,
+                child: FilmContinueCard(
+                  catalog: c,
+                  record: record,
+                  positionMs: 30000,
+                  durationMs: 120000,
+                  onTap: () {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      final card = find.byType(FilmContinueCard);
+      final bar = find.descendant(
+        of: card,
+        matching: find.byType(LinearProgressIndicator),
+      );
+      expect(bar, findsOneWidget);
+      expect(tester.widget<LinearProgressIndicator>(bar).value, .25);
+      expect(tester.getSize(card), const Size(300, 220));
+      final cover = find.descendant(
+        of: card,
+        matching: find.byType(FilmWatchOverlay),
+      );
+      expect(tester.getRect(bar).bottom, tester.getRect(cover).bottom);
+      final title = find
+          .descendant(of: card, matching: find.byType(Text))
+          .first;
+      expect(tester.getRect(bar).bottom, lessThan(tester.getRect(title).top));
+      await render(tester, 'continue-progress');
+    },
+  );
+
+  testWidgets(
+    'cover markers stay outside hover zoom and retain rounded clipping',
+    (tester) async {
+      await prepare(tester);
+      final work = (await tester.runAsync(
+        () => c.store.work(resources.first.workId!),
+      ))!;
+      await tester.pumpWidget(
+        frame(
+          Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 220,
+                height: 350,
+                child: FilmWorkCard(
+                  work: work,
+                  cache: c.images,
+                  store: c.store,
+                  onTap: () {},
+                  onMenu: (_) {},
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      final card = find.byType(FilmWorkCard);
+      final overlay = find.descendant(
+        of: card,
+        matching: find.byType(FilmWatchOverlay),
+      );
+      expect(
+        find.ancestor(of: overlay, matching: find.byType(FilmCoverZoom)),
+        findsNothing,
+      );
+      final corner = find.descendant(
+        of: overlay,
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is CustomPaint &&
+              w.painter.runtimeType.toString() == '_UnwatchedCorner',
+        ),
+      );
+      expect(corner, findsOneWidget);
+      final cornerRect = tester.getRect(corner);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(card));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.getRect(corner), cornerRect);
+      expect(
+        tester
+            .widget<AnimatedScale>(
+              find.descendant(of: card, matching: find.byType(AnimatedScale)),
+            )
+            .scale,
+        1.04,
+      );
+      await tester.runAsync(
+        () => c.store.recordVideoProgress(
+          VideoProgressUpdate(
+            sourceId: resources.first.sourceId,
+            path: resources.first.path,
+            positionMs: 30000,
+            durationMs: 120000,
+            recordedAt: DateTime.now(),
+          ),
+        ),
+      );
+      await settle(tester);
+      final bar = find.descendant(
+        of: overlay,
+        matching: find.byType(LinearProgressIndicator),
+      );
+      expect(tester.widget<LinearProgressIndicator>(bar).value, .25);
+      final barRect = tester.getRect(bar);
+      await mouse.moveTo(Offset.zero);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.getRect(bar), barRect);
+      final clip = find
+          .ancestor(of: overlay, matching: find.byType(ClipRRect))
+          .first;
+      expect(
+        tester.widget<ClipRRect>(clip).borderRadius,
+        BorderRadius.circular(8),
+      );
+      await mouse.removePointer();
+      await render(tester, 'fixed-cover-markers');
+    },
+  );
 
   testWidgets('收藏封面与标题年份在窗口、放大及高 DPI 下保持同一左边界', (tester) async {
     await prepare(tester);

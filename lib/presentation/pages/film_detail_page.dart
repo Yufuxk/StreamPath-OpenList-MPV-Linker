@@ -14,6 +14,8 @@ import 'package:provider/provider.dart';
 
 import '../../data/models/film_catalog_item.dart';
 import '../../data/local/media_library_store.dart';
+import '../../data/local/playback_progress_db.dart';
+import '../../domain/services/iso_playback_service.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_source.dart';
 import '../controllers/film_catalog_controller.dart';
@@ -78,6 +80,9 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
   int? _activeSeason;
   bool _expandedOverview = false;
   MediaLibraryRecord? _continueRecord;
+  int? _continuePositionMs, _continueDurationMs;
+  final _progressReaders = <PlaybackProgressReader>[];
+  final _isoReaders = <IsoLibraryProgressReader>[];
   late final List<MediaLibraryStore> _playbackStores;
   bool _favorite = false;
   bool _loading = true;
@@ -90,6 +95,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     _work = widget.initialWork;
     widget.catalog.store.addListener(_load);
     final app = context.read<AppState>();
+    unawaited(_listenToProgress(app));
     _playbackStores = [
       app.filmMediaLibraryStore,
       app.mediaLibraryStore,
@@ -104,12 +110,81 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
 
   @override
   void dispose() {
+    ++_generation;
+    for (final reader in _progressReaders) {
+      reader.removeListener(_progressChanged);
+    }
+    for (final reader in _isoReaders) {
+      reader.removeLibraryProgressListener(_load);
+    }
     widget.catalog.store.removeListener(_load);
     for (final store in _playbackStores) {
       store.removeListener(_load);
     }
     _scroll.dispose();
     super.dispose();
+  }
+
+  Future<void> _listenToProgress(AppState app) async {
+    await app.initializeFilmPlayback();
+    if (!mounted) return;
+    _progressReaders.addAll([app.progressService, app.filmProgressService]);
+    _isoReaders.addAll([
+      app.localDiscPlaybackService,
+      app.filmLocalDiscPlaybackService,
+      ?app.isoPlaybackService,
+      ?app.filmIsoPlaybackService,
+    ]);
+    for (final reader in _progressReaders) {
+      reader.addListener(_progressChanged);
+    }
+    for (final reader in _isoReaders) {
+      reader.addLibraryProgressListener(_load);
+    }
+  }
+
+  void _progressChanged(PlaybackProgressChange change) {
+    if (change.affectsAll ||
+        change.profileId == _continueRecord?.item.sourceId) {
+      _load();
+    }
+  }
+
+  Future<(int?, int?)> _continueProgress(
+    AppState app,
+    MediaLibraryRecord record,
+    bool film,
+  ) async {
+    final item = record.item;
+    if (item.kind == MediaLibraryKind.strm) {
+      return (record.strmPositionMs, record.strmDurationMs);
+    }
+    final target = app.resolveMediaLibraryTarget(item, allowLogicalPath: true);
+    if (target == null) return (null, null);
+    if (item.kind == MediaLibraryKind.iso) {
+      if (item.playbackMode == PlaybackMode.webdavHdmvMenu) return (null, null);
+      final IsoLibraryProgressReader? reader =
+          item.sourceKind == MediaSourceKind.local
+          ? film
+                ? app.filmLocalDiscPlaybackService
+                : app.localDiscPlaybackService
+          : film
+          ? app.filmIsoPlaybackService
+          : app.isoPlaybackService;
+      final progress = await reader?.getLibraryProgress(
+        profileId: item.sourceId,
+        resolvedUrl: target,
+        playbackMode: item.playbackMode,
+      );
+      return (
+        progress?.position.inMilliseconds,
+        progress?.duration?.inMilliseconds,
+      );
+    }
+    final progress =
+        await (film ? app.filmProgressService : app.progressService)
+            .getResumeProgress(target, profileId: item.sourceId);
+    return (progress?.positionMs, progress?.durationMs);
   }
 
   Widget _metadata(FilmWork work, List<String> tags) {
@@ -181,6 +256,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
   }
 
   Future<void> _load() async {
+    final app = context.read<AppState>();
     final generation = ++_generation;
     await widget.catalog.run(() async {
       final work = await widget.catalog.store.work(widget.workId);
@@ -193,27 +269,35 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
       );
       if (!mounted) return;
       final records = <MediaLibraryRecord>[];
+      final filmRecords = <MediaLibraryRecord>{};
       final paths = {for (final r in resources) '${r.sourceId}\u0000${r.path}'};
       for (final library in _playbackStores) {
         for (final source in resources.map((r) => r.sourceId).toSet()) {
           for (final iso in [false, true]) {
-            records.addAll(
-              (await library.playbackHistory(
-                source,
-                audio: false,
-                iso: iso,
-              )).where(
-                (record) =>
-                    !record.continueDismissed &&
-                    paths.contains(
-                      '${record.item.sourceId}\u0000${record.item.targetPath}',
-                    ),
-              ),
-            );
+            final matching =
+                (await library.playbackHistory(source, audio: false, iso: iso))
+                    .where(
+                      (record) =>
+                          !record.continueDismissed &&
+                          paths.contains(
+                            '${record.item.sourceId}\u0000${record.item.targetPath}',
+                          ),
+                    )
+                    .toList();
+            records.addAll(matching);
+            if (library == app.filmMediaLibraryStore) {
+              filmRecords.addAll(matching);
+            }
           }
         }
       }
       records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      await app.initializeFilmPlayback();
+      if (!mounted || generation != _generation) return;
+      final record = records.firstOrNull;
+      final (positionMs, durationMs) = record == null
+          ? (null, null)
+          : await _continueProgress(app, record, filmRecords.contains(record));
       final seasons = <int, Map<String, dynamic>>{};
       final probes = <int, Map<String, dynamic>?>{};
       for (final resource in resources) {
@@ -233,6 +317,8 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
           _favorite = favorite;
           _resources = resources;
           _continueRecord = records.firstOrNull;
+          _continuePositionMs = positionMs;
+          _continueDurationMs = durationMs;
           _seasons = seasons;
           _probes = probes;
           final numbers = resources.map((r) => r.season).toSet().toList()
@@ -459,6 +545,8 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
           child: FilmContinueCard(
             catalog: widget.catalog,
             record: record,
+            positionMs: _continuePositionMs,
+            durationMs: _continueDurationMs,
             onMenu: widget.onContinueMenu == null
                 ? null
                 : (position) => widget.onContinueMenu!(record, position),
@@ -604,17 +692,22 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                     GestureDetector(
                                       onSecondaryTapDown: (details) =>
                                           _posterMenu(details.globalPosition),
-                                      child: FilmWatchOverlay(
-                                        rootId: widget.catalog.rootId,
-                                        store: c.store,
-                                        workId: work.id,
-                                        child: FilmArtwork(
-                                          key: const Key('film-detail-poster'),
-                                          cache: c.images,
-                                          path: work.posterPath,
-                                          fallbackPath: work.posterPath,
-                                          target: 'w500',
-                                          width: 180,
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: FilmWatchOverlay(
+                                          rootId: widget.catalog.rootId,
+                                          store: c.store,
+                                          workId: work.id,
+                                          child: FilmArtwork(
+                                            key: const Key(
+                                              'film-detail-poster',
+                                            ),
+                                            cache: c.images,
+                                            path: work.posterPath,
+                                            fallbackPath: work.posterPath,
+                                            target: 'w500',
+                                            width: 180,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -889,13 +982,17 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                                       store: c.store,
                                                       workId: work.id,
                                                       season: number,
-                                                      child: FilmArtwork(
-                                                        cache: c.images,
-                                                        path:
-                                                            (_seasons[number]?['poster_path']
-                                                                as String?) ??
-                                                            work.posterPath,
-                                                        borderRadius: 0,
+                                                      child: ClipRect(
+                                                        child: FilmCoverZoom(
+                                                          child: FilmArtwork(
+                                                            cache: c.images,
+                                                            path:
+                                                                (_seasons[number]?['poster_path']
+                                                                    as String?) ??
+                                                                work.posterPath,
+                                                            borderRadius: 0,
+                                                          ),
+                                                        ),
                                                       ),
                                                     ),
                                                     Padding(
@@ -1274,12 +1371,16 @@ class FilmEpisodeCard extends StatelessWidget {
                 resource: resource,
                 spoilerSensitive: tv,
                 canReveal: false,
-                child: FilmArtwork(
-                  cache: catalog.images,
-                  path: still ?? artworkPath,
-                  target: still != null ? 'w300' : 'w780',
-                  aspectRatio: 16 / 9,
-                  borderRadius: 0,
+                child: ClipRect(
+                  child: FilmCoverZoom(
+                    child: FilmArtwork(
+                      cache: catalog.images,
+                      path: still ?? artworkPath,
+                      target: still != null ? 'w300' : 'w780',
+                      aspectRatio: 16 / 9,
+                      borderRadius: 0,
+                    ),
+                  ),
                 ),
               ),
               Padding(

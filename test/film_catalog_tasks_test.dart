@@ -14,10 +14,12 @@ import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/tmdb_credential_store.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/data/models/film_directory_exclusions.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
+import 'package:streampath/domain/services/film_catalog_scanner.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
 import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
 import 'package:streampath/domain/services/webdav_service.dart';
@@ -26,6 +28,178 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/widgets/film_catalog_tasks.dart';
 
 void main() {
+  test('folder exclusions use literal contiguous names and exact case', () {
+    expect(FilmDirectoryExclusions.parseNames(' Specials, , 特典,Specials '), [
+      'Specials',
+      '特典',
+    ]);
+    const fuzzy = FilmDirectoryExclusions(names: ['特典', 'Specials']);
+    expect(fuzzy.excludesPath('TV/作品特典/Child'), isTrue);
+    expect(fuzzy.excludesName('特别典藏'), isFalse);
+    expect(fuzzy.excludesName('specials'), isFalse);
+    const exact = FilmDirectoryExclusions(names: ['Specials'], exact: true);
+    expect(exact.excludesPath('TV/Specials/Child'), isTrue);
+    expect(exact.excludesName('Extra Specials'), isFalse);
+  });
+
+  for (final action in [
+    'scan',
+    'incremental scan',
+    'scrape',
+    'incremental scrape',
+  ]) {
+    test(
+      'folder exclusion prunes bound and pending resources for $action',
+      () async {
+        final readPaths = <String>[];
+        final fixture = await _Fixture.create(
+          (path) async {
+            readPaths.add(path);
+            if (path == 'Movies') {
+              return [
+                _file('Movies/A.2020.mkv'),
+                _file('Movies/Specials.mkv'),
+                _file('Movies/Specials', directory: true),
+                _file('Movies/Extra Specials', directory: true),
+              ];
+            }
+            if (path == 'Movies/Extra Specials') {
+              return [_file('$path/D.2020.mkv')];
+            }
+            fail('Excluded folder was read: $path');
+          },
+          type: FilmMediaType.tv,
+          credentials: _NoToken(),
+        );
+        final c = fixture.controller;
+        try {
+          await fixture.inventory([
+            'Movies/A.2020.mkv',
+            'Movies/Specials/B.2020.mkv',
+            'Movies/Specials/Child/C.2020.mkv',
+            'Movies/Extra Specials/D.2020.mkv',
+          ]);
+          final rows = await c.store.resources();
+          final kept = rows.firstWhere((r) => r.name == 'A.2020.mkv');
+          final blocked = rows.firstWhere((r) => r.name == 'B.2020.mkv');
+          await c.store.bind(
+            [kept, blocked],
+            const FilmWork(
+              type: FilmMediaType.tv,
+              tmdbId: 1,
+              title: 'Shared',
+              originalTitle: 'Shared',
+              overview: '',
+              language: 'en',
+            ),
+          );
+          final workId = (await c.store.resourceAt('dav', kept.path))!.workId!;
+          await c.store.setFavorite(workId, true);
+          await c.store.setPreference(
+            'directory_exclusions',
+            const FilmDirectoryExclusions(
+              names: ['Specials'],
+              exact: true,
+            ).toJson(),
+          );
+          if (action.contains('scrape')) {
+            await c.scrape(
+              fixture.root,
+              incremental: action.startsWith('incremental'),
+            );
+          } else {
+            await c.scan(
+              fixture.root,
+              incremental: action.startsWith('incremental'),
+            );
+          }
+          await c.waitForScraping();
+          final remaining = await c.store.resources();
+          expect(
+            remaining.any(
+              (r) =>
+                  r.parentPath == 'Movies/Specials' ||
+                  r.parentPath.startsWith('Movies/Specials/'),
+            ),
+            isFalse,
+          );
+          expect((await c.store.resourceAt('dav', kept.path))!.id, kept.id);
+          expect(
+            await c.store.resourceAt('dav', 'Movies/Extra Specials/D.2020.mkv'),
+            isNotNull,
+          );
+          expect(await c.store.isFavorite(workId), isTrue);
+          expect(
+            (await c.store.resources(
+              pending: true,
+            )).any((r) => r.parentPath.startsWith('Movies/Specials')),
+            isFalse,
+          );
+          expect(
+            readPaths.any(
+              (p) => p == 'Movies/Specials' || p.startsWith('Movies/Specials/'),
+            ),
+            isFalse,
+          );
+          if (action.contains('scrape')) expect(readPaths, isEmpty);
+          if (action.contains('scan')) {
+            expect(
+              await c.store.resourceAt('dav', 'Movies/Specials.mkv'),
+              isNotNull,
+            );
+          }
+          await c.refresh();
+          expect(c.isItemEnabled(blocked.playbackItem), isFalse);
+          expect(c.isItemEnabled(kept.playbackItem), isTrue);
+        } finally {
+          await fixture.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'fuzzy scope scan skips root and prunes only the selected subtree',
+    () async {
+      final fixture = await _Fixture.create(
+        (path) async => fail('Excluded scope was read: $path'),
+      );
+      try {
+        final store = fixture.controller.store;
+        await fixture.inventory([
+          'Movies/Extra Specials/A.mkv',
+          'Movies/Specials/B.mkv',
+          'Movies/Keep/C.mkv',
+        ]);
+        await store.setPreference(
+          'directory_exclusions',
+          const FilmDirectoryExclusions(names: ['Specials']).toJson(),
+        );
+        await fixture.controller.scan(
+          fixture.root,
+          scope: FilmScanScope(fixture.root.id, 'Movies/Extra Specials'),
+        );
+        expect(
+          await store.resourceAt('dav', 'Movies/Extra Specials/A.mkv'),
+          isNull,
+        );
+        expect(
+          (await store.resourceAt(
+            'dav',
+            'Movies/Specials/B.mkv',
+          ))!.availability,
+          'present',
+        );
+        expect(
+          (await store.resourceAt('dav', 'Movies/Keep/C.mkv'))!.availability,
+          'present',
+        );
+        expect(fixture.dav.reads, 0);
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
   test('任务结束释放刮削临时对象并保留结果与完成计数', () async {
     final fixture = await _Fixture.create(
       (_) async => [_file('Movies/A.2020.mkv')],
@@ -60,6 +234,183 @@ void main() {
   });
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
+
+  test(
+    'cached episode scraping publishes task progress without rebuilding the library',
+    () async {
+      final fixture = await _Fixture.create(
+        (_) async => throw StateError('Unexpected directory read'),
+        type: FilmMediaType.tv,
+      );
+      addTearDown(fixture.close);
+      final c = fixture.controller;
+      await fixture.inventory([
+        for (var i = 1; i <= 72; i++) 'Movies/Show.S01E$i.mkv',
+      ]);
+      await c.store.bind(
+        await c.store.resources(),
+        const FilmWork(
+          type: FilmMediaType.tv,
+          tmdbId: 1,
+          title: 'Show',
+          originalTitle: 'Show',
+          overview: '',
+          language: 'zh-CN',
+        ),
+      );
+      final rows = await c.store.resources();
+      await c.store.mapEpisodes({
+        for (var i = 0; i < rows.length; i++) rows[i]: (1, i + 1),
+      });
+      await c.store.saveSeason(rows.first.workId!, 1, 'zh-CN', {
+        'episodes': [],
+      });
+      await c.refresh();
+      var libraryUpdates = 0, taskUpdates = 0, storeUpdates = 0;
+      c.addListener(() => libraryUpdates++);
+      c.taskChanges.addListener(() => taskUpdates++);
+      c.store.addListener(() => storeUpdates++);
+      await c.scrape(fixture.root);
+      await c.waitForScraping();
+      expect(c.scrapeProcessed, 72);
+      expect(c.scrapedCount, 72);
+      expect(c.scrapeCompletion, 1);
+      expect(storeUpdates, 0);
+      expect(libraryUpdates, lessThan(12));
+      expect(taskUpdates, greaterThan(libraryUpdates));
+      expect(fixture.dav.reads, 0);
+    },
+  );
+
+  test(
+    'a batch commits its prepared prefix before pausing and resumes the remaining episode',
+    () async {
+      final fixture = await _Fixture.create(
+        (_) async => [],
+        type: FilmMediaType.tv,
+        api: (o) async => o.path.contains('/season/')
+            ? {'season_number': 1, 'episodes': []}
+            : {
+                'id': 2,
+                'name': 'Other',
+                'original_name': 'Other',
+                'genres': [],
+                'first_air_date': '2020-01-01',
+                'backdrops': [],
+              },
+      );
+      addTearDown(fixture.close);
+      final c = fixture.controller;
+      await fixture.inventory([
+        'Movies/A.Show.S01E01.mkv',
+        'Movies/B.Other.{tmdb-2}.S01E02.mkv',
+      ]);
+      final first = (await c.store.resources()).firstWhere(
+        (r) => r.name.contains('.Show.'),
+      );
+      await c.store.bind(
+        [first],
+        const FilmWork(
+          type: FilmMediaType.tv,
+          tmdbId: 1,
+          title: 'Show',
+          originalTitle: 'Show',
+          overview: '',
+          language: 'zh-CN',
+        ),
+      );
+      final bound = (await c.store.resource(first.id))!;
+      await c.store.saveSeason(bound.workId!, 1, 'zh-CN', {'episodes': []});
+      fixture.api.status = 503;
+      await c.scrape(fixture.root);
+      await _until(() => c.scrapePaused);
+      await _until(() => c.scrapeProcessed == 1);
+      expect((await c.store.resource(first.id))!.episode, 1);
+      expect(c.scrapeTotal, 2);
+      fixture.api.status = 200;
+      c.toggleScraping();
+      await c.waitForScraping().timeout(const Duration(seconds: 5));
+      expect(c.scrapeProcessed, 2);
+      expect(c.scrapeCompletion, 1);
+      expect(
+        (await c.store.resources()).every((r) => r.workId != null),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'write suspension waits for the current scrape batch and protects manual bindings on resume',
+    () async {
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final fixture = await _Fixture.create(
+        (_) async => throw StateError('Unexpected directory read'),
+        type: FilmMediaType.tv,
+        api: (o) async {
+          if (!entered.isCompleted) entered.complete();
+          await release.future;
+          return o.path.contains('/season/')
+              ? {'season_number': 1, 'episodes': []}
+              : {
+                  'id': 1,
+                  'name': 'Show',
+                  'original_name': 'Show',
+                  'genres': [],
+                  'first_air_date': '2020-01-01',
+                  'backdrops': [],
+                };
+        },
+      );
+      addTearDown(() async {
+        if (!release.isCompleted) release.complete();
+        await fixture.close();
+      });
+      final c = fixture.controller;
+      await fixture.inventory([
+        'Movies/Show.{tmdb-1}.S01E01.mkv',
+        'Movies/Show.{tmdb-1}.S01E02.mkv',
+      ]);
+      final secondId = (await c.store.resources(
+        rootId: fixture.root.id,
+      )).last.id;
+      await c.scrape(fixture.root);
+      await entered.future;
+      var importing = false;
+      final operation = c.withWritesSuspended(() async {
+        importing = true;
+        expect(c.scrapeProcessed, 1);
+        final second = (await c.store.resource(secondId))!;
+        await c.store.bind(
+          [second],
+          const FilmWork(
+            type: FilmMediaType.tv,
+            tmdbId: 2,
+            title: 'Manual',
+            originalTitle: 'Manual',
+            overview: '',
+            language: 'zh-CN',
+          ),
+        );
+        await c.store.mapEpisodes({
+          (await c.store.resource(second.id))!: (0, 3),
+        });
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(importing, isFalse);
+      release.complete();
+      await operation;
+      await c.waitForScraping().timeout(const Duration(seconds: 5));
+      final second = (await c.store.resource(secondId))!;
+      expect(c.scrapeProcessed, 2);
+      expect(
+        (second.season, second.episode, second.mappingOrigin),
+        (0, 3, 'manual'),
+      );
+      expect((await c.store.work(second.workId!))!.tmdbId, 2);
+      expect(fixture.dav.reads, 0);
+    },
+  );
 
   test('扫描完成不等待 TMDB，独立队列继续处理全部文件', () async {
     final entered = Completer<void>();
@@ -769,6 +1120,11 @@ Map<String, dynamic> _response(RequestOptions options) {
 class _Token extends TmdbCredentialStore {
   @override
   Future<String?> read() async => 'fake-token';
+}
+
+class _NoToken extends TmdbCredentialStore {
+  @override
+  Future<String?> read() async => null;
 }
 
 class _FailedToken extends TmdbCredentialStore {

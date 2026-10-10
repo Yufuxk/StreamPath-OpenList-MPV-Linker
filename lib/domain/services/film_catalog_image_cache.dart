@@ -36,6 +36,8 @@ class FilmCatalogImageCache {
   final Map<(String, String), File> _knownFiles = {};
   Future<void>? _configurationLoad;
   Future<void> _pruneTail = Future.value();
+  Map<String, int>? _fileSizes;
+  int _cachedBytes = 0;
   final List<Completer<void>> _waiters = [];
   final Set<CancelToken> _tokens = {};
   final Set<String> _protected = {};
@@ -96,6 +98,7 @@ class FilmCatalogImageCache {
       p.join(directory.path, '${cacheKey(path, target)}.img'),
     );
     if (await direct.exists()) return _rememberFile(path, target, direct);
+    if (!await directory.exists()) _fileSizes = null;
     if (_images != null) {
       final size = _size(_images!, target);
       final alternative = File(
@@ -188,7 +191,7 @@ class FilmCatalogImageCache {
           await partial.writeAsBytes(bytes, flush: true);
           await _validateImage(partial);
           await partial.rename(file.path);
-          final prune = _pruneTail.then((_) => _prune());
+          final prune = _pruneTail.then((_) => _prune(file));
           _pruneTail = prune.then<void>(
             (_) {},
             onError: (Object _, StackTrace _) {},
@@ -277,7 +280,7 @@ class FilmCatalogImageCache {
       await _validateImage(partial);
       await partial.rename(file.path);
       _imageHost = host;
-      final prune = _pruneTail.then((_) => _prune());
+      final prune = _pruneTail.then((_) => _prune(file));
       _pruneTail = prune.then<void>(
         (_) {},
         onError: (Object _, StackTrace _) {},
@@ -363,25 +366,38 @@ class FilmCatalogImageCache {
     }
   }
 
-  Future<void> _prune() async {
+  static bool _isCacheFile(File file) =>
+      RegExp(r'^[a-f0-9]{64}\.img$').hasMatch(p.basename(file.path));
+
+  Future<void> _prune(File added) async {
+    if (_fileSizes != null) {
+      final size = await added.length();
+      _cachedBytes += size - (_fileSizes![added.path] ?? 0);
+      _fileSizes![added.path] = size;
+      if (_cachedBytes <= budgetBytes) return;
+    }
     final files = <(File, FileStat)>[];
     var total = 0;
     await for (final entity in directory.list(followLinks: false)) {
-      if (entity is! File ||
-          !RegExp(r'^[a-f0-9]{64}\.img$').hasMatch(p.basename(entity.path))) {
+      if (entity is! File || !_isCacheFile(entity)) {
         continue;
       }
       final stat = await entity.stat();
       files.add((entity, stat));
       total += stat.size;
     }
+    _fileSizes = {for (final entry in files) entry.$1.path: entry.$2.size};
+    _cachedBytes = total;
+    if (total <= budgetBytes) return;
     files.sort((a, b) => a.$2.modified.compareTo(b.$2.modified));
     for (final entry in files) {
       if (total <= budgetBytes) break;
       if (_protected.contains(entry.$1.path)) continue;
       await entry.$1.delete();
       _knownFiles.removeWhere((_, file) => file.path == entry.$1.path);
+      _fileSizes!.remove(entry.$1.path);
       total -= entry.$2.size;
+      _cachedBytes = total;
     }
   }
 
@@ -389,6 +405,7 @@ class FilmCatalogImageCache {
     if (_active > 0) throw const FilmCatalogException('imageBusy');
     _knownFiles.clear();
     await (_initialized ??= _initialize());
+    _fileSizes = null;
     await for (final entity in directory.list(followLinks: false)) {
       if (entity is File &&
           RegExp(
@@ -397,11 +414,14 @@ class FilmCatalogImageCache {
         await entity.delete();
       }
     }
+    _fileSizes = {};
+    _cachedBytes = 0;
   }
 
   void close() {
     _closed = true;
     _knownFiles.clear();
+    _fileSizes = null;
     for (final token in _tokens) {
       token.cancel();
     }

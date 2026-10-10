@@ -145,15 +145,15 @@ void main() {
           .onPressed,
       isNull,
     );
-    await tester.enterText(find.byType(TextField), 'test-read-access-token');
+    final tokenField = find.byWidgetPredicate(
+      (w) => w is TextField && w.obscureText,
+    );
+    await tester.enterText(tokenField, 'test-read-access-token');
     await tester.pump();
     await tester.tap(find.text('保存凭据'));
     await settle();
     expect(credentials.token, 'test-read-access-token');
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      isEmpty,
-    );
+    expect(tester.widget<TextField>(tokenField).controller!.text, isEmpty);
     expect(find.text('保存后输入框会清空；验证使用已保存的凭据'), findsOneWidget);
     expect(
       tester
@@ -177,6 +177,36 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('已保存 TMDB 凭据'), findsOneWidget);
+    final foldersField = find.byKey(const Key('film-excluded-folders-field'));
+    await tester.ensureVisible(foldersField);
+    await tester.enterText(foldersField, ' Specials, 特典, ,Specials ');
+    await tester.ensureVisible(find.byType(SPDropdownButtonFormField<bool>));
+    await tester.tap(find.byType(SPDropdownButtonFormField<bool>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('精确匹配（完整名称相同）').last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存文件夹屏蔽'));
+    await tester.tap(find.text('保存文件夹屏蔽'));
+    await settle();
+    final exclusions = (await tester.runAsync(c.store.directoryExclusions))!;
+    expect(exclusions.names, ['Specials', '特典']);
+    expect(exclusions.exact, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(frame());
+    await settle();
+    await tester.ensureVisible(foldersField);
+    expect(
+      tester.widget<TextFormField>(foldersField).controller!.text,
+      'Specials, 特典',
+    );
+    expect(
+      tester
+          .widget<SPDropdownButtonFormField<bool>>(
+            find.byType(SPDropdownButtonFormField<bool>),
+          )
+          .initialValue,
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
   testWidgets('全部与三个同源目录独立筛选，卡片右键查看来源，影视库内起播和续播', (tester) async {

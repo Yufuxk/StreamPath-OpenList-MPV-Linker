@@ -41,7 +41,351 @@ void main() {
   final testRoot = Platform.environment['STREAMPATH_MPV_TEST_ROOT'];
 
   test(
-    '隐式队列在支持版本保持 PID，逻辑索引、版本取消和 EOF 均隔离',
+    '隐式滚动窗口提前挂入下一集且保留用户窗口状态',
+    () async {
+      final executable = Platform.environment['STREAMPATH_PATH_MPV']!;
+      for (final fullscreen in [true, false]) {
+        final dir = await Directory.systemTemp.createTemp('implicit_window_');
+        final media = File(p.join(dir.path, 'same.wav'));
+        await media.writeAsBytes(_silentWave(seconds: 3));
+        final profile = File(p.join(dir.path, 'idle.conf'));
+        await profile.writeAsString(
+          '[end]\nprofile-cond=idle_active\nno-fullscreen\n',
+        );
+        final events = File(p.join(dir.path, 'events.jsonl'));
+        final observer = File(p.join(dir.path, 'observer.lua'));
+        await observer.writeAsString('''
+local utils = require 'mp.utils'
+local loaded = 0
+mp.register_event('file-loaded', function() loaded = loaded + 1 end)
+mp.observe_property('idle-active', 'bool', function(_, value)
+    local file = assert(io.open(${jsonEncode(events.path.replaceAll(r'\', '/'))}, 'a'))
+    file:write(utils.format_json({idle=value, loaded=loaded}) .. '\\n')
+    file:close()
+end)
+''');
+        final config = StreamPathConfigStore.forPath(
+          p.join(dir.path, 'config.json'),
+        );
+        await config.save(
+          StreamPathConfig(
+            playerExecutable: executable,
+            playerArgs: [
+              '--no-config',
+              '--vo=null',
+              '--ao=null',
+              '--pause=yes',
+              '--include=${profile.path}',
+              '--script=${observer.path}',
+              '--log-file=${p.join(dir.path, 'mpv.log')}',
+              '{url}',
+            ],
+            autoSeasonTransitionEnabled: false,
+          ),
+        );
+        final active = <int>[];
+        final errors = <String>[];
+        MediaEntry entry(int index) => MediaEntry(
+          url: media.path,
+          catalogPath: '剧集目录/${index == 2 ? 1 : index}.wav',
+          title: 'Episode ${index == 2 ? 1 : index}',
+        );
+        final plan = ImplicitVideoPlan(
+          index: 0,
+          items: [
+            for (var i = 0; i < 3; i++)
+              VideoQueueItem(
+                versions: [
+                  VideoQueueVersion(
+                    path: '剧集目录/${i == 2 ? 1 : i}.wav',
+                    name: '${i == 2 ? 1 : i}.wav',
+                  ),
+                ],
+              ),
+          ],
+          prepare: (v) async =>
+              PreparedVideoItem(entry: entry(int.parse(v.name[0]))),
+          activated: (i, _) async => active.add(i),
+          failed: errors.add,
+        );
+        var service = ExternalPlayerService(
+          configStore: config,
+          watchLaterDir: Directory(p.join(dir.path, 'watch')),
+        );
+        PlayerLaunchResult? launched;
+        MpvSessionController? controller;
+        Future<void> waitFor(Future<bool> Function() check) async {
+          for (var i = 0; i < 100; i++) {
+            if (await check()) return;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+          fail(await File(p.join(dir.path, 'mpv.log')).readAsString());
+        }
+
+        try {
+          launched = await service.launchLocal(
+            entries: [entry(0)],
+            sourceId: 'local:fixture',
+            sessionId: 'rolling-window',
+            implicitPlan: plan,
+          );
+          controller = MpvSessionController(pipeName: launched.ipcPipeName!);
+          expect(await controller.connect(), true);
+          await waitFor(() async => active.contains(0));
+          await controller.setProperty('fullscreen', fullscreen);
+          await waitFor(
+            () async => await controller!.getProperty('playlist-count') == 2,
+          );
+          expect(await controller.getProperty('pause'), true);
+          expect(service.hasPendingVideo('rolling-window'), false);
+          if (!fullscreen) {
+            await service.stopImplicitPlaybackControl();
+            expect(await controller.getProperty('playlist-count'), 1);
+            service = ExternalPlayerService(
+              configStore: config,
+              watchLaterDir: Directory(p.join(dir.path, 'watch')),
+            );
+            await service.restoreSession(
+              sessionId: 'rolling-window',
+              profileId: 'local:fixture',
+              pid: launched.process.pid,
+              executablePath: launched.processIdentity!.executablePath,
+              creationTime: launched.processIdentity!.creationTime,
+              ipcPipeName: launched.ipcPipeName,
+              launchEpoch: launched.launchEpoch,
+            );
+            await service.attachImplicitPlan(
+              'rolling-window',
+              ImplicitVideoPlan(
+                items: plan.items,
+                index: 0,
+                prepare: plan.prepare,
+                activated: (i, _) async => active.add(i),
+                failed: errors.add,
+              ),
+            );
+            await waitFor(
+              () async => await controller!.getProperty('playlist-count') == 2,
+            );
+            expect(await controller.getProperty('pause'), true);
+          }
+          await controller.setProperty('pause', false);
+          await waitFor(() async => active.contains(1));
+          await waitFor(
+            () async => await controller!.getProperty('playlist-count') == 2,
+          );
+          expect(await controller.getProperty('fullscreen'), fullscreen);
+          expect(await controller.getProperty('media-title'), 'Episode 1');
+          expect(await controller.getProperty('pid'), launched.process.pid);
+          await waitFor(() async => active.contains(2));
+          expect(await controller.getProperty('fullscreen'), fullscreen);
+          expect(await controller.getProperty('media-title'), 'Episode 1');
+          await waitFor(
+            () async => !await service.isPlayerRunning('rolling-window'),
+          );
+          final rows = (await events.readAsLines()).map(
+            (line) => jsonDecode(line) as Map,
+          );
+          expect(
+            rows.where(
+              (row) =>
+                  row['idle'] == true &&
+                  (row['loaded'] as int) > 0 &&
+                  (row['loaded'] as int) < 3,
+            ),
+            isEmpty,
+          );
+          expect(active, fullscreen ? [0, 1, 2] : [0, 0, 1, 2]);
+          final journal = (await File(
+            launched.progressFilePath!,
+          ).readAsLines()).map((line) => jsonDecode(line) as Map);
+          expect(
+            journal
+                .where((row) => row['outcome'] == 'completed')
+                .map((row) => row['playlist_pos']),
+            [0, 1, 2],
+          );
+          expect(errors, isEmpty);
+        } finally {
+          await controller?.dispose();
+          if (launched != null) {
+            await service.terminateSession('rolling-window');
+          }
+          await dir.delete(recursive: true);
+        }
+      }
+    },
+    skip: Platform.environment['STREAMPATH_PATH_MPV'] == null
+        ? 'Set STREAMPATH_PATH_MPV'
+        : false,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  for (final scenario in ['打开失败切源', '预取后停用', '全部失败']) {
+    test(
+      '自动同源续播保持 PID：$scenario',
+      () async {
+        final dir = await Directory.systemTemp.createTemp(
+          'implicit_source_fallback_',
+        );
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final failedRequests = <String>[];
+        server.listen((request) async {
+          failedRequests.add(request.uri.path);
+          request.response.statusCode = HttpStatus.serviceUnavailable;
+          await request.response.close();
+        });
+        final media = File(p.join(dir.path, 'video.wav'));
+        await media.writeAsBytes(_silentWave(seconds: 2));
+        final config = StreamPathConfigStore.forPath(
+          p.join(dir.path, 'config.json'),
+        );
+        await config.save(
+          StreamPathConfig(
+            playerExecutable: Platform.environment['STREAMPATH_PATH_MPV']!,
+            playerArgs: [
+              '--no-config',
+              '--vo=null',
+              '--ao=null',
+              '--pause=yes',
+              '--log-file=${p.join(dir.path, 'mpv.log')}',
+              '{url}',
+            ],
+            subtitleInjectionEnabled: false,
+            externalAudioInjectionEnabled: false,
+            autoSeasonTransitionEnabled: false,
+          ),
+        );
+        final active = <(int, String)>[];
+        final preparedPaths = <String>[];
+        final errors = <String>[];
+        var disabled = false;
+        final plan = ImplicitVideoPlan(
+          index: 0,
+          items: [
+            const VideoQueueItem(
+              versions: [
+                VideoQueueVersion(path: 'B/0.wav', name: '0.wav', rootId: 2),
+              ],
+            ),
+            for (var i = 1; i < 4; i++)
+              VideoQueueItem(
+                versions: [
+                  VideoQueueVersion(
+                    path: 'A/$i.wav',
+                    name: '$i.wav',
+                    rootId: 1,
+                  ),
+                  VideoQueueVersion(
+                    path: 'B/$i.wav',
+                    name: '$i.wav',
+                    rootId: 2,
+                  ),
+                ],
+              ),
+          ],
+          prepare: (version) async {
+            preparedPaths.add(version.path);
+            return PreparedVideoItem(
+              entry: MediaEntry(
+                url:
+                    version.path == 'B/2.wav' ||
+                        scenario == '全部失败' && version.path == 'A/2.wav'
+                    ? 'http://${server.address.address}:${server.port}/${version.path}'
+                    : media.path,
+                catalogPath: version.path,
+                title: version.path,
+              ),
+            );
+          },
+          isAvailable: (v) async => !disabled || v.rootId != 2,
+          activated: (i, v) async => active.add((i, v.path)),
+          failed: errors.add,
+        );
+        final service = ExternalPlayerService(
+          configStore: config,
+          watchLaterDir: Directory(p.join(dir.path, 'watch')),
+        );
+        const id = 'automatic-source-fallback';
+        PlayerLaunchResult? launched;
+        MpvSessionController? controller;
+        Future<void> waitFor(Future<bool> Function() check) async {
+          for (var i = 0; i < 200; i++) {
+            if (await check()) return;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+          fail(await File(p.join(dir.path, 'mpv.log')).readAsString());
+        }
+
+        try {
+          launched = await service.launchLocal(
+            entries: [
+              MediaEntry(
+                url: media.path,
+                catalogPath: 'B/0.wav',
+                title: 'B/0.wav',
+              ),
+            ],
+            sourceId: 'local:fixture',
+            sessionId: id,
+            implicitPlan: plan,
+          );
+          controller = MpvSessionController(pipeName: launched.ipcPipeName!);
+          expect(await controller.connect(), true);
+          await waitFor(() async => active.contains((0, 'B/0.wav')));
+          await controller.setProperty('pause', false);
+          if (scenario == '预取后停用') {
+            await waitFor(
+              () async =>
+                  active.contains((1, 'B/1.wav')) &&
+                  plan.prepared.containsKey('B/2.wav') &&
+                  await controller!.getProperty('playlist-count') == 2,
+            );
+            disabled = true;
+          }
+          if (scenario == '全部失败') {
+            await waitFor(() async => errors.isNotEmpty);
+            expect(active, [(0, 'B/0.wav'), (1, 'B/1.wav')]);
+            expect(service.hasPendingVideo(id), true);
+            expect(await controller.getProperty('pid'), launched.process.pid);
+            expect(errors, hasLength(1));
+            final count = failedRequests.length;
+            await Future<void>.delayed(const Duration(seconds: 1));
+            expect(failedRequests, hasLength(count));
+            expect(failedRequests, contains('/A/2.wav'));
+            expect(failedRequests, contains('/B/2.wav'));
+            return;
+          }
+          await waitFor(() async => active.contains((3, 'A/3.wav')));
+          expect(active, [
+            (0, 'B/0.wav'),
+            (1, 'B/1.wav'),
+            (2, 'A/2.wav'),
+            (3, 'A/3.wav'),
+          ]);
+          expect(await controller.getProperty('pid'), launched.process.pid);
+          expect(await controller.getProperty('playlist-count'), 1);
+          expect(failedRequests, scenario == '预取后停用' ? isEmpty : isNotEmpty);
+          expect(preparedPaths, isNot(contains('A/1.wav')));
+          expect(preparedPaths, isNot(contains('B/3.wav')));
+          expect(errors, isEmpty);
+          await waitFor(() async => !await service.isPlayerRunning(id));
+        } finally {
+          await controller?.dispose();
+          if (launched != null) await service.terminateSession(id);
+          await server.close(force: true);
+          await dir.delete(recursive: true);
+        }
+      },
+      skip: Platform.environment['STREAMPATH_PATH_MPV'] == null
+          ? 'Set STREAMPATH_PATH_MPV'
+          : false,
+      timeout: const Timeout(Duration(minutes: 1)),
+    );
+  }
+
+  test(
+    '隐式队列在支持版本保持 PID，自动版本选择和 EOF 均隔离',
     () async {
       final builds = _fiveBuilds(testRoot!);
       for (final build in builds) {
@@ -103,7 +447,6 @@ void main() {
         final progress = await PlaybackProgressService.open(
           p.join(dir.path, 'progress.db'),
         );
-        var choices = 0;
         final plan = ImplicitVideoPlan(
           index: 0,
           items: [
@@ -123,7 +466,6 @@ void main() {
             entry: entries[int.parse(v.name[0])],
             localFontDirectory: fontDirs[int.parse(v.name[0])],
           ),
-          chooseVersion: (i) async => ++choices == 1 ? null : i.versions.first,
           failed: errors.add,
           activated: (i, v) async {
             active.add(i);
@@ -161,7 +503,9 @@ void main() {
           expect(await controller.connect(), true);
           await waitFor(() async => active.contains(0));
           expect(await controller.getProperty('fullscreen'), true);
-          expect(await controller.getProperty('playlist-count'), 1);
+          await waitFor(
+            () async => await controller!.getProperty('playlist-count') == 2,
+          );
           await progress.saveProgress(
             url: entries[1].url,
             positionMs: 0,
@@ -177,7 +521,7 @@ void main() {
           await controller.setProperty('fullscreen', false);
           expect(await service.selectPlaylistEntry(id, 1), true);
           await waitFor(() async => active.contains(1));
-          expect(await controller.getProperty('fullscreen'), true);
+          expect(await controller.getProperty('fullscreen'), false);
           expect(await controller.getProperty('pid'), launched.process.pid);
           expect(await controller.getProperty('media-title'), 'Episode 1');
           await waitFor(() async {
@@ -203,21 +547,21 @@ void main() {
           final properties =
               await controller.getProperty('property-list') as List;
           if (properties.contains('sub-fonts-dir')) {
-            expect(await controller.getProperty('sub-fonts-dir'), fontDirs[1]);
+            final actualFonts = await controller.getProperty('sub-fonts-dir');
+            if (actualFonts != fontDirs[1]) {
+              // ignore: avoid_print
+              print(
+                'Font mismatch: ${jsonEncode({'fonts': actualFonts, 'path': await controller.getProperty('path'), 'playlist': await controller.getProperty('playlist'), 'time': await controller.getProperty('time-pos'), 'active': active})}',
+              );
+            }
+            expect(actualFonts, fontDirs[1]);
           }
 
           final status = File(launched.statusFilePath!);
           await waitFor(() async => (await status.readAsLines()).first == '1');
-          await waitFor(() async => choices == 1);
-          expect(await controller.getProperty('idle-active'), true);
-          expect(await controller.getProperty('pid'), launched.process.pid);
-          expect((await status.readAsLines()).first, isNot('-1'));
-          expect(service.hasPendingVideo(id), true);
-          await controller.setProperty('fullscreen', false);
-          await service.sendResume(id);
           await waitFor(() async => active.contains(2));
-          expect(await controller.getProperty('fullscreen'), true);
-          expect(choices, 2);
+          expect(await controller.getProperty('fullscreen'), false);
+          expect(plan.selected[2]!.path, 'Show/2.wav');
           expect(await controller.getProperty('playlist-count'), 1);
           expect(await controller.getProperty('pid'), launched.process.pid);
           await waitFor(() async => !await service.isPlayerRunning(id));
@@ -235,12 +579,35 @@ void main() {
             rows
                 .where((r) => r['outcome'] == 'completed')
                 .map((r) => r['queue_generation']),
-            [1, 2],
+            rows
+                .where(
+                  (r) => r['outcome'] == 'loaded' && r['playlist_pos'] != 0,
+                )
+                .map((r) => r['queue_generation']),
           );
           expect((await status.readAsLines()).first, '-1');
           expect(errors, isEmpty);
           // ignore: avoid_print
           print('Implicit queue passed: ${build.id}');
+        } catch (_) {
+          final evidence = await Directory(
+            p.join('build', 'implicit-window-failures', id),
+          ).create(recursive: true);
+          final log = File(p.join(dir.path, 'mpv.log'));
+          if (await log.exists()) {
+            await log.copy(p.join(evidence.path, 'mpv.log'));
+          }
+          if (launched != null) {
+            for (final path in launched.artifactPaths) {
+              final file = File(path);
+              if (await file.exists()) {
+                await file.copy(p.join(evidence.path, p.basename(path)));
+              }
+            }
+          }
+          // ignore: avoid_print
+          print('Implicit queue evidence: ${evidence.path}');
+          rethrow;
         } finally {
           await controller?.dispose();
           if (launched != null) await service.terminateSession(id);
@@ -425,7 +792,6 @@ void main() {
         items: items,
         index: 0,
         prepare: preparer.prepare,
-        chooseVersion: (_) async => null,
         activated: (i, v) async {
           active.add(i);
         },
@@ -548,7 +914,6 @@ void main() {
         index: 0,
         prepare: (v) async =>
             PreparedVideoItem(entry: entries[int.parse(v.name[0])]),
-        chooseVersion: (_) async => null,
         activated: (i, v) async {
           active.add(i);
         },
@@ -574,7 +939,9 @@ void main() {
         ipc = MpvSessionController(pipeName: launched.ipcPipeName!);
         expect(await ipc.connect(), true);
         await _waitForProperty(ipc, 'duration', (v) => v is num && v > 0);
-        first.stopImplicitPlaybackControl();
+        await _waitForProperty(ipc, 'playlist-count', (v) => v == 2);
+        await first.stopImplicitPlaybackControl();
+        expect(await ipc.getProperty('playlist-count'), 1);
         await ipc.setProperty('pause', false);
         await _waitForProperty(ipc, 'idle-active', (v) => v == true);
         await Future<void>.delayed(const Duration(milliseconds: 700));

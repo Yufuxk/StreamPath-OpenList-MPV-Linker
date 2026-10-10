@@ -544,7 +544,7 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
           entry.episode = group.first.episode;
           entry.currentVersions = [
             for (final r in group)
-              VideoQueueVersion(path: r.path, name: r.name),
+              VideoQueueVersion(path: r.path, name: r.name, rootId: r.rootId),
           ];
           entry.display.addAll(await _playlistDisplay(txn, group.first));
           final versions = jsonEncode([

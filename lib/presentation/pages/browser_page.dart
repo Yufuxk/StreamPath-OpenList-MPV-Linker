@@ -1,7 +1,6 @@
 import '../../data/models/film_playlist.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_menu.dart';
-import '../widgets/video_version_dialog.dart';
 import '../../data/models/video_queue.dart';
 import '../../data/models/video_playlist_mode.dart';
 import '../../data/models/film_catalog_item.dart';
@@ -636,6 +635,26 @@ class BrowserPageState extends State<BrowserPage> {
     var session = resumeSessionId == null
         ? null
         : _playbackPresenter.videoSessionById(resumeSessionId);
+    if (widget.playbackOnly &&
+        session != null &&
+        session.history.videoPlaylistMode == VideoPlaylistMode.implicit) {
+      await _resumePlaybackSession(session);
+      return;
+    }
+    if (widget.playbackOnly) {
+      final store = await context.read<AppState>().getFilmCatalogStore();
+      if (!await store.playbackVersionAvailable(
+        item.sourceId,
+        VideoQueueVersion(
+          path: item.discRootPath ?? item.targetPath,
+          name: item.name,
+        ),
+      )) {
+        if (mounted) _showLibraryError('播放列表条目不可用，请检查来源或资源');
+        return;
+      }
+      if (!mounted) return;
+    }
     if (widget.playbackOnly && resumeSessionId == null) {
       session = _playbackSessions.where((candidate) {
         final history = candidate.history;
@@ -1659,10 +1678,10 @@ class BrowserPageState extends State<BrowserPage> {
       items: items,
       index: history.videoIndex,
       prepare: prepare,
-      chooseVersion: (item) async {
-        if (!navigator.mounted) return null;
-        return showVideoVersionDialog(navigator.context, item);
-      },
+      isAvailable: widget.playbackOnly
+          ? (version) =>
+                store.playbackVersionAvailable(history.sourceId!, version)
+          : null,
       activated: (i, v) => target(i, v, loaded: true),
       pending: (i) => target(i, items[i].versions.first),
       failed: (message) {
@@ -2975,10 +2994,8 @@ class BrowserPageState extends State<BrowserPage> {
         throw AppException.config('播放位置已占满');
       }
       final item = snapshot.queueItems[index];
-      final version = item.versions.length == 1
-          ? item.versions.single
-          : await showVideoVersionDialog(context, item);
-      if (version == null || !mounted) return;
+      final version = item.versions.first;
+      if (!mounted) return;
       final parent = p.posix
           .dirname(version.path)
           .replaceFirst(RegExp(r'^\.$'), '');
@@ -3044,12 +3061,16 @@ class BrowserPageState extends State<BrowserPage> {
         throw AppException.config('自定义播放列表需要 MPV 播放器');
       }
       final path = history.playlistRelativePaths[index];
-      final version =
-          history.pendingVideoIndex != null && item.versions.length > 1
-          ? await showVideoVersionDialog(context, item)
+      final previous = history.queueItems[history.videoIndex].versions
+          .where(
+            (v) => v.path == history.playlistRelativePaths[history.videoIndex],
+          )
+          .firstOrNull;
+      final version = history.pendingVideoIndex != null
+          ? item.orderedVersions(previous).first
           : item.versions.where((v) => v.path == path).firstOrNull ??
                 item.versions.first;
-      if (version == null || !mounted) return;
+      if (!mounted) return;
       final parent = p.posix
           .dirname(version.path)
           .replaceFirst(RegExp(r'^\.$'), '');
@@ -3117,6 +3138,7 @@ class BrowserPageState extends State<BrowserPage> {
       final resources = await store.resources(
         sourceId: sourceId,
         workId: mapped!.workId!,
+        enabledOnly: widget.playbackOnly,
       );
       final seasons = <int, Map<String, dynamic>>{};
       for (final number
@@ -3234,10 +3256,18 @@ class BrowserPageState extends State<BrowserPage> {
     if (!custom) {
       await preparer.prepareSharedFonts(rootPath, siblings: rootFiles);
     }
-    final version = items[index].versions.firstWhere(
+    final requestedVersion = items[index].versions.firstWhere(
       (v) => v.path == targetPath,
     );
-    final initial = await prepare(version);
+    final available = widget.playbackOnly
+        ? (VideoQueueVersion version) =>
+              store.playbackVersionAvailable(sourceId, version)
+        : null;
+    final (version, initial) = await items[index].prepareVersion(
+      prepare,
+      preferred: requestedVersion,
+      isAvailable: available,
+    );
     if (!mounted) return;
     final id = sessionId ?? _newSessionId();
     final now = DateTime.now();
@@ -3347,10 +3377,7 @@ class BrowserPageState extends State<BrowserPage> {
       items: items,
       index: index,
       prepare: prepare,
-      chooseVersion: (item) async {
-        if (!navigator.mounted) return null;
-        return showVideoVersionDialog(navigator.context, item);
-      },
+      isAvailable: available,
       activated: (i, v) => updateTarget(i, v, loaded: true),
       pending: (i) => updateTarget(i, items[i].versions.first, loaded: false),
       failed: (message) {
@@ -4758,6 +4785,10 @@ class BrowserPageState extends State<BrowserPage> {
     if (!running) {
       await playerService.waitForExitSync(sessionId);
       if (!_playbackSessions.contains(session)) return;
+      final pendingPos =
+          session.history.videoPlaylistMode == VideoPlaylistMode.implicit
+          ? session.history.pendingVideoIndex
+          : null;
       final pos = lines == null || lines.isEmpty
           ? null
           : int.tryParse(lines[0].trim());
@@ -4780,7 +4811,8 @@ class BrowserPageState extends State<BrowserPage> {
           lines,
         );
       }
-      if (naturallyFinished || (isLastItem && reachedCompletion)) {
+      if (pendingPos == null &&
+          (naturallyFinished || (isLastItem && reachedCompletion))) {
         await _removePlaybackSession(
           session,
           terminateProcess: false,
@@ -4789,12 +4821,31 @@ class BrowserPageState extends State<BrowserPage> {
         return;
       }
 
-      // shutdown 时 path 可能已清空，仍按本会话有效的 playlist-pos 收敛历史。
-      if (reachedCompletion) {
-        await _advanceCompletedVideoSession(
-          session,
-          session.history.pendingVideoIndex ?? currentPos + 1,
+      // 待播项尚未加载，退出时保存同源目标并隔离上一集的片尾采样。
+      if (pendingPos != null) {
+        final history = session.history;
+        final previous = history.queueItems[history.videoIndex].versions
+            .firstWhere(
+              (v) =>
+                  v.path == history.playlistRelativePaths[history.videoIndex],
+            );
+        final target = history.queueItems[pendingPos]
+            .orderedVersions(previous)
+            .first;
+        final paths = List<String>.of(history.playlistRelativePaths);
+        final names = List<String>.of(history.playlistFileNames);
+        paths[pendingPos] = target.path;
+        names[pendingPos] = target.name;
+        final parent = p.posix.dirname(target.path);
+        session.history = history.copyWith(
+          playlistRelativePaths: paths,
+          playlistFileNames: names,
+          dirCrumbs: parent == '.' ? [] : parent.split('/'),
         );
+        await _advanceCompletedVideoSession(session, pendingPos);
+        if (!mounted || !_playbackSessions.contains(session)) return;
+      } else if (reachedCompletion) {
+        await _advanceCompletedVideoSession(session, currentPos + 1);
         if (!mounted || !_playbackSessions.contains(session)) return;
       } else if (mediaChanged) {
         await _updateVideoPlaybackHistory(session, loadedPos);
@@ -5663,13 +5714,41 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
     var target = history.playlistRelativePaths[index];
-    if (history.pendingVideoIndex != null &&
-        history.queueItems.elementAtOrNull(index)?.versions.length != 1) {
+    if (history.pendingVideoIndex != null) {
       final item = history.queueItems.elementAtOrNull(index);
       if (item != null) {
-        final selected = await showVideoVersionDialog(context, item);
-        if (selected == null || !mounted) return;
-        target = selected.path;
+        final previous = history.queueItems[history.videoIndex].versions
+            .where(
+              (v) =>
+                  v.path == history.playlistRelativePaths[history.videoIndex],
+            )
+            .firstOrNull;
+        target = item.orderedVersions(previous).first.path;
+      }
+    }
+    if (widget.playbackOnly) {
+      final store = await context.read<AppState>().getFilmCatalogStore();
+      final item = history.queueItems.elementAtOrNull(index);
+      if (item != null) {
+        final preferred = item.versions
+            .where((v) => v.path == target)
+            .firstOrNull;
+        String? availablePath;
+        for (final version in item.orderedVersions(preferred)) {
+          if (await store.playbackVersionAvailable(
+            history.sourceId!,
+            version,
+          )) {
+            availablePath = version.path;
+            break;
+          }
+        }
+        if (!mounted) return;
+        if (availablePath == null) {
+          _showLibraryError('播放列表条目不可用，请检查来源或资源');
+          return;
+        }
+        target = availablePath;
       }
     }
     final selectedParent = p.posix.dirname(target);

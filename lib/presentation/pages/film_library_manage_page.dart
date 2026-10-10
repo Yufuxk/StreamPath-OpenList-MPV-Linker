@@ -27,6 +27,8 @@ import '../widgets/film_artwork_picker.dart';
 import '../widgets/film_section_settings.dart';
 import '../widgets/film_transfer_dialog.dart';
 import '../widgets/sp_controls.dart';
+import '../widgets/clipboard_history_menu.dart';
+import '../../data/models/film_directory_exclusions.dart';
 
 Future<void> showFilmRootEditor(
   BuildContext context,
@@ -60,6 +62,8 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   bool get wantKeepAlive => widget.directories;
 
   final _token = TextEditingController();
+  final _excludedFolders = TextEditingController();
+  bool _excludeExact = false;
   String _language = 'zh-CN';
   String _probeMode = 'playback';
   bool _hasToken = false;
@@ -80,6 +84,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
       final language = await widget.catalog.store.language();
       final token = await widget.catalog.tmdb.hasToken();
       final probeMode = await widget.catalog.store.probeMode();
+      final exclusions = await widget.catalog.store.directoryExclusions();
       for (final root in await widget.catalog.store.roots()) {
         _rootEnabled[root.id] =
             await widget.catalog.store.preference('root_enabled:${root.id}') !=
@@ -110,6 +115,8 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
           _language = language;
           _hasToken = token;
           _probeMode = probeMode;
+          _excludedFolders.text = exclusions.names.join(', ');
+          _excludeExact = exclusions.exact;
         });
       }
     });
@@ -118,6 +125,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   @override
   void dispose() {
     _token.dispose();
+    _excludedFolders.dispose();
     super.dispose();
   }
 
@@ -727,6 +735,69 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                     'spoiler_protection',
                                     value,
                                   ),
+                                ),
+                              ),
+                              const Divider(height: 24),
+                              TextFormField(
+                                key: const Key('film-excluded-folders-field'),
+                                controller: _excludedFolders,
+                                contextMenuBuilder: buildClipboardHistoryMenu,
+                                decoration: InputDecoration(
+                                  labelText: context.l10n.text('屏蔽文件夹名称'),
+                                  helperText: context.l10n.text(
+                                    '使用英文逗号分隔，区分大小写；命中后跳过整个子目录',
+                                  ),
+                                  helperMaxLines: 3,
+                                  prefixIcon: const Icon(SPIcons.hide),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              SPDropdownButtonFormField<bool>(
+                                key: ValueKey(
+                                  'film-excluded-folders-mode-$_excludeExact',
+                                ),
+                                initialValue: _excludeExact,
+                                isExpanded: true,
+                                decoration: InputDecoration(
+                                  labelText: context.l10n.text('文件夹名称匹配模式'),
+                                ),
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: false,
+                                    child: AppText('模糊匹配（包含连续关键字）'),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: true,
+                                    child: AppText('精确匹配（完整名称相同）'),
+                                  ),
+                                ],
+                                onChanged: _saving
+                                    ? null
+                                    : (value) => setState(
+                                        () => _excludeExact = value!,
+                                      ),
+                              ),
+                              const SizedBox(height: 8),
+                              const AppText('保存后，下次扫描或刮削时清理已入库及待整理的屏蔽资源'),
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: FilledButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () => _settingAction(
+                                          () => c.store.setPreference(
+                                            'directory_exclusions',
+                                            FilmDirectoryExclusions(
+                                              names:
+                                                  FilmDirectoryExclusions.parseNames(
+                                                    _excludedFolders.text,
+                                                  ),
+                                              exact: _excludeExact,
+                                            ).toJson(),
+                                          ),
+                                        ),
+                                  child: const AppText('保存文件夹屏蔽'),
                                 ),
                               ),
                               const Divider(height: 24),
