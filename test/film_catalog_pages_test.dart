@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'dart:async';
@@ -513,11 +514,10 @@ void main() {
     expect(find.text('Show.S00E01.mkv'), findsNothing);
     expect(find.text('调整季集'), findsNothing);
     expect(find.byKey(const Key('film-detail-backdrop')), findsOneWidget);
-    final backdrop = tester.widget<FilmArtwork>(
+    final backdrop = tester.widget<AdaptiveFilmBackdrop>(
       find.byKey(const Key('film-detail-backdrop')),
     );
-    expect(backdrop.target, 'original');
-    expect(backdrop.backdrop, isTrue);
+    expect(backdrop.path, '/backdrop.jpg');
     expect(
       tester.getSize(find.byKey(const Key('film-detail-backdrop'))).height,
       greaterThan(620),
@@ -765,9 +765,20 @@ void main() {
     await settle();
     expect(c.works, hasLength(60));
     final homeScroll = tester
-        .widgetList<ListView>(find.byType(ListView))
-        .firstWhere((view) => view.padding == const EdgeInsets.all(20))
+        .widget<CustomScrollView>(find.byKey(const Key('film-home-scroll')))
         .controller!;
+    final homeExtent = homeScroll.position.maxScrollExtent;
+    for (var i = 0; i < 20; i++) {
+      homeScroll.jumpTo(homeExtent * i / 20);
+      await tester.pump();
+      expect(
+        homeScroll.position.maxScrollExtent,
+        closeTo(homeExtent, .01),
+        reason: 'home scrollbar range changed at step $i',
+      );
+    }
+    homeScroll.jumpTo(0);
+    await tester.pump();
     for (
       var i = 0;
       i < 15 &&

@@ -1,3 +1,4 @@
+import '../widgets/transition_content.dart';
 import '../../data/models/film_playlist.dart';
 import '../widgets/film_playlist_dialog.dart';
 import '../widgets/sp_menu.dart';
@@ -6,7 +7,6 @@ import 'film_related_page.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/film_watch_menu.dart';
-import 'dart:ui' as ui;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -26,6 +26,10 @@ import '../theme/app_theme.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/film_artwork.dart';
+import '../widgets/film_detail_back_button.dart';
+import '../widgets/film_detail_backdrop.dart';
+import '../widgets/film_adaptive_foreground.dart';
+import '../widgets/film_detail_buttons.dart';
 import '../widgets/film_catalog_tasks.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/film_match_dialog.dart';
@@ -50,6 +54,26 @@ String filmResourceState(AppState app, FilmResource resource) {
   return '可用';
 }
 
+/// 精选橱窗与详情入口采用同一可用资源和首集规则。
+FilmResource? recommendedFilmResource(
+  AppState app,
+  FilmWork work,
+  List<FilmResource> resources,
+) {
+  final available = resources
+      .where((r) => filmResourceState(app, r) == '可用')
+      .toList();
+  if (work.type == FilmMediaType.movie) return available.firstOrNull;
+  final episodes = available
+      .where((r) => (r.season ?? 0) > 0 && r.episode != null)
+      .toList();
+  episodes.sort((a, b) {
+    final season = a.season!.compareTo(b.season!);
+    return season != 0 ? season : a.episode!.compareTo(b.episode!);
+  });
+  return episodes.firstOrNull;
+}
+
 class FilmDetailPage extends StatefulWidget {
   const FilmDetailPage({
     super.key,
@@ -70,8 +94,16 @@ class FilmDetailPage extends StatefulWidget {
   State<FilmDetailPage> createState() => _FilmDetailPageState();
 }
 
-class _FilmDetailPageState extends State<FilmDetailPage> {
+class _FilmDetailPageState extends State<FilmDetailPage>
+    with StreamPathTransitionState {
+  MaterialPageRoute<void>? _relatedRoute;
   final _scroll = ScrollController();
+  final _textColors = FilmBackdropTextController();
+  final _titleTextKey = GlobalKey();
+  final _originalTitleTextKey = GlobalKey();
+  final _metadataTextKey = GlobalKey();
+  final _genresTextKey = GlobalKey();
+  final _overviewTextKey = GlobalKey();
   FilmWork? _work;
   List<FilmResource> _resources = [];
   Map<int, Map<String, dynamic>> _seasons = {};
@@ -122,6 +154,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
       store.removeListener(_load);
     }
     _scroll.dispose();
+    _textColors.dispose();
     super.dispose();
   }
 
@@ -187,7 +220,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     return (progress?.positionMs, progress?.durationMs);
   }
 
-  Widget _metadata(FilmWork work, List<String> tags) {
+  Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final score = work.metadata['vote_average'] as num?;
@@ -203,7 +236,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     final summary = Text.rich(
       key: const Key('film-detail-metadata'),
       TextSpan(
-        style: theme.textTheme.bodyMedium,
+        style: theme.textTheme.bodyMedium?.copyWith(color: foreground),
         children: [
           if (score != null && score > 0) ...[
             TextSpan(
@@ -249,7 +282,10 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
               ),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: Text(tag, style: theme.textTheme.labelMedium),
+            child: Text(
+              tag,
+              style: theme.textTheme.labelMedium?.copyWith(color: foreground),
+            ),
           ),
       ],
     );
@@ -451,9 +487,10 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                       final chrome = context.read<ValueNotifier<double?>?>();
                       final previous = chrome?.value;
                       chrome?.value = null;
-                      await Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => FilmRelatedPage(
+                      final route = MaterialPageRoute<void>(
+                        builder: (_) => StreamPathTransitionContent(
+                          shellBuilder: (_) => const StreamPathPageShell(),
+                          contentBuilder: (_) => FilmRelatedPage(
                             catalog: c,
                             title: person['name'] as String? ?? '',
                             personId:
@@ -465,7 +502,15 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                           ),
                         ),
                       );
-                      if (mounted) chrome?.value = previous;
+                      _relatedRoute = route;
+                      await Navigator.of(context).push(route);
+                      await route.completed;
+                      if (mounted &&
+                          _relatedRoute == route &&
+                          ModalRoute.of(context)?.isActive == true) {
+                        _relatedRoute = null;
+                        chrome?.value = previous;
+                      }
                     },
               child: _CreditAvatar(
                 child: ClipOval(
@@ -506,18 +551,7 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
   }
 
   FilmResource? _recommended(AppState app, FilmWork work) {
-    final available = _resources
-        .where((r) => filmResourceState(app, r) == '可用')
-        .toList();
-    if (work.type == FilmMediaType.movie) return available.firstOrNull;
-    final episodes = available
-        .where((r) => (r.season ?? 0) > 0 && r.episode != null)
-        .toList();
-    episodes.sort((a, b) {
-      final season = a.season!.compareTo(b.season!);
-      return season != 0 ? season : a.episode!.compareTo(b.episode!);
-    });
-    return episodes.firstOrNull;
+    return recommendedFilmResource(app, work, _resources);
   }
 
   Widget _playEntry(AppState app, FilmWork work) {
@@ -571,7 +605,6 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     final app = context.watch<AppState>();
     final work = _work;
     final theme = Theme.of(context);
-    final surface = theme.scaffoldBackgroundColor;
     final topInset = MediaQuery.paddingOf(context).top;
     final numbers = _resources.map((r) => r.season).toSet().toList()
       ..sort((a, b) => (a ?? 9999).compareTo(b ?? 9999));
@@ -585,9 +618,9 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
     final brief = filmTechnicalTags(
       playable == null ? null : _probes[playable.id],
     );
-    return AnimatedBuilder(
-      animation: c,
-      builder: (context, _) => Scaffold(
+    return StreamPathTransitionBuilder(
+      listenable: c,
+      builder: (context) => Scaffold(
         body: Stack(
           children: [
             Positioned.fill(
@@ -599,66 +632,11 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                       children: [
                         if (work.backdropPath != null)
                           Positioned.fill(
-                            child: ExcludeSemantics(
-                              child: IgnorePointer(
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    FilmWatchOverlay(
-                                      store: c.store,
-                                      workId: work.id,
-                                      showStatus: false,
-                                      canReveal: false,
-                                      child: FilmArtwork(
-                                        key: const Key('film-detail-backdrop'),
-                                        cache: c.images,
-                                        path: work.backdropPath,
-                                        fallbackPath: work.posterPath,
-                                        target: 'original',
-                                        backdrop: true,
-                                        height: double.infinity,
-                                        width: double.infinity,
-                                        borderRadius: 0,
-                                        placeholder: const SizedBox.shrink(),
-                                      ),
-                                    ),
-                                    Positioned.fill(
-                                      child: DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.centerLeft,
-                                            end: Alignment.centerRight,
-                                            colors: [
-                                              surface.withValues(alpha: .90),
-                                              surface.withValues(alpha: .56),
-                                              surface.withValues(alpha: .16),
-                                              surface.withValues(alpha: .04),
-                                            ],
-                                            stops: const [0, .4, .72, 1],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    Positioned.fill(
-                                      child: DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.topCenter,
-                                            end: Alignment.bottomCenter,
-                                            colors: [
-                                              surface.withValues(alpha: .02),
-                                              surface.withValues(alpha: .10),
-                                              surface.withValues(alpha: .72),
-                                              surface.withValues(alpha: 1),
-                                            ],
-                                            stops: const [0, .35, .72, 1],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                            child: FilmDetailBackdrop(
+                              catalog: c,
+                              workId: work.id,
+                              path: work.backdropPath,
+                              textColors: _textColors,
                             ),
                           ),
                         if (_loading)
@@ -715,158 +693,153 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                                       constraints: const BoxConstraints(
                                         maxWidth: 700,
                                       ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          FilmArtwork(
-                                            cache: c.images,
-                                            path:
-                                                work.metadata['logo_path']
-                                                    as String?,
-                                            target: 'original',
-                                            transparent: true,
-                                            width: 420,
-                                            height: 90,
-                                            placeholder: Align(
-                                              alignment: Alignment.centerLeft,
-                                              child: Text(
-                                                work.title,
-                                                style: theme
-                                                    .textTheme
-                                                    .headlineMedium,
+                                      child: FilmAdaptiveForeground(
+                                        controller: _textColors,
+                                        textKeys: [
+                                          _titleTextKey,
+                                          _originalTitleTextKey,
+                                          _metadataTextKey,
+                                          _genresTextKey,
+                                          _overviewTextKey,
+                                        ],
+                                        scrollController: _scroll,
+                                        builder: (context, foreground) => Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            FilmArtwork(
+                                              cache: c.images,
+                                              path:
+                                                  work.metadata['logo_path']
+                                                      as String?,
+                                              target: 'original',
+                                              transparent: true,
+                                              width: 420,
+                                              height: 90,
+                                              placeholder: Align(
+                                                alignment: Alignment.centerLeft,
+                                                child: Text(
+                                                  key: _titleTextKey,
+                                                  work.title,
+                                                  style: theme
+                                                      .textTheme
+                                                      .headlineMedium
+                                                      ?.copyWith(
+                                                        color: foreground,
+                                                      ),
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Text(
-                                            work.originalTitle,
-                                            style: theme.textTheme.titleMedium
-                                                ?.copyWith(
-                                                  color: theme
-                                                      .colorScheme
-                                                      .onSurface
-                                                      .withValues(alpha: .76),
-                                                  fontWeight: FontWeight.w400,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 14),
-                                          _metadata(work, brief),
-                                          const SizedBox(height: 8),
-                                          Text(
-                                            (work.metadata['genres'] as List? ??
-                                                    [])
-                                                .join(' · '),
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                  color: theme
-                                                      .colorScheme
-                                                      .onSurface
-                                                      .withValues(alpha: .72),
-                                                ),
-                                          ),
-                                          const SizedBox(height: 16),
-                                          Wrap(
-                                            spacing: 12,
-                                            runSpacing: 8,
-                                            children: [
-                                              if (playable != null)
-                                                _FilmPlayButton(
-                                                  onPressed: () =>
-                                                      widget.onOpenItem(
-                                                        playable.playbackItem,
-                                                      ),
-                                                ),
-                                              ClipRRect(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                                child: BackdropFilter(
-                                                  filter: ui.ImageFilter.blur(
-                                                    sigmaX: 10,
-                                                    sigmaY: 10,
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              key: _originalTitleTextKey,
+                                              work.originalTitle,
+                                              style: theme.textTheme.titleMedium
+                                                  ?.copyWith(
+                                                    color: foreground,
+                                                    fontWeight: FontWeight.w400,
                                                   ),
-                                                  child: OutlinedButton.icon(
-                                                    style:
-                                                        OutlinedButton.styleFrom(
-                                                          minimumSize:
-                                                              const Size(0, 44),
-                                                          foregroundColor: theme
-                                                              .colorScheme
-                                                              .onSurface,
-                                                          backgroundColor: theme
-                                                              .colorScheme
-                                                              .onSurface
-                                                              .withValues(
-                                                                alpha: .08,
-                                                              ),
-                                                          side: BorderSide(
-                                                            color: theme
-                                                                .colorScheme
-                                                                .onSurface
-                                                                .withValues(
-                                                                  alpha: .16,
-                                                                ),
-                                                          ),
-                                                        ),
-                                                    onPressed: () => c.run(
-                                                      () => c.store.setFavorite(
-                                                        work.id,
-                                                        !_favorite,
-                                                      ),
-                                                    ),
-                                                    icon: Icon(
-                                                      _favorite
-                                                          ? SPIcons.favoriteFill
-                                                          : SPIcons.favorite,
-                                                    ),
-                                                    label: AppText(
-                                                      _favorite ? '取消收藏' : '收藏',
-                                                    ),
-                                                  ),
-                                                ),
+                                            ),
+                                            const SizedBox(height: 14),
+                                            KeyedSubtree(
+                                              key: _metadataTextKey,
+                                              child: _metadata(
+                                                work,
+                                                brief,
+                                                foreground,
                                               ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 16),
-                                          work.overview.isEmpty
-                                              ? const AppText('暂无简介')
-                                              : FilmWatchOverlay(
-                                                  store: c.store,
-                                                  workId: work.id,
-                                                  rootId: c.rootId,
-                                                  spoilerSensitive: true,
-                                                  showStatus: false,
-                                                  revealBelow: true,
-                                                  footer: TextButton(
-                                                    onPressed: () => setState(
-                                                      () => _expandedOverview =
-                                                          !_expandedOverview,
-                                                    ),
-                                                    child: AppText(
-                                                      _expandedOverview
-                                                          ? '收起简介'
-                                                          : '展开简介',
-                                                    ),
-                                                  ),
-                                                  child: Text(
-                                                    work.overview,
-                                                    maxLines: _expandedOverview
-                                                        ? null
-                                                        : 4,
-                                                    overflow: _expandedOverview
-                                                        ? TextOverflow.visible
-                                                        : TextOverflow.ellipsis,
-                                                    style: theme
-                                                        .textTheme
-                                                        .bodyMedium
-                                                        ?.copyWith(
-                                                          height: 1.55,
-                                                          fontWeight:
-                                                              FontWeight.w400,
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              key: _genresTextKey,
+                                              (work.metadata['genres']
+                                                          as List? ??
+                                                      [])
+                                                  .join(' · '),
+                                              style: theme.textTheme.bodyMedium
+                                                  ?.copyWith(color: foreground),
+                                            ),
+                                            const SizedBox(height: 16),
+                                            Wrap(
+                                              spacing: 12,
+                                              runSpacing: 8,
+                                              children: [
+                                                if (playable != null)
+                                                  FilmDetailPlayButton(
+                                                    onPressed: () =>
+                                                        widget.onOpenItem(
+                                                          playable.playbackItem,
                                                         ),
                                                   ),
+                                                FilmDetailActionButton(
+                                                  onPressed: () => c.run(
+                                                    () => c.store.setFavorite(
+                                                      work.id,
+                                                      !_favorite,
+                                                    ),
+                                                  ),
+                                                  icon: Icon(
+                                                    _favorite
+                                                        ? SPIcons.favoriteFill
+                                                        : SPIcons.favorite,
+                                                  ),
+                                                  label: AppText(
+                                                    _favorite ? '取消收藏' : '收藏',
+                                                  ),
                                                 ),
-                                        ],
+                                              ],
+                                            ),
+                                            const SizedBox(height: 16),
+                                            work.overview.isEmpty
+                                                ? AppText(
+                                                    '暂无简介',
+                                                    style: TextStyle(
+                                                      color: foreground,
+                                                    ),
+                                                  )
+                                                : FilmWatchOverlay(
+                                                    store: c.store,
+                                                    workId: work.id,
+                                                    rootId: c.rootId,
+                                                    spoilerSensitive: true,
+                                                    showStatus: false,
+                                                    revealBelow: true,
+                                                    footer: TextButton(
+                                                      onPressed: () => setState(
+                                                        () => _expandedOverview =
+                                                            !_expandedOverview,
+                                                      ),
+                                                      child: AppText(
+                                                        _expandedOverview
+                                                            ? '收起简介'
+                                                            : '展开简介',
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      key: _overviewTextKey,
+                                                      work.overview,
+                                                      maxLines:
+                                                          _expandedOverview
+                                                          ? null
+                                                          : 4,
+                                                      overflow:
+                                                          _expandedOverview
+                                                          ? TextOverflow.visible
+                                                          : TextOverflow
+                                                                .ellipsis,
+                                                      style: theme
+                                                          .textTheme
+                                                          .bodyMedium
+                                                          ?.copyWith(
+                                                            color: foreground,
+                                                            height: 1.55,
+                                                            fontWeight:
+                                                                FontWeight.w400,
+                                                          ),
+                                                    ),
+                                                  ),
+                                          ],
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -1085,22 +1058,9 @@ class _FilmDetailPageState extends State<FilmDetailPage> {
                     ),
             ),
             Positioned(
-              top: topInset + 2,
-              left: 16,
-              child: ClipOval(
-                child: BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                  child: Material(
-                    color: theme.colorScheme.onSurface.withValues(alpha: .08),
-                    child: IconButton(
-                      key: const Key('film-detail-back'),
-                      tooltip: context.l10n.text('返回'),
-                      icon: const Icon(SPIcons.back),
-                      onPressed: () => Navigator.of(context).maybePop(),
-                    ),
-                  ),
-                ),
-              ),
+              top: topInset - 10,
+              left: 4,
+              child: FilmDetailBackButton(scrollController: _scroll),
             ),
           ],
         ),
@@ -1119,52 +1079,6 @@ enum _FilmFileAction {
   match,
   mapping,
   select,
-}
-
-class _FilmPlayButton extends StatefulWidget {
-  const _FilmPlayButton({required this.onPressed});
-  final VoidCallback onPressed;
-  @override
-  State<_FilmPlayButton> createState() => _FilmPlayButtonState();
-}
-
-class _FilmPlayButtonState extends State<_FilmPlayButton> {
-  bool _hovered = false;
-  @override
-  Widget build(BuildContext context) => MouseRegion(
-    onEnter: (_) => setState(() => _hovered = true),
-    onExit: (_) => setState(() => _hovered = false),
-    child: AnimatedScale(
-      scale: _hovered ? 1.025 : 1,
-      duration: const Duration(milliseconds: 120),
-      curve: Curves.easeOutCubic,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          boxShadow: [
-            if (_hovered)
-              BoxShadow(
-                color: Colors.white.withValues(alpha: .18),
-                blurRadius: 20,
-              ),
-          ],
-        ),
-        child: FilledButton.icon(
-          key: const Key('film-detail-play'),
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.white,
-            foregroundColor: const Color(0xff15171c),
-            minimumSize: const Size(0, 44),
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-          ),
-          onPressed: widget.onPressed,
-          icon: const Icon(SPIcons.play, color: Color(0xff15171c)),
-          label: const AppText('播放此文件'),
-        ),
-      ),
-    ),
-  );
 }
 
 class FilmEpisodeCard extends StatelessWidget {
@@ -1602,7 +1516,8 @@ class FilmPendingPage extends StatefulWidget {
   State<FilmPendingPage> createState() => _FilmPendingPageState();
 }
 
-class _FilmPendingPageState extends State<FilmPendingPage> {
+class _FilmPendingPageState extends State<FilmPendingPage>
+    with StreamPathTransitionState {
   List<FilmResource> _resources = [];
   final Set<int> _selected = {};
   bool _loading = true;
@@ -1662,14 +1577,17 @@ class _FilmPendingPageState extends State<FilmPendingPage> {
           (r) =>
               r.type == FilmMediaType.tv && r.workId == selected.first.workId,
         );
-    return AnimatedBuilder(
-      animation: c,
-      builder: (context, _) => Stack(
+    return StreamPathTransitionBuilder(
+      listenable: c,
+      builder: (context) => Stack(
         children: [
           Positioned.fill(
             child: ExcludeSemantics(
               child: IgnorePointer(
-                child: FilmLibraryBackground(file: c.backgroundFile),
+                child: FilmLibraryBackground(
+                  cache: c.images,
+                  file: c.backgroundFile,
+                ),
               ),
             ),
           ),
@@ -1682,7 +1600,18 @@ class _FilmPendingPageState extends State<FilmPendingPage> {
                 automaticallyImplyLeading: false,
                 backgroundColor: Colors.transparent,
                 shape: const Border(),
-                title: const AppText('影视库'),
+                title: Row(
+                  children: [
+                    const AppText('影视库'),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: SizedBox(
+                        height: 44,
+                        child: FilmCatalogTasks(catalog: c, compact: true),
+                      ),
+                    ),
+                  ],
+                ),
               ),
               body: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1726,10 +1655,6 @@ class _FilmPendingPageState extends State<FilmPendingPage> {
                         ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: FilmCatalogTasks(catalog: c),
                   ),
                   if (_loading) const LinearProgressIndicator(),
                   if (c.error != null)

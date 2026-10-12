@@ -186,6 +186,15 @@ class FilmScanEntry {
   final String path, parentPath, name, mediaKind;
 }
 
+/// 刮削开始时的关联快照，仅保留匹配与人工纠错校验所需字段。
+typedef FilmScanBinding = ({
+  int? workId,
+  String bindingOrigin,
+  int bindingVersion,
+  String mappingOrigin,
+  int? season,
+});
+
 /// 本次扫描的元数据结果，完整清单提交时核对人工关联版本。
 class FilmScanMatch {
   const FilmScanMatch({

@@ -4,10 +4,53 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/data/models/app_language.dart';
+import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
+  testWidgets('退出收尾超过 300ms 显示说明，完成后关闭提示', (tester) async {
+    final finished = Completer<void>();
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (_, navigator) => Overlay(
+          initialEntries: [
+            OverlayEntry(
+              builder: (_) => Column(
+                children: [
+                  WindowTitleBar(onCloseRequested: () => finished.future),
+                  Expanded(child: navigator!),
+                ],
+              ),
+            ),
+          ],
+        ),
+        home: const Scaffold(),
+      ),
+    );
+    final response = TestDefaultBinaryMessengerBinding
+        .instance
+        .defaultBinaryMessenger
+        .handlePlatformMessage(
+          'streampath/appearance',
+          const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('closeRequested'),
+          ),
+          null,
+        );
+    await tester.pump(const Duration(milliseconds: 299));
+    expect(find.text('正在关闭 StreamPath'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.text('正在关闭 StreamPath'), findsOneWidget);
+    expect(find.text('正在停止播放控制、等待后台任务结束并释放连接，请稍候。'), findsOneWidget);
+    finished.complete();
+    await response;
+    await tester.pump();
+    expect(find.text('正在关闭 StreamPath'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('窗口关闭等待后台任务完成后回复原生', (tester) async {
     final finished = Completer<void>();
     var replied = false;
@@ -34,7 +77,21 @@ void main() {
     finished.complete();
     await response;
     expect(replied, true);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('正在关闭 StreamPath'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  test('退出说明覆盖四种语言', () {
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final text in ['正在关闭 StreamPath', '正在停止播放控制、等待后台任务结束并释放连接，请稍候。']) {
+        expect(l10n.text(text), isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(l10n.text(text), isNot(text));
+        }
+      }
+    }
   });
   testWidgets('标题栏销毁后注销原生回调', (tester) async {
     const codec = StandardMethodCodec();

@@ -8,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../theme/appearance_controller.dart';
+import '../theme/glass_tokens.dart';
+import 'glass_dialog.dart';
+import 'sp_dialog.dart';
 import 'sp_notice.dart';
 
 /// 无系统标题栏时的自绘窗口标题栏。
@@ -73,6 +76,8 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   /// 当前是否最大化（决定“最大化/还原”图标）。
   bool _maximized = false;
   bool _fullscreen = false;
+  Timer? _closeNoticeTimer;
+  OverlayEntry? _closeNotice;
 
   /// 最近一次已推送给原生的窗口框架色。
   int? _lastFrameColor;
@@ -129,6 +134,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
 
   @override
   void dispose() {
+    _dismissCloseNotice();
     if (identical(_nativeHandlerOwner, this)) {
       _channel.setMethodCallHandler(null);
       _nativeHandlerOwner = null;
@@ -141,7 +147,43 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   /// 原生窗口大小变化时同步最大化状态。
   Future<void> _handleNativeCall(MethodCall call) async {
     if (call.method == 'closeRequested') {
-      await widget.onCloseRequested?.call();
+      _closeNoticeTimer = Timer(const Duration(milliseconds: 300), () {
+        if (!mounted) return;
+        final tokens = Theme.of(context).glass;
+        _closeNotice = OverlayEntry(
+          builder: (_) => Stack(
+            fit: StackFit.expand,
+            children: [
+              if (tokens.enabled)
+                GlassDialogBackdrop(progress: 1, tokens: tokens),
+              ModalBarrier(
+                dismissible: false,
+                color: tokens.enabled ? Colors.transparent : Colors.black54,
+              ),
+              const Center(
+                child: SPDialog(
+                  title: AppText('正在关闭 StreamPath'),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AppText('正在停止播放控制、等待后台任务结束并释放连接，请稍候。'),
+                      SizedBox(height: 20),
+                      LinearProgressIndicator(),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+        Overlay.of(context).insert(_closeNotice!);
+      });
+      try {
+        await widget.onCloseRequested?.call();
+      } finally {
+        _dismissCloseNotice();
+      }
       return;
     }
     if (call.method == 'fullscreenChanged') {
@@ -170,6 +212,14 @@ class _WindowTitleBarState extends State<WindowTitleBar>
     } on MissingPluginException {
       // 同上。
     }
+  }
+
+  void _dismissCloseNotice() {
+    _closeNoticeTimer?.cancel();
+    _closeNoticeTimer = null;
+    _closeNotice?.remove();
+    _closeNotice?.dispose();
+    _closeNotice = null;
   }
 
   Future<void> _invoke(String method) async {

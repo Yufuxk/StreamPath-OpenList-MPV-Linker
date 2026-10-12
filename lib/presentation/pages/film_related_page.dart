@@ -1,3 +1,4 @@
+import '../widgets/transition_content.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../data/local/film_catalog_store.dart';
@@ -43,7 +44,9 @@ class FilmRelatedPage extends StatefulWidget {
   State<FilmRelatedPage> createState() => _FilmRelatedPageState();
 }
 
-class _FilmRelatedPageState extends State<FilmRelatedPage> {
+class _FilmRelatedPageState extends State<FilmRelatedPage>
+    with StreamPathTransitionState {
+  MaterialPageRoute<void>? _detailRoute;
   final _scroll = ScrollController();
   List<FilmWork> _works = [];
   bool _loading = false, _more = true;
@@ -114,14 +117,17 @@ class _FilmRelatedPageState extends State<FilmRelatedPage> {
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.catalog,
-    builder: (context, _) => Stack(
+  Widget build(BuildContext context) => StreamPathTransitionBuilder(
+    listenable: widget.catalog,
+    builder: (context) => Stack(
       children: [
         Positioned.fill(
           child: ExcludeSemantics(
             child: IgnorePointer(
-              child: FilmLibraryBackground(file: widget.catalog.backgroundFile),
+              child: FilmLibraryBackground(
+                cache: widget.catalog.images,
+                file: widget.catalog.backgroundFile,
+              ),
             ),
           ),
         ),
@@ -195,14 +201,17 @@ class _FilmRelatedPageState extends State<FilmRelatedPage> {
                               ),
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
-                            builder: (_) => FilmRelatedPage(
-                              catalog: widget.catalog,
-                              title: collection.name,
-                              collection: collection,
-                              sidebarInset: widget.sidebarInset,
-                              onOpenItem: widget.onOpenItem,
-                              onContinueSelected: widget.onContinueSelected,
-                              onContinueMenu: widget.onContinueMenu,
+                            builder: (_) => StreamPathTransitionContent(
+                              shellBuilder: (_) => const StreamPathPageShell(),
+                              contentBuilder: (_) => FilmRelatedPage(
+                                catalog: widget.catalog,
+                                title: collection.name,
+                                collection: collection,
+                                sidebarInset: widget.sidebarInset,
+                                onOpenItem: widget.onOpenItem,
+                                onContinueSelected: widget.onContinueSelected,
+                                onContinueMenu: widget.onContinueMenu,
+                              ),
                             ),
                           ),
                         ),
@@ -222,9 +231,10 @@ class _FilmRelatedPageState extends State<FilmRelatedPage> {
                   onOpen: (work) async {
                     final chrome = context.read<ValueNotifier<double?>?>();
                     chrome?.value = 0;
-                    await Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => FilmDetailPage(
+                    final route = MaterialPageRoute<void>(
+                      builder: (_) => StreamPathTransitionContent(
+                        shellBuilder: (_) => const StreamPathPageShell(),
+                        contentBuilder: (_) => FilmDetailPage(
                           catalog: widget.catalog,
                           workId: work.id,
                           initialWork: work,
@@ -234,7 +244,15 @@ class _FilmRelatedPageState extends State<FilmRelatedPage> {
                         ),
                       ),
                     );
-                    if (mounted) chrome?.value = null;
+                    _detailRoute = route;
+                    await Navigator.of(context).push(route);
+                    await route.completed;
+                    if (mounted &&
+                        _detailRoute == route &&
+                        ModalRoute.of(this.context)?.isActive == true) {
+                      _detailRoute = null;
+                      chrome?.value = null;
+                    }
                   },
                   onMenu: (work, position) async {
                     final collection = widget.collection;

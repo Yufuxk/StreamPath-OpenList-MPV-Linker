@@ -253,6 +253,7 @@ class SPDropdownButtonFormField<T> extends FormField<T> {
     super.autovalidateMode,
     this.selectedItemBuilder,
     this.padding,
+    this.expands = false,
   }) : super(
          enabled: onChanged != null && (items?.isNotEmpty ?? false),
          builder: (state) => _SPDropdownField<T>(state: state),
@@ -270,6 +271,7 @@ class SPDropdownButtonFormField<T> extends FormField<T> {
   final VoidCallback? onTap, onMenuClosed;
   final DropdownButtonBuilder? selectedItemBuilder;
   final EdgeInsetsGeometry? padding;
+  final bool expands;
   @override
   FormFieldState<T> createState() => _SPDropdownFormFieldState<T>();
 }
@@ -387,6 +389,7 @@ class _SPDropdownFieldState<T> extends State<_SPDropdownField<T>> {
               onTap: field.enabled ? _show : null,
               borderRadius: field.borderRadius ?? AppTheme.dropdownBorderRadius,
               child: InputDecorator(
+                expands: field.expands,
                 isFocused: _focused,
                 isEmpty: label == null,
                 decoration: (field.decoration ?? const InputDecoration())

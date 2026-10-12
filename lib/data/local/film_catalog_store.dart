@@ -985,6 +985,79 @@ class FilmCatalogStore extends ChangeNotifier {
       c.media_type, c.root_path, c.display_name FROM resources r
       JOIN catalog_roots c ON c.id = r.root_id''';
 
+  Future<Map<String, FilmScanBinding>> scanBindings(int rootId) =>
+      _db.transaction((txn) async {
+        final bindings = <String, FilmScanBinding>{};
+        var afterId = 0;
+        while (true) {
+          final rows = await txn.query(
+            'resources',
+            columns: [
+              'id',
+              'path_key',
+              'work_id',
+              'binding_origin',
+              'binding_version',
+              'episode_mapping_origin',
+              'season_number',
+            ],
+            where: 'root_id = ? AND id > ?',
+            whereArgs: [rootId, afterId],
+            orderBy: 'id',
+            limit: 512,
+          );
+          if (rows.isEmpty) return bindings;
+          for (final row in rows) {
+            bindings[row['path_key'] as String] = (
+              workId: row['work_id'] as int?,
+              bindingOrigin: row['binding_origin'] as String,
+              bindingVersion: row['binding_version'] as int,
+              mappingOrigin: row['episode_mapping_origin'] as String,
+              season: row['season_number'] as int?,
+            );
+          }
+          afterId = rows.last['id'] as int;
+        }
+      });
+
+  Future<Set<String>> presentResourcePaths(int rootId) async => {
+    for (final row in await _db.query(
+      'resources',
+      columns: ['path_key'],
+      where: "root_id = ? AND availability = 'present'",
+      whereArgs: [rootId],
+    ))
+      row['path_key'] as String,
+  };
+
+  /// 按稳定 ID 游标读取，前批落库改变 pending 条件不会跳过后批。
+  Future<List<(int, FilmScanEntry)>> scrapeEntries(
+    int rootId, {
+    required int afterId,
+    bool incremental = false,
+    int limit = 512,
+  }) async => [
+    for (final row in await _db.query(
+      'resources',
+      columns: ['id', 'relative_path', 'parent_path', 'name', 'media_kind'],
+      where:
+          "root_id = ? AND id > ? AND availability = 'present'"
+          '${incremental ? ' AND work_id IS NULL' : ''}',
+      whereArgs: [rootId, afterId],
+      orderBy: 'id',
+      limit: limit,
+    ))
+      (
+        row['id'] as int,
+        FilmScanEntry(
+          path: row['relative_path'] as String,
+          parentPath: row['parent_path'] as String,
+          name: row['name'] as String,
+          mediaKind: row['media_kind'] as String,
+        ),
+      ),
+  ];
+
   Future<List<FilmResource>> resources({
     int? rootId,
     int? workId,

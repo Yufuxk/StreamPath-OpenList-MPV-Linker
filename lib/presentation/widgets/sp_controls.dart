@@ -39,6 +39,7 @@ class SPButton extends StatelessWidget {
     this.kind = SPButtonKind.secondary,
     this.padding = const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
     this.minimumHeight = 36,
+    this.borderRadius = const BorderRadius.all(Radius.circular(8)),
   });
 
   final Key? controlKey;
@@ -48,6 +49,7 @@ class SPButton extends StatelessWidget {
   final SPButtonKind kind;
   final EdgeInsetsGeometry padding;
   final double minimumHeight;
+  final BorderRadius borderRadius;
 
   @override
   Widget build(BuildContext context) {
@@ -96,10 +98,8 @@ class SPButton extends StatelessWidget {
           width: states.contains(WidgetState.focused) ? 2 : 1,
         ),
       ),
-      shape: const WidgetStatePropertyAll(
-        RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(8)),
-        ),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(borderRadius: borderRadius),
       ),
       padding: WidgetStatePropertyAll(padding),
       minimumSize: WidgetStatePropertyAll(Size(0, minimumHeight)),

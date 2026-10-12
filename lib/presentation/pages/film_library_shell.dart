@@ -11,6 +11,8 @@ import '../../data/models/film_playlist.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../widgets/sp_notice.dart';
+import '../widgets/film_library_background.dart';
+import '../widgets/transition_content.dart';
 import 'browser_page.dart';
 import 'film_library_page.dart';
 
@@ -27,6 +29,32 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   final _hosts = <String, BrowserPage>{};
   final _keys = <String, GlobalKey<BrowserPageState>>{};
   bool _playbackMenuOpen = false;
+  FilmCatalogController? _backgroundCatalog;
+  VoidCallback? _onBackgroundReady;
+  String? _backgroundPath;
+
+  void setBackground(FilmCatalogController catalog, VoidCallback onReady) {
+    if (_backgroundCatalog != catalog) {
+      _backgroundCatalog?.removeListener(_backgroundChanged);
+      _backgroundCatalog = catalog;
+      catalog.addListener(_backgroundChanged);
+    }
+    setState(() {
+      _onBackgroundReady = onReady;
+      _backgroundPath = catalog.backgroundFile?.path;
+    });
+  }
+
+  void _backgroundChanged() {
+    final path = _backgroundCatalog!.backgroundFile?.path;
+    if (path != _backgroundPath) setState(() => _backgroundPath = path);
+  }
+
+  @override
+  void dispose() {
+    _backgroundCatalog?.removeListener(_backgroundChanged);
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -202,18 +230,35 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
     body: Column(
       children: [
         Expanded(
-          child: Navigator(
-            onGenerateRoute: (_) => MaterialPageRoute<void>(
-              builder: (_) => FilmLibraryPage(
-                sourceId: widget.sourceId,
-                onOpenItem: _play,
-                sidebarInset: widget.sidebarInset,
-                onContinueMenu: showPlaybackMenu,
-                onContinueSelected: (record) => _play(
-                  record.item,
-                  resumeSessionId: record.playbackSessionId,
+          child: StreamPathTransitionBackdropScope(
+            hasBackdrop: _backgroundCatalog?.backgroundFile != null,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_backgroundCatalog case final catalog?
+                    when catalog.backgroundFile != null)
+                  FilmLibraryBackground(
+                    cache: catalog.images,
+                    file: catalog.backgroundFile,
+                    onReady: _onBackgroundReady,
+                  )
+                else
+                  const SizedBox.expand(),
+                Navigator(
+                  onGenerateRoute: (_) => MaterialPageRoute<void>(
+                    builder: (_) => FilmLibraryPage(
+                      sourceId: widget.sourceId,
+                      onOpenItem: _play,
+                      sidebarInset: widget.sidebarInset,
+                      onContinueMenu: showPlaybackMenu,
+                      onContinueSelected: (record) => _play(
+                        record.item,
+                        resumeSessionId: record.playbackSessionId,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
         ),

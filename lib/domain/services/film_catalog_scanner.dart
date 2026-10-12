@@ -108,11 +108,9 @@ class FilmCatalogScanner {
         scopePath: scope?.path,
       );
       _checkCancelled();
-      final known = {
-        if (incremental)
-          for (final resource in await store.resources(rootId: root.id))
-            if (resource.availability == 'present') resource.pathKey,
-      };
+      final known = incremental
+          ? await store.presentResourcePaths(root.id)
+          : const <String>{};
       if (root.path.isNotEmpty &&
           excludedDirectory(root.path.split('/').last)) {
         throw const FilmCatalogException('unsupportedDirectory');

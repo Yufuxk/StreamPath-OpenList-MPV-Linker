@@ -28,6 +28,99 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/widgets/film_catalog_tasks.dart';
 
 void main() {
+  test(
+    'close preparation does not replay an already reported scan error',
+    () async {
+      final fixture = await _Fixture.create((_) async => []);
+      final c = fixture.controller;
+      final images = fixture.controller.images.directory;
+      await images.create(recursive: true);
+      await File(p.join(images.path, 'configuration.json')).writeAsString('{}');
+      await fixture.inventory(['Movies/A.2020.mkv']);
+      await c.store.bind(
+        await c.store.resources(),
+        const FilmWork(
+          type: FilmMediaType.movie,
+          tmdbId: 1,
+          title: 'Fixture',
+          originalTitle: 'Fixture',
+          overview: '',
+          language: 'zh-CN',
+          posterPath: '/fixture.jpg',
+        ),
+      );
+      try {
+        expect(await c.run(() => c.scan(fixture.root)), isFalse);
+        expect(c.error, 'invalidImage');
+        expect(c.busy, isFalse);
+        await c.waitForScraping();
+        await c
+            .withWritesSuspended(() async {})
+            .timeout(const Duration(seconds: 2));
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+
+  test(
+    'close preparation waits for an active scan and preserves its error',
+    () async {
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final fixture = await _Fixture.create((_) async {
+        entered.complete();
+        await release.future;
+        return [];
+      });
+      final c = fixture.controller;
+      await fixture.inventory(['Movies/A.2020.mkv']);
+      await c.store.bind(
+        await c.store.resources(),
+        const FilmWork(
+          type: FilmMediaType.movie,
+          tmdbId: 1,
+          title: 'Fixture',
+          originalTitle: 'Fixture',
+          overview: '',
+          language: 'zh-CN',
+          posterPath: '/fixture.jpg',
+        ),
+      );
+      await c.images.directory.create(recursive: true);
+      await File(
+        p.join(c.images.directory.path, 'configuration.json'),
+      ).writeAsString('{}');
+      final scanning = expectLater(
+        c.scan(fixture.root),
+        throwsA(
+          isA<FilmCatalogException>().having(
+            (error) => error.code,
+            'code',
+            'invalidImage',
+          ),
+        ),
+      );
+      try {
+        await entered.future.timeout(const Duration(seconds: 2));
+        var ready = false;
+        final preparing = c.withWritesSuspended(() async {
+          ready = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+        expect(ready, isFalse);
+        release.complete();
+        await preparing.timeout(const Duration(seconds: 2));
+        await scanning;
+        expect(ready, isTrue);
+        expect((await c.store.resources()).single.availability, 'present');
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await fixture.close();
+      }
+    },
+  );
+
   test('folder exclusions use literal contiguous names and exact case', () {
     expect(FilmDirectoryExclusions.parseNames(' Specials, , 特典,Specials '), [
       'Specials',
@@ -234,6 +327,121 @@ void main() {
   });
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
+
+  test(
+    'committed scrape results are released while remaining jobs stay paused',
+    () async {
+      final fixture = await _Fixture.create(
+        (_) async => throw StateError('Unexpected directory read'),
+        type: FilmMediaType.tv,
+        api: (o) async => o.path.contains('/season/')
+            ? {'season_number': 1, 'episodes': []}
+            : {
+                'id': 1,
+                'name': 'Show',
+                'original_name': 'Show',
+                'genres': [],
+                'backdrops': [],
+                'first_air_date': '2020-01-01',
+              },
+      );
+      addTearDown(fixture.close);
+      final c = fixture.controller;
+      await fixture.inventory([
+        for (var i = 1; i <= 96; i++) 'Movies/Show.{tmdb-1}.S01E$i.mkv',
+      ]);
+      void pause() {
+        if (c.scrapeProcessed >= 24 && !c.scrapePaused) c.toggleScraping();
+      }
+
+      c.taskChanges.addListener(pause);
+      await c.scrape(fixture.root);
+      await _until(() => c.scrapeProcessed >= 24);
+      c.taskChanges.removeListener(pause);
+      expect(c.scrapePaused, isTrue);
+      expect(c.scrapeProcessed, lessThan(96));
+      expect(await c.retainedScrapeMatchCount(), 0);
+      c.toggleScraping();
+      await c.waitForScraping();
+      expect(c.scrapeProcessed, 96);
+      expect(c.scrapedCount, 96);
+      expect(c.scrapeCompletion, 1);
+      expect(
+        fixture.api.requests.where((o) => o.path.contains('/season/')),
+        hasLength(1),
+      );
+    },
+  );
+
+  test('failed metadata commits keep prepared results for retry', () async {
+    final fixture = await _Fixture.create((_) async => []);
+    addTearDown(fixture.close);
+    final c = fixture.controller;
+    await fixture.inventory(['Movies/A.2020.mkv']);
+    final db = await databaseFactoryFfi.openDatabase(
+      p.join(fixture.temp.path, 'catalog.db'),
+    );
+    await db.execute(
+      "CREATE TEMP TRIGGER reject_metadata BEFORE INSERT ON works BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END",
+    );
+    await c.scrape(fixture.root);
+    await _until(() => c.scrapePaused);
+    expect(c.scrapeError, 'catalogStorageFailed');
+    expect(c.scrapeProcessed, 0);
+    expect(await c.retainedScrapeMatchCount(), 1);
+    await db.execute('DROP TRIGGER reject_metadata');
+    c.toggleScraping();
+    await c.waitForScraping();
+    expect(c.scrapeProcessed, 1);
+    expect(c.scrapedCount, 1);
+    expect((await c.store.resources()).single.workId, isNotNull);
+    expect(await c.retainedScrapeMatchCount(), 0);
+  });
+
+  for (final incremental in [false, true]) {
+    test(
+      'paged scraping consumes every resource across committed pages incremental=$incremental',
+      () async {
+        final fixture = await _Fixture.create(
+          (_) async => throw StateError('Unexpected directory read'),
+          type: FilmMediaType.tv,
+          api: (o) async => o.path.contains('/season/')
+              ? {'season_number': 1, 'episodes': []}
+              : {
+                  'id': 1,
+                  'name': 'Show',
+                  'original_name': 'Show',
+                  'genres': [],
+                  'backdrops': [],
+                  'first_air_date': '2020-01-01',
+                },
+        );
+        addTearDown(fixture.close);
+        await fixture.inventory([
+          for (var i = 1; i <= 1100; i++) 'Movies/Show.{tmdb-1}.S01E$i.mkv',
+        ]);
+        final c = fixture.controller;
+        await c.scrape(fixture.root, incremental: incremental);
+        await c.waitForScraping();
+        final resources = await c.store.resources(rootId: fixture.root.id);
+        expect(resources, hasLength(1100));
+        expect(
+          resources.every((r) => r.workId != null && r.season == 1),
+          isTrue,
+        );
+        expect(resources.map((r) => r.episode).toSet(), {
+          for (var i = 1; i <= 1100; i++) i,
+        });
+        expect(c.scrapeProcessed, 1100);
+        expect(c.scrapeTotal, 1100);
+        expect(c.scrapedCount, 1100);
+        expect(
+          fixture.api.requests.where((o) => o.path.contains('/season/')),
+          hasLength(1),
+        );
+      },
+    );
+  }
 
   test(
     'cached episode scraping publishes task progress without rebuilding the library',
@@ -877,7 +1085,7 @@ void main() {
   });
 
   for (final language in AppLanguage.values) {
-    testWidgets('扫描已完成时刮削控制仍可见，四语言与大字号 $language', (tester) async {
+    testWidgets('页头文本保留刮削控制，四语言与大字号 $language', (tester) async {
       tester.view.physicalSize = const Size(640, 720);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -922,20 +1130,49 @@ void main() {
             child: child!,
           ),
           home: Scaffold(
-            body: AnimatedBuilder(
-              animation: c,
-              builder: (_, _) => FilmCatalogTasks(catalog: c),
+            appBar: AppBar(
+              toolbarHeight: 48,
+              title: Row(
+                children: [
+                  const Text('Library'),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: SizedBox(
+                      height: 44,
+                      child: FilmCatalogTasks(catalog: c, compact: true),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       );
       await tester.pump();
-      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
       expect(find.text(l10n.text('取消扫描')), findsNothing);
-      expect(find.text(l10n.text('正在刮削…')), findsOneWidget);
+      expect(
+        find.text(
+          l10n.format('刮削：{processed}/{total} · 匹配 {matched}', {
+            'processed': c.scrapeProcessed,
+            'total': c.scrapeTotal,
+            'matched': c.scrapedCount,
+          }),
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.text(l10n.text('暂停刮削')));
       await tester.pump();
-      expect(find.text(l10n.text('刮削已暂停')), findsOneWidget);
+      expect(
+        find.text(
+          l10n.format('已暂停：{processed}/{total} · 匹配 {matched}', {
+            'processed': c.scrapeProcessed,
+            'total': c.scrapeTotal,
+            'matched': c.scrapedCount,
+          }),
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.text(l10n.text('继续刮削')));
       await tester.pump();
       await tester.runAsync(() async {

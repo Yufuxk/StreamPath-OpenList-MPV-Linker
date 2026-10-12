@@ -1,9 +1,14 @@
+import 'package:streampath/presentation/widgets/transition_content.dart';
+import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
@@ -15,11 +20,13 @@ import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
 import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
 import 'package:streampath/presentation/pages/film_detail_page.dart';
 import 'package:streampath/presentation/pages/film_library_page.dart';
+import 'package:streampath/presentation/pages/film_library_shell.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
@@ -27,6 +34,11 @@ import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_library_background.dart';
 import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/presentation/pages/film_related_page.dart';
+import 'package:streampath/presentation/pages/film_featured_page.dart';
+import 'package:streampath/presentation/widgets/film_featured_showcase.dart';
+import 'package:streampath/presentation/widgets/film_segmented_control.dart';
+import 'package:streampath/presentation/widgets/film_detail_backdrop.dart';
+import 'package:streampath/presentation/widgets/film_detail_back_button.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/film_play_icon.dart';
@@ -131,6 +143,16 @@ void main() {
               '${FilmCatalogImageCache.cacheKey(path, target)}.img',
             ),
           ).writeAsBytes(bytes);
+          if (target == 'original') {
+            await catalog.images.backdropBlurs.get(
+              File(
+                p.join(
+                  catalog.images.directory.path,
+                  '${FilmCatalogImageCache.cacheKey(path, target)}.img',
+                ),
+              ),
+            );
+          }
         }
       }
       await catalog.refresh();
@@ -157,8 +179,295 @@ void main() {
 
   Finder backdropImages() => find.descendant(
     of: find.byKey(const Key('film-detail-backdrop')),
-    matching: find.byType(RawImage),
+    matching: find.byKey(const Key('adaptive-backdrop-sharp')),
   );
+
+  testWidgets('详情提亮后极亮极暗背景仍可阅读真实信息区', (tester) async {
+    await prepare(tester);
+    final old = works.first;
+    const overview =
+        'Readable detail overview with a long paragraph. '
+        'The scene remains visible while the title and description stay clear. '
+        'A second sentence fills the available reading width. '
+        'The final sentence checks the right edge of the information column.';
+    await tester.runAsync(() async {
+      await catalog.store.bind(
+        [
+          (await catalog.store.resources()).firstWhere(
+            (r) => r.workId == old.id,
+          ),
+        ],
+        FilmWork(
+          type: old.type,
+          tmdbId: old.tmdbId,
+          title: old.title,
+          originalTitle: 'Original detail title with a long readable name',
+          overview: overview,
+          language: old.language,
+          year: 2020,
+          posterPath: old.posterPath,
+          backdropPath: old.backdropPath,
+          metadata: const {
+            'genres': ['Drama', 'Science Fiction'],
+            'runtime': 140,
+            'presentation_version': 3,
+          },
+        ),
+      );
+      await catalog.store.setPreference('spoiler_protection', false);
+    });
+    final evidence = <Map<String, Object>>[];
+    for (final size in [const Size(1920, 1350), const Size(640, 450)]) {
+      for (final color in [Colors.white, Colors.black]) {
+        await tester.pumpWidget(const SizedBox.shrink());
+        PaintingBinding.instance.imageCache.clear();
+        final file = (await tester.runAsync(
+          () => catalog.images.cached(old.backdropPath!, 'original'),
+        ))!;
+        await tester.runAsync(() async {
+          final recorder = ui.PictureRecorder();
+          Canvas(recorder).drawRect(Offset.zero & size, Paint()..color = color);
+          final picture = recorder.endRecording();
+          final image = await picture.toImage(
+            size.width.toInt(),
+            size.height.toInt(),
+          );
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          await file.writeAsBytes(bytes!.buffer.asUint8List());
+          image.dispose();
+          picture.dispose();
+        });
+        var ready = false;
+        Object? failure;
+        unawaited(
+          catalog.images.backdropBlurs
+              .get(file)
+              .then(
+                (_) => ready = true,
+                onError: (Object error) {
+                  failure = error;
+                  ready = true;
+                },
+              ),
+        );
+        for (var wait = 0; !ready && wait < 600; wait++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(failure, isNull);
+        expect(ready, isTrue);
+        final boundaryKey = GlobalKey();
+        await tester.pumpWidget(
+          frame(
+            RepaintBoundary(
+              key: boundaryKey,
+              child: FilmDetailPage(
+                catalog: catalog,
+                workId: old.id,
+                onOpenItem: (_) async {},
+              ),
+            ),
+          ),
+        );
+        await settle(tester);
+        final textRows = <(String, Rect, Color, double)>[];
+        for (final label in [
+          old.title,
+          'Original detail title with a long readable name',
+          'Drama · Science Fiction',
+          overview,
+        ]) {
+          final finder = find.text(label).first;
+          final element = tester.element(finder);
+          final text = element.widget as Text;
+          final style = DefaultTextStyle.of(element).style.merge(text.style);
+          final rect = tester.getRect(finder);
+          final painter = TextPainter(
+            text: TextSpan(text: label, style: style),
+            textDirection: TextDirection.ltr,
+            maxLines: text.maxLines,
+            ellipsis: text.overflow == TextOverflow.ellipsis ? '…' : null,
+          )..layout(maxWidth: rect.width);
+          for (final line in painter.computeLineMetrics()) {
+            textRows.add((
+              label,
+              Rect.fromLTWH(
+                rect.left + line.left,
+                rect.top + line.baseline - line.ascent,
+                line.width,
+                line.height,
+              ),
+              style.color!,
+              style.fontSize!,
+            ));
+          }
+          painter.dispose();
+        }
+        final colors = {for (final row in textRows) row.$3};
+        expect(colors, hasLength(1));
+        expect([Colors.black, Colors.white], contains(colors.single));
+        final backgroundKey = tester
+            .widget<AdaptiveFilmBackdrop>(find.byType(AdaptiveFilmBackdrop))
+            .textColors!
+            .backgroundKey;
+        final data = (await tester.runAsync(() async {
+          final image =
+              await (backgroundKey.currentContext!.findRenderObject()
+                      as RenderRepaintBoundary)
+                  .toImage();
+          final bytes = await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          );
+          image.dispose();
+          return bytes;
+        }))!;
+        for (final (label, bounds, foreground, fontSize) in textRows) {
+          final rect = bounds.intersect(const Rect.fromLTWH(0, 0, 1280, 900));
+          if (rect.isEmpty) continue;
+          var minimum = double.infinity;
+          for (var y = rect.top + 2; y < rect.bottom - 2; y += 4) {
+            for (var x = rect.left + 2; x < rect.right - 2; x += 4) {
+              final offset = (y.floor() * 1280 + x.floor()) * 4;
+              final background = Color.fromARGB(
+                255,
+                data.getUint8(offset),
+                data.getUint8(offset + 1),
+                data.getUint8(offset + 2),
+              );
+              final a = Color.alphaBlend(
+                    foreground,
+                    background,
+                  ).computeLuminance(),
+                  b = background.computeLuminance();
+              final contrast = a > b
+                  ? (a + .05) / (b + .05)
+                  : (b + .05) / (a + .05);
+              if (contrast < minimum) minimum = contrast;
+            }
+          }
+          evidence.add({
+            'size': size.toString(),
+            'color': color.toString(),
+            'label': label,
+            'contrast': minimum,
+          });
+          expect(
+            minimum,
+            greaterThanOrEqualTo(fontSize >= 24 ? 3 : 4.5),
+            reason: 'Detail: $size, $color, $label',
+          );
+        }
+      }
+    }
+    await tester.runAsync(() async {
+      final file = File(
+        'build/adaptive-background/brightness-followup/detail-contrast.json',
+      );
+      await file.parent.create(recursive: true);
+      await file.writeAsString(jsonEncode(evidence));
+    });
+  });
+
+  testWidgets('portrait progress bottom pixels do not depend on poster color', (
+    tester,
+  ) async {
+    await prepare(tester);
+    final pair = works.take(2).toList();
+    await tester.runAsync(() async {
+      final resources = await catalog.store.resources();
+      for (final work in pair) {
+        final resource = resources.singleWhere((r) => r.workId == work.id);
+        await catalog.store.recordVideoProgress(
+          VideoProgressUpdate(
+            sourceId: resource.sourceId,
+            path: resource.path,
+            positionMs: 50,
+            durationMs: 100,
+            recordedAt: DateTime.now(),
+          ),
+        );
+      }
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawColor(Colors.white, BlendMode.src);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(342, 513);
+      final bytes = (await image.toByteData(format: ui.ImageByteFormat.png))!;
+      await (await catalog.images.cached(
+        pair.last.posterPath!,
+        'w342',
+      ))!.writeAsBytes(bytes.buffer.asUint8List());
+      image.dispose();
+      picture.dispose();
+    });
+    final keys = [GlobalKey(), GlobalKey()];
+    for (final dpr in [1.0, 1.25, 1.5]) {
+      tester.view.devicePixelRatio = dpr;
+      for (final width in [174.5, 181.0, 210.5]) {
+        await tester.pumpWidget(
+          frame(
+            Scaffold(
+              body: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < pair.length; i++)
+                    RepaintBoundary(
+                      key: keys[i],
+                      child: SizedBox(
+                        width: width,
+                        height: 350,
+                        child: FilmWorkCard(
+                          store: catalog.store,
+                          work: pair[i],
+                          cache: catalog.images,
+                          onTap: () {},
+                          onMenu: (_) {},
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+        await settle(tester);
+        final progressRect = tester.getRect(
+          find.byType(LinearProgressIndicator).first,
+        );
+        final pixels = <ByteData>[];
+        var imageWidth = 0;
+        for (final key in keys) {
+          final image = await tester.runAsync(
+            () =>
+                (key.currentContext!.findRenderObject()!
+                        as RenderRepaintBoundary)
+                    .toImage(pixelRatio: dpr),
+          );
+          imageWidth = image!.width;
+          pixels.add(
+            (await tester.runAsync(
+              () async =>
+                  (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!,
+            ))!,
+          );
+          image.dispose();
+        }
+        final lastRow = (progressRect.bottom * dpr).floor();
+        for (var x = (30 * dpr).ceil(); x < ((width - 30) * dpr).floor(); x++) {
+          for (var channel = 0; channel < 3; channel++) {
+            final offset = (lastRow * imageWidth + x) * 4 + channel;
+            expect(
+              pixels[0].getUint8(offset),
+              closeTo(pixels[1].getUint8(offset), 1),
+              reason:
+                  'poster leaking at dpr=$dpr width=$width x=$x row=$lastRow',
+            );
+          }
+        }
+      }
+    }
+  });
 
   testWidgets(
     'spoiler mode retains main artwork and uses one overview reveal action',
@@ -298,7 +607,7 @@ void main() {
   );
 
   testWidgets(
-    'collections show all uses the shared grid, hover and synchronized background',
+    'collections show all opens the immersive showcase with selected artwork',
     (tester) async {
       await prepare(tester);
       await tester.runAsync(() async {
@@ -325,18 +634,17 @@ void main() {
       await tester.ensureVisible(all);
       await tester.tap(all);
       await settle(tester);
-      expect(tester.getTopLeft(find.byType(AppBar)).dx, 72);
-      expect(tester.widget<AppBar>(find.byType(AppBar)).toolbarHeight, 48);
-      expect(find.text('主页'), findsOneWidget);
-      final grid = tester.widget<GridView>(find.byType(GridView));
-      final layout =
-          grid.gridDelegate as SliverGridDelegateWithMaxCrossAxisExtent;
-      expect(layout.maxCrossAxisExtent, 220);
-      expect(layout.mainAxisExtent, 350);
-      expect(layout.crossAxisSpacing, 16);
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.byType(FilmFeaturedPage), findsOneWidget);
+      expect(find.byType(FilmFeaturedShowcase), findsOneWidget);
+      expect(find.byType(FilmDetailBackButton), findsOneWidget);
+      final selectedBackdrop = tester
+          .widget<FilmDetailBackdrop>(find.byType(FilmDetailBackdrop))
+          .path;
+      expect(selectedBackdrop, works.first.backdropPath);
       expect(
         find.descendant(
-          of: find.byType(FilmCollectionCard),
+          of: find.byType(FilmFeaturedShowcase),
           matching: find.byType(FilmCoverZoom),
         ),
         findsOneWidget,
@@ -349,17 +657,38 @@ void main() {
         await catalog.refresh();
       });
       await settle(tester);
+      expect(find.byType(FilmLibraryBackground), findsNothing);
+      expect(
+        tester.widget<FilmDetailBackdrop>(find.byType(FilmDetailBackdrop)).path,
+        selectedBackdrop,
+      );
+      await tester.tap(find.text('查看合集'));
+      await settle(tester);
+      expect(find.byType(FilmPosterGrid), findsNothing);
+      expect(find.byType(FilmFeaturedShowcase), findsOneWidget);
+      expect(find.byType(FilmSegmentedControl<String>), findsNothing);
+      expect(find.byType(FilmLibraryBackground), findsNothing);
       expect(
         tester
-            .widget<FilmLibraryBackground>(find.byType(FilmLibraryBackground))
-            .file!
-            .path,
-        newBackground.path,
+            .widget<FilmFeaturedShowcase>(find.byType(FilmFeaturedShowcase))
+            .works!
+            .single
+            .id,
+        works.first.id,
       );
-      await tester.tap(find.text('All collections fixture'));
+      await tester.tap(find.byKey(const ValueKey('featured-open')));
       await settle(tester);
-      expect(find.byType(FilmPosterGrid), findsOneWidget);
-      expect(find.text(works.first.title), findsOneWidget);
+      expect(find.byType(FilmDetailPage), findsOneWidget);
+      Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+      await settle(tester);
+      expect(find.byType(FilmFeaturedShowcase), findsOneWidget);
+      expect(find.byType(FilmSegmentedControl<String>), findsNothing);
+      Navigator.of(tester.element(find.byType(FilmFeaturedShowcase))).pop();
+      await settle(tester);
+      expect(find.text('查看合集'), findsOneWidget);
+      Navigator.of(tester.element(find.byType(FilmFeaturedShowcase))).pop();
+      await settle(tester);
+      expect(find.byType(FilmLibraryPage), findsOneWidget);
       expect(
         tester
             .widget<FilmLibraryBackground>(find.byType(FilmLibraryBackground))
@@ -419,7 +748,7 @@ void main() {
       final background = tester.element(find.byType(FilmLibraryBackground));
       final backgroundImage = find.descendant(
         of: find.byType(FilmLibraryBackground),
-        matching: find.byType(RawImage),
+        matching: find.byKey(const Key('adaptive-backdrop-sharp')),
       );
       final decoded = tester.widget<RawImage>(backgroundImage).image;
       expect(decoded, isNotNull);
@@ -433,7 +762,9 @@ void main() {
       final sortFilter = tester.state(
         find.byType(SPDropdownButtonFormField<bool>),
       );
-      final pending = tester.element(find.text('待整理（0）'));
+      final pending = tester.element(
+        find.byKey(const ValueKey('film-pending-button')),
+      );
       app.catalogGate = Completer<void>();
       await tester.tap(find.text('主影视库'));
       await tester.pumpAndSettle();
@@ -454,7 +785,10 @@ void main() {
         tester.state(find.byType(SPDropdownButtonFormField<bool>)),
         sortFilter,
       );
-      expect(tester.element(find.text('待整理（0）')), pending);
+      expect(
+        tester.element(find.byKey(const ValueKey('film-pending-button'))),
+        pending,
+      );
       app.catalogGate!.complete();
       app.catalogGate = null;
       await settle(tester);
@@ -494,7 +828,10 @@ void main() {
         tester.state(find.byType(SPDropdownButtonFormField<bool>)),
         sortFilter,
       );
-      expect(tester.element(find.text('待整理（0）')), pending);
+      expect(
+        tester.element(find.byKey(const ValueKey('film-pending-button'))),
+        pending,
+      );
       app.serverRefresh.complete();
       await settle(tester);
       await tester.tap(
@@ -530,7 +867,10 @@ void main() {
           tester.state(find.byType(SPDropdownButtonFormField<bool>)),
           sortFilter,
         );
-        expect(tester.element(find.text('待整理（0）')), pending);
+        expect(
+          tester.element(find.byKey(const ValueKey('film-pending-button'))),
+          pending,
+        );
       }
 
       void select(String value) => tester
@@ -772,6 +1112,13 @@ void main() {
         expect(find.text('展示封面'), findsOneWidget);
         expect(find.text('展示剧透'), findsNothing);
         expect(find.byType(ImageFiltered), findsNWidgets(3));
+        for (final element in find.byType(ImageFiltered).evaluate()) {
+          final filter = find.byWidget(element.widget);
+          final clip = find
+              .ancestor(of: filter, matching: find.byType(ClipRect))
+              .first;
+          expect(tester.getRect(clip), tester.getRect(filter));
+        }
         final continuationMenu = find.descendant(
           of: find.byType(FilmContinueCard),
           matching: find.byTooltip('更多操作'),
@@ -801,7 +1148,7 @@ void main() {
     },
   );
 
-  testWidgets('首页背景缓存被淘汰后返回首帧仍保留原图，切换路径不残留旧图', (tester) async {
+  testWidgets('首页背景淘汰后返回保留首帧，候选加载失败保留已显示图', (tester) async {
     await prepare(tester);
     final file = (await tester.runAsync(
       () => catalog.images.cached(works.first.backdropPath!, 'original'),
@@ -812,13 +1159,15 @@ void main() {
         Builder(
           builder: (context) {
             homeContext = context;
-            return FilmLibraryBackground(file: file);
+            return FilmLibraryBackground(cache: catalog.images, file: file);
           },
         ),
       ),
     );
     await settle(tester);
-    final original = tester.widget<RawImage>(find.byType(RawImage)).image;
+    final original = tester
+        .widget<RawImage>(find.byKey(const Key('adaptive-backdrop-sharp')))
+        .image;
     expect(original, isNotNull);
     for (var i = 0; i < 20; i++) {
       Navigator.of(homeContext).push(
@@ -831,17 +1180,30 @@ void main() {
       Navigator.of(homeContext).pop();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 1));
-      expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
+      expect(
+        tester
+            .widget<RawImage>(find.byKey(const Key('adaptive-backdrop-sharp')))
+            .image,
+        isNotNull,
+      );
       await settle(tester);
     }
     await tester.pumpWidget(
       frame(
-        FilmLibraryBackground(
-          file: File(p.join(temp.path, 'missing-background.png')),
+        Builder(
+          builder: (_) => FilmLibraryBackground(
+            cache: catalog.images,
+            file: File(p.join(temp.path, 'missing-background.png')),
+          ),
         ),
       ),
     );
-    expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNull);
+    expect(
+      tester
+          .widget<RawImage>(find.byKey(const Key('adaptive-backdrop-sharp')))
+          .image,
+      same(original),
+    );
     await settle(tester);
     expect(tester.takeException(), isNull);
   });
@@ -902,44 +1264,111 @@ void main() {
       final before = PaintingBinding.instance.imageCache.currentSizeBytes;
       await tester.pumpWidget(
         frame(
-          FilmArtwork(
+          AdaptiveFilmBackdrop(
             cache: catalog.images,
             path: works.first.backdropPath,
-            target: 'original',
-            backdrop: true,
-            height: double.infinity,
-            width: double.infinity,
           ),
         ),
       );
       final images = tester
-          .widgetList<RawImage>(find.byType(RawImage))
+          .widgetList<RawImage>(
+            find.byKey(const Key('adaptive-backdrop-sharp')),
+          )
           .toList();
-      expect(images, hasLength(2));
+      expect(images, hasLength(1));
       expect(images.every((image) => image.image != null), isTrue);
-      expect(images.first.image!.isCloneOf(images.last.image!), isTrue);
-      expect(
-        tester
-            .widgetList<Image>(find.byType(Image))
-            .every((image) => image.image == provider),
-        isTrue,
-      );
+      expect(images.single.image!.width, 960);
+      expect(images.single.scale, dpr);
       expect(PaintingBinding.instance.imageCache.currentSizeBytes, before);
     });
   }
 
-  testWidgets('点击立即导航，首帧复用主界面海报并继续原详情加载', (tester) async {
+  testWidgets('自定义主页背景在切页和返回中保持原帧，轻壳没有顶栏或占位块', (tester) async {
+    await prepare(tester);
+    await tester.runAsync(() async {
+      final background = await catalog.images.cached(
+        works.first.backdropPath!,
+        'original',
+      );
+      await catalog.store.setBackgroundPath(background!.path);
+      await catalog.refresh();
+    });
+    const frameKey = Key('library-transition-frame');
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: MaterialApp(
+          theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+          builder: (_, child) => RepaintBoundary(key: frameKey, child: child!),
+          home: const FilmLibraryShell(sidebarInset: 64),
+        ),
+      ),
+    );
+    await settle(tester);
+    final background = find.byType(FilmLibraryBackground);
+    expect(background, findsOneWidget);
+    final element = tester.element(background);
+    final sharp = find.descendant(
+      of: background,
+      matching: find.byKey(const Key('adaptive-backdrop-sharp')),
+    );
+    final decoded = tester.widget<RawImage>(sharp).image;
+    expect(decoded, isNotNull);
+    Future<List<int>> pixel() async => (await tester.runAsync(() async {
+      final boundary = tester.renderObject<RenderRepaintBoundary>(
+        find.byKey(frameKey),
+      );
+      final image = await boundary.toImage();
+      final data = (await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      ))!.buffer.asUint8List();
+      final offset = (450 * image.width + 5) * 4;
+      final result = data.sublist(offset, offset + 4);
+      image.dispose();
+      return result;
+    }))!;
+    final baseline = await pixel();
+    PaintingBinding.instance.imageCache.clear();
+    Future<void> checkFrames(int count) async {
+      for (var frame = 0; frame < count; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(tester.element(background), same(element));
+        expect(tester.widget<RawImage>(sharp).image, same(decoded));
+        final current = await pixel();
+        for (var channel = 0; channel < 4; channel++) {
+          expect(current[channel], closeTo(baseline[channel], 2));
+        }
+      }
+    }
+
+    await tester.tap(find.byType(FilmWorkCard).first);
+    await tester.pump();
+    await checkFrames(12);
+    final shell = tester.widget<Scaffold>(
+      find.descendant(
+        of: find.byType(StreamPathPageShell),
+        matching: find.byType(Scaffold),
+      ),
+    );
+    expect(shell.appBar, isNull);
+    expect(shell.body, isNull);
+    expect(shell.backgroundColor, Colors.transparent);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    await settle(tester);
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 64));
+    await checkFrames(8);
+    await settle(tester);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击立即导航，轻壳后加载原图且首张背景静态显示', (tester) async {
     await prepare(tester);
     await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
     await settle(tester);
     final card = find.byType(FilmWorkCard).first;
     final work = tester.widget<FilmWorkCard>(card).work;
-    final poster = tester
-        .widgetList<RawImage>(
-          find.descendant(of: card, matching: find.byType(RawImage)),
-        )
-        .first
-        .image!;
     final background = File(
       p.join(
         catalog.images.directory.path,
@@ -954,21 +1383,37 @@ void main() {
           .untracked,
       isTrue,
     );
-    await tester.tap(card);
-    await tester.pump();
-    await tester.pump();
-    expect(find.byType(FilmDetailPage), findsOneWidget);
-    final images = tester.widgetList<RawImage>(backdropImages()).toList();
-    expect(images, hasLength(2));
-    expect(
-      images.every(
-        (image) =>
-            image.image != null &&
-            (image.image!.isCloneOf(poster) || image.image!.width == 960),
+    // 使用生产 Windows 路由契约，正文在结束帧后挂载。
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: MaterialApp(
+          theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+          home: FilmLibraryPage(onOpenItem: (_) async {}),
+        ),
       ),
-      isTrue,
     );
     await settle(tester);
+    await tester.tap(find.byType(FilmWorkCard).first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(StreamPathPageShell), findsOneWidget);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(backdropImages(), findsNothing);
+    await settle(tester);
+    final images = tester.widgetList<RawImage>(backdropImages()).toList();
+    expect(images, hasLength(1));
+    expect(images.single.image!.width, 960);
+    final transitions = tester
+        .widgetList<AnimatedBuilder>(
+          find.descendant(
+            of: find.byKey(const Key('film-detail-backdrop')),
+            matching: find.byType(AnimatedBuilder),
+          ),
+        )
+        .map((w) => w.animation)
+        .whereType<AnimationController>();
+    expect(transitions.every((animation) => animation.value == 1), isTrue);
     final actual = tester.widgetList<Image>(
       find.descendant(
         of: find.byKey(const Key('film-detail-backdrop')),
@@ -981,9 +1426,17 @@ void main() {
   });
 
   for (final focus in [false, true]) {
-    testWidgets('${focus ? '键盘焦点' : '鼠标悬停'}预热详情专用 Provider', (tester) async {
+    testWidgets('${focus ? '键盘焦点' : '鼠标悬停'}不预解码下一页背景，切页完成后才加载', (tester) async {
       await prepare(tester);
-      await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+            home: FilmLibraryPage(onOpenItem: (_) async {}),
+          ),
+        ),
+      );
       await settle(tester);
       final card = find.byType(FilmWorkCard).first;
       final work = tester.widget<FilmWorkCard>(card).work;
@@ -1003,104 +1456,41 @@ void main() {
         addTearDown(mouse.removePointer);
       }
       await settle(tester);
-      final file = catalog.images.knownFile(work.backdropPath, 'original')!;
+      final file = File(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(work.backdropPath!, 'original')}.img',
+        ),
+      );
       final provider = filmArtworkProvider(
         file,
         target: 'original',
         backdrop: true,
       );
       expect(
-        PaintingBinding.instance.imageCache.statusForKey(provider).keepAlive,
+        PaintingBinding.instance.imageCache.statusForKey(provider).untracked,
         isTrue,
       );
       await tester.tap(card);
       await tester.pump();
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byType(StreamPathPageShell), findsOneWidget);
+      expect(find.byType(FilmDetailPage), findsNothing);
       expect(
-        tester
-            .widgetList<RawImage>(backdropImages())
-            .every((image) => image.image?.width == 960),
+        PaintingBinding.instance.imageCache.statusForKey(provider).untracked,
         isTrue,
       );
-      expect(
-        tester
-            .widgetList<Image>(
-              find.descendant(
-                of: find.byKey(const Key('film-detail-backdrop')),
-                matching: find.byType(Image),
-              ),
-            )
-            .every((image) => image.image == provider),
-        isTrue,
-      );
+      await settle(tester);
       final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
       expect(route, isA<MaterialPageRoute<void>>());
-      expect(route.transitionDuration, const Duration(milliseconds: 300));
-      await settle(tester);
+      expect(route.transitionDuration, const Duration(milliseconds: 220));
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(provider).keepAlive,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
     });
   }
-
-  testWidgets('快速候选切换只预热进行中与最新作品，不下载缺失图片', (tester) async {
-    await prepare(tester);
-    late BuildContext context;
-    await tester.pumpWidget(
-      frame(
-        Builder(
-          builder: (value) {
-            context = value;
-            return const SizedBox.shrink();
-          },
-        ),
-      ),
-    );
-    for (final work in works) {
-      precacheFilmDetailArtwork(context, catalog.images, work);
-    }
-    await settle(tester);
-    expect(
-      catalog.images.knownFile(works.first.backdropPath, 'original'),
-      isNotNull,
-    );
-    final skipped = File(
-      p.join(
-        catalog.images.directory.path,
-        '${FilmCatalogImageCache.cacheKey(works[1].backdropPath!, 'original')}.img',
-      ),
-    );
-    expect(
-      PaintingBinding.instance.imageCache
-          .statusForKey(
-            filmArtworkProvider(skipped, target: 'original', backdrop: true),
-          )
-          .untracked,
-      isTrue,
-    );
-    expect(
-      catalog.images.knownFile(works.last.backdropPath, 'original'),
-      isNotNull,
-    );
-    precacheFilmDetailArtwork(
-      context,
-      catalog.images,
-      const FilmWork(
-        type: FilmMediaType.movie,
-        tmdbId: 100,
-        title: 'Missing',
-        originalTitle: '',
-        overview: '',
-        language: 'zh-CN',
-        backdropPath: '/missing.png',
-        posterPath: '/missingposter.png',
-      ),
-    );
-    await settle(tester);
-    expect(catalog.images.knownFile('/missing.png', 'original'), isNull);
-    expect(
-      await tester.runAsync(() => catalog.images.directory.list().length),
-      9,
-    );
-    expect(tester.takeException(), isNull);
-  });
 
   testWidgets('20次进入退出不重复解码背景，缓存有界且没有残留监听器', (tester) async {
     await prepare(tester);
@@ -1115,7 +1505,9 @@ void main() {
         ),
       ),
     );
-    precacheFilmDetailArtwork(context, catalog.images, works.first);
+    await tester.runAsync(
+      () => catalog.images.cached(works.first.backdropPath!, 'original'),
+    );
     await settle(tester);
     final cache = PaintingBinding.instance.imageCache;
     final file = catalog.images.knownFile(
@@ -1177,22 +1569,28 @@ void main() {
       );
     }
     Widget artwork(FilmWork work) => frame(
-      FilmArtwork(
-        cache: catalog.images,
-        path: work.backdropPath,
-        target: 'original',
-        backdrop: true,
-        height: double.infinity,
-      ),
+      AdaptiveFilmBackdrop(cache: catalog.images, path: work.backdropPath),
     );
     await tester.pumpWidget(artwork(works.first));
     await tester.pumpWidget(artwork(works[1]));
     final file = catalog.images.knownFile(works[1].backdropPath, 'original')!;
+    await settle(tester);
     expect(
       tester
-          .widgetList<Image>(find.byType(Image))
-          .every((image) => (image.image as FileImage).file.path == file.path),
-      isTrue,
+          .widget<AdaptiveFilmBackdrop>(find.byType(AdaptiveFilmBackdrop))
+          .path,
+      works[1].backdropPath,
+    );
+    expect(
+      tester
+          .widget<RawImage>(find.byKey(const Key('adaptive-backdrop-sharp')))
+          .image!
+          .width,
+      960,
+    );
+    expect(
+      file.path,
+      catalog.images.knownFile(works[1].backdropPath, 'original')!.path,
     );
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.runAsync(() => catalog.images.clear());

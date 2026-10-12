@@ -1,3 +1,4 @@
+import 'transition_content.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -27,6 +28,7 @@ class FilmFavoritesWall extends StatefulWidget {
 }
 
 class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
+  MaterialPageRoute<void>? _detailRoute;
   FilmCatalogController? _catalog;
   List<FilmWork> _works = [];
   final _scroll = ScrollController();
@@ -127,9 +129,10 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
       onOpen: (work) async {
         final chrome = context.read<ValueNotifier<double?>?>();
         chrome?.value = 0;
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => FilmDetailPage(
+        final route = MaterialPageRoute<void>(
+          builder: (_) => StreamPathTransitionContent(
+            shellBuilder: (_) => const StreamPathPageShell(),
+            contentBuilder: (_) => FilmDetailPage(
               catalog: _catalog!,
               workId: work.id,
               initialWork: work,
@@ -137,7 +140,15 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
             ),
           ),
         );
-        if (mounted) chrome?.value = null;
+        _detailRoute = route;
+        await Navigator.of(context).push(route);
+        await route.completed;
+        if (mounted &&
+            _detailRoute == route &&
+            ModalRoute.of(this.context)?.isActive == true) {
+          _detailRoute = null;
+          chrome?.value = null;
+        }
       },
     );
   }

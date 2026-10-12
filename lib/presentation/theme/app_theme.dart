@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/appearance_config.dart';
+import '../widgets/sp_back_icon.dart';
 import 'glass_tokens.dart';
 import 'page_transitions.dart';
 import 'window_appearance_status.dart';
@@ -9,6 +10,47 @@ import 'window_appearance_status.dart';
 abstract final class AppTheme {
   static const Color _seedColor = Color(0xFF3B6FE8);
   static const dropdownBorderRadius = BorderRadius.all(Radius.circular(8));
+
+  /// 影视库顶部紧凑工具栏，字段外观仍从当前主题派生。
+  static ThemeData filmLibraryToolbarTheme(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    const radius = BorderRadius.all(Radius.circular(12));
+    return theme.copyWith(
+      extensions: theme.extensions.values.map(
+        (extension) =>
+            extension is GlassTokens &&
+                extension.enabled &&
+                extension.material == GlassMaterial.acrylic
+            ? extension.copyWith(
+                chromeSurface: Color.alphaBlend(
+                  extension.chromeSurface.withValues(alpha: 0.10),
+                  extension.chromeSurface,
+                ),
+              )
+            : extension,
+      ),
+      inputDecorationTheme: theme.inputDecorationTheme.copyWith(
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
+        constraints: const BoxConstraints(minHeight: 40),
+        border: OutlineInputBorder(borderRadius: radius),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: radius,
+          borderSide: BorderSide(color: scheme.outlineVariant),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: radius,
+          borderSide: BorderSide(color: scheme.primary, width: 2),
+        ),
+        hintStyle: theme.textTheme.bodySmall?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
 
   static Color dropdownMenuColor(ThemeData theme) {
     final surface = theme.colorScheme.surfaceContainerLow;
@@ -197,6 +239,9 @@ abstract final class AppTheme {
     );
 
     return base.copyWith(
+      actionIconTheme: ActionIconThemeData(
+        backButtonIconBuilder: (_) => const SPBackIcon(),
+      ),
       textTheme: desktopTextTheme,
       scaffoldBackgroundColor: glassTokens.baseSurface,
       canvasColor: scheme.surface,

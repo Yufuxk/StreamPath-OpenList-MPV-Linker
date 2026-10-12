@@ -10,6 +10,8 @@ import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_watch_state.dart';
 import '../state/app_state.dart';
 
+const _progressHeight = 4.0;
+
 class FilmSpoilerScope extends StatefulWidget {
   const FilmSpoilerScope({super.key, required this.child});
   final Widget child;
@@ -75,6 +77,7 @@ class FilmWatchOverlay extends StatefulWidget {
 class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   FilmCatalogStore? _store;
   FilmWatchState? _state;
+  bool _loaded = false;
   FilmResource? _resolvedResource;
   int _generation = 0;
   Timer? _loadTimer;
@@ -116,6 +119,8 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     super.didUpdateWidget(oldWidget);
     if (widget.store != oldWidget.store && widget.store != null) {
       _store?.watchChanges.removeListener(_scheduleLoad);
+      _state = null;
+      _loaded = false;
       _bind(widget.store!);
       return;
     }
@@ -129,6 +134,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
         widget.path != oldWidget.path) {
       _revealed = false;
       _state = null;
+      _loaded = false;
       _resolvedResource = null;
       _load();
     }
@@ -180,6 +186,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
             }
           }
           _state = state;
+          _loaded = true;
         });
       }
     } finally {
@@ -202,8 +209,15 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   @override
   Widget build(BuildContext context) {
     final fraction = widget.fallbackFraction ?? _state?.fraction;
+    final pendingOverview =
+        widget.spoilerSensitive &&
+        widget.revealBelow &&
+        widget.workId != null &&
+        (_store?.spoilerProtection ?? false) &&
+        !_loaded;
     final blocked =
         widget.spoilerSensitive &&
+        !pendingOverview &&
         (_store?.spoilerProtection ?? false) &&
         _state?.status != FilmWatchStatus.watched &&
         !(_reveals?.value.contains(_contentKey) ?? _revealed);
@@ -215,15 +229,74 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       }
     }
 
+    final showProgress =
+        widget.showStatus &&
+        (widget.fallbackFraction != null
+            ? fraction! > 0
+            : _state?.status == FilmWatchStatus.inProgress);
+    Widget artwork = widget.child;
+    if (pendingOverview) {
+      // 状态确认前保留简介尺寸，避免露出剧透或临时揭示按钮。
+      artwork = Opacity(opacity: 0, child: ExcludeSemantics(child: artwork));
+    }
+    if (blocked) {
+      artwork = ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(
+          sigmaX: widget.revealBelow ? 6 : 16,
+          sigmaY: widget.revealBelow ? 6 : 16,
+          tileMode: widget.revealBelow ? ui.TileMode.decal : ui.TileMode.clamp,
+        ),
+        child: ExcludeSemantics(child: artwork),
+      );
+      if (widget.revealBelow) {
+        artwork = Opacity(
+          opacity: .7,
+          child: ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (bounds) {
+              final fade = (8 / bounds.height).clamp(0.0, .45);
+              return LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: const [
+                  Colors.transparent,
+                  Colors.white,
+                  Colors.white,
+                  Colors.transparent,
+                ],
+                stops: [0, fade, 1 - fade, 1],
+              ).createShader(bounds);
+            },
+            child: ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (bounds) {
+                final fade = (12 / bounds.width).clamp(0.0, .45);
+                return LinearGradient(
+                  colors: const [
+                    Colors.transparent,
+                    Colors.white,
+                    Colors.white,
+                    Colors.transparent,
+                  ],
+                  stops: [0, fade, 1 - fade, 1],
+                ).createShader(bounds);
+              },
+              child: artwork,
+            ),
+          ),
+        );
+      }
+      artwork = ClipRect(child: artwork);
+    }
+    if (showProgress) {
+      artwork = ClipRect(
+        clipper: const _ProgressCoverClipper(),
+        child: artwork,
+      );
+    }
     final content = Stack(
       children: [
-        if (blocked)
-          ImageFiltered(
-            imageFilter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: ExcludeSemantics(child: widget.child),
-          )
-        else
-          widget.child,
+        artwork,
         if (blocked && widget.canReveal && !widget.revealBelow)
           Positioned.fill(
             child: Center(
@@ -244,16 +317,19 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
               ),
             ),
           ),
-        if (widget.showStatus &&
-            (widget.fallbackFraction != null
-                ? fraction! > 0
-                : _state?.status == FilmWatchStatus.inProgress))
+        if (showProgress)
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: IgnorePointer(
-              child: LinearProgressIndicator(value: fraction, minHeight: 4),
+              child: LinearProgressIndicator(
+                value: fraction,
+                minHeight: _progressHeight,
+                borderRadius: BorderRadius.zero,
+                trackGap: 0,
+                stopIndicatorRadius: 0,
+              ),
             ),
           ),
       ],
@@ -270,6 +346,21 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       ],
     );
   }
+}
+
+class _ProgressCoverClipper extends CustomClipper<Rect> {
+  const _ProgressCoverClipper();
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(
+    0,
+    0,
+    size.width,
+    (size.height - _progressHeight).clamp(0.0, double.infinity),
+  );
+
+  @override
+  bool shouldReclip(_ProgressCoverClipper oldClipper) => false;
 }
 
 class _UnwatchedCorner extends CustomPainter {

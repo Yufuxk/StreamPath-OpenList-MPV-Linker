@@ -1,5 +1,18 @@
 /// 影视库新增文案：繁体中文、日语、英语。
 const filmCatalogTranslations = <String, List<String>>{
+  '选择一部影片': ['選擇一部影片', '作品を選択', 'Select a title'],
+  '选择一个合集': ['選擇一個合集', 'コレクションを選択', 'Select a collection'],
+  '暂无每日精选': ['暫無每日精選', '今日のおすすめはありません', 'No daily picks available'],
+  '暂无合集': ['暫無合集', 'コレクションはありません', 'No collections available'],
+  '收录 {count} 部作品': [
+    '收錄 {count} 部作品',
+    '{count} 作品を収録',
+    '{count} titles in this collection',
+  ],
+  '查看详情': ['查看詳情', '詳細を見る', 'View details'],
+  '查看合集': ['查看合集', 'コレクションを見る', 'View collection'],
+  '正在关闭 StreamPath': ['正在關閉 StreamPath', 'StreamPath を終了しています', 'Closing StreamPath'],
+  '正在停止播放控制、等待后台任务结束并释放连接，请稍候。': ['正在停止播放控制、等待背景工作結束並釋放連線，請稍候。', '再生制御の停止、バックグラウンド処理の完了、接続の解放を待っています。しばらくお待ちください。', 'Stopping playback control, waiting for background tasks to finish, and releasing connections. Please wait.'],
   '屏蔽文件夹名称': ['屏蔽資料夾名稱', '除外するフォルダー名', 'Excluded folder names'],
   '使用英文逗号分隔，区分大小写；命中后跳过整个子目录': ['使用英文逗號分隔，區分大小寫；符合時略過所有子目錄', '半角コンマ区切り、大文字小文字を区別。一致するフォルダー以下を除外', 'Separate with commas; case-sensitive. Matching folders and their subfolders are skipped'],
   '文件夹名称匹配模式': ['資料夾名稱比對模式', 'フォルダー名の一致モード', 'Folder name matching mode'],
@@ -345,6 +358,21 @@ const filmCatalogTranslations = <String, List<String>>{
   '刮削完成': ['中繼資料取得完成', 'メタデータ取得完了', 'Metadata scraping complete'],
   '暂停刮削': ['暫停取得中繼資料', 'メタデータ取得を一時停止', 'Pause scraping'],
   '继续刮削': ['繼續取得中繼資料', 'メタデータ取得を再開', 'Resume scraping'],
+  '扫描：{dirs} 个目录 · {files} 个文件': [
+    '掃描：{dirs} 個目錄 · {files} 個檔案',
+    'スキャン：{dirs} フォルダー · {files} ファイル',
+    'Scan: {dirs} folders · {files} files',
+  ],
+  '刮削：{processed}/{total} · 匹配 {matched}': [
+    '取得：{processed}/{total} · 配對 {matched}',
+    '取得：{processed}/{total} · 一致 {matched}',
+    'Scraping: {processed}/{total} · Matched {matched}',
+  ],
+  '已暂停：{processed}/{total} · 匹配 {matched}': [
+    '已暫停：{processed}/{total} · 配對 {matched}',
+    '一時停止：{processed}/{total} · 一致 {matched}',
+    'Paused: {processed}/{total} · Matched {matched}',
+  ],
   '扫描：已读取 {dirs} 个目录 · 发现 {files} 个文件 · {path}': [
     '掃描：已讀取 {dirs} 個目錄 · 發現 {files} 個檔案 · {path}',
     'スキャン：{dirs} フォルダー · {files} ファイル · {path}',

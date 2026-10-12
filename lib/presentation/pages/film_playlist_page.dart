@@ -1,3 +1,4 @@
+import '../widgets/transition_content.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../data/local/film_catalog_store.dart';
@@ -16,6 +17,7 @@ import '../widgets/film_watch_overlay.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_icons.dart';
+import '../widgets/sp_back_icon.dart';
 import '../widgets/sp_menu.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/sp_reorderable.dart';
@@ -36,7 +38,8 @@ class FilmPlaylistPage extends StatefulWidget {
   State<FilmPlaylistPage> createState() => _FilmPlaylistPageState();
 }
 
-class _FilmPlaylistPageState extends State<FilmPlaylistPage> {
+class _FilmPlaylistPageState extends State<FilmPlaylistPage>
+    with StreamPathTransitionState {
   final _scroll = ScrollController();
   List<FilmPlaylist> _lists = [];
   FilmPlaylistSnapshot? _snapshot;
@@ -211,11 +214,14 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage> {
 
   void _open(String id) => Navigator.of(context).push(
     MaterialPageRoute<void>(
-      builder: (_) => FilmPlaylistPage(
-        catalog: widget.catalog,
-        onPlay: widget.onPlay,
-        playlistId: id,
-        sidebarInset: widget.sidebarInset,
+      builder: (_) => StreamPathTransitionContent(
+        shellBuilder: (_) => const StreamPathPageShell(),
+        contentBuilder: (_) => FilmPlaylistPage(
+          catalog: widget.catalog,
+          onPlay: widget.onPlay,
+          playlistId: id,
+          sidebarInset: widget.sidebarInset,
+        ),
       ),
     ),
   );
@@ -329,14 +335,17 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage> {
           const PopupMenuItem(value: 'delete', child: AppText('删除播放列表')),
         ];
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: widget.catalog,
-    builder: (context, _) => Stack(
+  Widget build(BuildContext context) => StreamPathTransitionBuilder(
+    listenable: widget.catalog,
+    builder: (context) => Stack(
       children: [
         Positioned.fill(
           child: ExcludeSemantics(
             child: IgnorePointer(
-              child: FilmLibraryBackground(file: widget.catalog.backgroundFile),
+              child: FilmLibraryBackground(
+                cache: widget.catalog.images,
+                file: widget.catalog.backgroundFile,
+              ),
             ),
           ),
         ),
@@ -366,7 +375,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage> {
                       children: [
                         TextButton.icon(
                           onPressed: () => Navigator.of(context).pop(),
-                          icon: const Icon(SPIcons.back),
+                          icon: const SPBackIcon(),
                           label: const AppText('返回'),
                         ),
                         if (_snapshot case final snapshot?) ...[

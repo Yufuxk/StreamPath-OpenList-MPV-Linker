@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -11,6 +12,7 @@ import 'package:streampath/data/local/directory_cache.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/local/tmdb_credential_store.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/local_root_config.dart';
@@ -18,6 +20,7 @@ import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/film_scan_scheduler.dart';
+import 'package:streampath/domain/services/tmdb_metadata_service.dart';
 import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/pages/film_library_manage_page.dart';
@@ -29,8 +32,18 @@ import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'package:streampath/presentation/widgets/section_switcher.dart';
 
 import 'helpers/shell_test_app_state.dart';
+
+class _CountingCredentials extends TmdbCredentialStore {
+  int reads = 0;
+  @override
+  Future<String?> read() async {
+    reads++;
+    return null;
+  }
+}
 
 FilmWork _work(int id) => FilmWork(
   type: FilmMediaType.movie,
@@ -147,6 +160,206 @@ Widget _frame(AppState app, Widget page) =>
 void main() {
   setUpAll(sqfliteFfiInit);
 
+  testWidgets('空目录标签在动画结束后初始化，保留键盘入口且正文拖拽不切页', (tester) async {
+    final (app, catalog) = await _fixture(tester);
+    await tester.runAsync(() async {
+      for (final root in catalog.roots) {
+        await catalog.store.removeRoot(root.id);
+      }
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(
+      _frame(app, FoldersPage(onOpenResult: (_) async {})),
+    );
+    await _settle(tester);
+    await tester.tap(find.widgetWithText(Tab, '影视库'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(FilmLibraryManagePage), findsNothing);
+    await _settle(tester);
+    expect(find.byType(FilmLibraryManagePage), findsOneWidget);
+    expect(catalog.roots, isEmpty);
+    await tester.drag(
+      find.byType(StreamPathSectionSwitcher<int>),
+      const Offset(200, 0),
+    );
+    await _settle(tester);
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 3);
+    Focus.of(tester.element(find.widgetWithText(Tab, '影视库'))).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await _settle(tester);
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 2);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('目录页按需在编辑窗口加载来源设置，保存提交、取消保留原配置', (tester) async {
+    final (app, shared) = await _fixture(tester);
+    final credentials = _CountingCredentials();
+    final tmdb = TmdbMetadataService(credentials: credentials);
+    final catalog = FilmCatalogController(
+      store: shared.store,
+      tmdb: tmdb,
+      images: shared.images,
+      sourceFor: shared.sourceFor,
+      ownsResources: false,
+    );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox());
+      await catalog.close();
+      tmdb.close();
+    });
+    final root = shared.roots.single;
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('root_enabled:${root.id}', false);
+      await catalog.store.setPreference(
+        'local_metadata:${root.sourceId}',
+        true,
+      );
+      await catalog.store.setPreference('write_back:${root.sourceId}', true);
+      await catalog.store.setPreference('read_only:${root.sourceId}', true);
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(
+      _frame(
+        app,
+        FilmLibraryManagePage(
+          key: const Key('directories'),
+          catalog: catalog,
+          directories: true,
+        ),
+      ),
+    );
+    await _settle(tester);
+    expect(find.byType(Checkbox), findsNothing);
+    await tester.tap(find.text('编辑影视目录'));
+    await _settle(tester);
+    Checkbox option(String text) => tester.widget<Checkbox>(
+      find.descendant(
+        of: find.widgetWithText(ListTile, text),
+        matching: find.byType(Checkbox),
+      ),
+    );
+    expect(credentials.reads, 0);
+    expect(option('参与定时扫描').value, isFalse);
+    expect(option('本地元数据模式').value, isTrue);
+    expect(option('只读来源').value, isTrue);
+    expect(option('允许写回缺少的 NFO 和图片').onChanged, isNull);
+    for (final title in ['本地元数据模式', '只读来源']) {
+      option(title).onChanged!(false);
+      await tester.pump();
+      expect(option(title).value, isFalse);
+      option(title).onChanged!(true);
+      await tester.pump();
+      expect(option(title).value, isTrue);
+    }
+    for (var i = 0; i < 6; i++) {
+      final checkbox = find.descendant(
+        of: find.widgetWithText(ListTile, '参与定时扫描'),
+        matching: find.byType(Checkbox),
+      );
+      await tester.tap(checkbox);
+      await tester.pump();
+      expect(option('参与定时扫描').value, i.isEven);
+    }
+    await tester.tap(find.text('参与定时扫描'));
+    await tester.pump();
+    expect(option('参与定时扫描').value, isTrue);
+    expect(
+      await tester.runAsync(
+        () => catalog.store.preference('root_enabled:${root.id}'),
+      ),
+      isFalse,
+    );
+    await tester.tap(find.text('取消'));
+    await _settle(tester);
+    expect(find.byType(Checkbox), findsNothing);
+    await tester.tap(find.text('编辑影视目录'));
+    await _settle(tester);
+    expect(option('参与定时扫描').value, isFalse);
+    option('参与定时扫描').onChanged!(true);
+    option('只读来源').onChanged!(false);
+    await tester.pump();
+    expect(option('允许写回缺少的 NFO 和图片').onChanged, isNotNull);
+    option('允许写回缺少的 NFO 和图片').onChanged!(false);
+    await tester.pump();
+    expect(option('允许写回缺少的 NFO 和图片').value, isFalse);
+    option('允许写回缺少的 NFO 和图片').onChanged!(true);
+    await tester.pump();
+    expect(option('允许写回缺少的 NFO 和图片').value, isTrue);
+    option('允许写回缺少的 NFO 和图片').onChanged!(false);
+    option('本地元数据模式').onChanged!(false);
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await _settle(tester);
+    expect(find.byType(Checkbox), findsNothing);
+    expect(
+      await tester.runAsync(
+        () => catalog.store.preference('root_enabled:${root.id}'),
+      ),
+      isTrue,
+    );
+    for (final setting in ['read_only', 'write_back', 'local_metadata']) {
+      expect(
+        await tester.runAsync(
+          () => catalog.store.preference('$setting:${root.sourceId}'),
+        ),
+        isFalse,
+      );
+    }
+    expect(
+      (await tester.runAsync(
+        () => catalog.store.resources(rootId: root.id),
+      ))!.first.workId,
+      isNotNull,
+    );
+    expect(credentials.reads, 0);
+    await tester.pumpWidget(
+      _frame(
+        app,
+        FilmLibraryManagePage(key: const Key('settings'), catalog: catalog),
+      ),
+    );
+    await _settle(tester);
+    expect(credentials.reads, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('影视目录卡片限制宽度、宽窗并列且窄窗不溢出', (tester) async {
+    tester.view.physicalSize = const Size(1920, 1080);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final (app, c) = await _fixture(tester);
+    await tester.runAsync(() async {
+      await _root(c.store, 'Second', 2);
+      await _root(c.store, 'Third', 3);
+      await c.refresh();
+    });
+    await tester.pumpWidget(
+      _frame(app, FilmLibraryManagePage(catalog: c, directories: true)),
+    );
+    await _settle(tester);
+    final cards = [
+      for (final root in c.roots)
+        find.widgetWithText(Card, root.displayName).last,
+    ];
+    final first = tester.getRect(cards.first);
+    expect(first.width, lessThanOrEqualTo(600));
+    expect(first.height, lessThan(300));
+    expect(tester.getTopLeft(cards[1]).dy, first.top);
+    expect(tester.getTopLeft(cards[2]).dy, first.top);
+    expect(find.byType(Checkbox), findsNothing);
+    for (final size in [const Size(800, 600), const Size(480, 720)]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(cards[1]).dy, greaterThan(first.top));
+      expect(tester.getRect(cards.first).right, lessThanOrEqualTo(size.width));
+      expect(tester.takeException(), isNull);
+    }
+  });
+
   testWidgets('合并文件夹页在四语言、明暗与玻璃模式窄窗两倍字号下可操作', (tester) async {
     tester.view.physicalSize = const Size(800, 600);
     tester.view.devicePixelRatio = 1;
@@ -195,6 +408,15 @@ void main() {
             reason: '${language.name}: $tab',
           );
         }
+        final edit = find.text(AppLocalizations(language).text('编辑影视目录'));
+        await tester.ensureVisible(edit);
+        await tester.pumpAndSettle();
+        await tester.tap(edit);
+        await _settle(tester);
+        expect(find.byType(Checkbox), findsNWidgets(4));
+        expect(tester.takeException(), isNull);
+        await tester.tap(find.text(AppLocalizations(language).text('取消')));
+        await _settle(tester);
         await tester.pumpWidget(const SizedBox.shrink());
       }
     }

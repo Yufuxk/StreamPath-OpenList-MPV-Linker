@@ -1,3 +1,4 @@
+import '../widgets/section_switcher.dart';
 import '../widgets/sp_menu.dart';
 import '../../domain/services/app_update_service.dart';
 import '../widgets/app_update_settings_card.dart';
@@ -133,32 +134,8 @@ class SettingsPage extends StatefulWidget {
   State<SettingsPage> createState() => SettingsPageState();
 }
 
-class SettingsPageState extends State<SettingsPage>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _sectionSlide;
-  SettingsSection? _transitionTarget, _queuedSection;
-  bool _enteringSection = false;
-  double _slideDirection = 1;
-
-  void _advanceSectionSlide() {
-    if (!_enteringSection && _sectionSlide.value >= 0.5) {
-      setState(() {
-        _enteringSection = true;
-        _selectedSection = _transitionTarget!;
-      });
-      if (_selectedSection == SettingsSection.server) {
-        unawaited(_refreshOpenListIndexProgress());
-      }
-    }
-  }
-
-  void _finishSectionSlide(AnimationStatus status) {
-    if (status != AnimationStatus.completed) return;
-    final next = _queuedSection;
-    _queuedSection = null;
-    _transitionTarget = null;
-    if (next != null && next != _selectedSection) _selectSection(next);
-  }
+class SettingsPageState extends State<SettingsPage> {
+  bool _animateSectionChanges = true;
 
   final _navigationKey = GlobalKey();
 
@@ -334,10 +311,6 @@ class SettingsPageState extends State<SettingsPage>
   @override
   void initState() {
     super.initState();
-    _sectionSlide =
-        AnimationController(vsync: this, duration: kTabScrollDuration, value: 1)
-          ..addListener(_advanceSectionSlide)
-          ..addStatusListener(_finishSectionSlide);
     _selectedSection = SettingsPageMemory.selectedSection;
     _draft = SettingsConfigDraft();
     _loadConfig();
@@ -349,7 +322,6 @@ class SettingsPageState extends State<SettingsPage>
 
   @override
   void dispose() {
-    _sectionSlide.dispose();
     _openListIndexProgressTimer?.cancel();
     _openListIndexProgressGeneration++;
     _serverSectionRevision.dispose();
@@ -410,6 +382,11 @@ class SettingsPageState extends State<SettingsPage>
   }
 
   Future<void> _save() async {
+    if (_formKeys[_selectedSection]?.currentState == null) {
+      _selectSection(_selectedSection, animate: false);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
     final invalidSection = _firstInvalidSection();
     if (invalidSection != null) {
       if (invalidSection == _selectedSection) {
@@ -1035,30 +1012,12 @@ class SettingsPageState extends State<SettingsPage>
 
   void _selectSection(SettingsSection section, {bool animate = true}) {
     SettingsPageMemory.select(section);
-    if (!animate) {
-      _sectionSlide.stop();
-      _transitionTarget = null;
-      _queuedSection = null;
-    } else if (_sectionSlide.isAnimating) {
-      _queuedSection = section;
-      return;
-    }
-    if (_selectedSection != section) {
-      _stopOpenListIndexProgressPolling(clear: false);
-      if (animate && _loaded) {
-        setState(() {
-          _transitionTarget = section;
-          _enteringSection = false;
-          _slideDirection = section.index > _selectedSection.index ? 1 : -1;
-        });
-        _sectionSlide.forward(from: 0);
-      } else {
-        setState(() => _selectedSection = section);
-        if (section == SettingsSection.server) {
-          unawaited(_refreshOpenListIndexProgress());
-        }
-      }
-    }
+    if (_selectedSection == section && animate) return;
+    _stopOpenListIndexProgressPolling(clear: false);
+    setState(() {
+      _animateSectionChanges = animate;
+      _selectedSection = section;
+    });
   }
 
   void _selectProfileForEditing(String? profileId) {
@@ -3915,9 +3874,6 @@ class SettingsPageState extends State<SettingsPage>
   @override
   Widget build(BuildContext context) {
     final sections = _buildSections();
-    final selectedIndex = sections.indexWhere(
-      (definition) => definition.section == _selectedSection,
-    );
     final theme = Theme.of(context);
     return Theme(
       data: theme.copyWith(
@@ -3991,41 +3947,20 @@ class SettingsPageState extends State<SettingsPage>
                 children: [
                   _buildNavigationBar(context, sections),
                   Expanded(
-                    child: ClipRect(
-                      child: AnimatedBuilder(
-                        animation: _sectionSlide,
-                        child: RepaintBoundary(
-                          child: _buildPageShell(
-                            sections[selectedIndex < 0 ? 0 : selectedIndex],
-                          ),
-                        ),
-                        builder: (context, child) {
-                          final value = _sectionSlide.value;
-                          final offset = _transitionTarget == null
-                              ? 0.0
-                              : _enteringSection
-                              ? _slideDirection *
-                                    (1 -
-                                        Curves.easeOutCubic.transform(
-                                          ((value - .5) * 2).clamp(0, 1),
-                                        ))
-                              : -_slideDirection *
-                                    Curves.easeInCubic.transform(
-                                      (value * 2).clamp(0, 1),
-                                    );
-                          return IgnorePointer(
-                            ignoring: _sectionSlide.isAnimating,
-                            child: ExcludeFocus(
-                              excluding: _sectionSlide.isAnimating,
-                              child: FractionalTranslation(
-                                key: const Key('settings-section-slide'),
-                                translation: Offset(offset, 0),
-                                child: child,
-                              ),
-                            ),
-                          );
-                        },
+                    child: StreamPathSectionSwitcher<SettingsSection>(
+                      selected: _selectedSection,
+                      order: SettingsSection.values,
+                      animate: _animateSectionChanges,
+                      shellBuilder: (context, section) =>
+                          const SizedBox.expand(),
+                      contentBuilder: (context, section) => _buildPageShell(
+                        sections.firstWhere((item) => item.section == section),
                       ),
+                      onSettled: (section) {
+                        if (section == SettingsSection.server) {
+                          unawaited(_refreshOpenListIndexProgress());
+                        }
+                      },
                     ),
                   ),
                 ],

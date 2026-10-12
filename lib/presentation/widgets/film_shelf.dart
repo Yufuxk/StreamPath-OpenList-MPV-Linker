@@ -21,11 +21,35 @@ class FilmShelf extends StatefulWidget {
     required this.title,
     required this.count,
     required this.builder,
-    this.height = 304,
-    this.itemWidth = 174,
+    this.height = defaultHeight,
+    this.itemWidth = defaultItemWidth,
     this.onShowAll,
     this.horizontal = false,
   });
+  static const double defaultHeight = 304;
+  static const double defaultItemWidth = 174;
+  static ({double width, double height, int visible}) adaptiveLayout(
+    double availableWidth,
+    int count, {
+    double itemWidth = defaultItemWidth,
+    double height = defaultHeight,
+  }) {
+    const spacing = 16.0;
+    final capacity = math.max(
+      1,
+      ((availableWidth + spacing) / (itemWidth + spacing)).round(),
+    );
+    final visible = math.min(capacity, count);
+    final width = count >= capacity
+        ? (availableWidth - (capacity - 1) * spacing) / capacity
+        : itemWidth;
+    return (
+      width: width,
+      height: height * math.max(1.0, width / itemWidth),
+      visible: visible,
+    );
+  }
+
   final String title;
   final int count;
   final double height, itemWidth;
@@ -95,6 +119,7 @@ class _FilmShelfState extends State<FilmShelf>
                       ),
                       child: DirectoryScrollView(
                         controller: _scroll,
+                        hideScrollbar: true,
                         builder: (scrollController) => ListView.separated(
                           controller: scrollController,
                           scrollDirection: Axis.horizontal,
@@ -112,23 +137,16 @@ class _FilmShelfState extends State<FilmShelf>
               : LayoutBuilder(
                   builder: (context, constraints) {
                     const spacing = 16.0;
-                    final capacity = math.max(
-                      1,
-                      ((constraints.maxWidth + spacing) /
-                              (widget.itemWidth + spacing))
-                          .round(),
+                    final layout = FilmShelf.adaptiveLayout(
+                      constraints.maxWidth,
+                      widget.count,
+                      itemWidth: widget.itemWidth,
+                      height: widget.height,
                     );
-                    final visible = math.min(capacity, widget.count);
-                    final fillsRow = widget.count >= capacity;
-                    final width = fillsRow
-                        ? (constraints.maxWidth - (capacity - 1) * spacing) /
-                              capacity
-                        : widget.itemWidth;
-                    // 保留文字区高度；扩大卡片时同步增加封面空间。
-                    final height =
-                        widget.height * math.max(1.0, width / widget.itemWidth);
+                    final width = layout.width;
+                    final visible = layout.visible;
                     return SizedBox(
-                      height: height,
+                      height: layout.height,
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -230,21 +248,8 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () {
-          precacheFilmDetailArtwork(context, widget.cache, widget.work);
-          widget.onTap();
-        },
-        onHover: (value) {
-          setState(() => _hovered = value);
-          if (value) {
-            precacheFilmDetailArtwork(context, widget.cache, widget.work);
-          }
-        },
-        onFocusChange: (value) {
-          if (value) {
-            precacheFilmDetailArtwork(context, widget.cache, widget.work);
-          }
-        },
+        onTap: widget.onTap,
+        onHover: (value) => setState(() => _hovered = value),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: LayoutBuilder(

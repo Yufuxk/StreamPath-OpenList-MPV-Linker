@@ -3,6 +3,7 @@ import '../../data/models/media_source.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -53,16 +54,19 @@ class FilmCatalogController extends ChangeNotifier {
   final Future<void> Function(FilmCatalogRoot)? serverRefresh;
   final String? sourceId;
   final bool ownsResources;
-  FilmCatalogController forSource(String id) => FilmCatalogController(
-    store: store,
-    tmdb: tmdb,
-    images: images,
-    sourceFor: sourceFor,
-    serverRefresh: serverRefresh,
-    filesFor: matcher.filesFor,
-    sourceId: id,
-    ownsResources: false,
-  );
+  FilmCatalogController forSource(String id) =>
+      FilmCatalogController(
+          store: store,
+          tmdb: tmdb,
+          images: images,
+          sourceFor: sourceFor,
+          serverRefresh: serverRefresh,
+          filesFor: matcher.filesFor,
+          sourceId: id,
+          ownsResources: false,
+        )
+        .._collectionBackdropMembers = _collectionBackdropMembers
+        .._collectionBackdrops = _collectionBackdrops;
   List<FilmWork> works = [];
   List<FilmCatalogRoot> roots = [];
   FilmDirectoryExclusions _directoryExclusions =
@@ -89,6 +93,83 @@ class FilmCatalogController extends ChangeNotifier {
       );
   List<FilmCollection> collections = [];
   final Map<String, String?> collectionCovers = {};
+  // 主库与来源视图共享本次运行的选择，图片请求失败时仍保留原成员。
+  Map<(String?, String), FilmWork?> _collectionBackdropMembers = {};
+  Map<(String?, String), Future<({int workId, String? path, String? poster})?>>
+  _collectionBackdrops = {};
+
+  Future<({int workId, String? path, String? poster})?> collectionBackdrop(
+    String collectionId,
+  ) async {
+    final key = (sourceId, collectionId);
+    final request = _collectionBackdrops.putIfAbsent(
+      key,
+      () => _loadCollectionBackdrop(collectionId),
+    );
+    var completed = false;
+    try {
+      final backdrop = await request;
+      completed = true;
+      return backdrop;
+    } finally {
+      if (!completed && _collectionBackdrops[key] == request) {
+        _collectionBackdrops.remove(key);
+      }
+    }
+  }
+
+  Future<({int workId, String? path, String? poster})?> _loadCollectionBackdrop(
+    String collectionId,
+  ) async {
+    final key = (sourceId, collectionId);
+    if (!_collectionBackdropMembers.containsKey(key)) {
+      final members = await store.works(
+        type: null,
+        sourceId: sourceId,
+        collectionId: collectionId,
+        limit: -1,
+      );
+      final scraped = members
+          .where(
+            (work) =>
+                work.tmdbId > 0 &&
+                (work.backdropPath != null ||
+                    work.posterPath != null ||
+                    work.fetchedAt > 0),
+          )
+          .toList();
+      final choices = scraped.isEmpty ? members : scraped;
+      _collectionBackdropMembers[key] = choices.isEmpty
+          ? null
+          : choices[math.Random().nextInt(choices.length)];
+    }
+    final member = _collectionBackdropMembers[key];
+    if (member == null) return null;
+    var artwork = member;
+    if (artwork.backdropPath == null) {
+      final language = await store.language();
+      var id = member.tmdbId;
+      if (id <= 0) {
+        final matches = await tmdb.search(
+          member.type,
+          member.originalTitle.isEmpty ? member.title : member.originalTitle,
+          language,
+          year: member.year,
+        );
+        if (matches.isEmpty) {
+          throw const FilmCatalogException('metadataNotFound');
+        }
+        id = matches.first.tmdbId;
+      }
+      artwork = await tmdb.details(member.type, id, language);
+    }
+    return (
+      workId: member.id,
+      path: artwork.backdropPath,
+      poster: artwork.posterPath,
+    );
+  }
+
   FilmMediaType? type;
   List<FilmWork> recentWorks = [], movies = [], series = [];
   final Map<int, FilmWork> rootCovers = {};
@@ -126,6 +207,15 @@ class FilmCatalogController extends ChangeNotifier {
   int get retainedScrapeSessionCount => _scrapeSessions.length;
   @visibleForTesting
   int get retainedScrapeEntryCount => _scrapeSeen.length;
+  @visibleForTesting
+  Future<int> retainedScrapeMatchCount() async {
+    final sessions = await Future.wait(_scrapeSessions.values);
+    return sessions.fold<int>(
+      0,
+      (count, session) => count + session.matches.length,
+    );
+  }
+
   int _scrapeInputs = 0;
   Future<void>? _scrapeTask;
   Completer<void>? _scrapeWake;
@@ -425,7 +515,8 @@ class FilmCatalogController extends ChangeNotifier {
         _notify();
       }
     }();
-    _scanTask = task;
+    // 扫描错误交给调用方，资源清理只等待任务结束。
+    _scanTask = task.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     await task;
   }
 
@@ -537,6 +628,8 @@ class FilmCatalogController extends ChangeNotifier {
       try {
         final jobs = <_FilmScrapeJob>[];
         final matches = <String, FilmScanMatch>{};
+        // 完整作品资料只在当前提交批内复用，后续批次重新读取。
+        final works = <int, FilmWork?>{};
         final preparation = Stopwatch()..start();
         final limit =
             job.session.root.type == FilmMediaType.tv &&
@@ -559,7 +652,7 @@ class FilmCatalogController extends ChangeNotifier {
               next.entry.path,
               next.session.root.sourceKind,
             );
-            await next.session.prepare([next.entry]);
+            await next.session.prepare([next.entry], workCache: works);
             if (_closed) break;
             if (next.session.paused) {
               scrapeError = next.session.error;
@@ -582,6 +675,12 @@ class FilmCatalogController extends ChangeNotifier {
             for (var i = 0; i < jobs.length; i++) {
               _scrapeQueue.removeFirst();
             }
+            job.session.releaseCommitted(
+              jobs.map(
+                (job) =>
+                    filmPathKey(job.entry.path, job.session.root.sourceKind),
+              ),
+            );
             scrapeProcessed += jobs.length;
             scrapeError ??= job.session.error;
             _notifyTaskProgress();
@@ -618,21 +717,17 @@ class FilmCatalogController extends ChangeNotifier {
       final exclusions = await store.directoryExclusions();
       await store.pruneExcludedDirectories(root, exclusions);
       final session = await _scrapeSession(root);
-      final resources = await store.resources(
-        rootId: root.id,
-        pending: incremental,
-      );
-      _queueScraping(session, [
-        for (final resource in resources)
-          if (resource.availability == 'present' &&
-              (!incremental || resource.workId == null))
-            FilmScanEntry(
-              path: resource.path,
-              parentPath: resource.parentPath,
-              name: resource.name,
-              mediaKind: resource.mediaKind,
-            ),
-      ]);
+      var afterId = 0;
+      while (!_closed) {
+        final batch = await store.scrapeEntries(
+          root.id,
+          afterId: afterId,
+          incremental: incremental,
+        );
+        if (batch.isEmpty) break;
+        afterId = batch.last.$1;
+        _queueScraping(session, [for (final row in batch) row.$2]);
+      }
     } on FilmCatalogException catch (cause) {
       scrapeError = cause.code;
     } on DatabaseException {

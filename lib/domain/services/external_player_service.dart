@@ -2838,7 +2838,11 @@ class ExternalPlayerService {
   Future<void> stopImplicitPlaybackControl() async {
     _queueControlEnabled = false;
     for (final runtime in _sessions.values.toList()) {
-      if (!runtime.rollingQueue) continue;
+      if (!runtime.rollingQueue || runtime.ipcPipeName == null) continue;
+      if (await runtime.livenessTracker.probe() ==
+          PlayerProcessLiveness.exited) {
+        continue;
+      }
       try {
         await _sendQueueMessage(runtime, ['streampath-queue-suspend']);
       } on StateError {
@@ -2861,6 +2865,7 @@ class ExternalPlayerService {
     final runtime = _sessions[sessionId];
     if (runtime == null ||
         runtime.queueFilePath == null ||
+        runtime.ipcPipeName == null ||
         runtime.implicitPlan != null) {
       return;
     }

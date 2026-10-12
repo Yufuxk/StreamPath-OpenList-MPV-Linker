@@ -41,6 +41,7 @@ dependencies:
   super_clipboard: ^0.9.1
   win32: ^5.15.0
   ffi: ^2.2.0
+  image: 4.5.4
 
 dev_dependencies:
   flutter_test:

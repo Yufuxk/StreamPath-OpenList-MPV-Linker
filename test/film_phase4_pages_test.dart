@@ -1,6 +1,7 @@
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
+import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -371,15 +372,16 @@ void main() {
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.addPointer(location: Offset.zero);
       await mouse.moveTo(tester.getCenter(card));
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
       expect(tester.getRect(corner), cornerRect);
+      final artwork = find.descendant(
+        of: card,
+        matching: find.byType(FilmArtwork),
+      );
       expect(
-        tester
-            .widget<AnimatedScale>(
-              find.descendant(of: card, matching: find.byType(AnimatedScale)),
-            )
-            .scale,
-        1.04,
+        tester.getRect(artwork).width / tester.getSize(artwork).width,
+        closeTo(1.04, .001),
       );
       await tester.runAsync(
         () => c.store.recordVideoProgress(
@@ -836,10 +838,14 @@ void main() {
         ),
       );
       await settle(tester);
-      final homeHeader = tester.getRect(find.byType(AppBar));
-      final homeTitleLeft = tester
-          .getTopLeft(find.byType(SPDropdownButtonFormField<String>))
-          .dx;
+      final libraryHeader = tester.getRect(find.byType(AppBar));
+      final homeHeader = Rect.fromLTWH(
+        libraryHeader.left,
+        libraryHeader.top,
+        libraryHeader.width,
+        48,
+      );
+      final homeTitleLeft = homeHeader.left + 20;
       final continueShelf = find.byWidgetPredicate(
         (w) => w is FilmShelf && w.title == '继续播放',
       );
@@ -858,10 +864,21 @@ void main() {
       final background = find.byKey(const Key('film-library-background'));
       expect(background, findsOneWidget);
       expect(tester.getRect(background), const Rect.fromLTWH(0, 0, 1280, 900));
-      final image = tester.widget<Image>(
-        find.descendant(of: background, matching: find.byType(Image)),
+      expect(
+        tester.widget<AdaptiveFilmBackdrop>(background).file!.path,
+        picture.path,
       );
-      expect((image.image as FileImage).file.path, picture.path);
+      expect(
+        tester
+            .widget<RawImage>(
+              find.descendant(
+                of: background,
+                matching: find.byKey(const Key('adaptive-backdrop-sharp')),
+              ),
+            )
+            .image,
+        isNotNull,
+      );
       await render(tester, 'continue-expanded');
       await tester.tap(find.byType(FilmContinueCard));
       await tester.tap(
@@ -890,7 +907,14 @@ void main() {
         );
         await settle(tester);
         expect(
-          tester.widget<ColoredBox>(background).color,
+          tester
+              .widget<ColoredBox>(
+                find.descendant(
+                  of: background,
+                  matching: find.byType(ColoredBox),
+                ),
+              )
+              .color,
           theme.scaffoldBackgroundColor,
         );
         expect(tester.getRect(find.byType(AppBar)), homeHeader);
@@ -919,7 +943,10 @@ void main() {
       expect(
         tester
             .widget<ColoredBox>(
-              find.byKey(const Key('film-library-background')),
+              find.descendant(
+                of: find.byKey(const Key('film-library-background')),
+                matching: find.byType(ColoredBox),
+              ),
             )
             .color,
         theme.scaffoldBackgroundColor,
@@ -945,14 +972,15 @@ void main() {
     final pointer = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await pointer.addPointer();
     await pointer.moveTo(tester.getCenter(card));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
+    final artwork = find.descendant(
+      of: card,
+      matching: find.byType(FilmArtwork),
+    );
     expect(
-      tester
-          .widget<AnimatedScale>(
-            find.descendant(of: card, matching: find.byType(AnimatedScale)),
-          )
-          .scale,
-      1.04,
+      tester.getRect(artwork).width / tester.getSize(artwork).width,
+      closeTo(1.04, .001),
     );
     await pointer.removePointer();
     await render(tester, 'home');

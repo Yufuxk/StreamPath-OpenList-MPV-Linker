@@ -1,3 +1,6 @@
+import '../widgets/transition_content.dart';
+import 'dart:math' as math;
+
 import '../widgets/sp_menu.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../domain/services/film_catalog_scanner.dart';
@@ -57,7 +60,7 @@ class FilmLibraryManagePage extends StatefulWidget {
 }
 
 class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, StreamPathTransitionState {
   @override
   bool get wantKeepAlive => widget.directories;
 
@@ -70,8 +73,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   bool _scanEnabled = true, _spoilers = false;
   int _scanHours = 24;
   bool _saving = false;
-  final _sourceSettings = <String, List<bool>>{};
-  final _rootEnabled = <int, bool>{};
   @override
   void initState() {
     super.initState();
@@ -81,27 +82,11 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   Future<void> _loadSettings({bool refreshCatalog = true}) async {
     await widget.catalog.run(() async {
       if (widget.directories && refreshCatalog) await widget.catalog.refresh();
+      if (widget.directories) return;
       final language = await widget.catalog.store.language();
       final token = await widget.catalog.tmdb.hasToken();
       final probeMode = await widget.catalog.store.probeMode();
       final exclusions = await widget.catalog.store.directoryExclusions();
-      for (final root in await widget.catalog.store.roots()) {
-        _rootEnabled[root.id] =
-            await widget.catalog.store.preference('root_enabled:${root.id}') !=
-            false;
-        _sourceSettings[root.sourceId] = [
-          await widget.catalog.store.preference(
-                'local_metadata:${root.sourceId}',
-              ) ==
-              true,
-          await widget.catalog.store.preference(
-                'write_back:${root.sourceId}',
-              ) ==
-              true,
-          await widget.catalog.store.preference('read_only:${root.sourceId}') ==
-              true,
-        ];
-      }
       _scanEnabled =
           await widget.catalog.store.preference('scan_enabled') != false;
       _spoilers =
@@ -237,13 +222,151 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
     }
   }
 
+  Widget _rootCard(BuildContext context, FilmCatalogRoot root) {
+    final c = widget.catalog;
+    return Card(
+      key: ValueKey('film-root-card-${root.id}'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    root.displayName,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                Tooltip(
+                  message: context.l10n.text('启用影视库'),
+                  child: Switch(
+                    key: ValueKey('film-root-enabled-${root.id}'),
+                    value: root.enabled,
+                    onChanged: _saving
+                        ? null
+                        : (value) => _settingAction(
+                            () => c.store.setRootEnabled(root.id, value),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+            SelectableText(
+              contextMenuBuilder: buildSPTextSelectionMenu,
+              root.path.isEmpty ? '/' : root.path,
+            ),
+            Wrap(
+              spacing: 12,
+              children: [
+                AppText(root.type == FilmMediaType.movie ? '电影' : '剧集'),
+                AppText(switch (root.status) {
+                  'running' => '正在扫描…',
+                  'completed' => '扫描完成',
+                  'cancelled' => '扫描已取消',
+                  'failed' => '扫描失败',
+                  _ => '尚未扫描',
+                }),
+              ],
+            ),
+            if (root.lastSuccessAt != null)
+              Text(
+                context.l10n.format('上次成功：{time}', {
+                  'time': DateTime.fromMillisecondsSinceEpoch(
+                    root.lastSuccessAt!,
+                  ).toLocal(),
+                }),
+              ),
+            if (root.lastError != null)
+              AppText(filmCatalogErrorText(root.lastError!)),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: c.busy || c.scraping
+                      ? null
+                      : () => showFilmRootEditor(context, c, root: root),
+                  icon: const Icon(SPIcons.edit),
+                  label: const AppText('编辑影视目录'),
+                ),
+                TextButton.icon(
+                  onPressed: () =>
+                      showFilmArtworkPicker(context, c, rootId: root.id),
+                  icon: const Icon(SPIcons.video),
+                  label: const AppText('修改图片'),
+                ),
+                TextButton.icon(
+                  onPressed: c.busy ? null : () => c.scan(root),
+                  icon: const Icon(SPIcons.refresh),
+                  label: const AppText('手动扫描'),
+                ),
+                TextButton.icon(
+                  onPressed: c.busy
+                      ? null
+                      : () async {
+                          final path = await showGlassDialog<String>(
+                            context: context,
+                            builder: (_) => FilmDirectoryDialog(
+                              source: c.sourceFor(root),
+                              initialPath: root.path,
+                              boundaryPath: root.path,
+                            ),
+                          );
+                          if (path != null && mounted) {
+                            await c.scan(
+                              root,
+                              scope: FilmScanScope(root.id, path),
+                            );
+                          }
+                        },
+                  icon: const Icon(SPIcons.folder),
+                  label: const AppText('指定扫描'),
+                ),
+                TextButton.icon(
+                  onPressed: c.busy
+                      ? null
+                      : () => c.scan(root, incremental: true),
+                  icon: const Icon(SPIcons.add),
+                  label: const AppText('增量扫描'),
+                ),
+                TextButton.icon(
+                  onPressed: c.isScrapingRoot(root.id)
+                      ? null
+                      : () => c.scrape(root),
+                  icon: const Icon(SPIcons.refresh),
+                  label: const AppText('刮削元数据'),
+                ),
+                TextButton.icon(
+                  onPressed:
+                      root.type != FilmMediaType.tv || c.isScrapingRoot(root.id)
+                      ? null
+                      : () => c.scrape(root, incremental: true),
+                  icon: const Icon(SPIcons.refresh),
+                  label: const AppText('增量刮削'),
+                ),
+                TextButton.icon(
+                  onPressed: () => _remove(root),
+                  icon: const Icon(SPIcons.delete),
+                  label: const AppText('移除'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final c = widget.catalog;
-    return AnimatedBuilder(
-      animation: c,
-      builder: (context, _) {
+    return StreamPathTransitionBuilder(
+      listenable: c,
+      builder: (context) {
         final content = DirectoryScrollView(
           builder: (scrollController) => ListView(
             controller: scrollController,
@@ -287,211 +410,33 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                         ],
                       ),
                       const SizedBox(height: 16),
-                      for (final root in c.roots)
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        root.displayName,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.titleMedium,
-                                      ),
-                                    ),
-                                    Tooltip(
-                                      message: context.l10n.text('启用影视库'),
-                                      child: Switch(
-                                        key: ValueKey(
-                                          'film-root-enabled-${root.id}',
-                                        ),
-                                        value: root.enabled,
-                                        onChanged: _saving
-                                            ? null
-                                            : (value) => _settingAction(
-                                                () => c.store.setRootEnabled(
-                                                  root.id,
-                                                  value,
-                                                ),
-                                              ),
-                                      ),
-                                    ),
-                                  ],
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final scale =
+                              MediaQuery.textScalerOf(context).scale(14) / 14;
+                          final columns = math.max(
+                            1,
+                            ((constraints.maxWidth + 16) / (480 * scale + 16))
+                                .floor(),
+                          );
+                          final width = math.min(
+                            600 * scale,
+                            (constraints.maxWidth - 16 * (columns - 1)) /
+                                columns,
+                          );
+                          return Wrap(
+                            spacing: 16,
+                            runSpacing: 12,
+                            children: [
+                              for (final root in c.roots)
+                                SizedBox(
+                                  width: width,
+                                  child: _rootCard(context, root),
                                 ),
-                                SelectableText(
-                                  contextMenuBuilder: buildSPTextSelectionMenu,
-                                  root.path.isEmpty ? '/' : root.path,
-                                ),
-                                AppText(
-                                  root.type == FilmMediaType.movie
-                                      ? '电影'
-                                      : '剧集',
-                                ),
-                                AppText(switch (root.status) {
-                                  'running' => '正在扫描…',
-                                  'completed' => '扫描完成',
-                                  'cancelled' => '扫描已取消',
-                                  'failed' => '扫描失败',
-                                  _ => '尚未扫描',
-                                }),
-                                if (root.lastSuccessAt != null)
-                                  Text(
-                                    context.l10n.format('上次成功：{time}', {
-                                      'time':
-                                          DateTime.fromMillisecondsSinceEpoch(
-                                            root.lastSuccessAt!,
-                                          ).toLocal(),
-                                    }),
-                                  ),
-                                if (root.lastError != null)
-                                  AppText(
-                                    filmCatalogErrorText(root.lastError!),
-                                  ),
-                                CheckboxListTile(
-                                  contentPadding: EdgeInsets.zero,
-                                  title: const AppText('参与定时扫描'),
-                                  value: _rootEnabled[root.id] ?? true,
-                                  onChanged: _saving
-                                      ? null
-                                      : (value) => _settingAction(
-                                          () => c.store.setPreference(
-                                            'root_enabled:${root.id}',
-                                            value,
-                                          ),
-                                        ),
-                                ),
-                                if (root.sourceKind == MediaSourceKind.local ||
-                                    root.sourceKind == MediaSourceKind.webdav)
-                                  for (final setting in [
-                                    (0, 'local_metadata', '本地元数据模式'),
-                                    (1, 'write_back', '允许写回缺少的 NFO 和图片'),
-                                    (2, 'read_only', '只读来源'),
-                                  ])
-                                    CheckboxListTile(
-                                      contentPadding: EdgeInsets.zero,
-                                      title: AppText(setting.$3),
-                                      value:
-                                          _sourceSettings[root
-                                              .sourceId]?[setting.$1] ??
-                                          false,
-                                      onChanged:
-                                          _saving ||
-                                              (setting.$1 == 1 &&
-                                                  (_sourceSettings[root
-                                                          .sourceId]?[2] ??
-                                                      false))
-                                          ? null
-                                          : (value) => _settingAction(
-                                              () => c.store.setPreference(
-                                                '${setting.$2}:${root.sourceId}',
-                                                value,
-                                              ),
-                                            ),
-                                    ),
-                                Wrap(
-                                  spacing: 12,
-                                  children: [
-                                    TextButton.icon(
-                                      onPressed: c.busy || c.scraping
-                                          ? null
-                                          : () => showFilmRootEditor(
-                                              context,
-                                              c,
-                                              root: root,
-                                            ),
-                                      icon: const Icon(SPIcons.edit),
-                                      label: const AppText('编辑影视目录'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: () => showFilmArtworkPicker(
-                                        context,
-                                        c,
-                                        rootId: root.id,
-                                      ),
-                                      icon: const Icon(SPIcons.video),
-                                      label: const AppText('修改图片'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: c.busy
-                                          ? null
-                                          : () => c.scan(root),
-                                      icon: const Icon(SPIcons.refresh),
-                                      label: const AppText('手动扫描'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: c.busy
-                                          ? null
-                                          : () async {
-                                              final path =
-                                                  await showGlassDialog<String>(
-                                                    context: context,
-                                                    builder: (_) =>
-                                                        FilmDirectoryDialog(
-                                                          source: c.sourceFor(
-                                                            root,
-                                                          ),
-                                                          initialPath:
-                                                              root.path,
-                                                          boundaryPath:
-                                                              root.path,
-                                                        ),
-                                                  );
-                                              if (path != null && mounted) {
-                                                await c.scan(
-                                                  root,
-                                                  scope: FilmScanScope(
-                                                    root.id,
-                                                    path,
-                                                  ),
-                                                );
-                                              }
-                                            },
-                                      icon: const Icon(SPIcons.folder),
-                                      label: const AppText('指定扫描'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: c.busy
-                                          ? null
-                                          : () =>
-                                                c.scan(root, incremental: true),
-                                      icon: const Icon(SPIcons.add),
-                                      label: const AppText('增量扫描'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: c.isScrapingRoot(root.id)
-                                          ? null
-                                          : () => c.scrape(root),
-                                      icon: const Icon(SPIcons.refresh),
-                                      label: const AppText('刮削元数据'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed:
-                                          root.type != FilmMediaType.tv ||
-                                              c.isScrapingRoot(root.id)
-                                          ? null
-                                          : () => c.scrape(
-                                              root,
-                                              incremental: true,
-                                            ),
-                                      icon: const Icon(SPIcons.refresh),
-                                      label: const AppText('增量刮削'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: () => _remove(root),
-                                      icon: const Icon(SPIcons.delete),
-                                      label: const AppText('移除'),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                            ],
+                          );
+                        },
+                      ),
                       const SizedBox(height: 12),
                       FilmCatalogTasks(catalog: c, panel: true),
                     ],
@@ -948,6 +893,12 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
   final _name = TextEditingController();
   String? _error;
   bool _saving = false;
+  bool _loadingSettings = false;
+  bool _settingsLoaded = false;
+  bool _scheduledScan = true;
+  bool _localMetadata = false;
+  bool _writeBack = false;
+  bool _readOnly = false;
   @override
   void initState() {
     super.initState();
@@ -960,7 +911,44 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
       _path = root.path;
       _type = root.type;
       _name.text = root.displayName;
+      _loadingSettings = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadDirectorySettings(loadSchedule: true);
+      });
     }
+  }
+
+  Future<void> _loadDirectorySettings({bool loadSchedule = false}) async {
+    final store = widget.catalog.store;
+    final source = _source!;
+    final ok = await widget.catalog.run(() async {
+      final scheduled = loadSchedule
+          ? await store.preference('root_enabled:${widget.root!.id}') != false
+          : _scheduledScan;
+      var local = false, writeBack = false, readOnly = false;
+      if (source.kind == MediaSourceKind.local ||
+          source.kind == MediaSourceKind.webdav) {
+        local =
+            await store.preference('local_metadata:${source.sourceId}') == true;
+        writeBack =
+            await store.preference('write_back:${source.sourceId}') == true;
+        readOnly =
+            await store.preference('read_only:${source.sourceId}') == true;
+      }
+      if (!mounted) return;
+      setState(() {
+        _scheduledScan = scheduled;
+        _localMetadata = local;
+        _writeBack = writeBack;
+        _readOnly = readOnly;
+      });
+    });
+    if (!mounted) return;
+    setState(() {
+      _loadingSettings = false;
+      _settingsLoaded = ok;
+      if (!ok) _error = widget.catalog.error;
+    });
   }
 
   @override
@@ -1024,6 +1012,23 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
           type: _type,
           name: name,
         );
+        await widget.catalog.store.setPreference(
+          'root_enabled:${root.id}',
+          _scheduledScan,
+        );
+        if (_source!.kind == MediaSourceKind.local ||
+            _source!.kind == MediaSourceKind.webdav) {
+          for (final setting in [
+            ('local_metadata', _localMetadata),
+            ('write_back', _writeBack),
+            ('read_only', _readOnly),
+          ]) {
+            await widget.catalog.store.setPreference(
+              '${setting.$1}:${_source!.sourceId}',
+              setting.$2,
+            );
+          }
+        }
       } else {
         await widget.catalog.store.addRoot(
           sourceId: _source!.sourceId,
@@ -1099,14 +1104,22 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                         child: Text(source.displayName),
                       ),
                   ],
-                  onChanged: _saving
+                  onChanged: _saving || _loadingSettings
                       ? null
-                      : (value) => setState(() {
-                          _source = sources.firstWhere(
-                            (s) => s.sourceId == value,
-                          );
-                          _path = null;
-                        }),
+                      : (value) {
+                          setState(() {
+                            _source = sources.firstWhere(
+                              (s) => s.sourceId == value,
+                            );
+                            _path = null;
+                            if (widget.root != null) {
+                              _loadingSettings = true;
+                              _settingsLoaded = false;
+                              _error = null;
+                            }
+                          });
+                          if (widget.root != null) _loadDirectorySettings();
+                        },
                 ),
                 const SizedBox(height: 16),
                 SPDropdownButtonFormField<FilmMediaType>(
@@ -1152,6 +1165,74 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                     contextMenuBuilder: buildSPTextSelectionMenu,
                     _path!.isEmpty ? '/' : _path!,
                   ),
+                if (widget.root != null) ...[
+                  const SizedBox(height: 12),
+                  if (_loadingSettings)
+                    const LinearProgressIndicator()
+                  else if (_settingsLoaded) ...[
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const AppText('参与定时扫描'),
+                      leading: Checkbox(
+                        value: _scheduledScan,
+                        onChanged: _saving
+                            ? null
+                            : (value) =>
+                                  setState(() => _scheduledScan = value!),
+                      ),
+                      onTap: _saving
+                          ? null
+                          : () => setState(
+                              () => _scheduledScan = !_scheduledScan,
+                            ),
+                    ),
+                    if (_source!.kind == MediaSourceKind.local ||
+                        _source!.kind == MediaSourceKind.webdav) ...[
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const AppText('本地元数据模式'),
+                        leading: Checkbox(
+                          value: _localMetadata,
+                          onChanged: _saving
+                              ? null
+                              : (value) =>
+                                    setState(() => _localMetadata = value!),
+                        ),
+                        onTap: _saving
+                            ? null
+                            : () => setState(
+                                () => _localMetadata = !_localMetadata,
+                              ),
+                      ),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const AppText('允许写回缺少的 NFO 和图片'),
+                        leading: Checkbox(
+                          value: _writeBack,
+                          onChanged: _saving || _readOnly
+                              ? null
+                              : (value) => setState(() => _writeBack = value!),
+                        ),
+                        onTap: _saving || _readOnly
+                            ? null
+                            : () => setState(() => _writeBack = !_writeBack),
+                      ),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const AppText('只读来源'),
+                        leading: Checkbox(
+                          value: _readOnly,
+                          onChanged: _saving
+                              ? null
+                              : (value) => setState(() => _readOnly = value!),
+                        ),
+                        onTap: _saving
+                            ? null
+                            : () => setState(() => _readOnly = !_readOnly),
+                      ),
+                    ],
+                  ],
+                ],
                 if (_error != null) AppText(filmCatalogErrorText(_error!)),
               ],
             ),
@@ -1164,7 +1245,14 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
           child: const AppText('取消'),
         ),
         FilledButton(
-          onPressed: _source == null || _path == null || _saving ? null : _save,
+          onPressed:
+              _source == null ||
+                  _path == null ||
+                  _saving ||
+                  _loadingSettings ||
+                  (widget.root != null && !_settingsLoaded)
+              ? null
+              : _save,
           child: AppText(widget.root == null ? '添加' : '保存'),
         ),
       ],

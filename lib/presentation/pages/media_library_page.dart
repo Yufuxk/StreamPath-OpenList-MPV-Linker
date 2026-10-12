@@ -1199,7 +1199,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
             Positioned.fill(
               child: ExcludeSemantics(
                 child: IgnorePointer(
-                  child: FilmLibraryBackground(file: catalog.backgroundFile),
+                  child: FilmLibraryBackground(
+                    cache: catalog.images,
+                    file: catalog.backgroundFile,
+                  ),
                 ),
               ),
             ),

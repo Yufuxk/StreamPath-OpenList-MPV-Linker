@@ -36,6 +36,7 @@ import 'presentation/localization/app_localizations.dart';
 import 'presentation/state/app_state.dart';
 import 'presentation/theme/app_theme.dart';
 import 'presentation/theme/appearance_controller.dart';
+import 'presentation/theme/film_shader_warm_up.dart';
 import 'presentation/widgets/window_title_bar.dart';
 import 'presentation/widgets/startup_overlay.dart';
 
@@ -48,6 +49,9 @@ Future<void> main() async {
   // 数据迁移必须早于任何日志或数据库写入。
   await AppPaths.migrateLegacyLayout();
   await FilmLibraryTransfer.recover(await AppPaths.dataDirectory());
+  final shaderWarmUp = Platform.isWindows
+      ? warmFilmShaders()
+      : Future<void>.value();
   final clipboardInstall = ClipboardHistoryFix.install();
 
   // 目录缓存与配置均位于便携数据目录。
@@ -246,6 +250,7 @@ Future<void> main() async {
   // 持久化为磨砂样式时先完成窗口合成，再绘制首帧，避免窗口先黑后亮。
   await appearanceController.restoreForStartup();
   await appearanceController.refreshSystemAccent();
+  await shaderWarmUp;
   final updates = AppUpdateService(
     appDirectory: Directory(p.dirname(Platform.resolvedExecutable)),
     version: AppReleaseVersion.parse(

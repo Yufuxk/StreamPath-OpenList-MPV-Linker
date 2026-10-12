@@ -171,7 +171,7 @@ class FilmCatalogMatcher {
     FilmCatalogRoot root, {
     required bool Function() cancelled,
   }) async {
-    final resources = await store.resources(rootId: root.id);
+    final bindings = await store.scanBindings(root.id);
     final local = await filesFor?.call(root);
     var enabled = false;
     String? credentialError;
@@ -183,7 +183,7 @@ class FilmCatalogMatcher {
     return FilmScanMetadataSession(
         this,
         root,
-        resources,
+        bindings,
         enabled || local != null,
         await store.language(),
         cancelled,
@@ -392,17 +392,17 @@ class FilmScanMetadataSession {
   FilmScanMetadataSession(
     this.matcher,
     this.root,
-    List<FilmResource> resources,
+    this._existing,
     this.enabled,
     this.language,
     this.cancelled,
-  ) : _existing = {for (final r in resources) r.pathKey: r};
+  );
   final FilmCatalogMatcher matcher;
   final FilmCatalogRoot root;
   final bool enabled;
   final String language;
   final bool Function() cancelled;
-  final Map<String, FilmResource> _existing;
+  final Map<String, FilmScanBinding> _existing;
   final matches = <String, FilmScanMatch>{};
   final _queries = <(String, int?), FilmWork?>{};
   final _works = <int, FilmWork>{};
@@ -417,6 +417,13 @@ class FilmScanMetadataSession {
   FilmFileMetadata? files;
   int scraped = 0;
   bool get paused => _paused;
+
+  void releaseCommitted(Iterable<String> keys) {
+    for (final key in keys) {
+      matches.remove(key);
+      _existing.remove(key);
+    }
+  }
 
   void resume() {
     _paused = false;
@@ -587,8 +594,12 @@ class FilmScanMetadataSession {
     return _queries[key] = work;
   }
 
-  Future<void> prepare(List<FilmScanEntry> entries) async {
+  Future<void> prepare(
+    List<FilmScanEntry> entries, {
+    Map<int, FilmWork?>? workCache,
+  }) async {
     if (!enabled || _paused) return;
+    final works = workCache ?? <int, FilmWork?>{};
     for (final entry in entries) {
       if (cancelled() || _paused) return;
       final key = filmPathKey(entry.path, root.sourceKind);
@@ -613,11 +624,11 @@ class FilmScanMetadataSession {
           work = local.work;
           origin = 'nfo';
         } else if (existing?.workId != null) {
-          work = await matcher.store.work(existing!.workId!);
+          final id = existing!.workId!;
+          if (!works.containsKey(id)) works[id] = await matcher.store.work(id);
+          work = works[id];
         } else {
-          final folderWork = root.type == FilmMediaType.tv && existing != null
-              ? await matcher.store.directoryWork(existing)
-              : root.type == FilmMediaType.tv
+          final folderWork = root.type == FilmMediaType.tv
               ? await matcher.store.directoryWorkAt(
                   root.id,
                   entry.parentPath,

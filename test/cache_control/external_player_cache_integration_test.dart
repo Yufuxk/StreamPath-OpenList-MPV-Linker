@@ -90,6 +90,7 @@ void main() {
       '--start={start}',
     ],
     bool keepAlive = false,
+    int keepAliveSeconds = 5,
     List<String>? cacheLogs,
     MpvCacheIpcUpdater? cacheIpcUpdater,
     bool resumeEnabled = false,
@@ -105,10 +106,11 @@ void main() {
               )
             : null);
     final fakeMpv = await createFakeMpv(dir, keepAlive: keepAlive);
+    // 保活命令使用静态模板，单集和播放列表模式均可执行。
     final effectivePlayerArgs = keepAlive
         ? (Platform.isWindows
-              ? const ['/c', 'ping -n 6 127.0.0.1 >nul & rem {url}']
-              : const ['-c', 'sleep 5 # {url}'])
+              ? ['/c', 'ping -n ${keepAliveSeconds + 1} 127.0.0.1 >nul & rem']
+              : ['-c', 'sleep $keepAliveSeconds #'])
         : playerArgs;
     final cfg = StreamPathConfigStore.forPath(
       '${dir.path}${Platform.pathSeparator}cfg.json',
@@ -818,9 +820,11 @@ void main() {
     test('快速连续切集时过期策略不能控制最新文件', () async {
       final provider = _DelayedTrackProvider();
       final cacheLogs = <String>[];
+      final updates = <int?>[];
       final (service, _) = await makeService(
         cachePolicy: provider,
         keepAlive: true,
+        keepAliveSeconds: 30,
         cacheLogs: cacheLogs,
         cacheIpcUpdater:
             (
@@ -830,6 +834,7 @@ void main() {
               cacheEnabled,
               seekableCacheEnabled,
             }) async {
+              updates.add(demuxerMaxBytes);
               return true;
             },
       );
@@ -859,10 +864,14 @@ void main() {
 
         await waitUntil(
           () => cacheLogs.any(
-            (line) => line.contains('demuxer-max-bytes=3000000'),
+            (line) =>
+                line.contains('IPC cache update applied') &&
+                line.contains('demuxer-max-bytes=3000000'),
           ),
           reason: '最新文件策略应最终生效',
         );
+        expect(updates, contains(3000000));
+        expect(updates, isNot(contains(2000000)));
         expect(
           cacheLogs.join('\n'),
           isNot(contains('demuxer-max-bytes=2000000')),

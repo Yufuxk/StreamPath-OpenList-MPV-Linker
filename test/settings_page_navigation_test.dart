@@ -189,14 +189,17 @@ void main() {
     }
     expect(
       tester
-          .widget<FractionalTranslation>(
-            find.byKey(const Key('settings-section-slide')),
+          .widget<Transform>(
+            find.byKey(
+              const ValueKey(('section-slide', SettingsSection.playback)),
+            ),
           )
-          .translation
-          .dx,
-      lessThan(0),
+          .transform
+          .storage[12],
+      greaterThan(0),
     );
-    expect(builds[SettingsSection.server], initial + 1);
+    expect(builds[SettingsSection.server], initial);
+    expect(builds[SettingsSection.playback], isNull);
     await tester.tap(find.byKey(const Key('settings-section-cache')));
     await tester.tap(find.byKey(const Key('settings-section-general')));
     await tester.pumpAndSettle();
@@ -208,12 +211,15 @@ void main() {
     await tester.pump(const Duration(milliseconds: 60));
     expect(
       tester
-          .widget<FractionalTranslation>(
-            find.byKey(const Key('settings-section-slide')),
+          .widget<Transform>(
+            find.byKey(
+              const ValueKey(('section-slide', SettingsSection.server)),
+              skipOffstage: false,
+            ),
           )
-          .translation
-          .dx,
-      greaterThan(0),
+          .transform
+          .storage[12],
+      lessThan(0),
     );
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -1680,8 +1686,7 @@ void main() {
       );
     });
     await tester.tap(find.byKey(const Key('settings-section-general')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
 
     final resetButton = find.byKey(const Key('reset-settings-button'));
     await tester.ensureVisible(resetButton);
@@ -1741,6 +1746,7 @@ void main() {
     await tester.tap(find.byKey(const Key('settings-section-server')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump();
     final serverField = tester.widget<TextFormField>(
       find.byKey(const Key('server-url-field')),
     );

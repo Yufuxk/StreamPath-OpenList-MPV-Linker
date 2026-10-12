@@ -3,6 +3,7 @@ import 'dart:ui' show PointerDeviceKind, ImageByteFormat;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -254,18 +255,24 @@ void main() {
     expect(dockCenter.dy, 360);
     expect(find.byKey(const Key('folders-search')), findsNothing);
     final libraryHeader = tester.getRect(find.byType(AppBar));
-    await tester.tap(find.text('待整理（0）'));
+    final pendingHeader = Rect.fromLTWH(
+      libraryHeader.left,
+      libraryHeader.top,
+      libraryHeader.width,
+      48 + MediaQuery.paddingOf(tester.element(find.byType(AppBar))).top,
+    );
+    await tester.tap(find.byKey(const ValueKey('film-pending-button')));
     await settle();
     expect(find.byType(FilmPendingPage), findsOneWidget);
     expect(
       tester.getRect(find.byKey(const Key('film-library-background'))),
       const Rect.fromLTWH(0, 0, 1280, 720),
     );
-    expect(tester.getRect(find.byType(AppBar)), libraryHeader);
+    expect(tester.getRect(find.byType(AppBar)), pendingHeader);
     expect(find.byType(BackButton), findsNothing);
     expect(tester.getTopLeft(find.text('主页')).dx, greaterThanOrEqualTo(80));
     final pendingHomeY = tester.getCenter(find.text('主页')).dy;
-    expect(pendingHomeY, libraryHeader.bottom + 40);
+    expect(pendingHomeY, pendingHeader.bottom + 40);
     await saveStartupFrame('pending');
     final customBackground = await tester.runAsync(() async {
       final recorder = ui.PictureRecorder();
@@ -289,13 +296,10 @@ void main() {
       return file;
     });
     await settle();
-    final background = find.descendant(
-      of: find.byKey(const Key('film-library-background')),
-      matching: find.byType(Image),
-    );
+    final background = find.byKey(const Key('film-library-background'));
     expect(background, findsOneWidget);
     expect(
-      (tester.widget<Image>(background).image as FileImage).file.path,
+      tester.widget<AdaptiveFilmBackdrop>(background).file!.path,
       customBackground!.path,
     );
     expect(tester.getRect(background), const Rect.fromLTWH(0, 0, 1280, 720));
@@ -304,18 +308,19 @@ void main() {
     await settle();
     expect(find.byType(FilmPendingPage), findsNothing);
     expect(
-      (tester
-                  .widget<Image>(
-                    find.descendant(
-                      of: find.byKey(const Key('film-library-background')),
-                      matching: find.byType(Image),
-                    ),
-                  )
-                  .image
-              as FileImage)
-          .file
+      tester
+          .widget<AdaptiveFilmBackdrop>(
+            find.byKey(const Key('film-library-background')),
+          )
+          .file!
           .path,
       customBackground.path,
+    );
+    expect(
+      tester
+          .widget<RawImage>(find.byKey(const Key('adaptive-backdrop-sharp')))
+          .image,
+      isNotNull,
     );
     await tester.runAsync(() async {
       await catalog.store.setBackgroundPath(null);
@@ -525,9 +530,40 @@ void main() {
     await settle();
     expect(find.byType(FilmDetailPage), findsOneWidget);
     expect(app.filmDetailChrome.value, 0);
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const Key('film-detail-back'))),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
     await tester.tap(find.byKey(const Key('film-detail-back')));
+    await tester.pump();
+    expect(app.filmDetailChrome.value, 0);
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(app.filmDetailChrome.value, 0);
+    tester.widget<FilmWorkCard>(find.byType(FilmWorkCard).first).onTap();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(app.filmDetailChrome.value, 0);
+    await settle();
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const Key('film-detail-back'))),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.tap(find.byKey(const Key('film-detail-back')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    final homeContext = tester.element(find.byType(FilmWorkCard).first);
+    final homeNavigator = Navigator.of(homeContext);
+    homeNavigator.push(
+      DialogRoute<void>(
+        context: homeContext,
+        builder: (_) =>
+            const AlertDialog(content: Text('Dialog during return')),
+      ),
+    );
     await settle();
     expect(app.filmDetailChrome.value, isNull);
+    homeNavigator.pop();
+    await settle();
     await tester.runAsync(() => catalog.store.setFavorite(1, true));
     await tester.tap(find.byKey(const Key('sidebar-library')));
     await settle();
@@ -554,6 +590,10 @@ void main() {
     expect(app.filmDetailChrome.value, 0);
     expect(find.byKey(const Key('film-detail-play')), findsOneWidget);
     expect(find.byType(FilmArtwork), findsWidgets);
+    await mouse.moveTo(
+      tester.getCenter(find.byKey(const Key('film-detail-back'))),
+    );
+    await tester.pump(const Duration(milliseconds: 180));
     await tester.tap(find.byKey(const Key('film-detail-back')));
     await settle();
     expect(app.filmDetailChrome.value, isNull);

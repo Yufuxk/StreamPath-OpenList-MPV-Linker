@@ -72,6 +72,34 @@ void main() {
   };
 
   test(
+    'projected scan bindings retain the initial manual version and mapping',
+    () async {
+      final resources = await store.resources(rootId: root.id);
+      await store.bind([resources.first], work(), origin: 'manual');
+      final first = (await store.resource(resources.first.id))!;
+      await store.mapEpisodes({first: (0, 3)});
+      final bindings = await store.scanBindings(root.id);
+      final snapshot = bindings[first.pathKey]!;
+      final mapped = (await store.resource(first.id))!;
+      expect(snapshot.workId, mapped.workId);
+      expect(snapshot.bindingOrigin, 'manual');
+      expect(snapshot.mappingOrigin, 'manual');
+      expect(snapshot.season, 0);
+      expect(snapshot.bindingVersion, mapped.bindingVersion);
+      await store.mapEpisodes({mapped: (1, 2)});
+      expect(
+        snapshot.bindingVersion,
+        lessThan((await store.resource(first.id))!.bindingVersion),
+      );
+      expect(snapshot.season, 0);
+      expect(
+        await store.presentResourcePaths(root.id),
+        resources.map((r) => r.pathKey).toSet(),
+      );
+    },
+  );
+
+  test(
     'unchanged metadata does not rewrite indexes, seasons or notify the library',
     () async {
       final resources = await store.resources(rootId: root.id);

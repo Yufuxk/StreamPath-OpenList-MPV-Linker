@@ -10,12 +10,14 @@ class DirectoryScrollView extends StatefulWidget {
     this.controller,
     this.scrollbarKey,
     this.thumbVisibility = false,
+    this.hideScrollbar = false,
   });
 
   final Widget Function(ScrollController) builder;
   final ScrollController? controller;
   final Key? scrollbarKey;
   final bool thumbVisibility;
+  final bool hideScrollbar;
 
   @override
   State<DirectoryScrollView> createState() => _DirectoryScrollViewState();
@@ -34,17 +36,31 @@ class _DirectoryScrollViewState extends State<DirectoryScrollView> {
   Widget build(BuildContext context) {
     final controller =
         widget.controller ?? (_ownedController ??= ScrollController());
+    final scrollbar = Scrollbar(
+      key: widget.scrollbarKey,
+      controller: controller,
+      thumbVisibility: widget.hideScrollbar ? false : widget.thumbVisibility,
+      interactive: !widget.hideScrollbar,
+      child: widget.builder(controller),
+    );
     return DirectoryWheelScrollRegion(
       controller: controller,
       child: ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-        child: Scrollbar(
-          key: widget.scrollbarKey,
-          controller: controller,
-          thumbVisibility: widget.thumbVisibility,
-          interactive: true,
-          child: widget.builder(controller),
-        ),
+        child: widget.hideScrollbar
+            ? ScrollbarTheme(
+                data: Theme.of(context).scrollbarTheme.copyWith(
+                  thickness: const WidgetStatePropertyAll(0),
+                  thumbColor: const WidgetStatePropertyAll(Colors.transparent),
+                  trackColor: const WidgetStatePropertyAll(Colors.transparent),
+                  trackBorderColor: const WidgetStatePropertyAll(
+                    Colors.transparent,
+                  ),
+                  trackVisibility: const WidgetStatePropertyAll(false),
+                ),
+                child: scrollbar,
+              )
+            : scrollbar,
       ),
     );
   }

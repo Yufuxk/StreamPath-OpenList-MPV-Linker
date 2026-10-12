@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -14,6 +13,8 @@ import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/glass_tokens.dart';
 import '../widgets/sp_icons.dart';
+import '../widgets/film_segmented_control.dart';
+import '../widgets/directory_scroll_view.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/window_title_bar.dart';
 import '../controllers/film_catalog_controller.dart';
@@ -39,6 +40,7 @@ class _AppShellPageState extends State<AppShellPage>
   static const _slideDuration = WindowTitleBar.sidebarSlideDuration;
   final _settingsKey = GlobalKey<SettingsPageState>();
   final _filmShellKey = GlobalKey<FilmLibraryShellState>();
+  final _sidebarControlKey = GlobalKey();
   FilmCatalogController? _filmTasks;
   int _filmCompletion = 0;
   bool _watchingFilms = false;
@@ -330,9 +332,6 @@ class _AppShellPageState extends State<AppShellPage>
   }
 
   Widget _sidebar({bool floating = false}) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final radius = BorderRadius.circular(28);
     const entries = [
       (_Section.films, SPIcons.video, '影视库'),
       (_Section.folders, SPIcons.folder, '文件夹'),
@@ -355,99 +354,30 @@ class _AppShellPageState extends State<AppShellPage>
             child: MouseRegion(
               onEnter: floating ? (_) => _enterSidebar() : null,
               onExit: floating ? (_) => _leaveSidebar() : null,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: radius,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: .18),
-                      blurRadius: 20,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: ClipRRect(
-                  borderRadius: radius,
-                  child: BackdropFilter(
-                    filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Material(
-                      key: const Key('sidebar-surface'),
-                      color: theme.sidebarSurfaceColor.withValues(
-                        alpha: theme.glass.enabled
-                            ? theme.brightness == Brightness.dark
-                                  ? .28
-                                  : .44
-                            : theme.brightness == Brightness.dark
-                            ? .48
-                            : .64,
-                      ),
-                      child: DecoratedBox(
-                        key: const Key('sidebar-edge'),
-                        position: DecorationPosition.foreground,
-                        decoration: BoxDecoration(
-                          borderRadius: radius,
-                          border: Border.all(
-                            color: scheme.onSurface.withValues(alpha: .14),
+              child: DirectoryScrollView(
+                hideScrollbar: true,
+                builder: (controller) => SingleChildScrollView(
+                  controller: controller,
+                  child: SizedBox(
+                    key: const Key('sidebar-surface'),
+                    width: double.infinity,
+                    child: FilmSegmentedControl<_Section>(
+                      key: _sidebarControlKey,
+                      direction: Axis.vertical,
+                      selected: _selected,
+                      onSelectionChanged: _select,
+                      segments: [
+                        for (final (section, icon, label) in entries)
+                          ButtonSegment(
+                            value: section,
+                            tooltip: context.l10n.text(label),
+                            label: Icon(
+                              icon,
+                              key: Key('sidebar-${section.name}'),
+                              size: 24,
+                            ),
                           ),
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [
-                              scheme.onSurface.withValues(alpha: .07),
-                              Colors.transparent,
-                            ],
-                          ),
-                        ),
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              for (final (section, icon, label) in entries)
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                    vertical: 3,
-                                  ),
-                                  child: Tooltip(
-                                    message: context.l10n.text(label),
-                                    excludeFromSemantics: true,
-                                    child: Semantics(
-                                      label: context.l10n.text(label),
-                                      button: true,
-                                      selected: section == _selected,
-                                      child: Material(
-                                        color: section == _selected
-                                            ? scheme.primaryContainer
-                                            : Colors.transparent,
-                                        borderRadius: BorderRadius.circular(24),
-                                        child: InkWell(
-                                          key: Key('sidebar-${section.name}'),
-                                          borderRadius: BorderRadius.circular(
-                                            24,
-                                          ),
-                                          onTap: () => _select(section),
-                                          child: SizedBox(
-                                            height: 48,
-                                            child: Center(
-                                              child: Icon(
-                                                icon,
-                                                size: 24,
-                                                color: section == _selected
-                                                    ? scheme.primary
-                                                    : scheme.onSurfaceVariant,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
+                      ],
                     ),
                   ),
                 ),

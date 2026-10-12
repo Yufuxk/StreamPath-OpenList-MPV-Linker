@@ -12,6 +12,7 @@ import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_image_reference.dart';
 import 'tmdb_metadata_service.dart';
 import 'tmdb_http_client.dart';
+import 'film_backdrop_blur_cache.dart';
 
 /// 受限的 TMDB 图片缓存；下载客户端没有 API 或网盘凭据。
 class FilmCatalogImageCache {
@@ -26,6 +27,25 @@ class FilmCatalogImageCache {
   }) : _dio = dio ?? createTmdbDio(),
        _validateImage = validateImage ?? _decode;
   final Directory directory;
+  late final backdropBlurs = FilmBackdropBlurCache(
+    Directory(p.join(directory.path, 'derived_backdrops')),
+    budgetBytes: budgetBytes ~/ 16,
+    maintainBudget: (source, thumbnail) async {
+      final paths = {source.path, if (thumbnail != null) thumbnail.path};
+      final added = paths.difference(_protected);
+      _protected.addAll(added);
+      try {
+        final prune = _pruneTail.then((_) => _prune());
+        _pruneTail = prune.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        );
+        await prune;
+      } finally {
+        _protected.removeAll(added);
+      }
+    },
+  );
   final TmdbMetadataService tmdb;
   final Dio _dio;
   final int maxImageBytes, budgetBytes;
@@ -43,6 +63,10 @@ class FilmCatalogImageCache {
   final Set<String> _protected = {};
   int _active = 0;
   bool _closed = false;
+  int _revision = 0;
+
+  /// 清理缓存后，依赖图片内容的布局计算使用新的身份。
+  int get revision => _revision;
   Future<void>? _initialized;
   Map<String, dynamic>? _images;
   String _imageHost = 'image.tmdb.org';
@@ -351,30 +375,40 @@ class FilmCatalogImageCache {
 
   static Future<void> validatePortableImage(File file) => _decode(file);
   static Future<void> _decode(File file) async {
-    final bytes = await file.readAsBytes();
-    late ui.Codec codec;
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? descriptor;
+    ui.Codec? codec;
     try {
-      codec = await ui.instantiateImageCodec(bytes, targetWidth: 500);
-    } on Exception {
-      throw const FilmCatalogException('invalidImage');
-    }
-    try {
+      try {
+        buffer = await ui.ImmutableBuffer.fromFilePath(file.path);
+        descriptor = await ui.ImageDescriptor.encoded(buffer);
+        codec = await descriptor.instantiateCodec(
+          targetWidth: descriptor.width < 500 ? descriptor.width : 500,
+        );
+      } on Exception {
+        throw const FilmCatalogException('invalidImage');
+      }
       final frame = await codec.getNextFrame();
       frame.image.dispose();
     } finally {
-      codec.dispose();
+      codec?.dispose();
+      descriptor?.dispose();
+      buffer?.dispose();
     }
   }
 
   static bool _isCacheFile(File file) =>
       RegExp(r'^[a-f0-9]{64}\.img$').hasMatch(p.basename(file.path));
 
-  Future<void> _prune(File added) async {
+  Future<void> _prune([File? added]) async {
+    final originalBudget = budgetBytes - backdropBlurs.budgetBytes;
     if (_fileSizes != null) {
-      final size = await added.length();
-      _cachedBytes += size - (_fileSizes![added.path] ?? 0);
-      _fileSizes![added.path] = size;
-      if (_cachedBytes <= budgetBytes) return;
+      if (added != null) {
+        final size = await added.length();
+        _cachedBytes += size - (_fileSizes![added.path] ?? 0);
+        _fileSizes![added.path] = size;
+      }
+      if (_cachedBytes <= originalBudget) return;
     }
     final files = <(File, FileStat)>[];
     var total = 0;
@@ -388,12 +422,13 @@ class FilmCatalogImageCache {
     }
     _fileSizes = {for (final entry in files) entry.$1.path: entry.$2.size};
     _cachedBytes = total;
-    if (total <= budgetBytes) return;
+    if (total <= originalBudget) return;
     files.sort((a, b) => a.$2.modified.compareTo(b.$2.modified));
     for (final entry in files) {
-      if (total <= budgetBytes) break;
+      if (total <= originalBudget) break;
       if (_protected.contains(entry.$1.path)) continue;
       await entry.$1.delete();
+      await backdropBlurs.removeSource(entry.$1);
       _knownFiles.removeWhere((_, file) => file.path == entry.$1.path);
       _fileSizes!.remove(entry.$1.path);
       total -= entry.$2.size;
@@ -403,7 +438,9 @@ class FilmCatalogImageCache {
 
   Future<void> clear() async {
     if (_active > 0) throw const FilmCatalogException('imageBusy');
+    _revision++;
     _knownFiles.clear();
+    await backdropBlurs.clear();
     await (_initialized ??= _initialize());
     _fileSizes = null;
     await for (final entity in directory.list(followLinks: false)) {
@@ -420,6 +457,7 @@ class FilmCatalogImageCache {
 
   void close() {
     _closed = true;
+    backdropBlurs.close();
     _knownFiles.clear();
     _fileSizes = null;
     for (final token in _tokens) {

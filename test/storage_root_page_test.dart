@@ -91,6 +91,7 @@ void main() {
       await tester.tap(find.byKey(const Key('folders-local-tab')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
+      await tester.pump();
       await tester.tap(find.byKey(const ValueKey('local-root-remembered')));
       await tester.pump();
       expect(find.byType(DirectoryBreadcrumbs), findsOneWidget);
@@ -199,6 +200,7 @@ void main() {
     await tester.tap(find.byKey(const Key('folders-local-tab')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump();
     final localTitle = pageTitle('文件夹');
     final localTitlePosition = tester.getTopLeft(localTitle);
     final localTitleStyle = DefaultTextStyle.of(
@@ -224,14 +226,7 @@ void main() {
     expect(find.byTooltip('文件夹管理'), findsNothing);
     expect(find.byKey(const Key('sidebar-mounts')), findsNothing);
     expect(
-      tester
-          .widget<Icon>(
-            find.descendant(
-              of: find.byKey(const Key('sidebar-folders')),
-              matching: find.byType(Icon),
-            ),
-          )
-          .icon,
+      tester.widget<Icon>(find.byKey(const Key('sidebar-folders'))).icon,
       SPIcons.folder,
     );
     expect(find.text('StreamPath'), findsNothing);
@@ -370,13 +365,13 @@ void main() {
     expect(find.byKey(const Key('sidebar-search')), findsNothing);
     expect(find.byKey(const Key('sidebar-local')), findsNothing);
     expect(find.byKey(const Key('sidebar-network')), findsNothing);
-    final edge = tester.widget<DecoratedBox>(
-      find.byKey(const Key('sidebar-edge')),
+    final edge = tester.widget<ClipRRect>(
+      find.descendant(
+        of: find.byKey(const Key('sidebar-surface')),
+        matching: find.byType(ClipRRect),
+      ),
     );
-    expect(
-      (edge.decoration as BoxDecoration).borderRadius,
-      BorderRadius.circular(28),
-    );
+    expect(edge.borderRadius, BorderRadius.circular(999));
     expect(tester.takeException(), isNull);
   });
 }
