@@ -7,6 +7,7 @@ import '../../data/models/local_root_config.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
+import '../theme/app_theme.dart';
 import '../widgets/mounted_playback_bars.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/file_tile.dart';
@@ -162,7 +163,7 @@ class _LocalStoragePageState extends State<LocalStoragePage>
     return Scaffold(
       appBar: AppBar(toolbarHeight: 48, title: const AppText('本地文件夹')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: AppTheme.pagePadding,
         child: content,
       ),
       bottomNavigationBar: bars,

@@ -70,10 +70,9 @@ class _SPFontPickerState extends State<SPFontPicker> {
               child: ExcludeSemantics(
                 child: AppText(
                   '软件字体',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),

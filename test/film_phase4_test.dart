@@ -184,6 +184,55 @@ void main() {
     );
   });
 
+  test('分类封面本次运行保持选择，数量去重并隔离来源及停用目录', () async {
+    final a = await root('A'), b = await root('B');
+    await resource(a, 'first.mkv', 1);
+    await resource(a, 'second.mkv', 2);
+    await resource(b, 'other-copy.mkv', 1);
+    final initial = (await store.categories()).singleWhere(
+      (c) => c.section.id == 'genre:动画',
+    );
+    expect(initial.count, 2);
+    expect(initial.coverPath, isIn(['/1.jpg', '/2.jpg']));
+    for (var i = 0; i < 8; i++) {
+      expect(
+        (await store.categories())
+            .singleWhere((c) => c.section.id == 'genre:动画')
+            .coverPath,
+        initial.coverPath,
+      );
+    }
+    expect(await store.categories(sourceId: 'another-source'), isEmpty);
+    final c = controller();
+    final source = c.forSource('local:fixture');
+    await c.refresh();
+    await source.refresh();
+    final sourceCover = source.categories
+        .singleWhere((c) => c.section.id == 'genre:动画')
+        .coverPath;
+    await source.close();
+    final reopenedSource = c.forSource('local:fixture');
+    await reopenedSource.refresh();
+    expect(
+      reopenedSource.categories
+          .singleWhere((c) => c.section.id == 'genre:动画')
+          .coverPath,
+      sourceCover,
+    );
+    await reopenedSource.close();
+    await c.close();
+    storeClosed = true;
+    store = await FilmCatalogStore.open(store.path);
+    storeClosed = false;
+    await store.setRootEnabled(a.id, false);
+    final remaining = (await store.categories()).singleWhere(
+      (c) => c.section.id == 'genre:动画',
+    );
+    expect((remaining.count, remaining.coverPath), (1, '/1.jpg'));
+    await store.setRootEnabled(b.id, false);
+    expect(await store.categories(), isEmpty);
+  });
+
   test('目录改名保留身份，改路径仅重建该根且留下完整备份', () async {
     final a = await root('A'), b = await root('B');
     final first = await resource(a, 'a.mkv', 1),
@@ -234,7 +283,7 @@ void main() {
     await backup.close();
   });
 
-  test('类型地区年代过滤一致，默认关闭且顺序、开关和图片跨重启持久化', () async {
+  test('类型地区年代过滤一致，栏目合并且顺序、开关和图片跨重启持久化', () async {
     final r = await root('Movies');
     await resource(r, 'a.mkv', 1);
     await resource(
@@ -259,13 +308,15 @@ void main() {
     );
     final sections = await store.homeSections();
     expect(
-      sections.where((s) => s.id.contains(':')).every((s) => !s.enabled),
+      sections.where((s) => s.isCategoryGroup).every((s) => s.enabled),
       isTrue,
     );
     await store.setHomeSections([
       const FilmHomeSection('series', enabled: true),
       const FilmHomeSection('genre:动画', enabled: true),
-      ...sections.where((s) => s.id != 'series' && s.id != 'genre:动画'),
+      const FilmHomeSection('genre:科幻', enabled: false),
+      const FilmHomeSection('country:JP', enabled: false),
+      ...sections.where((s) => s.id != 'series' && !s.isCategoryGroup),
     ]);
     await store.setCustomRootCover(r.id, 'custom.img');
     await store.setBackgroundPath('background.img');
@@ -273,9 +324,31 @@ void main() {
     store = await FilmCatalogStore.open(store.path);
     expect((await store.homeSections()).take(2).map((s) => s.id), [
       'series',
-      'genre:动画',
+      'genres',
     ]);
     expect((await store.homeSections())[1].enabled, isTrue);
+    expect(
+      (await store.homeSections())
+          .singleWhere((s) => s.id == 'countries')
+          .enabled,
+      isFalse,
+    );
+    expect(
+      (await store.homeSections()).where((s) => s.id.contains(':')),
+      isEmpty,
+    );
+    final categories = await store.categories();
+    expect(
+      categories.map((c) => (c.section.id, c.count, c.coverPath)),
+      containsAll([
+        ('genre:动画', 1, '/1.jpg'),
+        ('genre:科幻', 1, '/2.jpg'),
+        ('country:JP', 1, '/1.jpg'),
+        ('country:US', 1, '/2.jpg'),
+        ('decade:2020', 1, '/1.jpg'),
+        ('decade:1990', 1, '/2.jpg'),
+      ]),
+    );
     expect(await store.customRootCover(r.id), 'custom.img');
     expect(await store.backgroundPath(), 'background.img');
     await store.setCustomRootCover(r.id, null);

@@ -8,6 +8,14 @@ class FilmHomeSection {
       FilmHomeSection(id, enabled: value);
   Map<String, Object> toJson() => {'id': id, 'enabled': enabled};
   String get value => id.substring(id.indexOf(':') + 1);
+  String? get categoryGroup => switch (id.split(':').first) {
+    'genre' => 'genres',
+    'country' => 'countries',
+    'decade' => 'years',
+    _ => null,
+  };
+  bool get isCategoryGroup =>
+      id == 'genres' || id == 'countries' || id == 'years';
   String get label => switch (id) {
     'continue' => '继续播放',
     'daily' => '每日精选',
@@ -16,6 +24,9 @@ class FilmHomeSection {
     'recent' => '最近添加',
     'movies' => '电影',
     'series' => '剧集',
+    'genres' => '类型',
+    'countries' => '地区',
+    'years' => '年份',
     _ when id.startsWith('genre:') => '类型：{value}',
     _ when id.startsWith('country:') => '地区：{value}',
     _ => '{value} 年代',
@@ -33,5 +44,19 @@ class FilmHomeSection {
     FilmHomeSection('recent', enabled: true),
     FilmHomeSection('movies', enabled: true),
     FilmHomeSection('series', enabled: true),
+    FilmHomeSection('genres', enabled: true),
+    FilmHomeSection('countries', enabled: true),
+    FilmHomeSection('years', enabled: true),
   ];
+}
+
+class FilmCategory {
+  const FilmCategory({
+    required this.section,
+    required this.count,
+    required this.coverPath,
+  });
+  final FilmHomeSection section;
+  final int count;
+  final String? coverPath;
 }

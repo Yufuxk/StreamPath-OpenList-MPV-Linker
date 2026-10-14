@@ -274,6 +274,41 @@ void main() {
     });
   }
 
+  testWidgets('来源筛选标签、选中值与菜单随四语言切换', (tester) async {
+    await prepare(tester);
+    Element? sourceElement;
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      await tester.pumpWidget(
+        frame(FilmLibraryPage(onOpenItem: (_) async {}), language: language),
+      );
+      await settle(tester);
+      final source = find.byKey(const ValueKey('film-root-filter'));
+      expect(source, findsOneWidget);
+      sourceElement ??= tester.element(source);
+      expect(tester.element(source), same(sourceElement));
+      expect(
+        find.descendant(of: source, matching: find.text('${l10n.text('来源')}：')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: source, matching: find.text(l10n.text('全部来源'))),
+        findsOneWidget,
+      );
+      await tester.tap(source);
+      await tester.pumpAndSettle();
+      expect(find.text(l10n.text('全部来源')), findsWidgets);
+      expect(find.text(root.displayName), findsWidgets);
+      if (language != AppLanguage.simplifiedChinese) {
+        expect(find.text('全部来源'), findsNothing);
+        expect(find.text('来源：'), findsNothing);
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+  });
+
   testWidgets(
     'continue checkpoint stays above title with unchanged card geometry',
     (tester) async {
@@ -324,7 +359,7 @@ void main() {
   );
 
   testWidgets(
-    'cover markers stay outside hover zoom and retain rounded clipping',
+    'card hover keeps markers aligned with the cover and rounded clipping',
     (tester) async {
       await prepare(tester);
       final work = (await tester.runAsync(
@@ -356,8 +391,8 @@ void main() {
         matching: find.byType(FilmWatchOverlay),
       );
       expect(
-        find.ancestor(of: overlay, matching: find.byType(FilmCoverZoom)),
-        findsNothing,
+        find.ancestor(of: overlay, matching: find.byType(FilmPosterHover)),
+        findsOneWidget,
       );
       final corner = find.descendant(
         of: overlay,
@@ -374,14 +409,21 @@ void main() {
       await mouse.moveTo(tester.getCenter(card));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
-      expect(tester.getRect(corner), cornerRect);
+      expect(
+        tester.getRect(corner).width,
+        closeTo(cornerRect.width * 1.05, .001),
+      );
+      expect(
+        tester.getRect(corner).height,
+        closeTo(cornerRect.height * 1.05, .001),
+      );
       final artwork = find.descendant(
         of: card,
         matching: find.byType(FilmArtwork),
       );
       expect(
         tester.getRect(artwork).width / tester.getSize(artwork).width,
-        closeTo(1.04, .001),
+        closeTo(1.05, .001),
       );
       await tester.runAsync(
         () => c.store.recordVideoProgress(
@@ -402,8 +444,9 @@ void main() {
       expect(tester.widget<LinearProgressIndicator>(bar).value, .25);
       final barRect = tester.getRect(bar);
       await mouse.moveTo(Offset.zero);
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
-      expect(tester.getRect(bar), barRect);
+      expect(tester.getRect(bar).width, closeTo(barRect.width / 1.05, .001));
       final clip = find
           .ancestor(of: overlay, matching: find.byType(ClipRRect))
           .first;
@@ -535,7 +578,11 @@ void main() {
     tester.view.physicalSize = const Size(1280, 640);
     await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
     await settle(tester);
-    final region = find.byType(DirectoryWheelScrollRegion);
+    final region = find.ancestor(
+      of: find.byKey(const Key('film-home-scroll')),
+      matching: find.byType(DirectoryWheelScrollRegion),
+    );
+    expect(region, findsOneWidget);
     final controller = tester
         .widget<DirectoryWheelScrollRegion>(region)
         .controller;
@@ -845,7 +892,7 @@ void main() {
         libraryHeader.width,
         48,
       );
-      final homeTitleLeft = homeHeader.left + 20;
+      final homeTitleLeft = homeHeader.left + AppTheme.pageInset;
       final continueShelf = find.byWidgetPredicate(
         (w) => w is FilmShelf && w.title == '继续播放',
       );
@@ -927,6 +974,62 @@ void main() {
     },
   );
 
+  testWidgets(
+    'source shading follows the poster while both labels stay still',
+    (tester) async {
+      await prepare(tester);
+      c.rootCoverFiles[root.id] = picture;
+      await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+      await settle(tester);
+      final shelf = find.byWidgetPredicate(
+        (w) => w is FilmShelf && w.title == '媒体来源',
+      );
+      final card = find
+          .descendant(of: shelf, matching: find.byType(FilmPosterHover))
+          .first;
+      final image = find
+          .descendant(of: card, matching: find.byType(Image))
+          .first;
+      final shade = find.descendant(
+        of: card,
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is ColoredBox && w.color == Colors.black.withValues(alpha: .35),
+        ),
+      );
+      expect(shade, findsOneWidget);
+      final labels = find.descendant(of: card, matching: find.byType(Text));
+      final labelRects = labels
+          .evaluate()
+          .map((e) => tester.getRect(find.byWidget(e.widget)))
+          .toList();
+      final original = tester.getRect(image);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(card));
+      for (var i = 0; i < 14; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        final shadeRect = tester.getRect(shade);
+        final imageRect = tester.getRect(image);
+        expect(shadeRect.left, closeTo(imageRect.left, .001));
+        expect(shadeRect.top, closeTo(imageRect.top, .001));
+        expect(shadeRect.width, closeTo(imageRect.width, .001));
+        expect(shadeRect.height, closeTo(imageRect.height, .001));
+        expect(
+          labels.evaluate().map((e) => tester.getRect(find.byWidget(e.widget))),
+          labelRects,
+        );
+      }
+      expect(tester.getRect(image).width, closeTo(original.width * 1.05, .01));
+      await mouse.moveTo(Offset.zero);
+      await tester.pumpAndSettle();
+      expect(tester.getRect(shade).width, closeTo(original.width, .001));
+      expect(tester.getRect(shade).top, closeTo(original.top, .001));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('默认背景随主题材质变化，筛选无布局进度条，封面单行并轻微放大', (tester) async {
     await prepare(tester);
     final page = FilmLibraryPage(onOpenItem: (_) async {});
@@ -980,11 +1083,25 @@ void main() {
     );
     expect(
       tester.getRect(artwork).width / tester.getSize(artwork).width,
-      closeTo(1.04, .001),
+      closeTo(1.05, .001),
     );
     await pointer.removePointer();
     await render(tester, 'home');
     final source = find.widgetWithText(Card, 'Movies').last;
+    expect(
+      find.ancestor(of: source, matching: find.byType(FilmPosterHover)),
+      findsOneWidget,
+    );
+    final sourceSize = tester.getSize(source);
+    final sourcePointer = await tester.createGesture(
+      kind: PointerDeviceKind.mouse,
+    );
+    await sourcePointer.addPointer(location: Offset.zero);
+    await sourcePointer.moveTo(tester.getCenter(source));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(tester.getRect(source).width, closeTo(sourceSize.width, .001));
+    await sourcePointer.removePointer();
     final rightClick = await tester.createGesture(
       buttons: kSecondaryMouseButton,
     );
@@ -994,7 +1111,7 @@ void main() {
     await settle(tester);
     expect(find.text('编辑影视目录'), findsOneWidget);
     expect(find.text('修改图片'), findsOneWidget);
-    expect(find.text('设置影视库背景'), findsNothing);
+    expect(find.text('设置全局背景'), findsNothing);
     await tester.tap(find.text('编辑影视目录'));
     await settle(tester);
     final name = find.byWidgetPredicate(
@@ -1229,9 +1346,14 @@ void main() {
     expect(tester.getRect(find.byType(AppBar)), header);
     expect(tester.getRect(find.text('媒体中心')).topLeft, title.topLeft);
     expect(tester.getRect(find.text('媒体中心')).height, title.height);
+    final legacyFilter = tester.getRect(
+      find.byKey(const Key('media-library-source-filter')),
+    );
+    expect(legacyFilter.size, filter.size);
+    expect(legacyFilter.top, filter.top);
     expect(
-      tester.getRect(find.byKey(const Key('media-library-source-filter'))),
-      filter,
+      legacyFilter.right,
+      lessThanOrEqualTo(header.right - AppTheme.pageInset),
     );
     await render(tester, 'center-legacy');
     await tester.tap(find.text('返回新媒体中心'));

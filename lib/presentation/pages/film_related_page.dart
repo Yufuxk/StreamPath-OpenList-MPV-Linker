@@ -133,7 +133,9 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
         ),
         Padding(
           padding: EdgeInsets.only(left: widget.sidebarInset),
-          child: _page(context),
+          child: !widget.showCollections && _loading && _works.isEmpty
+              ? const SizedBox.shrink()
+              : _page(context),
         ),
       ],
     ),

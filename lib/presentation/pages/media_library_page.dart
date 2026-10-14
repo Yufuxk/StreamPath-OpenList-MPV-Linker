@@ -22,6 +22,8 @@ import '../../data/models/web_dav_file.dart';
 import '../../domain/services/media_library_search.dart';
 import '../../domain/services/iso_playback_service.dart';
 import '../theme/glass_tokens.dart';
+import '../theme/app_theme.dart';
+import '../widgets/sp_control_bar.dart';
 import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
@@ -932,53 +934,75 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final searchInToolbar = constraints.maxWidth >= 900;
+        final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+        final controlHeight = AppTheme.controlHeightFor(context);
         return DefaultTabController(
           length: widget.filmCenter ? 3 : 4,
           child: Scaffold(
             appBar: AppBar(
               toolbarHeight: 48,
               automaticallyImplyLeading: widget.headerAction == null,
-              title: Row(
-                children: [
-                  const Expanded(
-                    child: AppText(
-                      '媒体中心',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (widget.headerAction != null) ...[
-                    widget.headerAction!,
-                    const SizedBox(width: 12),
-                  ],
-                  if (searchInToolbar) ...[
-                    SizedBox(
-                      width: 340,
-                      child: _buildSearchField(inToolbar: true),
-                    ),
-                    if (widget.sourceFilter != null) const SizedBox(width: 12),
-                  ],
-                  if (widget.sourceFilter != null) widget.sourceFilter!,
-                ],
-              ),
-              bottom: TabBar(
-                dividerColor: Colors.transparent,
-                isScrollable: true,
-                tabAlignment: TabAlignment.start,
-                labelPadding: const EdgeInsets.symmetric(horizontal: 14),
-                tabs: [
-                  _compactNavigationTab(SPIcons.favorite, '收藏'),
-                  _compactNavigationTab(SPIcons.play, '继续播放'),
-                  _compactNavigationTab(SPIcons.history, '最近播放'),
-                  if (!widget.filmCenter)
-                    _compactNavigationTab(SPIcons.folderOpen, '目录'),
-                ],
-              ),
+              title: const AppText('媒体中心'),
             ),
             body: Column(
               children: [
-                if (!searchInToolbar) _buildSearchField(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTheme.pageInset,
+                    12,
+                    AppTheme.pageInset,
+                    0,
+                  ),
+                  child: SPControlBar(
+                    child: LayoutBuilder(
+                      builder: (context, controls) => Wrap(
+                        spacing: AppTheme.controlGap,
+                        runSpacing: AppTheme.controlGap,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: ((widget.filmCenter ? 330 : 430) * scale)
+                                .clamp(0, controls.maxWidth),
+                            height: controlHeight,
+                            child: TabBar(
+                              dividerColor: Colors.transparent,
+                              isScrollable: true,
+                              tabAlignment: TabAlignment.start,
+                              labelPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              tabs: [
+                                _compactNavigationTab(SPIcons.favorite, '收藏'),
+                                _compactNavigationTab(SPIcons.play, '继续播放'),
+                                _compactNavigationTab(SPIcons.history, '最近播放'),
+                                if (!widget.filmCenter)
+                                  _compactNavigationTab(
+                                    SPIcons.folderOpen,
+                                    '目录',
+                                  ),
+                              ],
+                            ),
+                          ),
+                          SizedBox(
+                            width: (280 * scale).clamp(0, controls.maxWidth),
+                            height: controlHeight,
+                            child: _buildSearchField(),
+                          ),
+                          if (widget.sourceFilter != null)
+                            SizedBox(
+                              height: controlHeight,
+                              child: widget.sourceFilter!,
+                            ),
+                          if (widget.headerAction != null)
+                            SizedBox(
+                              height: controlHeight,
+                              child: widget.headerAction!,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 Expanded(child: _buildContent()),
               ],
             ),
@@ -988,34 +1012,25 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     );
   }
 
-  Widget _buildSearchField({bool inToolbar = false}) => Padding(
-    padding: inToolbar
-        ? EdgeInsets.zero
-        : const EdgeInsets.fromLTRB(20, 16, 20, 12),
-    child: TextField(
-      key: const Key('media-library-global-search'),
-      controller: _searchController,
-      contextMenuBuilder: buildClipboardHistoryMenu,
-      onChanged: _scheduleSearch,
-      decoration: InputDecoration(
-        isDense: inToolbar,
-        contentPadding: inToolbar
-            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
-            : null,
-        hintText: context.l10n.text(widget.filmCenter ? '搜索库内作品' : '搜索已访问过的目录'),
-        prefixIcon: const Icon(SPIcons.globe),
-        suffixIcon: _searchController.text.isEmpty
-            ? null
-            : IconButton(
-                tooltip: context.l10n.text('清除搜索'),
-                onPressed: () {
-                  _searchController.clear();
-                  _runSearch('');
-                  setState(() {});
-                },
-                icon: const Icon(SPIcons.close),
-              ),
-      ),
+  Widget _buildSearchField() => TextField(
+    key: const Key('media-library-global-search'),
+    controller: _searchController,
+    contextMenuBuilder: buildClipboardHistoryMenu,
+    onChanged: _scheduleSearch,
+    decoration: InputDecoration(
+      hintText: context.l10n.text(widget.filmCenter ? '搜索库内作品' : '搜索已访问过的目录'),
+      prefixIcon: const Icon(SPIcons.search, size: 20),
+      suffixIcon: _searchController.text.isEmpty
+          ? null
+          : IconButton(
+              tooltip: context.l10n.text('清除搜索'),
+              onPressed: () {
+                _searchController.clear();
+                _runSearch('');
+                setState(() {});
+              },
+              icon: const Icon(SPIcons.close),
+            ),
     ),
   );
 
@@ -1558,7 +1573,12 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     required Widget child,
     required bool empty,
   }) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+    padding: const EdgeInsets.fromLTRB(
+      AppTheme.pageInset,
+      16,
+      AppTheme.pageInset,
+      AppTheme.pageInset,
+    ),
     child: Column(
       children: [
         Align(alignment: Alignment.centerLeft, child: selector),
@@ -1568,7 +1588,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
               ? child
               : GlassSurface(
                   level: GlassSurfaceLevel.raised,
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: AppTheme.panelRadius,
+                  blur: true,
+                  border: Border.all(
+                    color: Theme.of(context).glass.panelBorderColor,
+                  ),
                   clipBehavior: Clip.antiAlias,
                   automaticBorder: true,
                   child: child,

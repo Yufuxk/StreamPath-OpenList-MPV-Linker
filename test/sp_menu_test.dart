@@ -59,6 +59,16 @@ void main() {
         ),
       );
       focus.requestFocus();
+      expect(
+        tester.getSize(find.byType(SPDropdownButtonFormField<String>)).height,
+        40,
+      );
+      expect(
+        InputDecorator.containerOf(
+          tester.element(find.text('First')),
+        )!.size.height,
+        40,
+      );
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       expect(

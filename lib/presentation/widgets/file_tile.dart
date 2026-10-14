@@ -86,8 +86,7 @@ class FileListHeader extends StatelessWidget {
 
 /// 文件列表项（虚拟列表单元）。
 ///
-/// 轻量 StatelessWidget：万级条目下 Flutter 仅构建可视区，
-/// 配合 `const` 构造与无动画实现流畅滚动。
+/// 仅构建可视条目，交互表面复用 SPTile。
 class FileTile extends StatelessWidget {
   const FileTile({
     super.key,
@@ -123,7 +122,6 @@ class FileTile extends StatelessWidget {
         if (showColumns) return _buildWideTile(context);
 
         final scheme = Theme.of(context).colorScheme;
-        final compactMetadata = _buildCompactMetadata();
         return SPTile(
           onTap: onTap,
           selected: selected,
@@ -160,7 +158,7 @@ class FileTile extends StatelessWidget {
                       if (file.isSelfEntry)
                         const AppText('返回上级目录')
                       else
-                        ?compactMetadata,
+                        ?_buildCompactMetadata(context),
                     ],
                   ),
                 ),
@@ -277,7 +275,7 @@ class FileTile extends StatelessWidget {
     );
   }
 
-  Widget? _buildCompactMetadata() {
+  Widget? _buildCompactMetadata(BuildContext context) {
     final parts = <String>[
       ?subtitle,
       if (!file.isDirectory) file.sizeLabel,
@@ -286,7 +284,10 @@ class FileTile extends StatelessWidget {
     if (folderSize == null) {
       return parts.isEmpty
           ? null
-          : AppText(parts.join(' · '), style: const TextStyle(fontSize: 12));
+          : AppText(
+              parts.join(' · '),
+              style: Theme.of(context).textTheme.bodySmall,
+            );
     }
     return FutureBuilder<int>(
       future: folderSize,
@@ -300,7 +301,7 @@ class FileTile extends StatelessWidget {
             '…',
           ...parts,
         ].join(' · '),
-        style: const TextStyle(fontSize: 12),
+        style: Theme.of(context).textTheme.bodySmall,
       ),
     );
   }

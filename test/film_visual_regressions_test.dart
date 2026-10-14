@@ -20,9 +20,11 @@ void main() {
             child: SizedBox(
               width: 180,
               height: 270,
-              child: FilmCoverZoom(
+              child: FilmPosterHover(
                 hovered: hovered,
-                child: const ColoredBox(key: contentKey, color: Colors.teal),
+                child: const FilmPosterHoverSurface(
+                  child: ColoredBox(key: contentKey, color: Colors.teal),
+                ),
               ),
             ),
           ),
@@ -31,27 +33,31 @@ void main() {
       await frame(false);
       final original = tester.getRect(find.byKey(contentKey));
       await frame(true);
-      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pump(const Duration(milliseconds: 200));
       final enlarged = tester.getRect(find.byKey(contentKey));
-      expect(enlarged.width, closeTo(original.width * 1.04, .001));
+      expect(enlarged.width, closeTo(original.width * 1.05, .001));
+      expect(enlarged.center.dy, closeTo(original.center.dy - 6, .001));
       await frame(false);
       await tester.pump(const Duration(milliseconds: 16));
       final first = tester.getRect(find.byKey(contentKey));
       expect(enlarged.width - first.width, lessThan(.5));
-      expect(first.center, original.center);
+      expect(first.center.dy, greaterThan(enlarged.center.dy));
       await tester.pump(const Duration(milliseconds: 64));
       final interrupted = tester.getRect(find.byKey(contentKey));
       await frame(true);
       expect(tester.getRect(find.byKey(contentKey)), interrupted);
-      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pump(const Duration(milliseconds: 200));
       await frame(false);
       var lastWidth = enlarged.width;
-      for (var i = 0; i < 12; i++) {
+      for (var i = 0; i < 13; i++) {
         await tester.pump(const Duration(milliseconds: 16));
         final current = tester.getRect(find.byKey(contentKey));
         expect(current.width, lessThanOrEqualTo(lastWidth + .001));
         expect(current.center.dx, closeTo(original.center.dx, .001));
-        expect(current.center.dy, closeTo(original.center.dy, .001));
+        expect(
+          current.center.dy,
+          inInclusiveRange(original.center.dy - 6, original.center.dy),
+        );
         lastWidth = current.width;
       }
       expect(tester.getRect(find.byKey(contentKey)), original);
@@ -142,36 +148,38 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: Center(
-            child: RepaintBoundary(
-              key: boundary,
-              child: SizedBox(
-                width: 260,
-                height: 240,
-                child: ColoredBox(
-                  color: Colors.red,
-                  child: Column(
-                    children: [
-                      FilmWatchOverlay(
-                        store: store,
-                        spoilerSensitive: true,
-                        canReveal: false,
-                        showStatus: false,
-                        child: SizedBox(
-                          key: coverKey,
-                          width: 260,
-                          height: 160,
-                          child: ClipRect(
-                            child: FilmCoverZoom(
-                              hovered: hovered,
-                              child: const ColoredBox(
-                                key: Key('zoomed-cover-content'),
-                                color: Colors.white,
+            child: FilmPosterHover(
+              hovered: hovered,
+              child: RepaintBoundary(
+                key: boundary,
+                child: SizedBox(
+                  width: 260,
+                  height: 240,
+                  child: ColoredBox(
+                    color: Colors.red,
+                    child: Column(
+                      children: [
+                        FilmPosterHoverSurface(
+                          child: FilmWatchOverlay(
+                            store: store,
+                            spoilerSensitive: true,
+                            canReveal: false,
+                            showStatus: false,
+                            child: SizedBox(
+                              key: coverKey,
+                              width: 260,
+                              height: 160,
+                              child: ClipRect(
+                                child: const ColoredBox(
+                                  key: Key('zoomed-cover-content'),
+                                  color: Colors.white,
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -182,16 +190,13 @@ void main() {
     );
     await cover(false);
     await tester.pump();
-    final center = tester.getCenter(
-      find.byKey(const Key('zoomed-cover-content')),
-    );
     for (final hovered in [false, true, false]) {
       await cover(hovered);
       for (var i = 0; i < 11; i++) {
         await tester.pump(const Duration(milliseconds: 16));
         expect(
           tester.getCenter(find.byKey(const Key('zoomed-cover-content'))),
-          center,
+          tester.getCenter(find.byKey(coverKey)),
         );
         final image = await tester.runAsync(
           () =>
@@ -206,13 +211,39 @@ void main() {
         int channel(int x, int y, int component) =>
             bytes.getUint8((y * 260 + x) * 4 + component);
         expect(
-          channel(130, 158, 1),
+          channel(
+            130,
+            (tester.getRect(find.byKey(coverKey)).bottom -
+                    tester.getRect(find.byKey(boundary)).top -
+                    3)
+                .floor(),
+            1,
+          ),
           greaterThan(245),
           reason: 'cover edge hovered=$hovered frame=$i',
         );
         expect(
-          channel(130, 164, 1),
-          (Colors.red.g * 255).round(),
+          channel(
+            130,
+            (tester.getRect(find.byKey(coverKey)).bottom -
+                    tester.getRect(find.byKey(boundary)).top +
+                    5)
+                .floor(),
+            1,
+          ),
+          closeTo(
+            channel(
+                  130,
+                  (tester.getRect(find.byKey(coverKey)).bottom -
+                          tester.getRect(find.byKey(boundary)).top +
+                          5)
+                      .floor(),
+                  0,
+                ) *
+                Colors.red.g /
+                Colors.red.r,
+            1,
+          ),
           reason: 'blur outside cover hovered=$hovered frame=$i',
         );
       }

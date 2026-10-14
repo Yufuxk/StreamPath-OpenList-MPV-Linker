@@ -38,6 +38,7 @@ import 'presentation/theme/app_theme.dart';
 import 'presentation/theme/appearance_controller.dart';
 import 'presentation/theme/film_shader_warm_up.dart';
 import 'presentation/widgets/window_title_bar.dart';
+import 'presentation/widgets/app_background.dart';
 import 'presentation/widgets/startup_overlay.dart';
 
 /// StreamPath 应用入口。
@@ -336,10 +337,12 @@ class StreamPathApp extends StatelessWidget {
               fontFamily: appearance.fontFamily,
               systemAccent: appearanceController.systemAccent,
             ),
-            builder: (context, navigator) => _buildWindowChrome(
-              StartupOverlay(
-                ready: appState.startupReady,
-                child: navigator ?? const SizedBox.shrink(),
+            builder: (context, navigator) => AppBackground(
+              child: _buildWindowChrome(
+                StartupOverlay(
+                  ready: appState.startupReady,
+                  child: navigator ?? const SizedBox.shrink(),
+                ),
               ),
             ),
             home: child,

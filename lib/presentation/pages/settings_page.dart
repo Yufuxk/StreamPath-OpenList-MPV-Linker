@@ -4,6 +4,7 @@ import '../../domain/services/app_update_service.dart';
 import '../widgets/app_update_settings_card.dart';
 import '../../data/models/video_playlist_mode.dart';
 import '../widgets/settings_group_card.dart';
+import '../widgets/sp_control_bar.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -41,10 +42,9 @@ import '../models/settings_config_draft.dart';
 import '../localization/app_localizations.dart';
 import '../theme/appearance_controller.dart';
 import '../theme/app_theme.dart';
-import '../theme/glass_tokens.dart';
+import '../widgets/directory_scroll_view.dart';
 import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
-import '../widgets/glass_surface.dart';
 import '../widgets/settings_category_forms.dart';
 import '../widgets/settings_columns.dart';
 import '../widgets/sp_font_picker.dart';
@@ -123,9 +123,7 @@ class _SettingsSectionDefinition {
 /// `{url}` 视频地址 · `{subfile}` 字幕地址 · `{start}` 续播秒数；
 /// 无值的占位符所在的整行参数会被自动移除。
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, this.onSectionBuilt, this.onNavigationHeight});
-
-  final ValueChanged<double>? onNavigationHeight;
+  const SettingsPage({super.key, this.onSectionBuilt});
 
   @visibleForTesting
   final ValueChanged<SettingsSection>? onSectionBuilt;
@@ -136,16 +134,6 @@ class SettingsPage extends StatefulWidget {
 
 class SettingsPageState extends State<SettingsPage> {
   bool _animateSectionChanges = true;
-
-  final _navigationKey = GlobalKey();
-
-  void _measureNavigation() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final size = _navigationKey.currentContext?.size;
-      if (size != null) widget.onNavigationHeight?.call(size.height);
-    });
-  }
 
   void selectSection(SettingsSection section) => _selectSection(section);
 
@@ -3808,56 +3796,45 @@ class SettingsPageState extends State<SettingsPage> {
   Widget _buildNavigationBar(
     BuildContext context,
     List<_SettingsSectionDefinition> sections,
-  ) {
-    final tokens = Theme.of(context).glass;
-    _measureNavigation();
-    return NotificationListener<SizeChangedLayoutNotification>(
-      onNotification: (_) {
-        _measureNavigation();
-        return false;
-      },
-      child: SizeChangedLayoutNotifier(
-        key: _navigationKey,
-        child: GlassSurface(
-          key: const Key('settings-navigation-bar'),
-          level: GlassSurfaceLevel.chrome,
-          automaticBorder: false,
-          border: Border(bottom: BorderSide(color: tokens.dividerColor)),
-          child: SizedBox(
-            width: double.infinity,
-            child: Center(
-              child: SizedBox(
-                width: 1248,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 6,
-                  ),
-                  child: Row(
-                    children: [
-                      for (var index = 0; index < sections.length; index++) ...[
-                        _SettingsNavigationButton(
-                          key: Key(
-                            'settings-section-${sections[index].section.name}',
-                          ),
-                          definition: sections[index],
-                          selected: sections[index].section == _selectedSection,
-                          onTap: () => _selectSection(sections[index].section),
-                        ),
-                        if (index != sections.length - 1)
-                          const SizedBox(width: 8),
-                      ],
-                    ],
-                  ),
-                ),
+  ) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      AppTheme.pageInset,
+      12,
+      AppTheme.pageInset,
+      0,
+    ),
+    child: SPControlBar(
+      key: const Key('settings-navigation-bar'),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1248),
+          child: DirectoryScrollView(
+            hideScrollbar: true,
+            scrollDirection: Axis.horizontal,
+            builder: (controller) => SingleChildScrollView(
+              controller: controller,
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var index = 0; index < sections.length; index++) ...[
+                    _SettingsNavigationButton(
+                      key: Key(
+                        'settings-section-${sections[index].section.name}',
+                      ),
+                      definition: sections[index],
+                      selected: sections[index].section == _selectedSection,
+                      onTap: () => _selectSection(sections[index].section),
+                    ),
+                    if (index != sections.length - 1) const SizedBox(width: 8),
+                  ],
+                ],
               ),
             ),
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
 
   Widget _buildPageShell(_SettingsSectionDefinition definition) {
     final scrollController = _pageScrollControllers[definition.section]!;
@@ -3878,11 +3855,6 @@ class SettingsPageState extends State<SettingsPage> {
     return Theme(
       data: theme.copyWith(
         inputDecorationTheme: theme.inputDecorationTheme.copyWith(
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 12,
-          ),
           helperMaxLines: 4,
           errorMaxLines: 4,
         ),
@@ -3908,7 +3880,7 @@ class SettingsPageState extends State<SettingsPage> {
               icon: const Icon(SPIcons.refresh),
             ),
             Padding(
-              padding: const EdgeInsets.only(right: 20),
+              padding: const EdgeInsets.only(right: AppTheme.pageInset),
               child: SPButton(
                 controlKey: const Key('save-settings-button'),
                 kind: SPButtonKind.primary,
@@ -4082,30 +4054,35 @@ class _SettingsNavigationButton extends StatelessWidget {
       child: SPTile(
         selected: selected,
         onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SPGlyph(
-                definition.icon,
-                size: 20,
-                color: selected
-                    ? scheme.onPrimaryContainer
-                    : scheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              AppText(
-                definition.label,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+        borderRadius: AppTheme.controlRadius,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: AppTheme.controlHeightFor(context),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SPGlyph(
+                  definition.icon,
+                  size: 20,
                   color: selected
                       ? scheme.onPrimaryContainer
                       : scheme.onSurfaceVariant,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                AppText(
+                  definition.label,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: selected
+                        ? scheme.onPrimaryContainer
+                        : scheme.onSurfaceVariant,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

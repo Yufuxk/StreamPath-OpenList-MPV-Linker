@@ -8,6 +8,7 @@ import '../../data/models/server_profile.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
+import '../theme/app_theme.dart';
 import '../widgets/mounted_playback_bars.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
@@ -119,7 +120,7 @@ class _NetworkStoragePageState extends State<NetworkStoragePage>
     return Scaffold(
       appBar: AppBar(toolbarHeight: 48, title: const AppText('网络文件夹')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: AppTheme.pagePadding,
         child: content,
       ),
       bottomNavigationBar: bars,

@@ -27,6 +27,8 @@ part 'film_catalog_playlists.dart';
 class FilmCatalogStore extends ChangeNotifier {
   FilmCatalogStore._(this._db);
   final Database _db;
+  // 同一来源的分类封面在本次运行中保持选择，重启后重新随机。
+  final _categoryCovers = <(String?, String), (int, String)>{};
   int _notificationDepth = 0;
   bool _notificationPending = false;
   final _watchChanges = ChangeNotifier();
@@ -1306,36 +1308,90 @@ class FilmCatalogStore extends ChangeNotifier {
         const FilmHomeSection('daily', enabled: true),
       );
     }
-    final options = <String>{...FilmHomeSection.defaults.map((s) => s.id)};
-    final works = await _db.rawQuery('''SELECT DISTINCT w.year,
-        json_extract(w.metadata_json, '\$.genres') AS genres_json,
-        json_extract(w.metadata_json, '\$.origin_country') AS countries_json
-        FROM works w JOIN resources r ON r.work_id = w.id''');
-    for (final row in works) {
-      for (final genre
-          in (jsonDecode(row['genres_json'] as String? ?? '[]') as List)
-              .whereType<String>()) {
-        options.add('genre:$genre');
-      }
-      for (final country
-          in (jsonDecode(row['countries_json'] as String? ?? '[]') as List)
-              .whereType<String>()) {
-        options.add('country:$country');
-      }
-      if (row['year'] case final int year) {
-        options.add('decade:${year ~/ 10 * 10}');
-      }
+    final merged = <String, FilmHomeSection>{};
+    final explicit = {
+      for (final section in saved.where((s) => s.isCategoryGroup))
+        section.id: section.enabled,
+    };
+    for (final section in saved) {
+      final id = section.categoryGroup ?? section.id;
+      merged[id] = FilmHomeSection(
+        id,
+        enabled:
+            explicit[id] ?? (section.enabled || (merged[id]?.enabled ?? false)),
+      );
     }
     return [
-      ...saved,
-      for (final id
-          in options.difference(saved.map((s) => s.id).toSet()).toList()
-            ..sort())
-        FilmHomeSection(
-          id,
-          enabled: FilmHomeSection.defaults.any((s) => s.id == id),
-        ),
+      ...merged.values,
+      ...FilmHomeSection.defaults.where((s) => !merged.containsKey(s.id)),
     ];
+  }
+
+  Future<List<FilmCategory>> categories({String? sourceId}) async {
+    final rows = await _db.rawQuery(
+      '''SELECT DISTINCT w.id, w.year,
+        w.backdrop_path, w.poster_path,
+        json_extract(w.metadata_json, '\$.genres') AS genres_json,
+        json_extract(w.metadata_json, '\$.origin_country') AS countries_json
+        FROM works w JOIN resources r ON r.work_id = w.id
+        JOIN catalog_roots c ON c.id = r.root_id
+        WHERE $_rootEnabledSql ${sourceId == null ? '' : 'AND c.source_id = ?'}''',
+      [?sourceId],
+    );
+    final counts = <String, int>{};
+    final artworkCounts = <String, int>{};
+    final sampled = <String, (int, String)>{};
+    final retained = <String, (int, String)>{};
+    final random = Random();
+    for (final row in rows) {
+      final ids = <String>{
+        for (final genre
+            in (jsonDecode(row['genres_json'] as String? ?? '[]') as List)
+                .whereType<String>())
+          'genre:$genre',
+        for (final country
+            in (jsonDecode(row['countries_json'] as String? ?? '[]') as List)
+                .whereType<String>())
+          'country:$country',
+        if (row['year'] case final int year) 'decade:${year ~/ 10 * 10}',
+      };
+      final path =
+          row['backdrop_path'] as String? ?? row['poster_path'] as String?;
+      for (final id in ids) {
+        counts.update(id, (count) => count + 1, ifAbsent: () => 1);
+        if (path == null) continue;
+        final artwork = (row['id'] as int, path);
+        if (_categoryCovers[(sourceId, id)] == artwork) retained[id] = artwork;
+        final count = artworkCounts.update(
+          id,
+          (count) => count + 1,
+          ifAbsent: () => 1,
+        );
+        // 蓄水池采样只保留一个候选，不加载全量 FilmWork 或图片。
+        if (random.nextInt(count) == 0) sampled[id] = artwork;
+      }
+    }
+    _categoryCovers.removeWhere(
+      (key, _) => key.$1 == sourceId && !counts.containsKey(key.$2),
+    );
+    final ids = counts.keys.toList()..sort();
+    final categories = <FilmCategory>[];
+    for (final id in ids) {
+      final artwork = retained[id] ?? sampled[id];
+      if (artwork == null) {
+        _categoryCovers.remove((sourceId, id));
+      } else {
+        _categoryCovers[(sourceId, id)] = artwork;
+      }
+      categories.add(
+        FilmCategory(
+          section: FilmHomeSection(id),
+          count: counts[id]!,
+          coverPath: artwork?.$2,
+        ),
+      );
+    }
+    return categories;
   }
 
   Future<void> setHomeSections(List<FilmHomeSection> sections) async {

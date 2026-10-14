@@ -1,4 +1,7 @@
 import 'transition_content.dart';
+import 'cinematic_states.dart';
+import 'sp_icons.dart';
+import 'directory_scroll_view.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -110,10 +113,24 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) return Center(child: AppText(_error!));
-    if (_loading && _catalog == null) {
-      return const Center(child: CircularProgressIndicator());
+    if (_loading && _works.isEmpty) {
+      return const SizedBox.shrink();
     }
-    if (_works.isEmpty) return const Center(child: AppText('还没有收藏媒体'));
+    if (_works.isEmpty) {
+      return DirectoryScrollView(
+        controller: _scroll,
+        builder: (controller) => ListView(
+          controller: controller,
+          children: const [
+            ImmersiveEmptyState(
+              icon: SPIcons.favorite,
+              title: '还没有收藏媒体',
+              description: '右键作品封面，将喜欢的影片加入收藏。',
+            ),
+          ],
+        ),
+      );
+    }
     return FilmPosterGrid(
       store: _catalog!.store,
       sourceIds: widget.sourceIds,

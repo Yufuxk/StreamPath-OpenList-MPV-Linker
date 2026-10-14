@@ -4,11 +4,72 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
+import 'package:streampath/presentation/widgets/film_artwork.dart';
+import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/data/models/film_home_section.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
 
 void main() {
+  testWidgets('分类入口在明暗主题、窄宽度和放大文字下保留边界与点击', (tester) async {
+    final tmdb = TmdbMetadataService();
+    final cache = FilmCatalogImageCache(Directory.systemTemp, tmdb);
+    addTearDown(cache.close);
+    addTearDown(tmdb.close);
+    var taps = 0;
+    for (final brightness in Brightness.values) {
+      for (final width in [180.0, 320.0]) {
+        for (final scale in [1.0, 2.0]) {
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: ThemeData(brightness: brightness),
+              home: MediaQuery(
+                data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+                child: Center(
+                  child: SizedBox(
+                    width: width,
+                    height: width * 9 / 16,
+                    child: FilmCategoryCard(
+                      category: const FilmCategory(
+                        section: FilmHomeSection(
+                          'genre:Animation & Science Fiction',
+                        ),
+                        count: 12,
+                        coverPath: null,
+                      ),
+                      cache: cache,
+                      onTap: () => taps++,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          final card = tester.widget<Card>(find.byType(Card));
+          expect(card.clipBehavior, Clip.none);
+          expect(
+            find.descendant(
+              of: find.byType(FilmPosterHoverSurface),
+              matching: find.byType(ClipRRect),
+            ),
+            findsWidgets,
+          );
+          final artwork = tester.getRect(find.byType(FilmArtwork));
+          final cardBounds = tester.getRect(find.byType(FilmCategoryCard));
+          expect(artwork.left, closeTo(cardBounds.left, .001));
+          expect(artwork.top, closeTo(cardBounds.top, .001));
+          expect(artwork.width, closeTo(cardBounds.width, .001));
+          expect(artwork.height, closeTo(cardBounds.height, .001));
+          await tester.tap(find.byType(FilmCategoryCard));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+        }
+      }
+    }
+    expect(taps, 8);
+  });
+
   testWidgets('分辨率、DPI 与侧栏宽度变化时填满一行并保留海报比例', (tester) async {
     final tmdb = TmdbMetadataService();
     final cache = FilmCatalogImageCache(Directory.systemTemp, tmdb);
@@ -57,10 +118,14 @@ void main() {
           );
           await tester.pump();
           final cards = find.byType(FilmWorkCard);
-          final last = tester.getRect(cards.last);
+          final layout = FilmShelf.adaptiveLayout(available, 15);
+          final last = tester.getRect(cards.at(layout.visible - 1));
           expect(
             last.right,
-            closeTo(tester.getRect(find.byKey(rowKey)).right, .01),
+            closeTo(
+              layout.visible * layout.width + (layout.visible - 1) * 16,
+              .01,
+            ),
             reason: 'resolution=$resolution DPR=$dpr sidebar=$sidebar',
           );
           final first = tester.getRect(cards.first);
@@ -125,7 +190,8 @@ void main() {
     ]) {
       await frame(width);
       final first = tester.getRect(find.byKey(const ValueKey(0)));
-      final last = tester.getRect(find.byType(ColoredBox).last);
+      final visible = FilmShelf.adaptiveLayout(width, 15).visible;
+      final last = tester.getRect(find.byKey(ValueKey(visible - 1)));
       expect(last.right, closeTo(width, .01));
       expect(first.width, greaterThan(0));
       expect(tester.takeException(), isNull);
@@ -139,9 +205,11 @@ void main() {
     expect(tester.getSize(find.byKey(const ValueKey(0))), const Size(300, 220));
   });
 
-  testWidgets('主页栏目只构建可见卡片，滚轮始终滚动整页', (tester) async {
+  testWidgets('主页鼠标拖动最多 15 张卡片，滚轮只滚动整页并保留查看全部', (tester) async {
     final scroll = ScrollController();
     addTearDown(scroll.dispose);
+    var opened = 0;
+    var showAll = 0;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -151,7 +219,9 @@ void main() {
               FilmShelf(
                 title: 'Movies',
                 count: 30,
-                builder: (_, i) => Text('Movie $i'),
+                onShowAll: () => showAll++,
+                builder: (_, i) =>
+                    InkWell(onTap: () => opened++, child: Text('Movie $i')),
               ),
               const SizedBox(height: 1500),
             ],
@@ -160,13 +230,66 @@ void main() {
       ),
     );
     expect(find.text('Movie 4'), findsNothing);
+    final shelf = find.byType(FilmShelf);
+    final shared = tester.widget<DirectoryScrollView>(
+      find.descendant(of: shelf, matching: find.byType(DirectoryScrollView)),
+    );
+    final horizontal = shared.controller!;
+    expect(shared.hideScrollbar, isTrue);
+    expect(
+      tester
+          .widget<ListView>(
+            find.descendant(of: shelf, matching: find.byType(ListView)),
+          )
+          .semanticChildCount,
+      15,
+    );
+    await tester.tap(find.text('Movie 0'));
+    expect(opened, 1);
+    await tester.tap(find.text('查看全部'));
+    expect(showAll, 1);
     final pointer = TestPointer(1, PointerDeviceKind.mouse);
     await tester.sendEventToBinding(
       pointer.hover(tester.getCenter(find.text('Movie 0'))),
     );
+    await tester.sendEventToBinding(pointer.scroll(const Offset(120, 0)));
+    await tester.pump();
+    expect(horizontal.offset, 0);
+    scroll.jumpTo(0);
     await tester.sendEventToBinding(pointer.scroll(const Offset(0, 120)));
     await tester.pump();
     expect(scroll.offset, greaterThan(0));
+    expect(horizontal.offset, 0);
+    scroll.jumpTo(0);
+    await tester.pump();
+    await tester.drag(shelf, const Offset(-400, 0));
+    expect(horizontal.offset, 0);
+    await tester.drag(
+      shelf,
+      const Offset(-400, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    expect(horizontal.offset, greaterThan(0));
+    expect(scroll.offset, 0);
+    expect(opened, 1);
+    await tester.pumpAndSettle();
+    await tester.drag(
+      shelf,
+      const Offset(-5000, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(horizontal.offset, horizontal.position.maxScrollExtent);
+    expect(find.text('Movie 14'), findsOneWidget);
+    expect(find.text('Movie 15'), findsNothing);
+    await tester.drag(
+      shelf,
+      const Offset(5000, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    expect(horizontal.offset, 0);
+    expect(find.text('Movie 0'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

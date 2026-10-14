@@ -11,7 +11,6 @@ import '../../data/models/film_catalog_item.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
-import '../theme/glass_tokens.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/film_segmented_control.dart';
 import '../widgets/directory_scroll_view.dart';
@@ -86,7 +85,6 @@ class _AppShellPageState extends State<AppShellPage>
       section: ValueNotifier<double?>(null),
   };
   late _Section _selected;
-  double _settingsNavigationHeight = 0;
   bool _expanded = false;
   bool _hoveringTrigger = false;
   bool _hoveringSidebar = false;
@@ -282,14 +280,7 @@ class _AppShellPageState extends State<AppShellPage>
       key: _filmShellKey,
       sidebarInset: WindowTitleBar.compactSidebarWidth,
     ),
-    _Section.settings => SettingsPage(
-      key: _settingsKey,
-      onNavigationHeight: (height) {
-        if (mounted && height != _settingsNavigationHeight) {
-          setState(() => _settingsNavigationHeight = height);
-        }
-      },
-    ),
+    _Section.settings => SettingsPage(key: _settingsKey),
   };
 
   Widget _content() => IndexedStack(
@@ -314,8 +305,10 @@ class _AppShellPageState extends State<AppShellPage>
   );
 
   static double _rootHeaderHeight(_Section section) => switch (section) {
-    _Section.folders || _Section.library => 96,
-    _Section.films || _Section.settings => 48,
+    _Section.folders ||
+    _Section.library ||
+    _Section.films ||
+    _Section.settings => 48,
   };
 
   void _pageChanged(_Section section, PageRoute<dynamic> route) {
@@ -430,22 +423,6 @@ class _AppShellPageState extends State<AppShellPage>
                       shape: theme.appBarTheme.shape,
                     ),
                   ),
-                  if (_selected == _Section.settings)
-                    Positioned(
-                      top: headerHeight,
-                      left: 0,
-                      right: 0,
-                      height: _settingsNavigationHeight,
-                      child: DecoratedBox(
-                        key: const Key('sidebar-settings-navigation-extension'),
-                        decoration: BoxDecoration(
-                          color: theme.glass.chromeSurface,
-                          border: Border(
-                            bottom: BorderSide(color: theme.glass.dividerColor),
-                          ),
-                        ),
-                      ),
-                    ),
                   _sidebar(),
                 ],
               ),

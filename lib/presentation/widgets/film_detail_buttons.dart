@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 import 'sp_icons.dart';
 
 class FilmDetailPlayButton extends StatefulWidget {
@@ -22,45 +23,44 @@ class FilmDetailPlayButton extends StatefulWidget {
 class _FilmDetailPlayButtonState extends State<FilmDetailPlayButton> {
   bool _hovered = false;
   @override
-  Widget build(BuildContext context) => MouseRegion(
-    onEnter: (_) => setState(() => _hovered = true),
-    onExit: (_) => setState(() => _hovered = false),
-    child: AnimatedScale(
-      scale: _hovered ? 1.025 : 1,
-      duration: const Duration(milliseconds: 120),
-      curve: Curves.easeOutCubic,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          boxShadow: [
-            const BoxShadow(
-              color: Color(0x33000000),
-              blurRadius: 6,
-              offset: Offset(0, 2),
-            ),
-            if (_hovered)
-              BoxShadow(
-                color: Colors.white.withValues(alpha: .18),
-                blurRadius: 20,
-              ),
-          ],
-        ),
-        child: FilledButton.icon(
-          key: widget.buttonKey,
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.white,
-            foregroundColor: const Color(0xff15171c),
-            minimumSize: const Size(0, 44),
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedScale(
+        scale: _hovered && widget.onPressed != null ? 1.025 : 1,
+        duration: AppTheme.hoverDuration,
+        curve: Curves.easeOutCubic,
+        child: AnimatedContainer(
+          duration: AppTheme.hoverDuration,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: widget.onPressed == null
+                ? const []
+                : AppTheme.accentGlow(scheme.primary),
           ),
-          onPressed: widget.onPressed,
-          icon: const Icon(SPIcons.play, color: Color(0xff15171c)),
-          label: widget.label,
+          child: FilledButton.icon(
+            key: widget.buttonKey,
+            style: FilledButton.styleFrom(
+              backgroundColor: scheme.primary,
+              foregroundColor: scheme.onPrimary,
+              minimumSize: const Size(0, 44),
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+            ),
+            onPressed: widget.onPressed,
+            icon: Icon(
+              SPIcons.play,
+              color: widget.onPressed == null
+                  ? scheme.onSurface.withValues(alpha: .38)
+                  : scheme.onPrimary,
+            ),
+            label: widget.label,
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class FilmDetailActionButton extends StatelessWidget {

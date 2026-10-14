@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'sp_icons.dart';
+import 'directory_scroll_view.dart';
 
 import '../localization/app_text.dart';
 
@@ -17,43 +18,48 @@ class DirectoryBreadcrumbs extends StatelessWidget {
   final ValueChanged<int> onNavigate;
 
   @override
-  Widget build(BuildContext context) => SingleChildScrollView(
+  Widget build(BuildContext context) => DirectoryScrollView(
     scrollDirection: Axis.horizontal,
-    child: Row(
-      children: [
-        TextButton(
-          key: const Key('directory-root-breadcrumb'),
-          onPressed: crumbs.isEmpty ? null : () => onNavigate(-1),
-          style: TextButton.styleFrom(
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.only(right: 8),
-            minimumSize: const Size(0, 40),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            alignment: Alignment.centerLeft,
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(SPIcons.home, size: 20),
-              SizedBox(width: 6),
-              AppText('根目录'),
-            ],
-          ),
-        ),
-        for (var index = 0; index < crumbs.length; index++) ...[
-          Icon(
-            SPIcons.chevronRight,
-            size: 20,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+    hideScrollbar: true,
+    builder: (controller) => SingleChildScrollView(
+      controller: controller,
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
           TextButton(
-            key: ValueKey<String>('directory-breadcrumb-$index'),
-            onPressed: () => onNavigate(index),
-            style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-            child: AppText(crumbs[index]),
+            key: const Key('directory-root-breadcrumb'),
+            onPressed: crumbs.isEmpty ? null : () => onNavigate(-1),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.only(right: 8),
+              minimumSize: const Size(0, 40),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              alignment: Alignment.centerLeft,
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(SPIcons.home, size: 20),
+                SizedBox(width: 6),
+                AppText('根目录'),
+              ],
+            ),
           ),
+          for (var index = 0; index < crumbs.length; index++) ...[
+            Icon(
+              SPIcons.chevronRight,
+              size: 20,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            TextButton(
+              key: ValueKey<String>('directory-breadcrumb-$index'),
+              onPressed: () => onNavigate(index),
+              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+              child: AppText(crumbs[index]),
+            ),
+          ],
         ],
-      ],
+      ),
     ),
   );
 }

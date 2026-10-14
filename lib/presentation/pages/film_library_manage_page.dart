@@ -576,14 +576,14 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                       children: [
                         SettingsGroupCard(
                           icon: SPIcons.video,
-                          title: '影视库背景',
-                          description: '默认背景跟随软件界面样式，也可选择本地图片或已缓存封面',
+                          title: '全局背景',
+                          description: '背景应用于整个界面，可选择本地图片或已缓存封面；默认跟随软件界面样式',
                           child: Align(
                             alignment: Alignment.centerLeft,
                             child: TextButton(
                               onPressed: () =>
                                   showFilmArtworkPicker(context, c),
-                              child: const AppText('设置影视库背景'),
+                              child: const AppText('设置全局背景'),
                             ),
                           ),
                         ),

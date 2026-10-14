@@ -238,7 +238,7 @@ void main() {
       (w) => w is SettingsGroupCard && w.title == title,
     );
     expect(
-      tester.getTopLeft(card('影视库背景')).dx,
+      tester.getTopLeft(card('全局背景')).dx,
       greaterThan(tester.getTopLeft(card('首页栏目')).dx),
     );
     for (final language in AppLanguage.values) {
@@ -248,7 +248,7 @@ void main() {
       await settleFilmSettings(tester);
       await tester.pumpAndSettle();
       expect(
-        tester.getTopLeft(card('影视库背景')).dx,
+        tester.getTopLeft(card('全局背景')).dx,
         tester.getTopLeft(card('首页栏目')).dx,
       );
       expect(find.byType(SettingsGroupCard), findsNWidgets(5));
@@ -342,7 +342,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('深色设置按钮与导航图标沿用旧版配色', (tester) async {
+  testWidgets('深色设置按钮对比色与导航图标保持主题层级', (tester) async {
     await tester.pumpWidget(
       buildSettings(
         theme: AppTheme.dark(systemAccent: const Color(0xFFAA5500)),
@@ -385,7 +385,7 @@ void main() {
             ),
           )
           .color,
-      const Color(0xFFAEB9C7),
+      Colors.white.withValues(alpha: 0.55),
     );
   });
 

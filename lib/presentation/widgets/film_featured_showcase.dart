@@ -11,6 +11,7 @@ import '../../data/models/film_collection.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 import 'directory_scroll_view.dart';
 import 'adaptive_film_backdrop.dart';
 import 'film_artwork.dart';
@@ -332,33 +333,53 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
     double scale,
     ({double width, double height, int visible}) layout,
     double railPadding,
-  ) => Column(
-    key: const Key('featured-poster-rail'),
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Focus(
-        focusNode: _railFocus,
-        onFocusChange: (value) => setState(() => _focused = value),
-        onKeyEvent: (_, event) => _key(event, layout.width),
-        child: SizedBox(
-          height: math.max(layout.height, layout.width * 1.5 + 52 * scale + 14),
-          child: DirectoryScrollView(
-            controller: _railScroll,
-            hideScrollbar: true,
-            builder: (controller) => ListView.separated(
-              key: ValueKey(_section),
-              controller: controller,
+  ) {
+    final coverHeight = layout.width * 1.5;
+    final topInset = math.max(
+      16.0,
+      (AppTheme.posterHoverLift +
+              coverHeight * ((AppTheme.posterHoverScale - 1) / 2 + .018) +
+              2)
+          .ceilToDouble(),
+    );
+    return Column(
+      key: const Key('featured-poster-rail'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Focus(
+          focusNode: _railFocus,
+          onFocusChange: (value) => setState(() => _focused = value),
+          onKeyEvent: (_, event) => _key(event, layout.width),
+          child: SizedBox(
+            height: math.max(
+              layout.height,
+              coverHeight + 52 * scale + topInset + 8,
+            ),
+            child: DirectoryScrollView(
+              controller: _railScroll,
               scrollDirection: Axis.horizontal,
-              padding: EdgeInsets.fromLTRB(railPadding, 6, railPadding, 8),
-              itemCount: _count,
-              separatorBuilder: (_, _) => const SizedBox(width: 16),
-              itemBuilder: (_, index) => _poster(context, index, layout.width),
+              hideScrollbar: true,
+              builder: (controller) => ListView.separated(
+                key: ValueKey(_section),
+                controller: controller,
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.fromLTRB(
+                  railPadding,
+                  topInset,
+                  railPadding,
+                  8,
+                ),
+                itemCount: _count,
+                separatorBuilder: (_, _) => const SizedBox(width: 16),
+                itemBuilder: (_, index) =>
+                    _poster(context, index, layout.width),
+              ),
             ),
           ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 
   Widget _hero(BuildContext context, bool narrow, bool compact) {
     final work = _daily ? _works[_index] : null;
@@ -511,101 +532,104 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
     final selected = index == _index;
     return SizedBox(
       width: width,
-      child: Semantics(
-        selected: selected,
-        button: true,
-        label: title,
-        child: GestureDetector(
-          onSecondaryTapUp: (details) => work != null
-              ? widget.onWorkMenu(work, details.globalPosition)
-              : collection!.readOnly
-              ? null
-              : widget.onCollectionMenu?.call(
-                  collection,
-                  details.globalPosition,
-                ),
-          child: InkWell(
-            key: ValueKey<Object>((
-              'featured-poster',
-              work?.id ?? collection!.id,
-            )),
-            borderRadius: BorderRadius.circular(9),
-            onTap: () {
-              _railFocus.requestFocus();
-              _select(index, width);
-            },
-            child: RawGestureDetector(
-              gestures: {
-                SerialTapGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<
-                      SerialTapGestureRecognizer
-                    >(
-                      () => SerialTapGestureRecognizer(
-                        allowedButtonsFilter: (buttons) =>
-                            buttons == kPrimaryMouseButton,
-                      ),
-                      (recognizer) => recognizer.onSerialTapUp = (details) {
-                        _railFocus.requestFocus();
-                        _select(index, width);
-                        if (details.count == 2) {
-                          if (work != null) {
-                            widget.onOpenWork(work);
-                          } else {
-                            widget.onOpenCollection(collection!);
-                          }
-                        }
-                      },
-                    ),
+      child: FilmPosterHover(
+        child: Semantics(
+          selected: selected,
+          button: true,
+          label: title,
+          child: GestureDetector(
+            onSecondaryTapUp: (details) => work != null
+                ? widget.onWorkMenu(work, details.globalPosition)
+                : collection!.readOnly
+                ? null
+                : widget.onCollectionMenu?.call(
+                    collection,
+                    details.globalPosition,
+                  ),
+            child: InkWell(
+              hoverColor: Colors.transparent,
+              key: ValueKey<Object>((
+                'featured-poster',
+                work?.id ?? collection!.id,
+              )),
+              borderRadius: BorderRadius.circular(9),
+              onTap: () {
+                _railFocus.requestFocus();
+                _select(index, width);
               },
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  AnimatedSlide(
-                    offset: selected ? const Offset(0, -.018) : Offset.zero,
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeOut,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(
-                          color: selected
-                              ? _focused
-                                    ? scheme.onPrimaryContainer
-                                    : scheme.primary
-                              : Colors.transparent,
-                          width: 2,
+              child: RawGestureDetector(
+                gestures: {
+                  SerialTapGestureRecognizer:
+                      GestureRecognizerFactoryWithHandlers<
+                        SerialTapGestureRecognizer
+                      >(
+                        () => SerialTapGestureRecognizer(
+                          allowedButtonsFilter: (buttons) =>
+                              buttons == kPrimaryMouseButton,
                         ),
+                        (recognizer) => recognizer.onSerialTapUp = (details) {
+                          _railFocus.requestFocus();
+                          _select(index, width);
+                          if (details.count == 2) {
+                            if (work != null) {
+                              widget.onOpenWork(work);
+                            } else {
+                              widget.onOpenCollection(collection!);
+                            }
+                          }
+                        },
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: FilmCoverZoom(
-                          child: FilmArtwork(
-                            cache: widget.catalog.images,
-                            path:
-                                work?.posterPath ??
-                                widget.catalog.collectionCovers[collection?.id],
-                            height: width * 1.5 - 8,
+                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    AnimatedSlide(
+                      offset: selected ? const Offset(0, -.018) : Offset.zero,
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOut,
+                      child: FilmPosterHoverSurface(
+                        borderRadius: BorderRadius.circular(9),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(9),
+                            border: Border.all(
+                              color: selected
+                                  ? _focused
+                                        ? scheme.onPrimaryContainer
+                                        : scheme.primary
+                                  : Colors.transparent,
+                              width: 2,
+                            ),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: FilmArtwork(
+                              cache: widget.catalog.images,
+                              path:
+                                  work?.posterPath ??
+                                  widget.catalog.collectionCovers[collection
+                                      ?.id],
+                              height: width * 1.5 - 8,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                      color: _foreground(
-                        context,
-                      ).withValues(alpha: selected ? 1 : .86),
+                    const SizedBox(height: 8),
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: _foreground(context),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

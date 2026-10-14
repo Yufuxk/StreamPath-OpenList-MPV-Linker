@@ -104,7 +104,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
         : null;
     final sourceIds = selected == null ? names.keys.toSet() : {selected};
     final primary = sourceIds.firstOrNull ?? '';
-    final filterWidth = MediaQuery.sizeOf(context).width < 680 ? 180.0 : 280.0;
+    final filterWidth = MediaQuery.sizeOf(context).width < 680 ? 180.0 : 220.0;
     return MediaLibraryPage(
       key: ValueKey(selected ?? 'all'),
       filmCatalog: widget.filmCatalog,
@@ -146,11 +146,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
           isExpanded: true,
           dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
           borderRadius: AppTheme.dropdownBorderRadius,
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            isDense: true,
-            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          ),
+          decoration: const InputDecoration(),
           items: [
             const DropdownMenuItem(
               value: '',

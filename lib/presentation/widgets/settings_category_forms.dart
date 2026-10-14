@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+
 import 'directory_scroll_view.dart';
 
 /// 设置分类的独立表单容器。
@@ -31,9 +33,9 @@ class SettingsCategoryForm extends StatelessWidget {
           key: PageStorageKey<String>('settings-page-$sectionName'),
           controller: scrollController,
           padding: EdgeInsets.fromLTRB(
-            MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+            AppTheme.pageInset,
             16,
-            MediaQuery.sizeOf(context).width < 900 ? 16 : 24,
+            AppTheme.pageInset,
             24,
           ),
           child: Center(

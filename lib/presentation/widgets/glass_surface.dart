@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import '../theme/glass_tokens.dart';
@@ -14,6 +16,9 @@ class GlassSurface extends StatelessWidget {
     this.clipBehavior = Clip.none,
     this.automaticBorder = true,
     this.showShadow = true,
+    this.blur = false,
+    this.blurSigma = GlassTokens.panelBlurSigma,
+    this.color,
   });
 
   final GlassSurfaceLevel level;
@@ -24,6 +29,9 @@ class GlassSurface extends StatelessWidget {
   final Clip clipBehavior;
   final bool automaticBorder;
   final bool showShadow;
+  final bool blur;
+  final double blurSigma;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +44,7 @@ class GlassSurface extends StatelessWidget {
         (automaticBorder && drawsRaisedEdge
             ? Border.all(color: tokens.borderColor)
             : null);
-    final highlight = tokens.enabled && drawsRaisedEdge
+    final highlight = tokens.enabled && drawsRaisedEdge && color == null
         ? LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
@@ -45,19 +53,36 @@ class GlassSurface extends StatelessWidget {
           )
         : null;
 
-    Widget content = Material(
+    final content = Material(
       type: MaterialType.transparency,
       child: padding == null ? child : Padding(padding: padding!, child: child),
     );
 
+    final decoration = BoxDecoration(
+      color: color ?? tokens.surfaceFor(level),
+      gradient: highlight,
+      border: effectiveBorder,
+      borderRadius: borderRadius,
+    );
+    final shadows = showShadow ? tokens.shadowsFor(level) : const <BoxShadow>[];
+    if (blur && (tokens.enabled || color != null)) {
+      // 先模糊背后画面，再叠加底色与描边。
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: borderRadius,
+          boxShadow: shadows,
+        ),
+        child: ClipRRect(
+          borderRadius: borderRadius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
+            child: Container(decoration: decoration, child: content),
+          ),
+        ),
+      );
+    }
     return Container(
-      decoration: BoxDecoration(
-        color: tokens.surfaceFor(level),
-        gradient: highlight,
-        border: effectiveBorder,
-        borderRadius: borderRadius,
-        boxShadow: showShadow ? tokens.shadowsFor(level) : const [],
-      ),
+      decoration: decoration.copyWith(boxShadow: shadows),
       clipBehavior: clipBehavior,
       child: content,
     );

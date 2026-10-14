@@ -8,13 +8,16 @@ import 'dart:io';
 import '../../data/models/film_collection.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/film_home_section.dart';
 import '../../domain/services/film_catalog_image_cache.dart';
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 import 'film_artwork.dart';
 
-/// 主页展示一行可见卡片；演职人员可显式开启横向拖动。
+/// 主页支持鼠标拖动，默认最多 15 项；分类入口和演职人员可展示全部。
 class FilmShelf extends StatefulWidget {
   const FilmShelf({
     super.key,
@@ -25,6 +28,7 @@ class FilmShelf extends StatefulWidget {
     this.itemWidth = defaultItemWidth,
     this.onShowAll,
     this.horizontal = false,
+    this.maxItems = 15,
   });
   static const double defaultHeight = 304;
   static const double defaultItemWidth = 174;
@@ -56,6 +60,7 @@ class FilmShelf extends StatefulWidget {
   final IndexedWidgetBuilder builder;
   final VoidCallback? onShowAll;
   final bool horizontal;
+  final int? maxItems;
   @override
   State<FilmShelf> createState() => _FilmShelfState();
 }
@@ -85,7 +90,9 @@ class _FilmShelfState extends State<FilmShelf>
               Expanded(
                 child: AppText(
                   widget.title,
-                  style: Theme.of(context).textTheme.titleLarge,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontSize: 22),
                 ),
               ),
               if (widget.onShowAll != null)
@@ -99,36 +106,26 @@ class _FilmShelfState extends State<FilmShelf>
           widget.horizontal
               ? SizedBox(
                   height: widget.height,
-                  child: ShaderMask(
-                    blendMode: BlendMode.dstIn,
-                    shaderCallback: (bounds) => LinearGradient(
-                      colors: const [
-                        Colors.white,
-                        Colors.white,
-                        Colors.transparent,
-                      ],
-                      stops: [0, (1 - 32 / bounds.width).clamp(0.0, 1.0), 1],
-                    ).createShader(bounds),
-                    child: ScrollConfiguration(
-                      behavior: const MaterialScrollBehavior().copyWith(
-                        dragDevices: {
-                          PointerDeviceKind.mouse,
-                          PointerDeviceKind.touch,
-                          PointerDeviceKind.trackpad,
-                        },
-                      ),
-                      child: DirectoryScrollView(
-                        controller: _scroll,
-                        hideScrollbar: true,
-                        builder: (scrollController) => ListView.separated(
-                          controller: scrollController,
-                          scrollDirection: Axis.horizontal,
-                          itemCount: widget.count,
-                          separatorBuilder: (_, _) => const SizedBox(width: 16),
-                          itemBuilder: (context, i) => SizedBox(
-                            width: widget.itemWidth,
-                            child: widget.builder(context, i),
-                          ),
+                  child: ScrollConfiguration(
+                    behavior: const MaterialScrollBehavior().copyWith(
+                      dragDevices: {
+                        PointerDeviceKind.mouse,
+                        PointerDeviceKind.touch,
+                        PointerDeviceKind.trackpad,
+                      },
+                    ),
+                    child: DirectoryScrollView(
+                      scrollDirection: Axis.horizontal,
+                      controller: _scroll,
+                      hideScrollbar: true,
+                      builder: (scrollController) => ListView.separated(
+                        controller: scrollController,
+                        scrollDirection: Axis.horizontal,
+                        itemCount: widget.count,
+                        separatorBuilder: (_, _) => const SizedBox(width: 16),
+                        itemBuilder: (context, i) => SizedBox(
+                          width: widget.itemWidth,
+                          child: widget.builder(context, i),
                         ),
                       ),
                     ),
@@ -136,28 +133,63 @@ class _FilmShelfState extends State<FilmShelf>
                 )
               : LayoutBuilder(
                   builder: (context, constraints) {
-                    const spacing = 16.0;
+                    final count = widget.maxItems == null
+                        ? widget.count
+                        : math.min(widget.count, widget.maxItems!);
                     final layout = FilmShelf.adaptiveLayout(
                       constraints.maxWidth,
-                      widget.count,
+                      count,
                       itemWidth: widget.itemWidth,
                       height: widget.height,
                     );
-                    final width = layout.width;
-                    final visible = layout.visible;
+                    final hoverInset =
+                        (layout.width * (AppTheme.posterHoverScale - 1) / 2)
+                            .ceilToDouble() +
+                        2;
                     return SizedBox(
-                      height: layout.height,
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          for (var i = 0; i < visible; i++) ...[
-                            if (i > 0) const SizedBox(width: spacing),
-                            SizedBox(
-                              width: width,
-                              child: widget.builder(context, i),
+                      height: layout.height + 28,
+                      // 扩展裁剪视口并补等量内边距，卡片原位置与宽度保持。
+                      child: OverflowBox(
+                        alignment: Alignment.topCenter,
+                        minHeight: layout.height + 52,
+                        maxHeight: layout.height + 52,
+                        minWidth: constraints.maxWidth + hoverInset * 2,
+                        maxWidth: constraints.maxWidth + hoverInset * 2,
+                        child: GestureDetector(
+                          supportedDevices: const {PointerDeviceKind.mouse},
+                          onHorizontalDragUpdate: (details) => _scroll.jumpTo(
+                            (_scroll.offset - details.delta.dx).clamp(
+                              _scroll.position.minScrollExtent,
+                              _scroll.position.maxScrollExtent,
                             ),
-                          ],
-                        ],
+                          ),
+                          child: DirectoryScrollView(
+                            scrollDirection: Axis.horizontal,
+                            controller: _scroll,
+                            hideScrollbar: true,
+                            builder: (scrollController) => ListView.separated(
+                              controller: scrollController,
+                              scrollDirection: Axis.horizontal,
+                              physics: const NeverScrollableScrollPhysics(),
+                              padding: EdgeInsets.fromLTRB(
+                                hoverInset,
+                                16,
+                                hoverInset,
+                                36,
+                              ),
+                              scrollCacheExtent: const ScrollCacheExtent.pixels(
+                                0,
+                              ),
+                              itemCount: count,
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 16),
+                              itemBuilder: (context, i) => SizedBox(
+                                width: layout.width,
+                                child: widget.builder(context, i),
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                     );
                   },
@@ -166,6 +198,99 @@ class _FilmShelfState extends State<FilmShelf>
       ),
     );
   }
+}
+
+class FilmCategoryCard extends StatelessWidget {
+  const FilmCategoryCard({
+    super.key,
+    required this.category,
+    required this.cache,
+    required this.onTap,
+  });
+  final FilmCategory category;
+  final FilmCatalogImageCache cache;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => FilmPosterHover(
+    borderRadius: BorderRadius.circular(12),
+    child: Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      color: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      clipBehavior: Clip.none,
+      child: InkWell(
+        hoverColor: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FilmPosterHoverSurface(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  FilmArtwork(
+                    cache: cache,
+                    path: category.coverPath,
+                    target: 'w780',
+                    width: double.infinity,
+                    height: double.infinity,
+                    borderRadius: 0,
+                  ),
+                  const IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Color(0x66000000),
+                            Color(0x99000000),
+                            Color(0xB3000000),
+                          ],
+                          stops: [0, .5, 1],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                child: Text(
+                  category.section.categoryGroup == 'years'
+                      ? context.l10n.format('{value} 年代', {
+                          'value': category.section.value,
+                        })
+                      : context.l10n.text(category.section.value),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              right: 12,
+              bottom: 10,
+              child: Text(
+                '${category.count}',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 class FilmCollectionCard extends StatelessWidget {
@@ -183,33 +308,46 @@ class FilmCollectionCard extends StatelessWidget {
   final VoidCallback onTap;
   final ValueChanged<Offset>? onMenu;
   @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    onSecondaryTapUp: onMenu == null
-        ? null
-        : (details) => onMenu!(details.globalPosition),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: FilmCoverZoom(
-              child: collection.customPath == null
-                  ? FilmArtwork(cache: cache, path: path)
-                  : Image.file(
-                      File(collection.customPath!),
-                      fit: BoxFit.cover,
-                      width: double.infinity,
-                      cacheWidth: 342,
-                      frameBuilder: filmCoverFrameBuilder,
-                    ),
+  Widget build(BuildContext context) => FilmPosterHover(
+    child: InkWell(
+      hoverColor: Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      onSecondaryTapUp: onMenu == null
+          ? null
+          : (details) => onMenu!(details.globalPosition),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: FilmPosterHoverSurface(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: collection.customPath == null
+                    ? FilmArtwork(
+                        cache: cache,
+                        path: path,
+                        showCachedImmediately: true,
+                      )
+                    : Image.file(
+                        File(collection.customPath!),
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        cacheWidth: 342,
+                        frameBuilder: filmPosterFrameBuilder,
+                      ),
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(collection.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ],
+          const SizedBox(height: 8),
+          Text(
+            collection.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -237,92 +375,97 @@ class FilmWorkCard extends StatefulWidget {
 }
 
 class _FilmWorkCardState extends State<FilmWorkCard> {
-  bool _hovered = false;
   @override
   Widget build(BuildContext context) => GestureDetector(
     onSecondaryTapDown: (details) => widget.onMenu(details.globalPosition),
-    child: Card(
-      margin: EdgeInsets.zero,
-      color: Colors.transparent,
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: widget.onTap,
-        onHover: (value) => setState(() => _hovered = value),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final defaults = DefaultTextStyle.of(context).style;
-              double textHeight(String text, TextStyle style) {
-                final painter = TextPainter(
-                  text: TextSpan(text: text, style: style),
-                  textDirection: Directionality.of(context),
-                  textScaler: MediaQuery.textScalerOf(context),
-                  maxLines: 1,
-                )..layout(maxWidth: constraints.maxWidth);
-                final height = painter.height;
-                painter.dispose();
-                return height;
-              }
+    child: FilmPosterHover(
+      child: Card(
+        margin: EdgeInsets.zero,
+        color: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        clipBehavior: Clip.none,
+        child: InkWell(
+          hoverColor: Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+          onTap: widget.onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final defaults = DefaultTextStyle.of(context).style;
+                double textHeight(String text, TextStyle style) {
+                  final painter = TextPainter(
+                    text: TextSpan(text: text, style: style),
+                    textDirection: Directionality.of(context),
+                    textScaler: MediaQuery.textScalerOf(context),
+                    maxLines: 1,
+                  )..layout(maxWidth: constraints.maxWidth);
+                  final height = painter.height;
+                  painter.dispose();
+                  return height;
+                }
 
-              final textSpace =
-                  8 +
-                  textHeight(
-                    widget.work.title,
-                    defaults.merge(Theme.of(context).textTheme.titleSmall),
-                  ) +
-                  (widget.work.year == null
-                      ? 0
-                      : textHeight('${widget.work.year}', defaults)) +
-                  (widget.work.missingCount > 0
-                      ? textHeight(context.l10n.text('包含缺失位置'), defaults)
-                      : 0);
-              final posterWidth = math.min(
-                constraints.maxWidth,
-                math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
-              );
-              return Center(
-                child: SizedBox(
-                  width: posterWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Center(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: FilmWatchOverlay(
-                              store: widget.store,
-                              workId: widget.work.id,
-                              rootId: widget.rootId,
-                              sourceIds: widget.sourceIds,
-                              child: FilmCoverZoom(
-                                hovered: _hovered,
-                                child: FilmArtwork(
-                                  cache: widget.cache,
-                                  path: widget.work.posterPath,
+                final textSpace =
+                    8 +
+                    textHeight(
+                      widget.work.title,
+                      defaults.merge(Theme.of(context).textTheme.titleSmall),
+                    ) +
+                    (widget.work.year == null
+                        ? 0
+                        : textHeight('${widget.work.year}', defaults)) +
+                    (widget.work.missingCount > 0
+                        ? textHeight(context.l10n.text('包含缺失位置'), defaults)
+                        : 0);
+                final posterWidth = math.min(
+                  constraints.maxWidth,
+                  math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
+                );
+                return Center(
+                  child: SizedBox(
+                    width: posterWidth,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Center(
+                            child: FilmPosterHoverSurface(
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: FilmWatchOverlay(
+                                  store: widget.store,
+                                  workId: widget.work.id,
+                                  rootId: widget.rootId,
+                                  sourceIds: widget.sourceIds,
+                                  child: FilmArtwork(
+                                    cache: widget.cache,
+                                    path: widget.work.posterPath,
+                                    borderRadius: 0,
+                                    showCachedImmediately: true,
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        widget.work.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                      if (widget.work.year != null) Text('${widget.work.year}'),
-                      if (widget.work.missingCount > 0) const AppText('包含缺失位置'),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.work.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        if (widget.work.year != null)
+                          Text('${widget.work.year}'),
+                        if (widget.work.missingCount > 0)
+                          const AppText('包含缺失位置'),
+                      ],
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ),

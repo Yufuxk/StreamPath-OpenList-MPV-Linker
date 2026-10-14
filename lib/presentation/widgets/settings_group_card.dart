@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import '../theme/app_theme.dart';
 import '../theme/glass_tokens.dart';
 import '../localization/app_text.dart';
 import 'glass_surface.dart';
 
-class SettingsGroupCard extends StatelessWidget {
+class SettingsGroupCard extends StatefulWidget {
   const SettingsGroupCard({
     super.key,
     required this.icon,
@@ -18,48 +19,70 @@ class SettingsGroupCard extends StatelessWidget {
   final Widget child;
 
   @override
+  State<SettingsGroupCard> createState() => _SettingsGroupCardState();
+}
+
+class _SettingsGroupCardState extends State<SettingsGroupCard> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final tokens = Theme.of(context).glass;
     return GlassSurface(
       level: GlassSurfaceLevel.raised,
-      border: Border.all(color: tokens.borderColor),
+      border: Border.all(color: tokens.panelBorderColor),
       showShadow: false,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: AppTheme.panelRadius,
+      blur: true,
       clipBehavior: Clip.antiAlias,
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: AnimatedContainer(
+          duration: AppTheme.hoverDuration,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: AppTheme.panelRadius,
+            color: _hovered ? Theme.of(context).hoverColor : Colors.transparent,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Icon(icon, size: 24, color: scheme.primary),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    AppText(
-                      title,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    if (description.isNotEmpty) const SizedBox(height: 2),
-                    if (description.isNotEmpty)
-                      AppText(
-                        description,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AnimatedOpacity(
+                    opacity: _hovered ? 1 : 0.6,
+                    duration: AppTheme.hoverDuration,
+                    child: Icon(widget.icon, size: 24, color: scheme.primary),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AppText(
+                          widget.title,
+                          style: Theme.of(context).textTheme.titleMedium,
                         ),
-                      ),
-                  ],
-                ),
+                        if (widget.description.isNotEmpty)
+                          const SizedBox(height: 2),
+                        if (widget.description.isNotEmpty)
+                          AppText(
+                            widget.description,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
+              const SizedBox(height: 10),
+              widget.child,
             ],
           ),
-          const SizedBox(height: 10),
-          child,
-        ],
+        ),
       ),
     );
   }
@@ -76,8 +99,8 @@ class SettingsProgressPanel extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest.withValues(alpha: .38),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: AppTheme.controlRadius,
+        border: Border.all(color: Theme.of(context).glass.borderColor),
       ),
       child: child,
     );

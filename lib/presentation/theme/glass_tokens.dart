@@ -9,8 +9,14 @@ enum GlassMaterial { acrylic, mica }
 /// 玻璃界面的表现层参数，不承载窗口或业务状态。
 @immutable
 class GlassTokens extends ThemeExtension<GlassTokens> {
+  static const surfaceDark = Color(0xFF0F0F14);
+  static const double panelBlurSigma = 16;
+  static const controlBarDark = Color(0xFF1A1C24);
+  static const controlBarAcrylic = Color(0xFF171D27);
+  static const double controlBarBlurSigma = 24;
   const GlassTokens({
     required this.enabled,
+    this.hasCustomBackground = false,
     required this.baseSurface,
     required this.chromeSurface,
     required this.contentSurface,
@@ -45,7 +51,9 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
         contentSurface: scheme.surfaceContainerLow,
         raisedSurface: scheme.surface,
         floatingSurface: scheme.surface,
-        borderColor: scheme.outlineVariant,
+        borderColor: scheme.brightness == Brightness.dark
+            ? Colors.white.withValues(alpha: 0.10)
+            : scheme.outlineVariant,
         dividerColor: scheme.outlineVariant,
         innerHighlight: Colors.transparent,
         shadowColor: Colors.transparent,
@@ -92,7 +100,7 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
         alpha: _overlayAlpha(baseTarget, floatingTarget),
       ),
       borderColor: isDark
-          ? Colors.white.withValues(alpha: 0.15)
+          ? Colors.white.withValues(alpha: 0.10)
           : const Color(0xFF506078).withValues(alpha: 0.18),
       dividerColor: isDark
           ? Colors.white.withValues(alpha: 0.09)
@@ -120,6 +128,7 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
   }
 
   final bool enabled;
+  final bool hasCustomBackground;
   final Color baseSurface;
   final Color chromeSurface;
   final Color contentSurface;
@@ -138,6 +147,9 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
   final double modalElevation;
   final double modalScaleBegin;
   final double modalSlideOffset;
+
+  Color get panelBorderColor =>
+      borderColor.withValues(alpha: borderColor.a * .8);
 
   Color surfaceFor(GlassSurfaceLevel level) => switch (level) {
     GlassSurfaceLevel.base => baseSurface,
@@ -173,6 +185,7 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
   @override
   GlassTokens copyWith({
     bool? enabled,
+    bool? hasCustomBackground,
     Color? baseSurface,
     Color? chromeSurface,
     Color? contentSurface,
@@ -193,6 +206,7 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     double? modalSlideOffset,
   }) => GlassTokens(
     enabled: enabled ?? this.enabled,
+    hasCustomBackground: hasCustomBackground ?? this.hasCustomBackground,
     baseSurface: baseSurface ?? this.baseSurface,
     chromeSurface: chromeSurface ?? this.chromeSurface,
     contentSurface: contentSurface ?? this.contentSurface,
@@ -218,6 +232,9 @@ class GlassTokens extends ThemeExtension<GlassTokens> {
     if (other == null) return this;
     return GlassTokens(
       enabled: t < 0.5 ? enabled : other.enabled,
+      hasCustomBackground: t < 0.5
+          ? hasCustomBackground
+          : other.hasCustomBackground,
       baseSurface: Color.lerp(baseSurface, other.baseSurface, t)!,
       chromeSurface: Color.lerp(chromeSurface, other.chromeSurface, t)!,
       contentSurface: Color.lerp(contentSurface, other.contentSurface, t)!,

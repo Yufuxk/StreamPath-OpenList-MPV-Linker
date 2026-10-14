@@ -16,6 +16,8 @@ import '../widgets/sp_dialog.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/directory_scroll_view.dart';
+import '../theme/app_theme.dart';
+import '../widgets/sp_control_bar.dart';
 import 'media_connections_page.dart';
 import 'global_search_page.dart';
 import 'network_storage_page.dart';
@@ -181,94 +183,122 @@ class _FoldersPageState extends State<FoldersPage>
             ),
           ),
         ],
-        bottom: TabBar(
-          controller: _tabs,
-          dividerColor: Colors.transparent,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start,
-          labelPadding: EdgeInsets.symmetric(horizontal: 20),
-          tabs: const [
-            Tab(key: Key('folders-network-tab'), child: AppText('网络存储')),
-            Tab(key: Key('folders-local-tab'), child: AppText('本地文件夹')),
-            Tab(key: Key('folders-server-tab'), child: AppText('媒体服务器')),
-            Tab(key: Key('folders-film-tab'), child: AppText('影视库')),
-          ],
-        ),
       ),
-      body: StreamPathSectionSwitcher<int>(
-        selected: _selectedTab,
-        order: const [0, 1, 2, 3],
-        retainContent: true,
-        shellBuilder: (_, _) => const SizedBox.expand(),
-        contentBuilder: (context, index) => switch (index) {
-          0 => DirectoryScrollView(
-            builder: (controller) => SingleChildScrollView(
-              key: PageStorageKey('folders-network'),
-              controller: controller,
-              padding: EdgeInsets.all(20),
-              child: MediaConnectionsPage(
-                embedded: true,
-                management: true,
-                onAddWebDav: _addNetwork,
-                beforeConnections: NetworkStoragePage(
-                  embedded: true,
-                  onRemove: (profile) async {
-                    if (await _confirm(
-                      '移除服务器挂载？',
-                      '只移除网络存储入口；服务器档案和媒体记录会保留。',
-                    )) {
-                      await _run(
-                        profile.profileId,
-                        () => app.unmountProfile(profile.profileId),
-                      );
-                    }
-                  },
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppTheme.pageInset,
+              12,
+              AppTheme.pageInset,
+              0,
+            ),
+            child: SPControlBar(
+              child: SizedBox(
+                height: AppTheme.controlHeightFor(context),
+                child: TabBar(
+                  controller: _tabs,
+                  dividerColor: Colors.transparent,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 16),
+                  tabs: const [
+                    Tab(
+                      key: Key('folders-network-tab'),
+                      child: AppText('网络存储'),
+                    ),
+                    Tab(key: Key('folders-local-tab'), child: AppText('本地文件夹')),
+                    Tab(
+                      key: Key('folders-server-tab'),
+                      child: AppText('媒体服务器'),
+                    ),
+                    Tab(key: Key('folders-film-tab'), child: AppText('影视库')),
+                  ],
                 ),
               ),
             ),
           ),
-          1 => DirectoryScrollView(
-            builder: (controller) => SingleChildScrollView(
-              key: PageStorageKey('folders-local'),
-              controller: controller,
-              padding: EdgeInsets.all(20),
-              child: LocalStoragePage(
-                embedded: true,
-                onAdd: () => _editLocal(),
-                onEdit: _editLocal,
-                onEnabled: (root, enabled) => _run(
-                  root.rootId,
-                  () => app.setLocalRootEnabled(root.rootId, enabled),
+          Expanded(
+            child: StreamPathSectionSwitcher<int>(
+              selected: _selectedTab,
+              order: const [0, 1, 2, 3],
+              retainContent: true,
+              shellBuilder: (_, _) => const SizedBox.expand(),
+              contentBuilder: (context, index) => switch (index) {
+                0 => DirectoryScrollView(
+                  builder: (controller) => SingleChildScrollView(
+                    key: PageStorageKey('folders-network'),
+                    controller: controller,
+                    padding: AppTheme.pagePadding,
+                    child: MediaConnectionsPage(
+                      embedded: true,
+                      management: true,
+                      onAddWebDav: _addNetwork,
+                      beforeConnections: NetworkStoragePage(
+                        embedded: true,
+                        onRemove: (profile) async {
+                          if (await _confirm(
+                            '移除服务器挂载？',
+                            '只移除网络存储入口；服务器档案和媒体记录会保留。',
+                          )) {
+                            await _run(
+                              profile.profileId,
+                              () => app.unmountProfile(profile.profileId),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ),
                 ),
-                onRemove: (root) async {
-                  if (await _confirm(
-                    '删除本地文件夹？',
-                    '只移除挂载配置，不删除磁盘文件；媒体中心历史会保留。',
-                  )) {
-                    await _run(
-                      root.rootId,
-                      () => app.removeLocalRoot(root.rootId),
-                    );
-                  }
-                },
-              ),
+                1 => DirectoryScrollView(
+                  builder: (controller) => SingleChildScrollView(
+                    key: PageStorageKey('folders-local'),
+                    controller: controller,
+                    padding: AppTheme.pagePadding,
+                    child: LocalStoragePage(
+                      embedded: true,
+                      onAdd: () => _editLocal(),
+                      onEdit: _editLocal,
+                      onEnabled: (root, enabled) => _run(
+                        root.rootId,
+                        () => app.setLocalRootEnabled(root.rootId, enabled),
+                      ),
+                      onRemove: (root) async {
+                        if (await _confirm(
+                          '删除本地文件夹？',
+                          '只移除挂载配置，不删除磁盘文件；媒体中心历史会保留。',
+                        )) {
+                          await _run(
+                            root.rootId,
+                            () => app.removeLocalRoot(root.rootId),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                2 => const MediaConnectionsPage(
+                  servers: true,
+                  management: true,
+                ),
+                3 => FutureBuilder<FilmCatalogController>(
+                  future: _filmCatalog ??= app.getFilmCatalog(),
+                  builder: (_, state) => state.hasData
+                      ? FilmLibraryManagePage(
+                          catalog: state.data!,
+                          embedded: true,
+                          directories: true,
+                        )
+                      : state.hasError
+                      ? const Center(child: AppText('影视目录库操作失败'))
+                      : const Center(child: CircularProgressIndicator()),
+                ),
+                _ => throw StateError('Unknown folder tab: $index'),
+              },
             ),
           ),
-          2 => const MediaConnectionsPage(servers: true, management: true),
-          3 => FutureBuilder<FilmCatalogController>(
-            future: _filmCatalog ??= app.getFilmCatalog(),
-            builder: (_, state) => state.hasData
-                ? FilmLibraryManagePage(
-                    catalog: state.data!,
-                    embedded: true,
-                    directories: true,
-                  )
-                : state.hasError
-                ? const Center(child: AppText('影视目录库操作失败'))
-                : const Center(child: CircularProgressIndicator()),
-          ),
-          _ => throw StateError('Unknown folder tab: $index'),
-        },
+        ],
       ),
     );
   }

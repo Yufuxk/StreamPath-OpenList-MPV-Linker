@@ -34,13 +34,10 @@ class _FilmMediaCenterPageState extends State<FilmMediaCenterPage> {
     future: _catalog,
     builder: (context, snapshot) {
       if (!snapshot.hasData) {
+        if (!snapshot.hasError) return const Scaffold();
         return Scaffold(
           appBar: AppBar(toolbarHeight: 48, title: const AppText('媒体中心')),
-          body: Center(
-            child: snapshot.hasError
-                ? const AppText('影视目录库操作失败')
-                : const CircularProgressIndicator(),
-          ),
+          body: const Center(child: AppText('影视目录库操作失败')),
         );
       }
       return Navigator(

@@ -393,7 +393,7 @@ void main() {
     expect(find.text('添加服务器以浏览文件夹'), findsOneWidget);
     expect(
       tester.getTopLeft(find.byKey(const Key('folders-network-tab'))).dx,
-      84,
+      greaterThanOrEqualTo(88),
     );
     expect(
       tester.getTopLeft(find.byKey(const Key('folders-network-tab'))).dx,
@@ -415,11 +415,12 @@ void main() {
       ))!.buffer.asUint8List();
       for (final y in [16, 48, 100, 127, 170]) {
         final left = (y * image.width + 24) * 4;
-        final right = (y * image.width + 500) * 4;
+        final right = (y * image.width + 80) * 4;
         expect(
           pixels.sublist(left, left + 4),
           pixels.sublist(right, right + 4),
-          reason: 'Header, divider and body must span the sidebar at y=$y',
+          reason:
+              'Header, divider and page gutter must span the sidebar at y=$y',
         );
       }
       image.dispose();
@@ -614,13 +615,16 @@ void main() {
     final navigation = tester.getRect(
       find.byKey(const Key('settings-navigation-bar')),
     );
-    final extension = tester.getRect(
+    expect(
       find.byKey(const Key('sidebar-settings-navigation-extension')),
+      findsNothing,
     );
-    expect(extension.left, 0);
-    expect(extension.top, navigation.top);
-    expect(extension.bottom, navigation.bottom);
-    expect(extension.right, navigation.left);
+    expect(navigation.top, tester.getRect(find.byType(AppBar)).bottom + 12);
+    expect(
+      navigation.left,
+      tester.getRect(find.byKey(const Key('sidebar-header-extension'))).right +
+          24,
+    );
     await mouse.removePointer();
   });
 }

@@ -1,10 +1,10 @@
 import '../widgets/transition_content.dart';
+import '../widgets/cinematic_states.dart';
 import 'film_playlist_page.dart';
 import 'film_library_shell.dart';
 import '../widgets/sp_menu.dart';
 import '../widgets/sp_controls.dart';
-import '../widgets/glass_surface.dart';
-import '../theme/glass_tokens.dart';
+import '../widgets/sp_control_bar.dart';
 import 'film_related_page.dart';
 import 'film_featured_page.dart';
 import 'dart:async';
@@ -36,6 +36,7 @@ import '../widgets/film_artwork_picker.dart';
 import '../widgets/film_artwork.dart';
 import '../widgets/film_section_settings.dart';
 import '../widgets/film_library_background.dart';
+import '../widgets/app_background.dart';
 import '../widgets/directory_scroll_view.dart';
 import 'film_library_manage_page.dart';
 import 'global_media_library_page.dart';
@@ -105,10 +106,12 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       if (_scroll.hasClients) _scroll.jumpTo(0);
       final previous = _controller;
       _controller = c;
-      context.findAncestorStateOfType<FilmLibraryShellState>()?.setBackground(
-        c,
-        _markBackgroundReady,
-      );
+      if (AppBackgroundScope.maybeOf(context) == null) {
+        context.findAncestorStateOfType<FilmLibraryShellState>()?.setBackground(
+          c,
+          _markBackgroundReady,
+        );
+      }
       if (previous?.sourceId != null && previous != c) {
         // 等待旧内容解除监听后释放来源控制器。
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -262,7 +265,13 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
 
   double _toolbarHeight(FilmCatalogController c) {
     final available =
-        MediaQuery.sizeOf(context).width - widget.sidebarInset - 58;
+        math.min(
+          MediaQuery.sizeOf(context).width -
+              widget.sidebarInset -
+              AppTheme.pageInset * 2,
+          AppTheme.controlBarMaxWidth,
+        ) -
+        26;
     final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
     var rows = 1;
     var used = 0.0;
@@ -279,309 +288,292 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       }
       used += (used == 0 ? 0 : 12) + itemWidth;
     }
-    return rows * math.max(40, 20 * scale + 20) + (rows - 1) * 12 + 42;
+    return rows * math.max(40, 20 * scale + 20) + (rows - 1) * 12 + 50;
   }
 
-  Widget _toolbar(FilmCatalogController c, bool switching) => Theme(
-    data: AppTheme.filmLibraryToolbarTheme(Theme.of(context)),
-    child: Builder(
-      builder: (context) => LayoutBuilder(
-        builder: (context, constraints) {
-          final widths = _toolbarWidths(context, c);
-          return SizedBox(
-            width: math.min(
-              constraints.maxWidth,
-              widths.fold<double>(0, (sum, width) => sum + width) +
-                  (widths.length - 1) * 12 +
-                  26,
-            ),
-            child: GlassSurface(
-              key: const ValueKey('film-library-toolbar'),
-              level: GlassSurfaceLevel.chrome,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-              padding: const EdgeInsets.all(12),
-              showShadow: false,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final widths = _toolbarWidths(context, c)
-                      .map((width) => math.min(width, constraints.maxWidth))
-                      .toList();
-                  final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
-                  final controlHeight = math.max(40.0, 20 * scale + 20);
-                  return Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
+  Widget _toolbar(FilmCatalogController c, bool switching) => Builder(
+    builder: (context) => LayoutBuilder(
+      builder: (context, constraints) {
+        final widths = _toolbarWidths(context, c);
+        return SizedBox(
+          width: math.min(
+            math.min(constraints.maxWidth, AppTheme.controlBarMaxWidth),
+            widths.fold<double>(0, (sum, width) => sum + width) +
+                (widths.length - 1) * 12 +
+                26,
+          ),
+          child: SPControlBar(
+            key: const ValueKey('film-library-toolbar'),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final widths = _toolbarWidths(context, c)
+                    .map((width) => math.min(width, constraints.maxWidth))
+                    .toList();
+                final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
+                final controlHeight = math.max(40.0, 20 * scale + 20);
+                return Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SizedBox(
+                      key: const ValueKey('film-toolbar-library'),
+                      width: widths[0],
+                      height: controlHeight,
+                      child: _librarySelector(expands: true),
+                    ),
+                    ...[
+                      if (_browse)
+                        SizedBox(
+                          key: const ValueKey('film-toolbar-home'),
+                          width: widths[6],
+                          child: TextButton(
+                            onPressed: () {
+                              setState(() => _browse = false);
+                              c.type = null;
+                              c.query = '';
+                              c.rootId = null;
+                              c.sectionId = null;
+                              _search.clear();
+                              c.refresh(home: false);
+                            },
+                            child: const AppText('主页'),
+                          ),
+                        ),
                       SizedBox(
-                        key: const ValueKey('film-toolbar-library'),
-                        width: widths[0],
-                        height: controlHeight,
-                        child: _librarySelector(expands: true),
-                      ),
-                      ...[
-                        if (_browse)
-                          SizedBox(
-                            key: const ValueKey('film-toolbar-home'),
-                            width: widths[6],
-                            child: TextButton(
+                        key: const ValueKey('film-library-search'),
+                        width: widths[1],
+                        child: TextField(
+                          style: Theme.of(context).textTheme.bodySmall,
+                          expands: true,
+                          maxLines: null,
+                          textAlignVertical: TextAlignVertical.center,
+                          keyboardType: TextInputType.text,
+                          textInputAction: TextInputAction.search,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.singleLineFormatter,
+                          ],
+                          controller: _search,
+                          decoration: InputDecoration(
+                            hintText: context.l10n.text('搜索库内作品'),
+                            prefixIconConstraints: const BoxConstraints(
+                              minWidth: 40,
+                              minHeight: 40,
+                            ),
+                            prefixIcon: IconButton(
+                              iconSize: 18,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 36,
+                                height: 36,
+                              ),
+                              style: const ButtonStyle(
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              icon: const Icon(SPIcons.search),
                               onPressed: () {
-                                setState(() => _browse = false);
-                                c.type = null;
-                                c.query = '';
-                                c.rootId = null;
-                                c.sectionId = null;
-                                _search.clear();
+                                setState(() => _browse = true);
+                                c.query = _search.text;
                                 c.refresh(home: false);
                               },
-                              child: const AppText('主页'),
                             ),
                           ),
-                        SizedBox(
-                          key: const ValueKey('film-library-search'),
-                          width: widths[1],
-                          child: TextField(
-                            style: Theme.of(context).textTheme.bodySmall,
-                            expands: true,
-                            maxLines: null,
-                            textAlignVertical: TextAlignVertical.center,
-                            keyboardType: TextInputType.text,
-                            textInputAction: TextInputAction.search,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.singleLineFormatter,
-                            ],
-                            controller: _search,
-                            decoration: InputDecoration(
-                              hintText: context.l10n.text('搜索库内作品'),
-                              prefixIconConstraints: const BoxConstraints(
-                                minWidth: 40,
-                                minHeight: 40,
-                              ),
-                              prefixIcon: IconButton(
-                                iconSize: 18,
-                                constraints: const BoxConstraints.tightFor(
-                                  width: 36,
-                                  height: 36,
-                                ),
-                                style: const ButtonStyle(
-                                  tapTargetSize:
-                                      MaterialTapTargetSize.shrinkWrap,
-                                ),
-                                icon: const Icon(SPIcons.search),
-                                onPressed: () {
-                                  setState(() => _browse = true);
-                                  c.query = _search.text;
-                                  c.refresh(home: false);
-                                },
-                              ),
-                            ),
-                            onSubmitted: (value) {
-                              setState(() => _browse = true);
-                              c.query = value;
-                              c.refresh(home: false);
-                            },
-                          ),
+                          onSubmitted: (value) {
+                            setState(() => _browse = true);
+                            c.query = value;
+                            c.refresh(home: false);
+                          },
                         ),
-                        SizedBox(
-                          key: const ValueKey('film-toolbar-source'),
-                          width: widths[2],
-                          child: SPDropdownButtonFormField<int>(
-                            key: const ValueKey('film-root-filter'),
-                            dropdownColor: AppTheme.dropdownMenuColor(
-                              Theme.of(context),
-                            ),
-                            borderRadius: AppTheme.dropdownBorderRadius,
-                            isExpanded: true,
-                            expands: true,
-                            initialValue: c.rootId ?? 0,
-                            style: Theme.of(context).textTheme.bodySmall,
-                            decoration: _filterDecoration('来源'),
-                            items: [
-                              const DropdownMenuItem(
-                                value: 0,
-                                child: AppText(
-                                  '全部来源',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              for (final root in c.enabledRoots)
-                                DropdownMenuItem(
-                                  value: root.id,
-                                  child: Text(
-                                    root.displayName,
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 1,
-                                  ),
-                                ),
-                            ],
-                            onChanged: (value) {
-                              setState(() => _browse = true);
-                              c.rootId = value == 0 ? null : value;
-                              c.sectionId = null;
-                              c.refresh(home: false);
-                            },
+                      ),
+                      SizedBox(
+                        key: const ValueKey('film-toolbar-source'),
+                        width: widths[2],
+                        child: SPDropdownButtonFormField<int>(
+                          key: const ValueKey('film-root-filter'),
+                          dropdownColor: AppTheme.dropdownMenuColor(
+                            Theme.of(context),
                           ),
-                        ),
-                        SizedBox(
-                          key: const ValueKey('film-sort-filter'),
-                          width: widths[3],
-                          child: SPDropdownButtonFormField<bool>(
-                            dropdownColor: AppTheme.dropdownMenuColor(
-                              Theme.of(context),
+                          borderRadius: AppTheme.dropdownBorderRadius,
+                          isExpanded: true,
+                          expands: true,
+                          initialValue: c.rootId ?? 0,
+                          style: Theme.of(context).textTheme.bodySmall,
+                          decoration: _filterDecoration('来源'),
+                          items: [
+                            const DropdownMenuItem(
+                              value: 0,
+                              child: AppText(
+                                '全部来源',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                            borderRadius: AppTheme.dropdownBorderRadius,
-                            isExpanded: true,
-                            expands: true,
-                            initialValue: c.newest,
-                            style: Theme.of(context).textTheme.bodySmall,
-                            decoration: _filterDecoration('排序'),
-                            items: const [
+                            for (final root in c.enabledRoots)
                               DropdownMenuItem(
-                                value: false,
-                                child: AppText(
-                                  '按标题',
-                                  maxLines: 1,
+                                value: root.id,
+                                child: Text(
+                                  root.displayName,
                                   overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              DropdownMenuItem(
-                                value: true,
-                                child: AppText(
-                                  '按收录时间',
                                   maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                            ],
-                            onChanged: (value) {
-                              c.newest = value!;
-                              c.refresh(home: false);
-                            },
-                          ),
+                          ],
+                          onChanged: (value) {
+                            setState(() => _browse = true);
+                            c.rootId = value == 0 ? null : value;
+                            c.sectionId = null;
+                            c.refresh(home: false);
+                          },
                         ),
-                        SizedBox(
-                          key: const ValueKey('film-playlists-button'),
-                          width: widths[4],
-                          child: SPButton(
-                            minimumHeight: 40,
-                            borderRadius: const BorderRadius.all(
-                              Radius.circular(12),
-                            ),
-                            icon: Icon(
-                              SPIcons.list,
-                              size: 16,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                            label: const AppText('播放列表'),
-                            onPressed: () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => StreamPathTransitionContent(
-                                  shellBuilder: (_) =>
-                                      const StreamPathPageShell(),
-                                  contentBuilder: (_) => FilmPlaylistPage(
-                                    catalog: c,
-                                    sidebarInset: widget.sidebarInset,
-                                    onPlay: (snapshot, index) => context
-                                        .findAncestorStateOfType<
-                                          FilmLibraryShellState
-                                        >()!
-                                        .playPlaylist(snapshot, index),
-                                  ),
-                                ),
+                      ),
+                      SizedBox(
+                        key: const ValueKey('film-sort-filter'),
+                        width: widths[3],
+                        child: SPDropdownButtonFormField<bool>(
+                          dropdownColor: AppTheme.dropdownMenuColor(
+                            Theme.of(context),
+                          ),
+                          borderRadius: AppTheme.dropdownBorderRadius,
+                          isExpanded: true,
+                          expands: true,
+                          initialValue: c.newest,
+                          style: Theme.of(context).textTheme.bodySmall,
+                          decoration: _filterDecoration('排序'),
+                          items: const [
+                            DropdownMenuItem(
+                              value: false,
+                              child: AppText(
+                                '按标题',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                          ),
-                        ),
-                        SizedBox(
-                          key: const ValueKey('film-pending-button'),
-                          width: widths[5],
-                          child: SPButton(
-                            minimumHeight: 40,
-                            borderRadius: const BorderRadius.all(
-                              Radius.circular(12),
-                            ),
-                            icon: Icon(
-                              SPIcons.folder,
-                              size: 16,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                            onPressed: () => Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) => StreamPathTransitionContent(
-                                  shellBuilder: (_) =>
-                                      const StreamPathPageShell(),
-                                  contentBuilder: (_) => FilmPendingPage(
-                                    catalog: c,
-                                    onOpenItem: widget.onOpenItem,
-                                    sidebarInset: widget.sidebarInset,
-                                  ),
-                                ),
+                            DropdownMenuItem(
+                              value: true,
+                              child: AppText(
+                                '按收录时间',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            label: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const AppText('待整理'),
-                                const SizedBox(width: 8),
-                                Semantics(
-                                  label: context.l10n.format('待整理（{count}）', {
-                                    'count': c.pendingCount,
-                                  }),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primaryContainer,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      '${c.pendingCount}',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelSmall
-                                          ?.copyWith(
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.onPrimaryContainer,
-                                          ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                          ],
+                          onChanged: (value) {
+                            c.newest = value!;
+                            c.refresh(home: false);
+                          },
                         ),
-                      ].map(
-                        (control) => IgnorePointer(
-                          key: control.key == null
-                              ? null
-                              : ValueKey(control.key),
-                          ignoring: switching,
-                          child: SizedBox(
-                            height: controlHeight,
-                            child: ExcludeFocus(
-                              excluding: switching,
-                              child: control,
+                      ),
+                      SizedBox(
+                        key: const ValueKey('film-playlists-button'),
+                        width: widths[4],
+                        child: SPButton(
+                          minimumHeight: 40,
+                          borderRadius: AppTheme.controlRadius,
+                          icon: Icon(
+                            SPIcons.list,
+                            size: 16,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          label: const AppText('播放列表'),
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => StreamPathTransitionContent(
+                                shellBuilder: (_) =>
+                                    const StreamPathPageShell(),
+                                contentBuilder: (_) => FilmPlaylistPage(
+                                  catalog: c,
+                                  sidebarInset: widget.sidebarInset,
+                                  onPlay: (snapshot, index) => context
+                                      .findAncestorStateOfType<
+                                        FilmLibraryShellState
+                                      >()!
+                                      .playPlaylist(snapshot, index),
+                                ),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ],
-                  );
-                },
-              ),
+                      SizedBox(
+                        key: const ValueKey('film-pending-button'),
+                        width: widths[5],
+                        child: SPButton(
+                          minimumHeight: 40,
+                          borderRadius: AppTheme.controlRadius,
+                          icon: Icon(
+                            SPIcons.folder,
+                            size: 16,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => StreamPathTransitionContent(
+                                shellBuilder: (_) =>
+                                    const StreamPathPageShell(),
+                                contentBuilder: (_) => FilmPendingPage(
+                                  catalog: c,
+                                  onOpenItem: widget.onOpenItem,
+                                  sidebarInset: widget.sidebarInset,
+                                ),
+                              ),
+                            ),
+                          ),
+                          label: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const AppText('待整理'),
+                              const SizedBox(width: 8),
+                              Semantics(
+                                label: context.l10n.format('待整理（{count}）', {
+                                  'count': c.pendingCount,
+                                }),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primaryContainer,
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: Text(
+                                    '${c.pendingCount}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.onPrimaryContainer,
+                                        ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ].map(
+                      (control) => IgnorePointer(
+                        key: control.key == null ? null : ValueKey(control.key),
+                        ignoring: switching,
+                        child: SizedBox(
+                          height: controlHeight,
+                          child: ExcludeFocus(
+                            excluding: switching,
+                            child: control,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     ),
   );
 
@@ -644,12 +636,16 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   Widget build(BuildContext context) => FutureBuilder<FilmCatalogController>(
     future: _catalog,
     builder: (context, state) {
+      if (AppBackgroundScope.maybeOf(context)?.ready == true) {
+        _markBackgroundReady();
+      }
       if (state.connectionState == ConnectionState.done) {
         _catalogReady = true;
         _scheduleStartupReady();
       }
       final c = state.data ?? _controller;
       if (c == null) {
+        if (!state.hasError) return const SizedBox.shrink();
         return Padding(
           padding: EdgeInsets.only(left: widget.sidebarInset),
           child: Scaffold(
@@ -660,11 +656,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
               shape: const Border(),
               title: _librarySelector(),
             ),
-            body: Center(
-              child: state.hasError
-                  ? const AppText('影视目录库操作失败')
-                  : const SizedBox.shrink(),
-            ),
+            body: const Center(child: AppText('影视目录库操作失败')),
           ),
         );
       }
@@ -717,7 +709,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                     backgroundColor: Colors.transparent,
                     appBar: AppBar(
                       toolbarHeight: _toolbarHeight(c),
-                      titleSpacing: 16,
+                      titleSpacing: AppTheme.pageInset,
                       backgroundColor: Colors.transparent,
                       shape: const Border(),
                       title: MediaQuery(
@@ -738,7 +730,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                   c.busy || c.scraping || c.scrapeError != null
                                   ? Padding(
                                       padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
+                                        horizontal: AppTheme.pageInset,
                                       ),
                                       child: SizedBox(
                                         height: 44,
@@ -777,7 +769,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                       controller: _homeScroll,
                                       slivers: [
                                         SliverPadding(
-                                          padding: const EdgeInsets.all(20),
+                                          padding: AppTheme.pagePadding,
                                           sliver: SliverMainAxisGroup(
                                             slivers: [
                                               for (final section
@@ -791,14 +783,15 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                                     section,
                                                   ),
                                                 ),
-                                              if (c.works.isEmpty &&
+                                              if (!c.loading &&
+                                                  c.works.isEmpty &&
                                                   c.enabledRoots.isEmpty)
                                                 const SliverToBoxAdapter(
-                                                  child: Padding(
-                                                    padding: EdgeInsets.all(24),
-                                                    child: AppText(
-                                                      '暂无已匹配作品，请添加影视目录并整理文件',
-                                                    ),
+                                                  child: ImmersiveEmptyState(
+                                                    icon: SPIcons.movies,
+                                                    title: '暂无已匹配作品',
+                                                    description:
+                                                        '暂无已匹配作品，请添加影视目录并整理文件',
                                                   ),
                                                 ),
                                             ],
@@ -807,12 +800,23 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                       ],
                                     ),
                                   ),
-                                  !_browse || (c.works.isEmpty && c.loading)
+                                  !_browse
+                                      ? const SizedBox.shrink()
+                                      : c.works.isEmpty && c.loading
                                       ? const SizedBox.shrink()
                                       : c.works.isEmpty
-                                      ? const Center(
-                                          child: AppText(
-                                            '暂无已匹配作品，请添加影视目录并整理文件',
+                                      ? DirectoryScrollView(
+                                          controller: _scroll,
+                                          builder: (controller) => ListView(
+                                            controller: controller,
+                                            children: const [
+                                              ImmersiveEmptyState(
+                                                icon: SPIcons.movies,
+                                                title: '暂无已匹配作品',
+                                                description:
+                                                    '暂无已匹配作品，请添加影视目录并整理文件',
+                                              ),
+                                            ],
                                           ),
                                         )
                                       : NotificationListener<
@@ -971,6 +975,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
         'recent' => _workShelf(c, '最近添加', c.recentWorks, newest: true),
         'movies' => _workShelf(c, '电影', c.movies, type: FilmMediaType.movie),
         'series' => _workShelf(c, '剧集', c.series, type: FilmMediaType.tv),
+        'genres' || 'countries' || 'years' => _categoryShelf(c, section),
         _ => _workShelf(
           c,
           filmSectionTitle(context, section),
@@ -978,6 +983,35 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
           sectionId: section.id,
         ),
       };
+
+  void _browseCategory(FilmCatalogController c, FilmCategory category) {
+    setState(() => _browse = true);
+    c.type = null;
+    c.newest = false;
+    c.sectionId = category.section.id;
+    c.rootId = null;
+    c.query = '';
+    _search.clear();
+    c.refresh(home: false);
+  }
+
+  Widget _categoryShelf(FilmCatalogController c, FilmHomeSection group) {
+    final categories = c.categories
+        .where((category) => category.section.categoryGroup == group.id)
+        .toList();
+    return FilmShelf(
+      title: group.label,
+      count: categories.length,
+      height: 180,
+      itemWidth: 320,
+      maxItems: null,
+      builder: (_, i) => FilmCategoryCard(
+        category: categories[i],
+        cache: c.images,
+        onTap: () => _browseCategory(c, categories[i]),
+      ),
+    );
+  }
 
   Widget _collectionShelf(FilmCatalogController c) => FilmShelf(
     title: '合集',
@@ -1069,69 +1103,86 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       return GestureDetector(
         onSecondaryTapUp: (details) =>
             _sourceMenu(c, root, details.globalPosition),
-        child: Card(
-          margin: EdgeInsets.zero,
-          color: Colors.transparent,
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () {
-              setState(() => _browse = true);
-              c.type = null;
-              c.rootId = root.id;
-              c.sectionId = null;
-              c.query = '';
-              _search.clear();
-              c.refresh(home: false);
-            },
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (cover != null)
-                        Image.file(
-                          cover,
-                          key: ValueKey(cover.path),
-                          fit: BoxFit.cover,
-                          cacheWidth: 560,
-                          frameBuilder: filmCoverFrameBuilder,
-                          errorBuilder: (_, _, _) => const Center(
-                            child: Icon(SPIcons.folderOpen, size: 40),
-                          ),
-                        )
-                      else
-                        const Center(child: Icon(SPIcons.folderOpen, size: 40)),
-                      ColoredBox(color: Colors.black.withValues(alpha: .35)),
-                      Center(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Text(
-                            root.displayName,
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(color: Colors.white),
+        child: FilmPosterHover(
+          child: Card(
+            margin: EdgeInsets.zero,
+            color: Colors.transparent,
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            clipBehavior: Clip.none,
+            child: InkWell(
+              hoverColor: Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              onTap: () {
+                setState(() => _browse = true);
+                c.type = null;
+                c.rootId = root.id;
+                c.sectionId = null;
+                c.query = '';
+                _search.clear();
+                c.refresh(home: false);
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        FilmPosterHoverSurface(
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              if (cover != null)
+                                Image.file(
+                                  cover,
+                                  key: ValueKey(cover.path),
+                                  fit: BoxFit.cover,
+                                  cacheWidth: 560,
+                                  frameBuilder: filmCoverFrameBuilder,
+                                  errorBuilder: (_, _, _) => const Center(
+                                    child: Icon(SPIcons.folderOpen, size: 40),
+                                  ),
+                                )
+                              else
+                                const Center(
+                                  child: Icon(SPIcons.folderOpen, size: 40),
+                                ),
+                              ColoredBox(
+                                color: Colors.black.withValues(alpha: .35),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                    ],
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Text(
+                              root.displayName,
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleLarge
+                                  ?.copyWith(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Text(
-                    root.displayName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleSmall,
+                  Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Text(
+                      root.displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -1180,7 +1231,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
 
   Future<void> _backgroundMenu(FilmCatalogController c, Offset position) async {
     final action = await _menu(position, const [
-      PopupMenuItem(value: 'background', child: AppText('设置影视库背景')),
+      PopupMenuItem(value: 'background', child: AppText('设置全局背景')),
     ]);
     if (mounted && action != null) await showFilmArtworkPicker(context, c);
   }

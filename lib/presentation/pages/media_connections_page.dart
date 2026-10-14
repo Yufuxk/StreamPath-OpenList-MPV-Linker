@@ -226,7 +226,7 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
     return DirectoryScrollView(
       builder: (controller) => ListView(
         controller: controller,
-        padding: const EdgeInsets.all(20),
+        padding: AppTheme.pagePadding,
         children: [content],
       ),
     );

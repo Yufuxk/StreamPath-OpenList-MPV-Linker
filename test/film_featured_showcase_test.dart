@@ -431,7 +431,7 @@ void main() {
                     .resolve({});
               } else if (segmented.evaluate().isNotEmpty) {
                 backing = text.data == '每日精选'
-                    ? Colors.white
+                    ? Theme.of(element).colorScheme.primary
                     : Colors.black.withValues(alpha: .6);
               }
               if (outlined.evaluate().isNotEmpty) {
@@ -900,6 +900,54 @@ void main() {
       );
       expect(opened, isEmpty);
       await settle(tester);
+    },
+  );
+
+  testWidgets(
+    'selected cover keeps the complete border outside the image clip',
+    (tester) async {
+      await prepare(tester);
+      await tester.pumpWidget(frame(showcase()));
+      await settle(tester);
+      final works = catalog.sectionWorks['daily']!;
+      final selected = poster(works.first.id);
+      final slide = find.descendant(
+        of: selected,
+        matching: find.byType(AnimatedSlide),
+      );
+      final surface = find.descendant(
+        of: selected,
+        matching: find.byType(FilmPosterHoverSurface),
+      );
+      expect(find.ancestor(of: surface, matching: slide), findsOneWidget);
+      expect(
+        find.ancestor(of: slide, matching: find.byType(ClipRRect)),
+        findsNothing,
+      );
+      final border = find.descendant(
+        of: selected,
+        matching: find.byType(AnimatedContainer),
+      );
+      final boundary = tester.renderObject<RenderBox>(border);
+      final viewport = tester.getRect(
+        find.ancestor(of: selected, matching: find.byType(Viewport)).first,
+      );
+      Rect borderRect() => MatrixUtils.transformRect(
+        boundary.getTransformTo(null),
+        Offset.zero & boundary.size,
+      );
+      expect(borderRect().top, greaterThanOrEqualTo(viewport.top + 1));
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(selected));
+      for (var i = 0; i < 14; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(borderRect().top, greaterThanOrEqualTo(viewport.top + 1));
+      }
+      await mouse.moveTo(Offset.zero);
+      await settle(tester);
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -1419,7 +1467,12 @@ void main() {
       final play = tester.widget<FilledButton>(
         find.byKey(const ValueKey('featured-play')),
       );
-      expect(play.style!.backgroundColor!.resolve({}), Colors.white);
+      expect(
+        play.style!.backgroundColor!.resolve({}),
+        Theme.of(
+          tester.element(find.byKey(const ValueKey('featured-play'))),
+        ).colorScheme.primary,
+      );
       expect(play.style!.minimumSize!.resolve({}), const Size(0, 44));
       final open = tester.widget<OutlinedButton>(
         find.byKey(const ValueKey('featured-open')),
@@ -1691,7 +1744,7 @@ void main() {
   );
 
   testWidgets(
-    'film segmented controls use a white floating indicator in both themes',
+    'film segmented controls use the theme accent indicator in both themes',
     (tester) async {
       await prepare(tester);
       for (final dark in [true, false]) {
@@ -1711,7 +1764,10 @@ void main() {
         );
         final daily = tester.widget<TextButton>(dailyFinder);
         final collections = tester.widget<TextButton>(collectionsFinder);
-        expect(daily.style!.foregroundColor!.resolve({}), Colors.black);
+        expect(
+          daily.style!.foregroundColor!.resolve({}),
+          Theme.of(tester.element(dailyFinder)).colorScheme.onPrimary,
+        );
         expect(
           collections.style!.foregroundColor!.resolve({}),
           Colors.white.withValues(alpha: .7),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:streampath/presentation/widgets/sp_control_bar.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -162,7 +163,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('来源筛选与媒体标题共用页头和单层页面背景', (tester) async {
+  testWidgets('来源筛选与搜索共用控制栏和单层页面背景', (tester) async {
     tester.view.physicalSize = const Size(1180, 720);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -184,14 +185,14 @@ void main() {
     expect(
       find.ancestor(
         of: find.byKey(const Key('source-filter-probe')),
-        matching: find.byType(AppBar),
+        matching: find.byType(SPControlBar),
       ),
       findsOneWidget,
     );
     expect(
       find.ancestor(
         of: find.byKey(const Key('media-library-global-search')),
-        matching: find.byType(AppBar),
+        matching: find.byType(SPControlBar),
       ),
       findsOneWidget,
     );

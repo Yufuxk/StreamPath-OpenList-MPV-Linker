@@ -6,6 +6,27 @@ import 'package:streampath/presentation/theme/page_transitions.dart';
 import 'package:streampath/presentation/theme/window_appearance_status.dart';
 
 void main() {
+  test('无背景 Acrylic 控制栏使用旧版灰色及10到20%，自定义背景保持原参数', () {
+    for (final opacity in [0.60, 0.95]) {
+      final theme = AppTheme.dark(glass: true, glassOpacity: opacity);
+      final plain = AppTheme.controlBarTheme(theme).glass.chromeSurface;
+      expect(plain.withValues(alpha: 1), GlassTokens.controlBarAcrylic);
+      expect(plain.a, closeTo(opacity == 0.60 ? .10 : .20, .001));
+      final custom = theme.copyWith(
+        extensions: [theme.glass.copyWith(hasCustomBackground: true)],
+      );
+      final surface = AppTheme.controlBarTheme(custom).glass.chromeSurface;
+      expect(surface.withValues(alpha: 1), GlassTokens.controlBarDark);
+      expect(surface.a, closeTo(opacity == 0.60 ? .25 : .35, .001));
+      final mica = AppTheme.dark(
+        glass: true,
+        glassOpacity: opacity,
+        windowBackdrop: WindowBackdropType.mica,
+      );
+      expect(AppTheme.controlBarTheme(mica).glass.chromeSurface, surface);
+    }
+  });
+
   test('亮暗主题保持桌面视觉与低渲染成本约束', () {
     final light = AppTheme.light();
     final dark = AppTheme.dark();
@@ -25,11 +46,11 @@ void main() {
     final segmentedStyle = dark.segmentedButtonTheme.style!;
     expect(
       segmentedStyle.backgroundColor!.resolve({WidgetState.selected}),
-      dark.colorScheme.primaryContainer,
+      dark.colorScheme.primary,
     );
     expect(
       segmentedStyle.foregroundColor!.resolve({WidgetState.selected}),
-      dark.colorScheme.onPrimaryContainer,
+      dark.colorScheme.onPrimary,
     );
     expect(dark.hoverColor.a, greaterThan(0));
     expect(
@@ -50,7 +71,7 @@ void main() {
     expect(dark.onPrimary, const Color(0xFF071B34));
     expect(dark.primaryContainer, const Color(0xFF17365F));
     expect(dark.onPrimaryContainer, const Color(0xFFD8E7FF));
-    expect(dark.onSurfaceVariant, const Color(0xFFAEB9C7));
+    expect(dark.onSurfaceVariant, Colors.white.withValues(alpha: 0.55));
   });
 
   test('磨砂主题保持主背景控制并建立可区分的表面层级', () {
@@ -85,7 +106,7 @@ void main() {
       clearerGlass.appBarTheme.backgroundColor,
       clearerTokens.chromeSurface,
     );
-    expect(clearerTokens.borderColor.a, greaterThan(0.12));
+    expect(clearerTokens.borderColor.a, closeTo(0.10, 0.001));
     expect(
       (clearerGlass.inputDecorationTheme.enabledBorder! as OutlineInputBorder)
           .borderSide
@@ -94,7 +115,10 @@ void main() {
     );
     expect(clearerGlass.colorScheme.primaryContainer, const Color(0xFF1E4D84));
     expect(clearerGlass.snackBarTheme.backgroundColor!.a, greaterThan(0.9));
-    expect(AppTheme.dropdownMenuColor(clearerGlass), clearerTokens.modalSurface);
+    expect(
+      AppTheme.dropdownMenuColor(clearerGlass),
+      clearerTokens.modalSurface,
+    );
     expect(
       (clearerGlass.snackBarTheme.shape! as RoundedRectangleBorder)
           .side

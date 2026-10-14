@@ -361,6 +361,16 @@ class _SPDropdownFieldState<T> extends State<_SPDropdownField<T>> {
     final label = field.enabled
         ? selected ?? field.hint
         : field.disabledHint ?? selected ?? field.hint;
+    final decoration = (field.decoration ?? const InputDecoration())
+        .copyWith(enabled: field.enabled, errorText: widget.state.errorText)
+        .applyDefaults(Theme.of(context).inputDecorationTheme);
+    final contentPadding = (decoration.contentPadding ?? EdgeInsets.zero)
+        .resolve(Directionality.of(context));
+    final contentHeight =
+        (AppTheme.controlHeightFor(context) - contentPadding.vertical).clamp(
+          0.0,
+          double.infinity,
+        );
     return Shortcuts(
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.arrowDown): ActivateIntent(),
@@ -388,42 +398,43 @@ class _SPDropdownFieldState<T> extends State<_SPDropdownField<T>> {
               canRequestFocus: false,
               onTap: field.enabled ? _show : null,
               borderRadius: field.borderRadius ?? AppTheme.dropdownBorderRadius,
-              child: InputDecorator(
-                expands: field.expands,
-                isFocused: _focused,
-                isEmpty: label == null,
-                decoration: (field.decoration ?? const InputDecoration())
-                    .copyWith(
-                      enabled: field.enabled,
-                      errorText: widget.state.errorText,
-                    )
-                    .applyDefaults(Theme.of(context).inputDecorationTheme),
-                child: DefaultTextStyle(
-                  style:
-                      field.style ?? Theme.of(context).textTheme.titleMedium!,
-                  child: Padding(
-                    padding: field.padding ?? EdgeInsets.zero,
-                    child: Row(
-                      mainAxisSize: field.isExpanded
-                          ? MainAxisSize.max
-                          : MainAxisSize.min,
-                      children: [
-                        if (field.isExpanded)
-                          Expanded(child: label ?? const SizedBox.shrink())
-                        else
-                          label ?? const SizedBox.shrink(),
-                        const SizedBox(width: 8),
-                        field.icon ??
-                            Icon(
-                              Icons.arrow_drop_down,
-                              size: 16,
-                              color: field.enabled
-                                  ? Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant
-                                  : Theme.of(context).disabledColor,
-                            ),
-                      ],
+              child: ConstrainedBox(
+                constraints: decoration.constraints ?? const BoxConstraints(),
+                child: InputDecorator(
+                  expands: field.expands,
+                  isFocused: _focused,
+                  isEmpty: label == null,
+                  decoration: decoration,
+                  child: DefaultTextStyle(
+                    style:
+                        field.style ?? Theme.of(context).textTheme.bodyMedium!,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: contentHeight),
+                      child: Padding(
+                        padding: field.padding ?? EdgeInsets.zero,
+                        child: Row(
+                          mainAxisSize: field.isExpanded
+                              ? MainAxisSize.max
+                              : MainAxisSize.min,
+                          children: [
+                            if (field.isExpanded)
+                              Expanded(child: label ?? const SizedBox.shrink())
+                            else
+                              label ?? const SizedBox.shrink(),
+                            const SizedBox(width: 8),
+                            field.icon ??
+                                Icon(
+                                  Icons.arrow_drop_down,
+                                  size: 16,
+                                  color: field.enabled
+                                      ? Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant
+                                      : Theme.of(context).disabledColor,
+                                ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),

@@ -179,6 +179,7 @@ class FilmCatalogController extends ChangeNotifier {
   String? sectionId;
   List<FilmHomeSection> homeSections = FilmHomeSection.defaults;
   Map<String, List<FilmWork>> sectionWorks = {};
+  List<FilmCategory> categories = [];
   File? backgroundFile;
   final Map<int, String> _customCovers = {};
   bool newest = false;
@@ -332,7 +333,7 @@ class FilmCatalogController extends ChangeNotifier {
       final sections = await store.homeSections();
       final extraWorks = <String, List<FilmWork>>{};
       for (final section in sections.where(
-        (s) => s.enabled && (s.id.contains(':') || s.id == 'daily'),
+        (s) => s.enabled && s.id == 'daily',
       )) {
         extraWorks[section.id] = await store.works(
           sourceId: sourceId,
@@ -341,6 +342,9 @@ class FilmCatalogController extends ChangeNotifier {
           limit: 30,
         );
       }
+      final categoryList = sections.any((s) => s.enabled && s.isCategoryGroup)
+          ? await store.categories(sourceId: sourceId)
+          : <FilmCategory>[];
       final filmCollections = await store.collections(sourceId: sourceId);
       for (final collection in filmCollections) {
         collectionCovers[collection.id] = await store.collectionArtwork(
@@ -404,6 +408,7 @@ class FilmCatalogController extends ChangeNotifier {
       homeSections = sections;
       collections = filmCollections;
       sectionWorks = extraWorks;
+      categories = categoryList;
       backgroundFile = background == null || background.isEmpty
           ? null
           : File(background);

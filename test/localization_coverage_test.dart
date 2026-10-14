@@ -8,6 +8,8 @@ import 'package:streampath/domain/services/openlist_api_client.dart';
 import 'package:streampath/features/cache_control/models/cache_policy_config.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_translation_catalog.dart';
+import 'package:streampath/presentation/localization/film_catalog_translations.dart';
+import 'package:streampath/presentation/localization/app_update_translations.dart';
 import 'package:streampath/presentation/widgets/playback_bar.dart';
 
 void main() {
@@ -34,6 +36,61 @@ void main() {
         isNot(contains(RegExp(r'[\u4e00-\u9fff]'))),
         reason: entry.key,
       );
+    }
+  });
+
+  test('影视库与软件更新扩展词条覆盖四语言并保持模板参数', () {
+    final placeholders = RegExp(r'\{(\w+)\}');
+    for (final entry in {
+      ...filmCatalogTranslations,
+      ...appUpdateTranslations,
+    }.entries) {
+      expect(entry.value, hasLength(3), reason: entry.key);
+      for (final language in AppLanguage.values) {
+        final translated = AppLocalizations(language).text(entry.key);
+        expect(
+          translated,
+          language == AppLanguage.simplifiedChinese
+              ? entry.key
+              : entry.value[language.index - 1],
+        );
+        expect(translated, isNotEmpty, reason: entry.key);
+        expect(
+          placeholders.allMatches(translated).map((m) => m[1]).toSet(),
+          placeholders.allMatches(entry.key).map((m) => m[1]).toSet(),
+          reason: '${language.name}: ${entry.key}',
+        );
+        if (language == AppLanguage.english) {
+          expect(translated, isNot(contains(RegExp(r'[\u4e00-\u9fff]'))));
+        }
+      }
+    }
+  });
+
+  test('影视库操作、来源筛选和连接提示覆盖四语言', () {
+    const labels = <String, List<String>>{
+      '来源': ['來源', '保存先', 'Source'],
+      '全部来源': ['全部來源', 'すべての保存先', 'All sources'],
+      '重命名': ['重新命名', '名前を変更', 'Rename'],
+      '移除': ['移除', '削除', 'Remove'],
+      '添加': ['新增', '追加', 'Add'],
+      '正在扫描…': ['正在掃描…', 'スキャン中…', 'Scanning…'],
+      '验证连接': ['測試連線', '接続をテスト', 'Test connection'],
+      '连接成功': ['連線成功', '接続に成功しました', 'Connected successfully'],
+      '导出': ['匯出', 'エクスポート', 'Export'],
+      '导出完成': ['匯出完成', 'エクスポート完了', 'Export complete'],
+    };
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final entry in labels.entries) {
+        expect(
+          l10n.text(entry.key),
+          language == AppLanguage.simplifiedChinese
+              ? entry.key
+              : entry.value[language.index - 1],
+          reason: '${language.name}: ${entry.key}',
+        );
+      }
     }
   });
 

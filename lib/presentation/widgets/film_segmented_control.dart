@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import '../theme/app_theme.dart';
 
 /// 橱窗与侧边栏共用的内嵌浮动滑块组合按钮，选中状态由调用方持有。
 class FilmSegmentedControl<T> extends StatelessWidget {
@@ -20,6 +21,7 @@ class FilmSegmentedControl<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final index = segments.indexWhere((segment) => segment.value == selected);
     assert(index >= 0, 'The selected value must belong to the segments.');
     const shape = StadiumBorder();
@@ -44,10 +46,10 @@ class FilmSegmentedControl<T> extends StatelessWidget {
           style:
               TextButton.styleFrom(
                 foregroundColor: selectedSegment
-                    ? Colors.black
+                    ? scheme.onPrimary
                     : Colors.white.withValues(alpha: .7),
                 disabledForegroundColor: selectedSegment
-                    ? Colors.black.withValues(alpha: .38)
+                    ? scheme.onPrimary.withValues(alpha: .38)
                     : Colors.white.withValues(alpha: .38),
                 backgroundColor: Colors.transparent,
                 minimumSize: Size(0, vertical ? 54 : 34),
@@ -68,17 +70,20 @@ class FilmSegmentedControl<T> extends StatelessWidget {
                 side: WidgetStateProperty.resolveWith(
                   (states) => states.contains(WidgetState.focused)
                       ? BorderSide(
-                          color: (selectedSegment ? Colors.black : Colors.white)
-                              .withValues(alpha: .7),
+                          color:
+                              (selectedSegment
+                                      ? scheme.onPrimary
+                                      : Colors.white)
+                                  .withValues(alpha: .7),
                         )
                       : BorderSide.none,
                 ),
                 overlayColor: WidgetStateProperty.resolveWith(
                   (states) => states.contains(WidgetState.pressed)
-                      ? (selectedSegment ? Colors.black : Colors.white)
+                      ? (selectedSegment ? scheme.onPrimary : Colors.white)
                             .withValues(alpha: .12)
                       : states.contains(WidgetState.hovered)
-                      ? (selectedSegment ? Colors.black : Colors.white)
+                      ? (selectedSegment ? scheme.onPrimary : Colors.white)
                             .withValues(alpha: .06)
                       : Colors.transparent,
                 ),
@@ -111,15 +116,9 @@ class FilmSegmentedControl<T> extends StatelessWidget {
                 heightFactor: vertical ? 1 / segments.length : 1,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: scheme.primary,
                     borderRadius: BorderRadius.circular(999),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x40000000),
-                        blurRadius: 6,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
+                    boxShadow: AppTheme.accentGlow(scheme.primary),
                   ),
                 ),
               ),

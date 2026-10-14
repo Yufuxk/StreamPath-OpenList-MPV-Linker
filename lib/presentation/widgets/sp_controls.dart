@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+import '../theme/glass_tokens.dart';
+
 /// StreamPath 桌面按钮的常用视觉层级。
 enum SPButtonKind { primary, secondary, tonal, subtle }
 
@@ -38,8 +41,8 @@ class SPButton extends StatelessWidget {
     this.icon,
     this.kind = SPButtonKind.secondary,
     this.padding = const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-    this.minimumHeight = 36,
-    this.borderRadius = const BorderRadius.all(Radius.circular(8)),
+    this.minimumHeight = AppTheme.controlHeight,
+    this.borderRadius = AppTheme.controlRadius,
   });
 
   final Key? controlKey;
@@ -79,7 +82,7 @@ class SPButton extends StatelessWidget {
     }
 
     final style = ButtonStyle(
-      animationDuration: const Duration(milliseconds: 120),
+      animationDuration: AppTheme.hoverDuration,
       backgroundColor: WidgetStateProperty.resolveWith(stateBackground),
       foregroundColor: WidgetStateProperty.resolveWith(
         (states) => states.contains(WidgetState.disabled)
@@ -88,12 +91,13 @@ class SPButton extends StatelessWidget {
       ),
       overlayColor: const WidgetStatePropertyAll(Colors.transparent),
       splashFactory: NoSplash.splashFactory,
+      elevation: const WidgetStatePropertyAll(0),
       side: WidgetStateProperty.resolveWith(
         (states) => BorderSide(
           color: states.contains(WidgetState.focused)
               ? scheme.primary
               : kind == SPButtonKind.secondary
-              ? scheme.outlineVariant
+              ? Theme.of(context).glass.borderColor
               : Colors.transparent,
           width: states.contains(WidgetState.focused) ? 2 : 1,
         ),
@@ -111,7 +115,7 @@ class SPButton extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [icon!, const SizedBox(width: 8), label],
           );
-    return switch (kind) {
+    final button = switch (kind) {
       SPButtonKind.primary || SPButtonKind.tonal => FilledButton(
         key: controlKey,
         onPressed: onPressed,
@@ -131,6 +135,15 @@ class SPButton extends StatelessWidget {
         child: child,
       ),
     };
+    return kind == SPButtonKind.primary && onPressed != null
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: borderRadius,
+              boxShadow: AppTheme.accentGlow(scheme.primary),
+            ),
+            child: button,
+          )
+        : button;
   }
 }
 
@@ -167,7 +180,7 @@ class SPTile extends StatelessWidget {
         hoverColor: theme.hoverColor,
         highlightColor: theme.highlightColor,
         focusColor: theme.focusColor,
-        hoverDuration: const Duration(milliseconds: 120),
+        hoverDuration: AppTheme.hoverDuration,
         borderRadius: borderRadius,
         child: child,
       ),

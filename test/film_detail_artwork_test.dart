@@ -34,6 +34,7 @@ import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_library_background.dart';
 import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/presentation/pages/film_related_page.dart';
+import 'package:streampath/data/models/film_home_section.dart';
 import 'package:streampath/presentation/pages/film_featured_page.dart';
 import 'package:streampath/presentation/widgets/film_featured_showcase.dart';
 import 'package:streampath/presentation/widgets/film_segmented_control.dart';
@@ -645,7 +646,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byType(FilmFeaturedShowcase),
-          matching: find.byType(FilmCoverZoom),
+          matching: find.byType(FilmPosterHover),
         ),
         findsOneWidget,
       );
@@ -963,8 +964,135 @@ void main() {
     expect(find.text('Renamed collection'), findsNothing);
   });
 
+  testWidgets('分类栏无查看全部，鼠标拖动可访问全部分类并复用海报墙筛选', (tester) async {
+    await prepare(tester);
+    final work = works.first;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: work.id,
+          type: work.type,
+          tmdbId: work.tmdbId,
+          title: work.title,
+          originalTitle: work.originalTitle,
+          overview: work.overview,
+          language: work.language,
+          year: 2024,
+          posterPath: work.posterPath,
+          backdropPath: work.backdropPath,
+          metadata: {
+            'genres': [
+              for (var i = 0; i < 18; i++)
+                'Genre ${i.toString().padLeft(2, '0')}',
+            ],
+            'origin_country': ['JP'],
+          },
+        ),
+      );
+      await catalog.store.setHomeSections(const [
+        FilmHomeSection('genres', enabled: true),
+        FilmHomeSection('countries', enabled: true),
+        FilmHomeSection('years', enabled: true),
+        FilmHomeSection('continue'),
+        FilmHomeSection('daily'),
+        FilmHomeSection('collections'),
+        FilmHomeSection('sources'),
+        FilmHomeSection('recent'),
+        FilmHomeSection('movies'),
+        FilmHomeSection('series'),
+      ]);
+      final original = File(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(work.backdropPath!, 'original')}.img',
+        ),
+      );
+      await original.copy(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(work.backdropPath!, 'w780')}.img',
+        ),
+      );
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmLibraryPage(
+          onOpenItem: (_) async {},
+          continueShelf: const SizedBox.shrink(),
+        ),
+      ),
+    );
+    await settle(tester);
+    final shelf = find.byWidgetPredicate(
+      (w) => w is FilmShelf && w.title == '类型',
+    );
+    await tester.ensureVisible(shelf);
+    await tester.pumpAndSettle();
+    final list = tester.widget<ListView>(
+      find.descendant(of: shelf, matching: find.byType(ListView)),
+    );
+    expect(list.semanticChildCount, 18);
+    for (final title in ['类型', '地区', '年份']) {
+      final categoryShelf = find.byWidgetPredicate(
+        (w) => w is FilmShelf && w.title == title,
+      );
+      expect(
+        find.descendant(of: categoryShelf, matching: find.text('查看全部')),
+        findsNothing,
+      );
+    }
+    final cover = tester
+        .widget<FilmCategoryCard>(
+          find
+              .descendant(of: shelf, matching: find.byType(FilmCategoryCard))
+              .first,
+        )
+        .category
+        .coverPath;
+    final shared = tester.widget<DirectoryScrollView>(
+      find.descendant(of: shelf, matching: find.byType(DirectoryScrollView)),
+    );
+    expect(shared.hideScrollbar, isTrue);
+    await tester.drag(
+      shelf,
+      const Offset(-10000, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      shared.controller!.offset,
+      shared.controller!.position.maxScrollExtent,
+    );
+    expect(find.text('Genre 17'), findsOneWidget);
+    await tester.tap(find.text('Genre 17'));
+    await settle(tester);
+    expect(catalog.sectionId, 'genre:Genre 17');
+    expect(catalog.works.map((w) => w.id), [work.id]);
+    await tester.tap(find.text('主页'));
+    await settle(tester);
+    await tester.drag(
+      shelf,
+      const Offset(10000, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<FilmCategoryCard>(
+            find
+                .descendant(of: shelf, matching: find.byType(FilmCategoryCard))
+                .first,
+          )
+          .category
+          .coverPath,
+      cover,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
-    'continue artwork fills landscape cards and retains portrait aspect ratio',
+    'continue artwork and watch overlay fill the card cover without inset gaps',
     (tester) async {
       await prepare(tester);
       final resource = (await tester.runAsync(
@@ -977,8 +1105,8 @@ void main() {
               body: Align(
                 alignment: Alignment.topLeft,
                 child: SizedBox(
-                  width: FilmContinueCard.landscapeWidth,
-                  height: FilmContinueCard.landscapeHeight,
+                  width: poster ? 212 : FilmContinueCard.landscapeWidth,
+                  height: poster ? 400 : FilmContinueCard.landscapeHeight,
                   child: FilmContinueCard(
                     catalog: catalog,
                     record: MediaLibraryRecord(
@@ -995,12 +1123,26 @@ void main() {
         );
         await settle(tester);
         final artwork = tester.getRect(find.byType(FilmArtwork));
-        if (poster) {
-          expect(artwork.width / artwork.height, closeTo(2 / 3, .001));
-        } else {
-          expect(artwork.width, FilmContinueCard.landscapeWidth);
-          expect(artwork, tester.getRect(find.byType(FilmWatchOverlay)));
-        }
+        final card = tester.getRect(find.byType(FilmContinueCard));
+        expect(artwork.left, closeTo(card.left, 1e-9));
+        expect(artwork.top, closeTo(card.top, 1e-9));
+        expect(artwork.width, closeTo(card.width, 1e-9));
+        expect(artwork, tester.getRect(find.byType(FilmWatchOverlay)));
+        final info = tester.getRect(
+          find
+              .descendant(
+                of: find.byType(FilmContinueCard),
+                matching: find.byType(Padding),
+              )
+              .last,
+        );
+        expect(artwork.bottom, closeTo(info.top, 1e-9));
+        expect(tester.widget<Card>(find.byType(Card)).clipBehavior, Clip.none);
+        final surface = find.byType(FilmPosterHoverSurface);
+        expect(
+          find.descendant(of: surface, matching: find.byType(ClipRRect)),
+          findsWidgets,
+        );
       }
     },
   );

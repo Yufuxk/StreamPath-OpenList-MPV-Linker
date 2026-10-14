@@ -277,20 +277,27 @@ void main() {
       await store.setHomeSections(saved);
       final sections = await store.homeSections();
       expect(sections.take(4).map((s) => (s.id, s.enabled)), [
-        ('country:JP', false),
+        ('countries', false),
         ('continue', false),
         ('daily', true),
-        ('genre:Retained', true),
+        ('genres', true),
       ]);
       expect(
         sections.map((s) => s.id),
-        containsAll(['genre:Drama', 'decade:2020']),
+        containsAll(['genres', 'countries', 'years']),
       );
       expect(sections.map((s) => s.id), isNot(contains('country:XX')));
       expect(sections.map((s) => s.id), isNot(contains('genre:Unreferenced')));
+      expect(sections.singleWhere((s) => s.id == 'genres').enabled, isTrue);
+      expect(await store.categories(), isEmpty);
+      await store.setRootEnabled(root.id, true);
       expect(
-        sections.singleWhere((s) => s.id == 'genre:Drama').enabled,
-        isFalse,
+        (await store.categories()).map((c) => c.section.id),
+        containsAll(['genre:Drama', 'country:JP', 'decade:2020']),
+      );
+      expect(
+        (await store.categories()).map((c) => c.section.id),
+        isNot(contains('genre:Unreferenced')),
       );
     },
   );

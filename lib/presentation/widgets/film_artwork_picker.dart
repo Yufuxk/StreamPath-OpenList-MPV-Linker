@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'cinematic_states.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
@@ -155,7 +156,7 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
   @override
   Widget build(BuildContext context) => SPDialog(
     title: AppText(
-      widget.rootId == null && widget.collectionId == null ? '影视库背景' : '修改图片',
+      widget.rootId == null && widget.collectionId == null ? '全局背景' : '修改图片',
     ),
     content: SizedBox(
       width: 760,
@@ -182,7 +183,7 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
           const SizedBox(height: 12),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? const CinematicLoadingView()
                 : DirectoryScrollView(
                     builder: (scrollController) => GridView.builder(
                       controller: scrollController,

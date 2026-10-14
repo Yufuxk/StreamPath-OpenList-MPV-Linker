@@ -2,6 +2,16 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  '来源': 'Source',
+  '全部来源': 'All sources',
+  '重命名': 'Rename',
+  '移除': 'Remove',
+  '添加': 'Add',
+  '正在扫描…': 'Scanning…',
+  '验证连接': 'Test connection',
+  '连接成功': 'Connected successfully',
+  '导出': 'Export',
+  '导出完成': 'Export complete',
   "全部清理": "Clear all",
   "目录缓存清理": "Clear directory cache",
   "元数据与图片清理": "Clear metadata and images",
@@ -1021,6 +1031,16 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  '来源': '保存先',
+  '全部来源': 'すべての保存先',
+  '重命名': '名前を変更',
+  '移除': '削除',
+  '添加': '追加',
+  '正在扫描…': 'スキャン中…',
+  '验证连接': '接続をテスト',
+  '连接成功': '接続に成功しました',
+  '导出': 'エクスポート',
+  '导出完成': 'エクスポート完了',
   "全部清理": "すべて削除",
   "目录缓存清理": "ディレクトリキャッシュを削除",
   "元数据与图片清理": "メタデータと画像を削除",
@@ -1895,6 +1915,16 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  '来源': '來源',
+  '全部来源': '全部來源',
+  '重命名': '重新命名',
+  '移除': '移除',
+  '添加': '新增',
+  '正在扫描…': '正在掃描…',
+  '验证连接': '測試連線',
+  '连接成功': '連線成功',
+  '导出': '匯出',
+  '导出完成': '匯出完成',
   "全部清理": "全部清理",
   "目录缓存清理": "目錄快取清理",
   "元数据与图片清理": "中繼資料與圖片清理",

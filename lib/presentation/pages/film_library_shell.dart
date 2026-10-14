@@ -12,6 +12,7 @@ import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/film_library_background.dart';
+import '../widgets/app_background.dart';
 import '../widgets/transition_content.dart';
 import 'browser_page.dart';
 import 'film_library_page.dart';
@@ -231,7 +232,9 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       children: [
         Expanded(
           child: StreamPathTransitionBackdropScope(
-            hasBackdrop: _backgroundCatalog?.backgroundFile != null,
+            hasBackdrop:
+                AppBackgroundScope.maybeOf(context)?.hasBackground ??
+                (_backgroundCatalog?.backgroundFile != null),
             child: Stack(
               fit: StackFit.expand,
               children: [
