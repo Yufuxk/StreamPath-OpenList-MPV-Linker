@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'package:flutter/material.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
@@ -192,47 +193,53 @@ class _PlaylistDialogState extends State<_PlaylistDialog> {
     title: AppText(widget.create ? '创建播放列表' : '加入播放列表…'),
     content: SizedBox(
       width: 480,
-      height: 360,
+      height: widget.create ? null : 360,
       child: DirectoryScrollView(
-        builder: (controller) => ListView(
+        builder: (controller) => SingleChildScrollView(
           controller: controller,
-          children: [
-            if (_busy) const LinearProgressIndicator(),
-            if (_error != null) AppText(filmCatalogErrorText(_error!)),
-            Text(_sourceName, maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(context.l10n.format('成员数量：{count}', {'count': _count})),
-            AppText(
-              widget.scope.playlist != null
-                  ? '保留所选条目及版本设定，不自动追加'
-                  : widget.scope.follows
-                  ? widget.scope.season == null
-                        ? '自动追加范围：本作品'
-                        : '自动追加范围：本季'
-                  : '固定所选版本，不自动追加',
-            ),
-            if (widget.omitted > 0)
-              Text(
-                context.l10n.format('未映射资源未纳入：{count}', {
-                  'count': widget.omitted,
-                }),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (_busy) const LinearProgressIndicator(),
+              if (_error != null) AppText(filmCatalogErrorText(_error!)),
+              Text(_sourceName, maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(context.l10n.format('成员数量：{count}', {'count': _count})),
+              AppText(
+                widget.scope.playlist != null
+                    ? '保留所选条目及版本设定，不自动追加'
+                    : widget.scope.follows
+                    ? widget.scope.season == null
+                          ? '自动追加范围：本作品'
+                          : '自动追加范围：本季'
+                    : '固定所选版本，不自动追加',
               ),
-            if (!widget.create) ...[
-              for (final list in _lists)
-                ListTile(
-                  title: Text(list.name),
-                  onTap: _busy || _count == 0 ? null : () => _save(list.id),
+              if (widget.omitted > 0)
+                Text(
+                  context.l10n.format('未映射资源未纳入：{count}', {
+                    'count': widget.omitted,
+                  }),
                 ),
-            ],
-            const SizedBox(height: 12),
-            TextField(
-              controller: _name,
-              enabled: !_busy,
-              contextMenuBuilder: buildSPTextSelectionMenu,
-              decoration: InputDecoration(
-                labelText: context.l10n.text('播放列表名称'),
+              if (!widget.create) ...[
+                for (final list in _lists)
+                  ListTile(
+                    leading: const Icon(SPIcons.list),
+                    title: Text(list.name),
+                    onTap: _busy || _count == 0 ? null : () => _save(list.id),
+                  ),
+              ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: _name,
+                enabled: !_busy,
+                contextMenuBuilder: buildSPTextSelectionMenu,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(SPIcons.list),
+                  labelText: context.l10n.text('播放列表名称'),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),

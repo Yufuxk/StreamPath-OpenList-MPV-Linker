@@ -1829,6 +1829,20 @@ void main() {
     await tester.tap(resetButton);
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('重置全部设置？'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('cancel-reset-settings-button')),
+        matching: find.byType(Icon),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('confirm-reset-settings-button')),
+        matching: find.byType(Icon),
+      ),
+      findsNothing,
+    );
 
     await tester.tap(find.byKey(const Key('cancel-reset-settings-button')));
     await tester.pump(const Duration(milliseconds: 500));

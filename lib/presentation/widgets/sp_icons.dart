@@ -90,6 +90,26 @@ abstract final class SPIcons {
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );
+  static const copy = IconData(
+    0xE8C8,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const cut = IconData(
+    0xE8C6,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const paste = IconData(
+    0xE77F,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const image = IconData(
+    0xEB9F,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
   static const delete = IconData(
     0xE74D,
     fontFamily: _font,

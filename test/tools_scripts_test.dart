@@ -152,6 +152,52 @@ Write-Output 'Integrity fixture passed.'
     expect(result.output, contains('Integrity fixture passed.'));
   }, skip: !Platform.isWindows);
 
+  test('发布目录解压后以 Medium 运行且不修改已有共享输出目录', () async {
+    fixtureFile(
+      p.join('project', 'tools', 'release_directory_fixture.ps1'),
+      r'''
+$ErrorActionPreference = 'Stop'
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'release_common.ps1')
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$Project = Split-Path $PSScriptRoot -Parent
+$Root = Join-Path $Project 'build\releases'
+New-Item -ItemType Directory -Path $Root -Force | Out-Null
+& "$env:SystemRoot\System32\icacls.exe" $Root /setintegritylevel '(OI)(CI)L' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not label fixture root.' }
+$Output = Join-Path $Root 'StreamPath.fixture'
+New-Item -ItemType Directory -Path $Output | Out-Null
+$Dacl = (Get-Acl -LiteralPath $Output).Sddl
+Initialize-StreamPathReleaseDirectory -Path $Output -ProjectRoot $Project
+if ((Get-Acl -LiteralPath $Output).Sddl -ne $Dacl) { throw 'Output DACL changed.' }
+$Payload = Join-Path $Project 'payload'
+New-Item -ItemType Directory -Path $Payload | Out-Null
+Copy-Item -LiteralPath "$env:SystemRoot\System32\whoami.exe" -Destination (Join-Path $Payload 'probe.exe')
+$Zip = Join-Path $Output 'portable.zip'
+[IO.Compression.ZipFile]::CreateFromDirectory($Payload, $Zip)
+$Extracted = Join-Path $Output 'portable'
+[IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Extracted)
+if ((& (Join-Path $Extracted 'probe.exe') /groups | Out-String) -notmatch 'S-1-16-8192') { throw 'Extracted program did not run at medium integrity.' }
+$Shared = Join-Path $Project 'shared-output'
+New-Item -ItemType Directory -Path $Shared | Out-Null
+& "$env:SystemRoot\System32\icacls.exe" $Shared /setintegritylevel '(OI)(CI)L' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not label shared fixture.' }
+Initialize-StreamPathReleaseDirectory -Path $Shared -ProjectRoot $Project
+if ([StreamPathReleaseSecurity]::ReadLabel($Shared) -notmatch ';;;LW\)') { throw 'Existing shared directory label changed.' }
+$NewOutput = Join-Path $Shared 'new-output'
+Initialize-StreamPathReleaseDirectory -Path $NewOutput -ProjectRoot $Project
+Copy-Item -LiteralPath "$env:SystemRoot\System32\whoami.exe" -Destination (Join-Path $NewOutput 'probe.exe')
+if ((& (Join-Path $NewOutput 'probe.exe') /groups | Out-String) -notmatch 'S-1-16-8192') { throw 'New output inherited low integrity.' }
+Write-Output 'Release directory fixture passed.'
+''',
+    );
+    final result = await runScript('release_directory_fixture.ps1');
+    expect(result.exitCode, 0, reason: result.output);
+    expect(result.output, contains('Release directory fixture passed.'));
+  }, skip: !Platform.isWindows);
+
   test('build 在项目标记缺失时失败关闭', () async {
     File(p.join(projectDir.path, 'pubspec.yaml')).deleteSync();
     final target = p.join(tempDir.path, 'outside-package');

@@ -825,15 +825,51 @@ class BrowserPageState extends State<BrowserPage> {
       ),
       items: [
         if (controls?.onPressed != null)
-          PopupMenuItem(value: 'play', child: AppText(controls!.tooltip)),
+          PopupMenuItem(
+            value: 'play',
+            child: SPMenuItemContent(
+              icon: controls!.icon,
+              child: AppText(controls.tooltip),
+            ),
+          ),
         if (controls?.onSubtitles != null)
-          const PopupMenuItem(value: 'subtitles', child: AppText('蓝光外挂字幕')),
+          const PopupMenuItem(
+            value: 'subtitles',
+            child: SPMenuItemContent(
+              icon: SPIcons.subtitles,
+              child: AppText('蓝光外挂字幕'),
+            ),
+          ),
         if (controls?.onSkipSeason != null)
-          const PopupMenuItem(value: 'skip', child: AppText('跳过本季')),
-        const PopupMenuItem(value: 'refresh', child: AppText('刷新播放状态')),
+          const PopupMenuItem(
+            value: 'skip',
+            child: SPMenuItemContent(
+              icon: SPIcons.next,
+              child: AppText('跳过本季'),
+            ),
+          ),
+        const PopupMenuItem(
+          value: 'refresh',
+          child: SPMenuItemContent(
+            icon: SPIcons.refresh,
+            child: AppText('刷新播放状态'),
+          ),
+        ),
         if (watchResource?.canMarkWatched == true)
-          const PopupMenuItem(value: 'watched', child: AppText('本集已看完')),
-        const PopupMenuItem(value: 'delete', child: AppText('删除并关闭播放器')),
+          const PopupMenuItem(
+            value: 'watched',
+            child: SPMenuItemContent(
+              icon: SPIcons.view,
+              child: AppText('本集已看完'),
+            ),
+          ),
+        const PopupMenuItem(
+          value: 'delete',
+          child: SPMenuItemContent(
+            icon: SPIcons.delete,
+            child: AppText('删除并关闭播放器'),
+          ),
+        ),
       ],
     );
     if (!mounted) return;
@@ -6287,12 +6323,9 @@ class BrowserPageState extends State<BrowserPage> {
       items: const [
         PopupMenuItem<String>(
           value: 'delete',
-          child: Row(
-            children: [
-              Icon(SPIcons.delete),
-              SizedBox(width: 10),
-              AppText('删除并关闭播放器'),
-            ],
+          child: SPMenuItemContent(
+            icon: SPIcons.delete,
+            child: AppText('删除并关闭播放器'),
           ),
         ),
       ],
@@ -6373,12 +6406,9 @@ class BrowserPageState extends State<BrowserPage> {
       items: const [
         PopupMenuItem<String>(
           value: 'delete',
-          child: Row(
-            children: [
-              Icon(SPIcons.delete),
-              SizedBox(width: 10),
-              AppText('删除并关闭音频播放器'),
-            ],
+          child: SPMenuItemContent(
+            icon: SPIcons.delete,
+            child: AppText('删除并关闭音频播放器'),
           ),
         ),
       ],
@@ -6562,12 +6592,9 @@ class BrowserPageState extends State<BrowserPage> {
       items: const [
         PopupMenuItem<String>(
           value: 'delete',
-          child: Row(
-            children: [
-              Icon(SPIcons.delete),
-              SizedBox(width: 10),
-              AppText('删除并关闭播放器'),
-            ],
+          child: SPMenuItemContent(
+            icon: SPIcons.delete,
+            child: AppText('删除并关闭播放器'),
           ),
         ),
       ],

@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'sp_menu.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -165,9 +166,10 @@ class _FilmTransferDialogState extends State<_FilmTransferDialog> {
                   ),
                 ],
                 if (widget.importing) ...[
-                  TextButton(
+                  TextButton.icon(
+                    icon: const Icon(SPIcons.folderOpen, size: 18),
                     onPressed: _busy ? null : _choose,
-                    child: const AppText('选择导入 ZIP'),
+                    label: const AppText('选择导入 ZIP'),
                   ),
                   if (_preview != null) ...[
                     for (final category in _labels.entries)
@@ -201,6 +203,7 @@ class _FilmTransferDialogState extends State<_FilmTransferDialog> {
                       ),
                     for (final source in _preview!.sources)
                       SPDropdownButtonFormField<String>(
+                        menuIcon: SPIcons.network,
                         dropdownColor: AppTheme.dropdownMenuColor(
                           Theme.of(context),
                         ),

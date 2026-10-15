@@ -72,7 +72,7 @@ $TargetPrefix = $Target.TrimEnd('\') + '\'
 if ($OutputDirectory -eq $Target -or $OutputDirectory.StartsWith($TargetPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'ZIP output directory must be outside the portable directory.'
 }
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+Initialize-StreamPathReleaseDirectory -Path $OutputDirectory -ProjectRoot $ProjectRoot
 & $BuildScript -Mode release -Target $Target -Yes -Version $Options.Version.Name -BuildNumber $Options.Version.Build -SkipAnalyze:$SkipAnalyze
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

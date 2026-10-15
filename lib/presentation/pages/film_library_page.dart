@@ -189,6 +189,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     return SizedBox(
       width: 150,
       child: SPDropdownButtonFormField<String>(
+        menuIcon: SPIcons.library,
         key: const ValueKey('film-library-selector'),
         initialValue: servers.any((row) => row.id == _sourceId)
             ? _sourceId
@@ -347,6 +348,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                         key: const ValueKey('film-library-search'),
                         width: widths[1],
                         child: TextField(
+                          contextMenuBuilder: buildSPTextSelectionMenu,
                           style: Theme.of(context).textTheme.bodySmall,
                           expands: true,
                           maxLines: null,
@@ -391,6 +393,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                         key: const ValueKey('film-toolbar-source'),
                         width: widths[2],
                         child: SPDropdownButtonFormField<int>(
+                          menuIcon: SPIcons.folder,
                           key: const ValueKey('film-root-filter'),
                           dropdownColor: AppTheme.dropdownMenuColor(
                             Theme.of(context),
@@ -432,6 +435,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                         key: const ValueKey('film-sort-filter'),
                         width: widths[3],
                         child: SPDropdownButtonFormField<bool>(
+                          menuIcon: SPIcons.sort,
                           dropdownColor: AppTheme.dropdownMenuColor(
                             Theme.of(context),
                           ),
@@ -1057,9 +1061,18 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     Offset position,
   ) async {
     final action = await _menu(position, const [
-      PopupMenuItem(value: 'rename', child: AppText('重命名')),
-      PopupMenuItem(value: 'image', child: AppText('修改图片')),
-      PopupMenuItem(value: 'delete', child: AppText('删除合集')),
+      PopupMenuItem(
+        value: 'rename',
+        child: SPMenuItemContent(icon: SPIcons.edit, child: AppText('重命名')),
+      ),
+      PopupMenuItem(
+        value: 'image',
+        child: SPMenuItemContent(icon: SPIcons.image, child: AppText('修改图片')),
+      ),
+      PopupMenuItem(
+        value: 'delete',
+        child: SPMenuItemContent(icon: SPIcons.delete, child: AppText('删除合集')),
+      ),
     ]);
     if (!mounted) return;
     if (action == 'image') {
@@ -1073,6 +1086,8 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
         builder: (context) => SPDialog(
           title: const AppText('合集名称'),
           content: TextFormField(
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            decoration: const InputDecoration(prefixIcon: Icon(SPIcons.edit)),
             initialValue: name,
             autofocus: true,
             onChanged: (value) => name = value,
@@ -1220,9 +1235,15 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       PopupMenuItem(
         value: 'edit',
         enabled: !c.busy && !c.scraping,
-        child: const AppText('编辑影视目录'),
+        child: const SPMenuItemContent(
+          icon: SPIcons.edit,
+          child: AppText('编辑影视目录'),
+        ),
       ),
-      const PopupMenuItem(value: 'image', child: AppText('修改图片')),
+      const PopupMenuItem(
+        value: 'image',
+        child: SPMenuItemContent(icon: SPIcons.image, child: AppText('修改图片')),
+      ),
     ]);
     if (!mounted) return;
     if (action == 'edit') {
@@ -1237,9 +1258,15 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       PopupMenuItem(
         value: 'refresh',
         enabled: !_refreshingPlayback && widget.onRefreshPlaybackStatus != null,
-        child: const AppText('刷新播放状态'),
+        child: const SPMenuItemContent(
+          icon: SPIcons.refresh,
+          child: AppText('刷新播放状态'),
+        ),
       ),
-      const PopupMenuItem(value: 'background', child: AppText('设置全局背景')),
+      const PopupMenuItem(
+        value: 'background',
+        child: SPMenuItemContent(icon: SPIcons.image, child: AppText('设置全局背景')),
+      ),
     ]);
     if (!mounted) return;
     if (action == 'background') {

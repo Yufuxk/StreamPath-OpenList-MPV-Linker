@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import '../../data/local/film_catalog_store.dart';
 import 'directory_scroll_view.dart';
 import 'dart:io';
@@ -167,13 +168,15 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
           Wrap(
             spacing: 12,
             children: [
-              OutlinedButton(
+              OutlinedButton.icon(
+                icon: const Icon(SPIcons.restore, size: 18),
                 onPressed: _saving ? null : () => _save(null),
-                child: const AppText('默认'),
+                label: const AppText('默认'),
               ),
-              FilledButton(
+              FilledButton.icon(
+                icon: const Icon(SPIcons.image, size: 18),
                 onPressed: _saving ? null : _local,
-                child: const AppText('选择本地图片'),
+                label: const AppText('选择本地图片'),
               ),
             ],
           ),

@@ -7,6 +7,24 @@ import '../theme/glass_tokens.dart';
 import 'directory_scroll_view.dart';
 import 'sp_icons.dart';
 
+/// 菜单图标与文字共用行间距，并跟随条目的禁用文字颜色。
+class SPMenuItemContent extends StatelessWidget {
+  const SPMenuItemContent({super.key, required this.icon, required this.child});
+
+  final IconData icon;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 18, color: DefaultTextStyle.of(context).style.color),
+      const SizedBox(width: 12),
+      Flexible(child: child),
+    ],
+  );
+}
+
 /// 菜单整体复用对话框材质，背景模糊只施加一次。
 class SPMenuSurface extends StatelessWidget {
   const SPMenuSurface({
@@ -214,10 +232,42 @@ Widget buildSPSelectionToolbar(
             type: MaterialType.transparency,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: AdaptiveTextSelectionToolbar.getAdaptiveButtons(
-                context,
-                items,
-              ).toList(),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final item in items)
+                  TextButton(
+                    onPressed: item.onPressed,
+                    style: TextButton.styleFrom(
+                      alignment: AlignmentDirectional.centerStart,
+                      foregroundColor: Theme.of(context).colorScheme.onSurface,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      shape: const RoundedRectangleBorder(),
+                    ),
+                    child: SPMenuItemContent(
+                      icon: switch (item.type) {
+                        ContextMenuButtonType.cut => SPIcons.cut,
+                        ContextMenuButtonType.copy => SPIcons.copy,
+                        ContextMenuButtonType.paste => SPIcons.paste,
+                        ContextMenuButtonType.selectAll => SPIcons.checklist,
+                        ContextMenuButtonType.delete => SPIcons.delete,
+                        ContextMenuButtonType.lookUp ||
+                        ContextMenuButtonType.searchWeb => SPIcons.search,
+                        ContextMenuButtonType.share => SPIcons.link,
+                        ContextMenuButtonType.liveTextInput => SPIcons.edit,
+                        ContextMenuButtonType.custom => SPIcons.history,
+                      },
+                      child: Text(
+                        AdaptiveTextSelectionToolbar.getButtonLabel(
+                          context,
+                          item,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -244,6 +294,7 @@ class SPDropdownButtonFormField<T> extends FormField<T> {
     super.onSaved,
     this.style,
     this.icon,
+    this.menuIcon,
     this.menuMaxHeight,
     this.focusNode,
     this.autofocus = false,
@@ -264,6 +315,7 @@ class SPDropdownButtonFormField<T> extends FormField<T> {
   final Color? dropdownColor;
   final BorderRadius? borderRadius;
   final bool isExpanded, isDense, autofocus;
+  final IconData? menuIcon;
   final Widget? hint, disabledHint, icon;
   final TextStyle? style;
   final double? menuMaxHeight, itemHeight;
@@ -330,7 +382,15 @@ class _SPDropdownFieldState<T> extends State<_SPDropdownField<T>> {
               enabled: item.enabled,
               onTap: item.onTap,
               height: field.itemHeight ?? kMinInteractiveDimension,
-              child: Align(alignment: item.alignment, child: item.child),
+              child: Align(
+                alignment: item.alignment,
+                child: field.menuIcon == null
+                    ? item.child
+                    : SPMenuItemContent(
+                        icon: field.menuIcon!,
+                        child: item.child,
+                      ),
+              ),
             ),
         ],
       );

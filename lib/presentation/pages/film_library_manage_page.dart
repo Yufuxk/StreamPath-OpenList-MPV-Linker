@@ -472,12 +472,14 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               ),
                               const SizedBox(height: 12),
                               TextField(
+                                contextMenuBuilder: buildSPTextSelectionMenu,
                                 controller: _token,
                                 obscureText: true,
                                 enableSuggestions: false,
                                 autocorrect: false,
                                 onChanged: (_) => setState(() {}),
                                 decoration: const InputDecoration(
+                                  prefixIcon: Icon(SPIcons.lock),
                                   label: AppText('TMDB Read Access Token'),
                                   helper: AppText('保存后输入框会清空；验证使用已保存的凭据'),
                                 ),
@@ -519,6 +521,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               SizedBox(
                                 width: 260,
                                 child: SPDropdownButtonFormField<String>(
+                                  menuIcon: SPIcons.language,
                                   dropdownColor: AppTheme.dropdownMenuColor(
                                     Theme.of(context),
                                   ),
@@ -632,6 +635,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                             ? 220
                                             : constraints.maxWidth,
                                         child: SPDropdownButtonFormField<int>(
+                                          menuIcon: SPIcons.settings,
                                           isExpanded: true,
                                           initialValue: _scanHours,
                                           key: ValueKey(_scanHours),
@@ -698,6 +702,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               ),
                               const SizedBox(height: 12),
                               SPDropdownButtonFormField<bool>(
+                                menuIcon: SPIcons.manageSearch,
                                 key: ValueKey(
                                   'film-excluded-folders-mode-$_excludeExact',
                                 ),
@@ -779,6 +784,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                             children: [
                               const SizedBox(height: 12),
                               SPDropdownButtonFormField<String>(
+                                menuIcon: SPIcons.diagnostic,
                                 key: ValueKey(_probeMode),
                                 borderRadius: AppTheme.dropdownBorderRadius,
                                 isExpanded: true,
@@ -1092,6 +1098,7 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 SPDropdownButtonFormField<String>(
+                  menuIcon: SPIcons.network,
                   initialValue: _source?.sourceId,
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
@@ -1123,6 +1130,7 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                 ),
                 const SizedBox(height: 16),
                 SPDropdownButtonFormField<FilmMediaType>(
+                  menuIcon: SPIcons.movies,
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
                   isExpanded: true,
@@ -1144,8 +1152,12 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                 ),
                 const SizedBox(height: 16),
                 TextField(
+                  contextMenuBuilder: buildSPTextSelectionMenu,
                   controller: _name,
-                  decoration: const InputDecoration(label: AppText('显示名称（可选）')),
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(SPIcons.edit),
+                    label: AppText('显示名称（可选）'),
+                  ),
                 ),
                 if (widget.root != null)
                   const Padding(

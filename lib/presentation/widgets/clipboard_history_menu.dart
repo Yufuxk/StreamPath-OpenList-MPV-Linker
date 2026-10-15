@@ -46,7 +46,10 @@ Widget buildClipboardHistoryMenu(
 }
 
 /// 读取系统剪贴板并粘贴到聚焦输入框（「粘贴当前剪贴板」兜底入口）。
-Future<void> _pasteCurrentClipboard(BuildContext context, EditableTextState state) async {
+Future<void> _pasteCurrentClipboard(
+  BuildContext context,
+  EditableTextState state,
+) async {
   final text = await ClipboardService.instance.readPlainText();
   if (!context.mounted) return;
   state.hideToolbar();
@@ -85,11 +88,13 @@ List<ContextMenuButtonItem> clipboardHistoryMenuItems(
           onPressed: () => onPick(item),
         ),
     ContextMenuButtonItem(
+      type: ContextMenuButtonType.paste,
       label: localized('粘贴当前剪贴板'),
       onPressed: onPickCurrentClipboard,
     ),
     if (store.items.isNotEmpty)
       ContextMenuButtonItem(
+        type: ContextMenuButtonType.delete,
         label: localized('清空剪贴板历史'),
         onPressed: onClearHistory,
       ),

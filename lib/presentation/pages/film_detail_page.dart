@@ -662,8 +662,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                             color: theme.colorScheme.error,
                                           ),
                                         ),
-                                      if (_refreshing)
-                                        const LinearProgressIndicator(),
                                       Wrap(
                                         spacing: 24,
                                         runSpacing: 16,
@@ -1176,46 +1174,73 @@ class FilmEpisodeCard extends StatelessWidget {
         if (resource.canMarkWatched) ...[
           const PopupMenuItem(
             value: _FilmFileAction.watched,
-            child: AppText('标记已看完'),
+            child: SPMenuItemContent(
+              icon: SPIcons.view,
+              child: AppText('标记已看完'),
+            ),
           ),
           const PopupMenuItem(
             value: _FilmFileAction.unwatched,
-            child: AppText('标记未观看'),
+            child: SPMenuItemContent(
+              icon: SPIcons.hide,
+              child: AppText('标记未观看'),
+            ),
           ),
         ],
         const PopupMenuItem(
           value: _FilmFileAction.source,
-          child: AppText('查看来源信息'),
+          child: SPMenuItemContent(
+            icon: SPIcons.document,
+            child: AppText('查看来源信息'),
+          ),
         ),
         const PopupMenuItem(
           value: _FilmFileAction.refresh,
-          child: AppText('刷新元数据'),
+          child: SPMenuItemContent(
+            icon: SPIcons.refresh,
+            child: AppText('刷新元数据'),
+          ),
         ),
         const PopupMenuItem(
           value: _FilmFileAction.match,
-          child: AppText('纠正作品匹配'),
+          child: SPMenuItemContent(
+            icon: SPIcons.manageSearch,
+            child: AppText('纠正作品匹配'),
+          ),
         ),
         if (resource.type == FilmMediaType.tv && resource.workId != null)
           const PopupMenuItem(
             value: _FilmFileAction.mapping,
-            child: AppText('调整季集'),
+            child: SPMenuItemContent(
+              icon: SPIcons.sort,
+              child: AppText('调整季集'),
+            ),
           ),
         if (onSelected != null)
           PopupMenuItem(
             value: _FilmFileAction.select,
-            child: AppText(selected ? '取消选择' : '选择此集'),
+            child: SPMenuItemContent(
+              icon: SPIcons.checklist,
+              child: AppText(selected ? '取消选择' : '选择此集'),
+            ),
           ),
         PopupMenuItem(
           value: _FilmFileAction.playlist,
           enabled: !resource.isDisc && resource.availability == 'present',
-          child: AppText(
-            resource.type == FilmMediaType.tv ? '以本集创建播放列表' : '以本资源创建播放列表',
+          child: SPMenuItemContent(
+            icon: SPIcons.list,
+            child: AppText(
+              resource.type == FilmMediaType.tv ? '以本集创建播放列表' : '以本资源创建播放列表',
+            ),
           ),
         ),
         PopupMenuItem(
           value: _FilmFileAction.addPlaylist,
           enabled: !resource.isDisc && resource.availability == 'present',
-          child: const AppText('加入播放列表…'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.add,
+            child: AppText('加入播放列表…'),
+          ),
         ),
       ],
     );
@@ -1717,7 +1742,6 @@ class _FilmPendingPageState extends State<FilmPendingPage>
                             ),
                           ),
                         ),
-                        if (_loading) const LinearProgressIndicator(),
                         if (c.error != null)
                           Padding(
                             padding: const EdgeInsets.all(12),

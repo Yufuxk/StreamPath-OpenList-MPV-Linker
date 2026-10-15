@@ -16,6 +16,8 @@ import 'package:streampath/presentation/controllers/film_catalog_controller.dart
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_work_menu.dart';
+import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
@@ -149,6 +151,21 @@ void main() {
     await settle();
     expect(opened, 0);
     expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
+    expect(find.byType(SPMenuItemContent), findsNWidgets(8));
+    expect(
+      find.descendant(
+        of: find.widgetWithText(SPMenuItemContent, '标记已看完'),
+        matching: find.byIcon(SPIcons.view),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.widgetWithText(SPMenuItemContent, '标记未观看'),
+        matching: find.byIcon(SPIcons.hide),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('加入合集'), findsOneWidget);
     final surface = tester
         .widgetList<Material>(find.byType(Material))

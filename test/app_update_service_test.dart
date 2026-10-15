@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/domain/services/app_update_service.dart';
@@ -29,6 +29,7 @@ class _ReleaseAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   const name = 'StreamPath.20261010.V1.1.portable.zip';
   final payload = utf8.encode('synthetic release payload');
   final hash = sha256.convert(payload).toString();
@@ -255,6 +256,112 @@ void main() {
         await directory.delete(recursive: true);
       }
     });
+  }
+
+  for (final scenario in [
+    'ready',
+    'closeFailure',
+    'earlyExit',
+    'earlyExitZero',
+  ]) {
+    test('真实 Windows 助手启动握手及取消 $scenario', () async {
+      final directory = await Directory.systemTemp.createTemp('sp-helper-');
+      final downloads = await Directory('${directory.path}/downloads').create();
+      await File('${directory.path}/streampath.exe').writeAsString('old exe');
+      await File(
+        '${directory.path}/streampath-release.json',
+      ).writeAsString('{}');
+      final helper = File('${directory.path}/streampath-updater.ps1');
+      final exitsEarly = scenario.startsWith('earlyExit');
+      final expectedExit = scenario == 'earlyExitZero' ? 0 : 23;
+      if (exitsEarly) {
+        await helper.writeAsString('exit $expectedExit');
+      } else {
+        await File('tools/streampath-updater.ps1').copy(helper.path);
+      }
+      final service = AppUpdateService(
+        appDirectory: directory,
+        version: AppReleaseVersion.parse('1.0.0+2'),
+        installed: false,
+      );
+      service.asset = AppUpdateAsset.fromRelease(
+        apiRelease(),
+        metadata(),
+        'portable',
+      );
+      service.package = await File(
+        '${downloads.path}/release.zip',
+      ).writeAsBytes(payload);
+      await service.cancelRestart();
+      const channel = MethodChannel('streampath/appearance');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      var closes = 0;
+      var rejectClose = scenario == 'closeFailure';
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        expect(call.method, 'close');
+        closes++;
+        if (rejectClose) throw PlatformException(code: 'close_rejected');
+        await service.confirmClosePrepared();
+        return null;
+      });
+      try {
+        final watch = Stopwatch()..start();
+        if (exitsEarly) {
+          await expectLater(
+            service.restartToUpdate(busyWithUserData: () async => false),
+            throwsA(
+              isA<ProcessException>().having(
+                (e) => e.errorCode,
+                'exit code',
+                expectedExit,
+              ),
+            ),
+          );
+          expect(watch.elapsed, lessThan(const Duration(seconds: 8)));
+          expect(closes, 0);
+          expect(service.status, AppUpdateStatus.ready);
+        } else {
+          if (rejectClose) {
+            await expectLater(
+              service.restartToUpdate(busyWithUserData: () async => false),
+              throwsA(isA<PlatformException>()),
+            );
+            expect(service.status, AppUpdateStatus.ready);
+            expect(
+              await File('${downloads.path}/helper-commit').exists(),
+              isFalse,
+            );
+            rejectClose = false;
+          }
+          await service.restartToUpdate(busyWithUserData: () async => false);
+          expect(service.status, AppUpdateStatus.installing);
+          expect(
+            await File('${downloads.path}/helper-commit').readAsString(),
+            'prepared',
+          );
+          expect(
+            await File('${directory.path}/streampath.exe').readAsString(),
+            'old exe',
+          );
+          expect(
+            await Directory('${directory.path}/.streampath-update').exists(),
+            isFalse,
+          );
+          await service.cancelRestart();
+          expect(service.status, AppUpdateStatus.ready);
+          expect(
+            await File('${downloads.path}/helper-commit').exists(),
+            isFalse,
+          );
+        }
+      } finally {
+        await service.cancelRestart();
+        messenger.setMockMethodCallHandler(channel, null);
+        service.dispose();
+        await directory.delete(recursive: true);
+      }
+    }, skip: !Platform.isWindows);
   }
 
   test('更新界面四语言覆盖且占位符一致', () {

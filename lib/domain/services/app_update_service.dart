@@ -206,6 +206,7 @@ class AppUpdateService extends ChangeNotifier {
   double progress = 0;
   bool previousUpdateFailed = false;
   File? _closeCommit;
+  Process? _helperProcess;
   bool _disposed = false;
   String get kind => installed ? 'installed' : 'portable';
   bool get busy =>
@@ -427,7 +428,7 @@ class AppUpdateService extends ChangeNotifier {
     );
     _setStatus(AppUpdateStatus.installing);
     try {
-      await Process.start(powershell, [
+      final process = await Process.start(powershell, [
         '-NoProfile',
         '-ExecutionPolicy',
         'Bypass',
@@ -451,9 +452,16 @@ class AppUpdateService extends ChangeNotifier {
         ready.path,
         '-CommitFile',
         commit.path,
-      ], mode: ProcessStartMode.detached);
+      ], mode: ProcessStartMode.normal);
+      _helperProcess = process;
+      // normal 在 Windows 后台运行；持续消费管道，助手在主程序退出后继续提交。
+      unawaited(process.stdout.drain<void>());
+      unawaited(process.stderr.drain<void>());
+      await process.stdin.close();
+      int? helperExitCode;
+      unawaited(process.exitCode.then((code) => helperExitCode = code));
       final deadline = DateTime.now().add(const Duration(seconds: 10));
-      while (!await ready.exists()) {
+      while (!await ready.exists() && helperExitCode == null) {
         if (DateTime.now().isAfter(deadline)) {
           throw const ProcessException(
             'powershell.exe',
@@ -462,6 +470,14 @@ class AppUpdateService extends ChangeNotifier {
           );
         }
         await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (helperExitCode != null) {
+        throw ProcessException(
+          powershell,
+          [],
+          'Update helper exited before closing the application',
+          helperExitCode!,
+        );
       }
       await const MethodChannel(
         'streampath/appearance',
@@ -472,6 +488,9 @@ class AppUpdateService extends ChangeNotifier {
     } on PlatformException {
       await cancelRestart();
       rethrow;
+    } on FileSystemException {
+      await cancelRestart();
+      rethrow;
     }
   }
 
@@ -479,6 +498,13 @@ class AppUpdateService extends ChangeNotifier {
       _closeCommit!.writeAsString('prepared');
 
   Future<void> cancelRestart() async {
+    // 父进程尚在运行时助手只等待关闭；取消时释放助手和更新互斥。
+    final helper = _helperProcess;
+    _helperProcess = null;
+    if (helper != null) {
+      helper.kill();
+      await helper.exitCode;
+    }
     final commit = _closeCommit;
     if (commit != null && await commit.exists()) await commit.delete();
     _closeCommit = null;

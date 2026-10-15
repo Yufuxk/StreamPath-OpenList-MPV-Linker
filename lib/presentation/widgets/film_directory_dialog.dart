@@ -94,16 +94,20 @@ class FilmDirectoryDialogState extends State<FilmDirectoryDialog> {
       height: MediaQuery.sizeOf(context).height * 0.45,
       child: Column(
         children: [
-          SelectableText(contextMenuBuilder: buildSPTextSelectionMenu, _path.isEmpty ? '/' : _path),
+          SelectableText(
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            _path.isEmpty ? '/' : _path,
+          ),
           if (_path != widget.boundaryPath)
-            TextButton(
+            TextButton.icon(
+              icon: const Icon(SPIcons.completed, size: 18),
               onPressed: _loading
                   ? null
                   : () {
                       final parts = _path.split('/')..removeLast();
                       _load(parts.join('/'));
                     },
-              child: const AppText('返回上级'),
+              label: const AppText('返回上级'),
             ),
           if (_unsupported) const AppText('影视库暂不收录 DVD 结构'),
           if (_error != null) AppText(filmCatalogErrorText(_error!)),

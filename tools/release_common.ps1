@@ -41,6 +41,18 @@ public static class StreamPathReleaseSecurity {
     }
 }
 
+function Initialize-StreamPathReleaseDirectory {
+    param([string]$Path, [string]$ProjectRoot)
+    $Directory = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $Created = -not (Test-Path -LiteralPath $Directory)
+    New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    $ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot 'build\releases')).TrimEnd('\')
+    # 只处理新建目录或项目专用发布目录，不改已有桌面等共享目录的继承标签。
+    if ($Created -or $Directory.StartsWith($ReleaseRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Repair-StreamPathReleaseIntegrity -Path $Directory
+    }
+}
+
 function Get-StreamPathVersion {
     param([string]$Version, [int]$BuildNumber = 1)
     if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?$') {

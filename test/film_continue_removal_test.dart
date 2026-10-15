@@ -27,6 +27,8 @@ import 'package:streampath/domain/services/tmdb_metadata_service.dart';
 import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
 import 'package:streampath/presentation/pages/film_library_shell.dart';
 import 'package:streampath/presentation/pages/film_media_center_page.dart';
+import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
@@ -342,6 +344,25 @@ void main() {
       }
       await settle();
       expect(find.text('删除并关闭播放器'), findsOneWidget);
+      for (final entry in tester.widgetList<PopupMenuItem<String>>(
+        find.byType(PopupMenuItem<String>),
+      )) {
+        expect(entry.child, isA<SPMenuItemContent>());
+      }
+      expect(
+        find.descendant(
+          of: find.widgetWithText(SPMenuItemContent, '刷新播放状态'),
+          matching: find.byIcon(SPIcons.refresh),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.widgetWithText(SPMenuItemContent, '删除并关闭播放器'),
+          matching: find.byIcon(SPIcons.delete),
+        ),
+        findsOneWidget,
+      );
       final firstItem = tester.getRect(
         find.byType(PopupMenuItem<String>).first,
       );

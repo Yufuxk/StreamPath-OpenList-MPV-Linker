@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'sp_menu.dart';
 import 'film_playlist_dialog.dart';
 import '../../data/models/film_playlist.dart';
@@ -30,8 +31,14 @@ Future<void> showFilmWatchMenu(
       Offset.zero & overlay.size,
     ),
     items: [
-      const PopupMenuItem(value: 'watched', child: AppText('标记已看完')),
-      const PopupMenuItem(value: 'unwatched', child: AppText('标记未观看')),
+      const PopupMenuItem(
+        value: 'watched',
+        child: SPMenuItemContent(icon: SPIcons.view, child: AppText('标记已看完')),
+      ),
+      const PopupMenuItem(
+        value: 'unwatched',
+        child: SPMenuItemContent(icon: SPIcons.hide, child: AppText('标记未观看')),
+      ),
       if (playlistScope != null) ...[
         PopupMenuItem(
           value: 'playlist',
@@ -41,7 +48,10 @@ Future<void> showFilmWatchMenu(
                 r.availability == 'present' &&
                 r.episode != null,
           ),
-          child: const AppText('以本季创建播放列表'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.list,
+            child: AppText('以本季创建播放列表'),
+          ),
         ),
         PopupMenuItem(
           value: 'addPlaylist',
@@ -51,7 +61,10 @@ Future<void> showFilmWatchMenu(
                 r.availability == 'present' &&
                 r.episode != null,
           ),
-          child: const AppText('加入播放列表…'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.add,
+            child: AppText('加入播放列表…'),
+          ),
         ),
       ],
     ],
@@ -103,6 +116,7 @@ Future<String?> selectFilmActionSource(
             children: [
               for (final id in sources)
                 ListTile(
+                  leading: const Icon(SPIcons.network),
                   title: Text(
                     resources.firstWhere((r) => r.sourceId == id).rootName,
                   ),

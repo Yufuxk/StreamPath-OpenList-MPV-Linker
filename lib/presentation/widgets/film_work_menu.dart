@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'sp_menu.dart';
 import 'film_collection_dialog.dart';
 import 'film_watch_menu.dart';
@@ -71,45 +72,75 @@ Future<void> showFilmWorkMenu(
     ),
     items: [
       if (onRemove != null)
-        const PopupMenuItem(value: _WorkAction.remove, child: AppText('移除成员')),
+        const PopupMenuItem(
+          value: _WorkAction.remove,
+          child: SPMenuItemContent(
+            icon: SPIcons.delete,
+            child: AppText('移除成员'),
+          ),
+        ),
       if (onRemove == null) ...[
         const PopupMenuItem(
           value: _WorkAction.collection,
-          child: AppText('加入合集'),
+          child: SPMenuItemContent(
+            icon: SPIcons.library,
+            child: AppText('加入合集'),
+          ),
         ),
         if (watchable) ...[
           const PopupMenuItem(
             value: _WorkAction.watched,
-            child: AppText('标记已看完'),
+            child: SPMenuItemContent(
+              icon: SPIcons.view,
+              child: AppText('标记已看完'),
+            ),
           ),
           const PopupMenuItem(
             value: _WorkAction.unwatched,
-            child: AppText('标记未观看'),
+            child: SPMenuItemContent(
+              icon: SPIcons.hide,
+              child: AppText('标记未观看'),
+            ),
           ),
         ],
         PopupMenuItem(
           value: _WorkAction.favorite,
-          child: AppText(favorite ? '取消收藏' : '收藏'),
+          child: SPMenuItemContent(
+            icon: favorite ? SPIcons.favoriteFill : SPIcons.favorite,
+            child: AppText(favorite ? '取消收藏' : '收藏'),
+          ),
         ),
         PopupMenuItem(
           value: _WorkAction.refresh,
           enabled: !refreshing,
-          child: const AppText('刷新元数据'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.refresh,
+            child: AppText('刷新元数据'),
+          ),
         ),
         const PopupMenuItem(
           value: _WorkAction.correct,
-          child: AppText('纠正作品匹配'),
+          child: SPMenuItemContent(
+            icon: SPIcons.manageSearch,
+            child: AppText('纠正作品匹配'),
+          ),
         ),
       ],
       PopupMenuItem(
         value: _WorkAction.playlist,
         enabled: playlistable,
-        child: const AppText('以本作品创建播放列表'),
+        child: const SPMenuItemContent(
+          icon: SPIcons.list,
+          child: AppText('以本作品创建播放列表'),
+        ),
       ),
       PopupMenuItem(
         value: _WorkAction.addPlaylist,
         enabled: playlistable,
-        child: const AppText('加入播放列表…'),
+        child: const SPMenuItemContent(
+          icon: SPIcons.add,
+          child: AppText('加入播放列表…'),
+        ),
       ),
     ],
   );

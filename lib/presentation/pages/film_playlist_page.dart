@@ -266,33 +266,54 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
         PopupMenuItem(
           value: 'refresh',
           enabled: workIds.isNotEmpty,
-          child: const AppText('刷新元数据'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.refresh,
+            child: AppText('刷新元数据'),
+          ),
         ),
         PopupMenuItem(
           value: 'watched',
           enabled: resources.any((r) => r.canMarkWatched),
-          child: const AppText('标记已看完'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.view,
+            child: AppText('标记已看完'),
+          ),
         ),
         PopupMenuItem(
           value: 'unwatched',
           enabled: resources.any((r) => r.canMarkWatched),
-          child: const AppText('标记未看完'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.hide,
+            child: AppText('标记未看完'),
+          ),
         ),
         PopupMenuItem(
           value: 'addPlaylist',
           enabled: entries.isNotEmpty,
-          child: const AppText('加入播放列表…'),
+          child: const SPMenuItemContent(
+            icon: SPIcons.add,
+            child: AppText('加入播放列表…'),
+          ),
         ),
         PopupMenuItem(
           value: 'playlist',
           enabled: entries.isNotEmpty,
-          child: AppText(entryId == null ? '以本列表创建播放列表' : '以本集创建播放列表'),
+          child: SPMenuItemContent(
+            icon: SPIcons.list,
+            child: AppText(entryId == null ? '以本列表创建播放列表' : '以本集创建播放列表'),
+          ),
         ),
         if (entryId == null || !list.readOnly) const PopupMenuDivider(),
         if (entryId == null)
           ..._actions(list)
         else if (!list.readOnly)
-          const PopupMenuItem(value: 'remove', child: AppText('移除成员')),
+          const PopupMenuItem(
+            value: 'remove',
+            child: SPMenuItemContent(
+              icon: SPIcons.delete,
+              child: AppText('移除成员'),
+            ),
+          ),
       ],
     );
     if (!mounted) return;
@@ -332,10 +353,27 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
   }
 
   List<PopupMenuEntry<String>> _actions(FilmPlaylist list) => list.readOnly
-      ? [const PopupMenuItem(value: 'copy', child: AppText('复制为自定义播放列表'))]
+      ? [
+          const PopupMenuItem(
+            value: 'copy',
+            child: SPMenuItemContent(
+              icon: SPIcons.copy,
+              child: AppText('复制为自定义播放列表'),
+            ),
+          ),
+        ]
       : [
-          const PopupMenuItem(value: 'rename', child: AppText('重命名')),
-          const PopupMenuItem(value: 'delete', child: AppText('删除播放列表')),
+          const PopupMenuItem(
+            value: 'rename',
+            child: SPMenuItemContent(icon: SPIcons.edit, child: AppText('重命名')),
+          ),
+          const PopupMenuItem(
+            value: 'delete',
+            child: SPMenuItemContent(
+              icon: SPIcons.delete,
+              child: AppText('删除播放列表'),
+            ),
+          ),
         ];
   @override
   Widget build(BuildContext context) => StreamPathTransitionBuilder(
@@ -658,7 +696,10 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                     itemBuilder: (_) => [
                       const PopupMenuItem(
                         value: 'remove',
-                        child: AppText('移除成员'),
+                        child: SPMenuItemContent(
+                          icon: SPIcons.delete,
+                          child: AppText('移除成员'),
+                        ),
                       ),
                     ],
                     onSelected: (_) async {
@@ -702,7 +743,10 @@ Future<String?> _playlistName(
           controller: controller,
           autofocus: true,
           contextMenuBuilder: buildSPTextSelectionMenu,
-          decoration: InputDecoration(labelText: ctx.l10n.text('播放列表名称')),
+          decoration: InputDecoration(
+            prefixIcon: const Icon(SPIcons.edit),
+            labelText: ctx.l10n.text('播放列表名称'),
+          ),
         ),
       ),
       actions: [

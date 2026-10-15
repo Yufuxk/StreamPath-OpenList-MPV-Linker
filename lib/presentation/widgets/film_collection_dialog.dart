@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'package:flutter/material.dart';
 import '../../data/models/film_collection.dart';
 import '../../data/local/film_catalog_store.dart';
@@ -7,6 +8,7 @@ import '../localization/app_localizations.dart';
 import 'directory_scroll_view.dart';
 import 'glass_dialog.dart';
 import 'sp_dialog.dart';
+import 'sp_menu.dart';
 
 Future<void> showAddToFilmCollection(
   BuildContext context,
@@ -87,6 +89,7 @@ class _CollectionDialogState extends State<_CollectionDialog> {
                 controller: controller,
                 itemCount: _collections.length,
                 itemBuilder: (_, i) => ListTile(
+                  leading: const Icon(SPIcons.library),
                   title: Text(_collections[i].name),
                   onTap: _busy ? null : () => _add(_collections[i].id),
                 ),
@@ -96,7 +99,11 @@ class _CollectionDialogState extends State<_CollectionDialog> {
           TextField(
             controller: _name,
             enabled: !_busy,
-            decoration: InputDecoration(labelText: context.l10n.text('合集名称')),
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(SPIcons.library),
+              labelText: context.l10n.text('合集名称'),
+            ),
           ),
         ],
       ),

@@ -46,7 +46,7 @@ foreach ($CompressionName in @('islzma32.exe', 'islzma64.exe')) {
 $AssetName = "StreamPath.$($Options.Date).V$($Options.Version.Display).setup.exe"
 $AssetPath = Join-Path $OutputDirectory $AssetName
 if (Test-Path -LiteralPath $AssetPath) { throw "Release asset already exists: $AssetPath" }
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+Initialize-StreamPathReleaseDirectory -Path $OutputDirectory -ProjectRoot $ProjectRoot
 & (Join-Path $PSScriptRoot 'build.ps1') -Mode release -SkipPackage -Version $Options.Version.Name -BuildNumber $Options.Version.Build -SkipAnalyze:$SkipAnalyze
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Compiler "/DSourceDir=$Source" "/DOutputDir=$OutputDirectory" "/DOutputName=$([IO.Path]::GetFileNameWithoutExtension($AssetName))" "/DAppVersion=$($Options.Version.Name)" "/DDisplayVersion=$($Options.Version.Display)" "/DWindowsVersion=$($Options.Version.Windows)" (Join-Path $PSScriptRoot 'installer\StreamPath.iss')

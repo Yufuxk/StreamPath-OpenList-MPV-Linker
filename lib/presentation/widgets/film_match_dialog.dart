@@ -1,3 +1,4 @@
+import 'sp_icons.dart';
 import 'sp_menu.dart';
 import 'directory_scroll_view.dart';
 import 'package:flutter/material.dart';
@@ -202,26 +203,39 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
           builder: (scrollController) => ListView(
             controller: scrollController,
             children: [
-              SelectableText(contextMenuBuilder: buildSPTextSelectionMenu, widget.resource.path),
+              SelectableText(
+                contextMenuBuilder: buildSPTextSelectionMenu,
+                widget.resource.path,
+              ),
               if (_hint.conflicting) const AppText('文件与目录中的 TMDB ID 冲突，请人工确认'),
               const SizedBox(height: 12),
               TextField(
+                contextMenuBuilder: buildSPTextSelectionMenu,
                 controller: _query,
                 onSubmitted: (_) => _loading ? null : _search(),
-                decoration: const InputDecoration(label: AppText('搜索作品名称')),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(SPIcons.search),
+                  label: AppText('搜索作品名称'),
+                ),
               ),
-              TextButton(
+              TextButton.icon(
+                icon: const Icon(SPIcons.search, size: 18),
                 onPressed: _loading ? null : _search,
-                child: const AppText('搜索候选'),
+                label: const AppText('搜索候选'),
               ),
               TextField(
+                contextMenuBuilder: buildSPTextSelectionMenu,
                 controller: _id,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(label: AppText('明确 TMDB ID')),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(SPIcons.label),
+                  label: AppText('明确 TMDB ID'),
+                ),
               ),
-              TextButton(
+              TextButton.icon(
+                icon: const Icon(SPIcons.search, size: 18),
                 onPressed: _loading ? null : _lookup,
-                child: const AppText('核验 ID'),
+                label: const AppText('核验 ID'),
               ),
               if (_loading) const LinearProgressIndicator(),
               if (_error != null) AppText(filmCatalogErrorText(_error!)),
@@ -244,9 +258,10 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
                       : () => setState(() => _selected = result),
                 ),
               if (_more)
-                TextButton(
+                TextButton.icon(
+                  icon: const Icon(SPIcons.more, size: 18),
                   onPressed: _loading ? null : () => _search(more: true),
-                  child: const AppText('加载更多'),
+                  label: const AppText('加载更多'),
                 ),
               if (widget.resource.type == FilmMediaType.tv) ...[
                 const Divider(),
@@ -263,6 +278,7 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
                 ),
                 if (_folder)
                   SPDropdownButtonFormField<String>(
+                    menuIcon: SPIcons.folder,
                     dropdownColor: AppTheme.dropdownMenuColor(
                       Theme.of(context),
                     ),
@@ -425,21 +441,30 @@ class _FilmEpisodeDialogState extends State<_FilmEpisodeDialog> {
           controller: scrollController,
           children: [
             TextField(
+              contextMenuBuilder: buildSPTextSelectionMenu,
               controller: _season,
               onChanged: _invalidate,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(label: AppText('季号（0 为特别篇）')),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(SPIcons.sort),
+                label: AppText('季号（0 为特别篇）'),
+              ),
             ),
             const SizedBox(height: 12),
             TextField(
+              contextMenuBuilder: buildSPTextSelectionMenu,
               controller: _episode,
               onChanged: _invalidate,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(label: AppText('首个集号')),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(SPIcons.sort),
+                label: AppText('首个集号'),
+              ),
             ),
-            TextButton(
+            TextButton.icon(
+              icon: const Icon(SPIcons.completed, size: 18),
               onPressed: _loading ? null : _makePreview,
-              child: const AppText('生成映射预览'),
+              label: const AppText('生成映射预览'),
             ),
             const AppText('逐行确认真实文件与目标集；仅保存已勾选行'),
             const AppText('TMDB 未收录的集使用作品名称和图片'),

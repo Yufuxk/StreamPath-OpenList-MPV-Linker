@@ -364,7 +364,10 @@ abstract final class AppTheme {
         fillColor: glass
             ? glassTokens.raisedSurface
             : glassTokens.contentSurface,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
         constraints: const BoxConstraints(minHeight: controlHeight),
         prefixIconConstraints: const BoxConstraints(
           minWidth: 40,
