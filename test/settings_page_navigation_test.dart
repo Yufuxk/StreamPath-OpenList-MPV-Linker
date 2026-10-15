@@ -1,4 +1,5 @@
 import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'helpers/pump_until.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -16,11 +17,13 @@ import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
+import 'package:streampath/data/models/accent_color_preset.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
+import 'package:streampath/data/models/video_playlist_mode.dart';
 import 'package:streampath/domain/services/cache_cleanup_service.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
@@ -342,6 +345,77 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('小数番外开关默认关闭，可保存开启并重新加载', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(
+      const Key('video-playlist-insert-decimal-episodes'),
+    );
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    for (
+      var i = 0;
+      i < 30 && !configStore.current.videoPlaylistInsertDecimalEpisodes;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+    }
+    expect(configStore.current.videoPlaylistInsertDecimalEpisodes, isTrue);
+    final saved = await tester.runAsync(configStore.load);
+    expect(saved!.videoPlaylistInsertDecimalEpisodes, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('小数番外开关四语言窄窗放大正常，传统模式禁用并保留选择', (tester) async {
+    tester.view.physicalSize = const Size(640, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    for (final language in AppLanguage.values) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      SettingsPageMemory.select(SettingsSection.playback);
+      await tester.pumpWidget(
+        buildSettings(language: language, textScale: 1.5),
+      );
+      await tester.pumpAndSettle();
+      final toggle = find.byKey(
+        const Key('video-playlist-insert-decimal-episodes'),
+      );
+      await tester.ensureVisible(toggle);
+      expect(
+        find.text(AppLocalizations(language).text('按小数集号插入番外篇')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull, reason: language.name);
+    }
+    final toggle = find.byKey(
+      const Key('video-playlist-insert-decimal-episodes'),
+    );
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    final mode = find.byType(SPDropdownButtonFormField<VideoPlaylistMode>);
+    await tester.ensureVisible(mode);
+    await tester.tap(mode);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Legacy full playlist').last);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(toggle).onChanged, isNull);
+    expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('深色设置按钮对比色与导航图标保持主题层级', (tester) async {
     await tester.pumpWidget(
       buildSettings(
@@ -425,6 +499,68 @@ void main() {
       SidebarDisplayMode.autoHide,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('强调色可保存、重新加载并切回蓝色，保留其他外观设置', (tester) async {
+    await tester.pumpWidget(buildSettings(theme: AppTheme.dark()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    for (final entry in [
+      for (final preset in AccentColorPreset.values.reversed)
+        (preset.argb, preset.label),
+    ]) {
+      final selector = find.byKey(const Key('accent-color-selector'));
+      await tester.ensureVisible(selector);
+      await tester.tap(selector);
+      await tester.pumpAndSettle();
+      final choice = find.text(entry.$2).last;
+      await tester.ensureVisible(choice);
+      await tester.tap(choice);
+      await tester.pumpAndSettle();
+      final save = tester.widget<FilledButton>(
+        find.byKey(const Key('save-settings-button')),
+      );
+      await tester.runAsync(() async {
+        save.onPressed!();
+        for (var i = 0; i < 200; i++) {
+          if (configStore.current.appearance.accentColor == entry.$1) break;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      });
+      await tester.pump();
+      await pumpUntil(
+        tester,
+        () =>
+            tester
+                .widget<FilledButton>(
+                  find.byKey(const Key('save-settings-button')),
+                )
+                .onPressed !=
+            null,
+        reason: 'Saving all settings must finish before the page is reloaded',
+      );
+      await tester.pumpAndSettle();
+      expect(configStore.current.appearance.accentColor, entry.$1);
+      expect(appearanceController.config.accentColor, entry.$1);
+      final readback = StreamPathConfigStore.forPath(
+        configStore.configFilePath,
+      );
+      await tester.runAsync(() => readback.load());
+      expect(readback.current.appearance.accentColor, entry.$1);
+      expect(appearanceDriver.applied, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(buildSettings(theme: AppTheme.dark()));
+      await pumpUntil(
+        tester,
+        () => selector.evaluate().isNotEmpty,
+        reason: 'Reloaded appearance settings must finish reading their drafts',
+      );
+      await tester.pumpAndSettle();
+      final field = tester.widget<SPDropdownButtonFormField<int>>(selector);
+      expect(field.initialValue, entry.$1);
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('界面页从系统字体列表选择字体并保存', (tester) async {

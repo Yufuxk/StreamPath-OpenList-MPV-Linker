@@ -743,6 +743,39 @@ class BrowserPageState extends State<BrowserPage> {
     await _openLibraryItem(item, resumeSessionId: resumeSessionId);
   }
 
+  /// 空白菜单与单条续播菜单共用会话刷新流程。
+  Future<void> refreshLibraryPlaybackStatuses() async {
+    await _sessionsLoaded;
+    if (!mounted) return;
+    final ids = {
+      for (final session in _playbackSessions) session.history.sessionId,
+      for (final entry in _localDiscContinue)
+        if (entry.record.playbackSessionId != null)
+          entry.record.playbackSessionId!,
+    };
+    for (final id in ids) {
+      await _refreshLibraryPlaybackStatus(id);
+      if (!mounted) return;
+    }
+    if (_isLocal) await _refreshLocalDiscContinue();
+  }
+
+  Future<void> _refreshLibraryPlaybackStatus(String id) async {
+    await _playerService.refreshPlaybackStatus(id);
+    final session = _sessionById(id);
+    if (session != null) {
+      if (session.history.kind == PlaybackHistoryKind.video) {
+        await _syncPlaybackSession(session);
+      } else {
+        await _syncIsoPlaybackSession(session);
+      }
+    }
+    if (_isLocal && session == null) {
+      await _localDiscPlaybackService.refreshPlaybackStatus(id);
+    }
+    if (mounted) setState(() {});
+  }
+
   Future<void> showLibraryPlaybackMenu(
     MediaLibraryRecord record,
     Offset position,
@@ -807,19 +840,7 @@ class BrowserPageState extends State<BrowserPage> {
     switch (selected) {
       case 'refresh':
         if (record.playbackSessionId != null) {
-          await _playerService.refreshPlaybackStatus(record.playbackSessionId!);
-          if (session != null) {
-            if (session.history.kind == PlaybackHistoryKind.video) {
-              await _syncPlaybackSession(session);
-            } else {
-              await _syncIsoPlaybackSession(session);
-            }
-          }
-          if (discEntry != null) {
-            await _localDiscPlaybackService.refreshPlaybackStatus(
-              record.playbackSessionId!,
-            );
-          }
+          await _refreshLibraryPlaybackStatus(record.playbackSessionId!);
         }
         if (mounted) setState(() {});
       case 'watched':
@@ -3140,18 +3161,14 @@ class BrowserPageState extends State<BrowserPage> {
         workId: mapped!.workId!,
         enabledOnly: widget.playbackOnly,
       );
-      final seasons = <int, Map<String, dynamic>>{};
-      for (final number
-          in resources.map((r) => r.season).whereType<int>().toSet()) {
-        final metadata = await store.season(mapped.workId!, number);
-        if (metadata != null) seasons[number] = metadata;
-      }
+      final seasons = await store.seasons(mapped.workId!);
       items = buildFilmVideoTimeline(
         resources,
         seasons,
         selectedPath: targetPath,
         autoSeason: config.autoSeasonTransitionEnabled,
         allowGap: config.allowSeasonGap,
+        insertDecimalEpisodes: config.videoPlaylistInsertDecimalEpisodes,
       );
     }
     if (!custom &&

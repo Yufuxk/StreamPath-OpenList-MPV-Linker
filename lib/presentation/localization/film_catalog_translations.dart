@@ -249,6 +249,16 @@ const filmCatalogTranslations = <String, List<String>>{
   "传统完整播放列表": ["傳統完整播放清單", "従来の全項目プレイリスト", "Legacy full playlist"],
   "隐式播放列表": ["隱式播放清單", "暗黙のプレイリスト", "Implicit playlist"],
   "视频播放列表模式": ["影片播放清單模式", "動画プレイリストモード", "Video playlist mode"],
+  '按小数集号插入番外篇': [
+    '按小數集號插入番外篇',
+    '小数の話数に合わせて特別編を挿入',
+    'Insert specials by decimal episode number',
+  ],
+  '仅用于已识别剧集的隐式播放列表；季归属明确且在集数范围内时，忽略首播日期插入正片之间': [
+    '僅用於已識別劇集的隱式播放清單；季歸屬明確且在集數範圍內時，忽略首播日期插入正片之間',
+    '識別済みシリーズの暗黙のプレイリストのみ。シーズンが明確で話数の範囲内なら、放送日によらず本編の間に挿入します',
+    'For identified series in implicit playlists. Inserts specials between regular episodes regardless of air date when the season is clear and the number is within its episode range',
+  ],
   "无法切换播放集数，请关闭播放器后重试": [
     "無法切換播放集數，請關閉播放器後重試",
     "エピソードを切り替えられません。プレーヤーを閉じて再試行してください",

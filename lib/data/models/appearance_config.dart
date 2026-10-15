@@ -1,3 +1,5 @@
+import 'accent_color_preset.dart';
+
 /// 可选的界面样式。
 enum InterfaceStyle {
   /// 保留现有的不透明界面。
@@ -30,6 +32,7 @@ class AppearanceConfig {
     this.material = WindowMaterialPreference.automatic,
     this.glassOpacity = defaultGlassOpacity,
     this.fontFamily,
+    this.accentColor = defaultAccentColor,
     this.sidebarMode = SidebarDisplayMode.pinned,
     this.sidebarCompact = false,
     this.directoryMemoryMode = DirectoryMemoryMode.temporary,
@@ -48,6 +51,9 @@ class AppearanceConfig {
 
   /// 界面字体；null 表示使用系统推荐的 Segoe UI 系列。
   final String? fontFamily;
+
+  /// 不透明 ARGB 强调色，与预设列表独立保存。
+  final int accentColor;
   final SidebarDisplayMode sidebarMode;
   final bool sidebarCompact;
   final DirectoryMemoryMode directoryMemoryMode;
@@ -61,6 +67,7 @@ class AppearanceConfig {
     'material': material.name,
     'glassOpacity': glassOpacity,
     'fontFamily': fontFamily,
+    'accentColor': accentColor,
     'sidebarMode': sidebarMode.name,
     'sidebarCompact': sidebarCompact,
     'directoryMemoryMode': directoryMemoryMode.name,
@@ -86,10 +93,15 @@ class AppearanceConfig {
     final opacity = (parsedOpacity ?? defaultGlassOpacity)
         .clamp(minGlassOpacity, maxGlassOpacity)
         .toDouble();
+    final rawAccent = json['accentColor'];
     return AppearanceConfig(
       style: style,
       material: material,
       glassOpacity: opacity,
+      accentColor:
+          rawAccent is int && rawAccent >= 0xFF000000 && rawAccent <= 0xFFFFFFFF
+          ? rawAccent
+          : AccentColorPreset.blue.argb,
       fontFamily:
           json['fontFamily'] is String &&
               (json['fontFamily'] as String).isNotEmpty
@@ -107,6 +119,7 @@ class AppearanceConfig {
   }
 
   AppearanceConfig copyWith({
+    int? accentColor,
     SidebarDisplayMode? sidebarMode,
     bool? sidebarCompact,
     DirectoryMemoryMode? directoryMemoryMode,
@@ -115,6 +128,7 @@ class AppearanceConfig {
     material: material,
     glassOpacity: glassOpacity,
     fontFamily: fontFamily,
+    accentColor: accentColor ?? this.accentColor,
     sidebarMode: sidebarMode ?? this.sidebarMode,
     sidebarCompact: sidebarCompact ?? this.sidebarCompact,
     directoryMemoryMode: directoryMemoryMode ?? this.directoryMemoryMode,

@@ -1,9 +1,9 @@
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../localization/app_localizations.dart';
+import 'film_detail_buttons.dart';
 import 'sp_back_icon.dart';
 
 class FilmDetailBackButton extends StatefulWidget {
@@ -45,6 +45,7 @@ class _FilmDetailBackButtonState extends State<FilmDetailBackButton> {
   @override
   Widget build(BuildContext context) {
     final visible = _scrolling || _hovered || _focused;
+    final actionStyle = FilmDetailActionButton.styleOf(context);
     return MouseRegion(
       key: const Key('film-detail-back-region'),
       onEnter: (_) => setState(() => _hovered = true),
@@ -59,20 +60,18 @@ class _FilmDetailBackButtonState extends State<FilmDetailBackButton> {
             curve: Curves.easeOut,
             child: IgnorePointer(
               ignoring: !visible,
-              child: ClipOval(
-                child: BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                  child: Material(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.onSurface.withValues(alpha: .08),
-                    child: IconButton(
-                      key: const Key('film-detail-back'),
-                      tooltip: context.l10n.text('返回'),
-                      icon: const SPBackIcon(),
-                      onPressed: () => Navigator.of(context).maybePop(),
-                    ),
+              child: FilmDetailActionSurface(
+                radius: 999,
+                child: IconButton(
+                  key: const Key('film-detail-back'),
+                  tooltip: context.l10n.text('返回'),
+                  style: ButtonStyle(
+                    backgroundColor: actionStyle.backgroundColor,
+                    side: actionStyle.side,
+                    shape: const WidgetStatePropertyAll(CircleBorder()),
                   ),
+                  icon: const SPBackIcon(),
+                  onPressed: () => Navigator.of(context).maybePop(),
                 ),
               ),
             ),

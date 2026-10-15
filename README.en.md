@@ -1,3 +1,4 @@
+
 <h1 align="center">StreamPath</h1>
 
 <p align="center">Browse network storage, local media, and media servers on Windows, with playback powered by MPV.</p>
@@ -23,13 +24,13 @@
 
 ## What Can StreamPath Do?
 
-| Feature                | Description                                                                                                                                                |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 🎬 Media Library       | Browse movies, TV series, collections, daily picks, title details, and episodes. Supports TMDB and local NFO metadata.                                     |
-| 🌐 Multiple Sources    | Browse WebDAV, SMB, FTP/FTPS, NFS, and local folders, or connect to Jellyfin and Emby.                                                                     |
-| ▶️ Video & Music       | Play video, audio, and STRM files using MPV. Supports resume playback, automatic episode transitions, external subtitles and fonts, lyrics, and cover art. |
-| 💿 Blu-ray             | Local ISO/BDMV sources support menu or main-title playback. WebDAV supports title-based playback, while HDMV menus are experimental.                       |
-| 🕘 Favorites & History | Browse favorites, resume playback, and recently played items by source. Import and export selected categories of metadata and personal states.             |
+| Feature | Description |
+| --- | --- |
+| 🎬 Media Library | Browse movies, TV series, collections, daily picks, title details, and episodes. Supports TMDB and local NFO metadata. |
+| 🌐 Multiple Sources | Browse WebDAV, SMB, FTP/FTPS, NFS, and local folders, or connect to Jellyfin and Emby. |
+| ▶️ Video & Music | Play video, audio, and STRM files using MPV. Supports resume playback, automatic episode transitions, external subtitles and fonts, lyrics, and cover art. |
+| 💿 Blu-ray | Local ISO/BDMV sources support menu or main-title playback. WebDAV supports title-based playback, while HDMV menus are experimental. |
+| 🕘 Favorites & History | Browse favorites, resume playback, and recently played items by source. Import and export selected categories of metadata and personal states. |
 
 The interface supports Simplified Chinese, Traditional Chinese, Japanese, and English. OpenList/AList can be accessed through WebDAV. Features such as search and recovery depend on server capabilities.
 
@@ -108,9 +109,19 @@ For more details, see [Custom Playlist Documentation](docs/影视库自定义播
 
 The details page provides **Start Playback** or **Resume Playback**. TV series start from S01E01 by default.
 
-The Continue Watching and Recently Played menus allow you to refresh playback status or mark content as watched. When another episode is available, resume playback automatically advances to the next episode.
+The Continue Watching and Recently Played menus allow you to refresh playback status or mark content as watched. Right-click an empty area of the media library and select **Refresh Playback Status** to refresh all playback sessions at once.
+
+When another episode is available, resume playback automatically advances to the next episode.
 
 Media duration is taken from probing results when available; otherwise, official metadata is used.
+
+Go to **Settings → Playback → Playback Behavior** to enable **Insert Specials by Decimal Episode Number** (disabled by default).
+
+For recognized TV series, implicit playlists use decimal episode numbers found in special episode metadata titles to insert specials such as Episode 11.5 between the corresponding regular episodes.
+
+If the season assignment is unclear or the episode number falls outside the season's range, the original air-date ordering is preserved.
+
+Changes take effect when a new playback session starts after saving the setting. Custom playlists retain their original order.
 
 **Spoiler Protection** can be enabled in the media library settings. Covers and descriptions of unwatched titles are masked and can be temporarily revealed using **Reveal Spoilers**. The mask is restored when content is marked as unwatched.
 
@@ -119,6 +130,10 @@ ZIP backups can be imported or exported from the media library settings. Exporte
 During import, you can select categories and source mappings. Local data takes precedence in case of conflicts, and repeated imports do not create duplicate records.
 
 Backups do not include passwords, active players, temporary playback URLs, or custom playlists. Watched status cannot be imported during playback.
+
+Go to **Settings → Interface → Interface Style** to select and save an accent color. Available colors include blue, cyan, green, lime, yellow, orange, pink, magenta, purple, and white. Blue is the default.
+
+The white accent appears white in dark mode and uses a distinguishable neutral color in light mode.
 
 ## Compatibility & Data Storage
 

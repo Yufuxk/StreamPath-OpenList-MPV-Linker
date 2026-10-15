@@ -178,6 +178,202 @@ void main() {
     child: MaterialApp(theme: AppTheme.dark(), home: home),
   );
 
+  testWidgets('season hover stays inside its fixed selection frame', (
+    tester,
+  ) async {
+    await prepare(tester);
+    final workId = (await tester.runAsync(() async {
+      final rootId = await catalog.store.addRoot(
+        sourceId: 'local:season-clip',
+        kind: MediaSourceKind.local,
+        path: 'TV',
+        type: FilmMediaType.tv,
+        name: 'Season clip',
+      );
+      final root = (await catalog.store.root(rootId))!;
+      final generation = await catalog.store.beginScan(rootId);
+      await catalog.store.stage(root, generation, [
+        const FilmScanEntry(
+          path: 'TV/E1.mkv',
+          parentPath: 'TV',
+          name: 'E1.mkv',
+          mediaKind: 'video',
+        ),
+      ]);
+      await catalog.store.commitScan(
+        rootId,
+        generation,
+        cancelled: () => false,
+      );
+      final resource = (await catalog.store.resources(rootId: rootId)).single;
+      await catalog.store.bind(
+        [resource],
+        FilmWork(
+          type: FilmMediaType.tv,
+          tmdbId: 888,
+          title: 'Season clip fixture',
+          originalTitle: 'Season clip fixture',
+          overview: '',
+          language: 'en',
+          posterPath: works.first.posterPath,
+        ),
+      );
+      final bound = (await catalog.store.resources()).singleWhere(
+        (r) => r.id == resource.id,
+      );
+      await catalog.store.mapEpisodes({bound: (1, 1)});
+      return bound.workId!;
+    }))!;
+    final boundary = GlobalKey();
+    await tester.pumpWidget(
+      frame(
+        RepaintBoundary(
+          key: boundary,
+          child: FilmDetailPage(
+            catalog: catalog,
+            workId: workId,
+            onOpenItem: (_) async {},
+          ),
+        ),
+      ),
+    );
+    await settle(tester);
+    final season = find.byKey(const ValueKey('film-season-1'));
+    await tester.ensureVisible(season);
+    await settle(tester);
+    final frameFinder = find
+        .descendant(of: season, matching: find.byType(InkWell))
+        .first;
+    final rect = tester.getRect(frameFinder);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1200, 850));
+    final samples = <ByteData>[];
+    var imageWidth = 0;
+    for (final hovered in [false, true]) {
+      if (hovered) await mouse.moveTo(rect.center);
+      await tester.pumpAndSettle();
+      final image = (await tester.runAsync(
+        () =>
+            (boundary.currentContext!.findRenderObject()
+                    as RenderRepaintBoundary)
+                .toImage(),
+      ))!;
+      imageWidth = image.width;
+      samples.add(
+        (await tester.runAsync(
+          () async =>
+              (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!,
+        ))!,
+      );
+      image.dispose();
+    }
+    for (final x in [(rect.left - 2).floor(), (rect.right + 1).ceil()]) {
+      for (var y = (rect.top + 50).ceil(); y < (rect.top + 120).floor(); y++) {
+        for (var c = 0; c < 3; c++) {
+          final offset = (y * imageWidth + x) * 4 + c;
+          expect(
+            samples.last.getUint8(offset),
+            closeTo(samples.first.getUint8(offset), 1),
+            reason: 'season escapes frame at ($x, $y)',
+          );
+        }
+      }
+    }
+    expect(tester.getRect(frameFinder), rect);
+    await mouse.removePointer();
+  });
+
+  testWidgets('episode hover does not paint the fixed border over artwork', (
+    tester,
+  ) async {
+    await prepare(tester);
+    final resource = (await tester.runAsync(
+      () => catalog.store.resources(),
+    ))!.first;
+    await tester.runAsync(() async {
+      final original = (await catalog.images.cached(
+        works.first.backdropPath!,
+        'original',
+      ))!;
+      await original.copy(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(works.first.backdropPath!, 'w780')}.img',
+        ),
+      );
+    });
+    final boundary = GlobalKey();
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1000, 800));
+    for (final dpr in [1.0, 1.25, 1.5, 2.0]) {
+      tester.view.devicePixelRatio = dpr;
+      for (final selected in [false, true]) {
+        await mouse.moveTo(const Offset(1000, 800));
+        await tester.pumpWidget(
+          frame(
+            Scaffold(
+              body: RepaintBoundary(
+                key: boundary,
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: SizedBox(
+                      width: 320,
+                      child: FilmEpisodeCard(
+                        catalog: catalog,
+                        resource: resource,
+                        state: '可用',
+                        artworkPath: works.first.backdropPath,
+                        selected: selected,
+                        onOpenItem: (_) async {},
+                        onChanged: () async {},
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await settle(tester);
+        final card = tester.getRect(
+          find
+              .descendant(
+                of: find.byKey(ValueKey('film-resource-${resource.id}')),
+                matching: find.byType(InkWell),
+              )
+              .first,
+        );
+        final imageRect = tester.getRect(find.byType(FilmArtwork));
+        await mouse.moveTo(imageRect.center);
+        await tester.pumpAndSettle();
+        final origin = tester.getTopLeft(find.byKey(boundary));
+        final image = (await tester.runAsync(
+          () =>
+              (boundary.currentContext!.findRenderObject()
+                      as RenderRepaintBoundary)
+                  .toImage(pixelRatio: dpr),
+        ))!;
+        final bytes = (await tester.runAsync(
+          () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+        ))!;
+        final y = ((imageRect.bottom - 12 - origin.dy) * dpr).floor();
+        final edgeX = ((card.left - origin.dx) * dpr).ceil();
+        final centerX = ((card.left + 12 - origin.dx) * dpr).floor();
+        for (var c = 0; c < 3; c++) {
+          expect(
+            bytes.getUint8((y * image.width + edgeX) * 4 + c),
+            closeTo(bytes.getUint8((y * image.width + centerX) * 4 + c), 2),
+            reason: 'border crosses artwork at dpr=$dpr selected=$selected',
+          );
+        }
+        image.dispose();
+      }
+    }
+    await mouse.removePointer();
+  });
+
   Finder backdropImages() => find.descendant(
     of: find.byKey(const Key('film-detail-backdrop')),
     matching: find.byKey(const Key('adaptive-backdrop-sharp')),
@@ -371,7 +567,7 @@ void main() {
     });
   });
 
-  testWidgets('portrait progress bottom pixels do not depend on poster color', (
+  testWidgets('portrait progress leaves unplayed poster visible', (
     tester,
   ) async {
     await prepare(tester);
@@ -454,17 +650,32 @@ void main() {
           );
           image.dispose();
         }
-        final lastRow = (progressRect.bottom * dpr).floor();
-        for (var x = (30 * dpr).ceil(); x < ((width - 30) * dpr).floor(); x++) {
+        final row = (progressRect.center.dy * dpr).floor();
+        for (
+          var x = (30 * dpr).ceil();
+          x < ((width / 2 - 4) * dpr).floor();
+          x++
+        ) {
           for (var channel = 0; channel < 3; channel++) {
-            final offset = (lastRow * imageWidth + x) * 4 + channel;
+            final offset = (row * imageWidth + x) * 4 + channel;
             expect(
               pixels[0].getUint8(offset),
               closeTo(pixels[1].getUint8(offset), 1),
-              reason:
-                  'poster leaking at dpr=$dpr width=$width x=$x row=$lastRow',
+              reason: 'progress differs at dpr=$dpr width=$width x=$x row=$row',
             );
           }
+        }
+        for (
+          var x = ((width / 2 + 4) * dpr).ceil();
+          x < ((width - 30) * dpr).floor();
+          x++
+        ) {
+          final offset = (row * imageWidth + x) * 4;
+          expect(
+            (pixels[0].getUint8(offset) - pixels[1].getUint8(offset)).abs(),
+            greaterThan(20),
+            reason: 'track hides poster at dpr=$dpr width=$width x=$x',
+          );
         }
       }
     }

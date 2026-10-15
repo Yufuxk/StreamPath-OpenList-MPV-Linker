@@ -925,7 +925,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                       key: ValueKey(
                                                         'film-season-${number ?? 'unmapped'}',
                                                       ),
-                                                      clipBehavior: Clip.none,
+                                                      clipBehavior:
+                                                          Clip.antiAlias,
                                                       shape: RoundedRectangleBorder(
                                                         borderRadius:
                                                             BorderRadius.circular(
@@ -1312,6 +1313,7 @@ class FilmEpisodeCard extends StatelessWidget {
       child: FilmPosterHover(
         child: Card(
           key: ValueKey('film-resource-${resource.id}'),
+          borderOnForeground: false,
           color: theme.colorScheme.surface.withValues(alpha: .18),
           elevation: 0,
           clipBehavior: Clip.none,
@@ -1331,20 +1333,19 @@ class FilmEpisodeCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                FilmPosterHoverSurface(
-                  child: FilmWatchOverlay(
-                    store: catalog.store,
-                    resource: resource,
-                    spoilerSensitive: tv,
-                    canReveal: false,
-                    child: ClipRect(
-                      child: FilmArtwork(
-                        cache: catalog.images,
-                        path: still ?? artworkPath,
-                        target: still != null ? 'w300' : 'w780',
-                        aspectRatio: 16 / 9,
-                        borderRadius: 0,
-                      ),
+                FilmWatchOverlay(
+                  hoverSurface: true,
+                  store: catalog.store,
+                  resource: resource,
+                  spoilerSensitive: tv,
+                  canReveal: false,
+                  child: ClipRect(
+                    child: FilmArtwork(
+                      cache: catalog.images,
+                      path: still ?? artworkPath,
+                      target: still != null ? 'w300' : 'w780',
+                      aspectRatio: 16 / 9,
+                      borderRadius: 0,
                     ),
                   ),
                 ),

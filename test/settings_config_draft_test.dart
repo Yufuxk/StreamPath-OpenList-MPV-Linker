@@ -9,6 +9,78 @@ import 'package:streampath/features/cache_expiration/models/cache_expiration_con
 import 'package:streampath/presentation/models/settings_config_draft.dart';
 
 void main() {
+  test('强调色草稿保留任意颜色且可恢复默认', () {
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    const config = StreamPathConfig(
+      appearance: AppearanceConfig(accentColor: 0xFF35AC76),
+    );
+    draft.loadFrom(
+      fullConfig: config,
+      appearance: config.appearance,
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(draft.buildAppearanceConfig().accentColor, 0xFF35AC76);
+    draft.accentColor = 0xFFFFFFFF;
+    expect(draft.buildAppearanceConfig().accentColor, 0xFFFFFFFF);
+    draft.loadFrom(
+      fullConfig: const StreamPathConfig(),
+      appearance: AppearanceConfig.defaults(),
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(
+      draft.buildAppearanceConfig().accentColor,
+      AppearanceConfig.defaults().accentColor,
+    );
+  });
+  test('小数番外插入默认关闭，开启值贯通配置复制、PlayerConfig 和草稿', () {
+    expect(
+      StreamPathConfig.fromJson({}).videoPlaylistInsertDecimalEpisodes,
+      isFalse,
+    );
+    const enabled = StreamPathConfig(videoPlaylistInsertDecimalEpisodes: true);
+    final restored = StreamPathConfig.fromJson(enabled.toJson());
+    final player = restored.toPlayerConfig();
+    final copied = restored
+        .copyWithGlobalSettings(
+          player: player,
+          appearance: restored.appearance,
+          mediaLibrary: restored.mediaLibrary,
+        )
+        .copyWithParts()
+        .withLocalRoots(const [])
+        .withMountedProfileIds(const []);
+    expect(copied.videoPlaylistInsertDecimalEpisodes, isTrue);
+    expect(
+      StreamPathConfig.fromParts(
+        player,
+        restored.toConnectionConfig(),
+      ).videoPlaylistInsertDecimalEpisodes,
+      isTrue,
+    );
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    draft.loadFrom(
+      fullConfig: copied,
+      appearance: copied.appearance,
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(
+      draft.buildPlayerConfig().videoPlaylistInsertDecimalEpisodes,
+      isTrue,
+    );
+    draft.videoPlaylistInsertDecimalEpisodes = false;
+    expect(
+      draft.buildPlayerConfig().videoPlaylistInsertDecimalEpisodes,
+      isFalse,
+    );
+  });
   test('简洁命名默认开启，关闭值贯通配置转换、复制与设置草稿', () {
     expect(StreamPathConfig.fromJson({}).videoPlaylistSimpleNaming, isTrue);
     const disabled = StreamPathConfig(videoPlaylistSimpleNaming: false);

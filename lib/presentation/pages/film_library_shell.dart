@@ -30,6 +30,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   final _hosts = <String, BrowserPage>{};
   final _keys = <String, GlobalKey<BrowserPageState>>{};
   bool _playbackMenuOpen = false;
+  Future<void>? _restoreFuture;
   FilmCatalogController? _backgroundCatalog;
   VoidCallback? _onBackgroundReady;
   String? _backgroundPath;
@@ -60,7 +61,9 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _restore());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restoreFuture = _restore();
+    });
   }
 
   BrowserPage? _hostFor(String sourceId) {
@@ -171,6 +174,17 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
 
   Future<void> continuePlaying(MediaLibraryRecord record) =>
       _play(record.item, resumeSessionId: record.playbackSessionId);
+
+  Future<void> refreshPlaybackStatuses() async {
+    await _restoreFuture;
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    for (final key in _keys.values.toList()) {
+      await key.currentState?.refreshLibraryPlaybackStatuses();
+      if (!mounted) return;
+    }
+  }
+
   Future<void> showPlaybackMenu(
     MediaLibraryRecord record,
     Offset position,
@@ -254,6 +268,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
                       onOpenItem: _play,
                       sidebarInset: widget.sidebarInset,
                       onContinueMenu: showPlaybackMenu,
+                      onRefreshPlaybackStatus: refreshPlaybackStatuses,
                       onContinueSelected: (record) => _play(
                         record.item,
                         resumeSessionId: record.playbackSessionId,

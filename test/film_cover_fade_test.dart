@@ -49,14 +49,16 @@ void main() {
           child: FilmArtwork(cache: cache, path: path, width: 100, height: 150),
         ),
       );
-      double opacity() => tester
-          .widget<Opacity>(
-            find.descendant(
-              of: find.byType(FilmArtwork),
-              matching: find.byType(Opacity),
-            ),
-          )
-          .opacity;
+      double opacity() {
+        final layers = tester.widgetList<Opacity>(
+          find.descendant(
+            of: find.byType(FilmArtwork),
+            matching: find.byType(Opacity),
+          ),
+        );
+        return layers.isEmpty ? 1 : layers.single.opacity;
+      }
+
       Future<void> decode() async {
         for (var i = 0; i < 20; i++) {
           await tester.runAsync(

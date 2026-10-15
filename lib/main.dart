@@ -329,6 +329,7 @@ class StreamPathApp extends StatelessWidget {
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
               systemAccent: appearanceController.systemAccent,
+              accentColor: appearance.accentColor,
             ),
             darkTheme: AppTheme.dark(
               glass: glass,
@@ -336,6 +337,7 @@ class StreamPathApp extends StatelessWidget {
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
               systemAccent: appearanceController.systemAccent,
+              accentColor: appearance.accentColor,
             ),
             builder: (context, navigator) => AppBackground(
               child: _buildWindowChrome(

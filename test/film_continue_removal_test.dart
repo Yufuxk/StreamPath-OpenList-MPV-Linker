@@ -214,6 +214,22 @@ void main() {
         reason: 'Playback records must load before opening their context menu',
       );
       expect(target(), findsOneWidget);
+      if (!mode.startsWith('center-')) {
+        await tester.tapAt(
+          const Offset(1200, 800),
+          buttons: kSecondaryMouseButton,
+        );
+        await settle();
+        expect(find.text('刷新播放状态'), findsOneWidget);
+        expect(find.text('设置全局背景'), findsOneWidget);
+        await tester.tap(find.text('刷新播放状态'));
+        await settle();
+        expect(player.refreshed, contains('neighbor'));
+        if (mode != 'orphan') expect(player.refreshed, contains('target'));
+        expect(player.terminated, isEmpty);
+        expect(find.byType(FilmContinueCard), findsNWidgets(2));
+        expect(tester.takeException(), isNull);
+      }
       if (mode == 'orphan') {
         final originalSections = catalog.homeSections;
         catalog.homeSections = [
@@ -468,6 +484,12 @@ class _Player extends ExternalPlayerService {
     Directory watchLater,
   ) => this;
   bool refuse = false;
+  final refreshed = <String>[];
+  @override
+  Future<void> refreshPlaybackStatus(String sessionId) async {
+    refreshed.add(sessionId);
+  }
+
   final terminated = <String>[];
   @override
   Future<void> restoreSession({

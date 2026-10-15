@@ -54,6 +54,7 @@ class PlayerConfig {
     this.externalAudioInjectionEnabled = true,
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
     this.videoPlaylistSimpleNaming = true,
+    this.videoPlaylistInsertDecimalEpisodes = false,
     this.autoSeasonTransitionEnabled = true,
     this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
@@ -111,6 +112,7 @@ class PlayerConfig {
   final bool externalAudioInjectionEnabled;
   final VideoPlaylistMode videoPlaylistMode;
   final bool videoPlaylistSimpleNaming;
+  final bool videoPlaylistInsertDecimalEpisodes;
   final bool autoSeasonTransitionEnabled;
   final bool allowSeasonGap;
 
@@ -168,6 +170,7 @@ class PlayerConfig {
     'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
     'videoPlaylistMode': videoPlaylistMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
+    'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
     'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
@@ -220,6 +223,8 @@ class PlayerConfig {
       videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
       videoPlaylistSimpleNaming:
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
+      videoPlaylistInsertDecimalEpisodes:
+          (json['videoPlaylistInsertDecimalEpisodes'] as bool?) ?? false,
       autoSeasonTransitionEnabled:
           (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
       allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,

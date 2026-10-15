@@ -9,6 +9,7 @@ import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_watch_state.dart';
 import '../state/app_state.dart';
+import 'film_artwork.dart';
 
 const _progressHeight = 4.0;
 
@@ -57,6 +58,7 @@ class FilmWatchOverlay extends StatefulWidget {
     this.revealBelow = false,
     this.revealLabel = '展示剧透',
     this.footer,
+    this.hoverSurface = false,
   });
   final Widget child;
   final bool spoilerSensitive, showStatus;
@@ -64,6 +66,8 @@ class FilmWatchOverlay extends StatefulWidget {
   final bool revealBelow;
   final String revealLabel;
   final Widget? footer;
+  /// 根据实际遮罩状态选择封面悬停的绘制方式。
+  final bool hoverSurface;
   final double? fallbackFraction;
   final FilmCatalogStore? store;
   final int? workId, season, rootId;
@@ -288,12 +292,6 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       }
       artwork = ClipRect(child: artwork);
     }
-    if (showProgress) {
-      artwork = ClipRect(
-        clipper: const _ProgressCoverClipper(),
-        child: artwork,
-      );
-    }
     final content = Stack(
       children: [
         artwork,
@@ -326,7 +324,9 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
               child: LinearProgressIndicator(
                 value: fraction,
                 minHeight: _progressHeight,
-                borderRadius: BorderRadius.zero,
+                color: Theme.of(context).colorScheme.primary,
+                backgroundColor: Colors.transparent,
+                borderRadius: BorderRadius.circular(_progressHeight / 2),
                 trackGap: 0,
                 stopIndicatorRadius: 0,
               ),
@@ -334,7 +334,11 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
           ),
       ],
     );
-    if (!widget.revealBelow) return content;
+    if (!widget.revealBelow) {
+      return widget.hoverSurface
+          ? FilmPosterHoverSurface(blurred: blocked, child: content)
+          : content;
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -346,21 +350,6 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       ],
     );
   }
-}
-
-class _ProgressCoverClipper extends CustomClipper<Rect> {
-  const _ProgressCoverClipper();
-
-  @override
-  Rect getClip(Size size) => Rect.fromLTWH(
-    0,
-    0,
-    size.width,
-    (size.height - _progressHeight).clamp(0.0, double.infinity),
-  );
-
-  @override
-  bool shouldReclip(_ProgressCoverClipper oldClipper) => false;
 }
 
 class _UnwatchedCorner extends CustomPainter {

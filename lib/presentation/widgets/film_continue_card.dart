@@ -89,26 +89,25 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
       final cover = Stack(
         fit: StackFit.expand,
         children: [
-          FilmPosterHoverSurface(
-            child: FilmWatchOverlay(
-              store: widget.catalog.store,
-              canReveal: false,
-              spoilerSensitive: data['spoilerSensitive'] == true,
-              fallbackFraction:
-                  widget.positionMs != null && (widget.durationMs ?? 0) > 0
-                  ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
-                  : null,
-              sourceId: widget.record.item.sourceId,
-              path: widget.record.item.targetPath,
-              child: ClipRect(
-                child: FilmArtwork(
-                  cache: widget.catalog.images,
-                  path: data['path'] as String?,
-                  width: double.infinity,
-                  height: double.infinity,
-                  borderRadius: 0,
-                  placeholder: const SizedBox.shrink(),
-                ),
+          FilmWatchOverlay(
+            hoverSurface: true,
+            store: widget.catalog.store,
+            canReveal: false,
+            spoilerSensitive: data['spoilerSensitive'] == true,
+            fallbackFraction:
+                widget.positionMs != null && (widget.durationMs ?? 0) > 0
+                ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
+                : null,
+            sourceId: widget.record.item.sourceId,
+            path: widget.record.item.targetPath,
+            child: ClipRect(
+              child: FilmArtwork(
+                cache: widget.catalog.images,
+                path: data['path'] as String?,
+                width: double.infinity,
+                height: double.infinity,
+                borderRadius: 0,
+                placeholder: const SizedBox.shrink(),
               ),
             ),
           ),

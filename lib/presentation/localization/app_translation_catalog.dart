@@ -2,6 +2,18 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  '强调色': 'Accent color',
+  '蓝色': 'Blue',
+  '青色': 'Cyan',
+  '绿色': 'Green',
+  '青柠绿': 'Lime green',
+  '黄色': 'Yellow',
+  '橙色': 'Orange',
+  '粉色': 'Pink',
+  '洋红色': 'Magenta',
+  '紫色': 'Purple',
+  '白色': 'White',
+  '自定义颜色': 'Custom color',
   '来源': 'Source',
   '全部来源': 'All sources',
   '重命名': 'Rename',
@@ -1031,6 +1043,18 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  '强调色': 'アクセントカラー',
+  '蓝色': 'ブルー',
+  '青色': 'シアン',
+  '绿色': 'グリーン',
+  '青柠绿': 'ライムグリーン',
+  '黄色': 'イエロー',
+  '橙色': 'オレンジ',
+  '粉色': 'ピンク',
+  '洋红色': 'マゼンタ',
+  '紫色': 'パープル',
+  '白色': 'ホワイト',
+  '自定义颜色': 'カスタムカラー',
   '来源': '保存先',
   '全部来源': 'すべての保存先',
   '重命名': '名前を変更',
@@ -1915,6 +1939,18 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  '强调色': '強調色',
+  '蓝色': '藍色',
+  '青色': '青色',
+  '绿色': '綠色',
+  '青柠绿': '青檸綠',
+  '黄色': '黃色',
+  '橙色': '橙色',
+  '粉色': '粉色',
+  '洋红色': '洋紅色',
+  '紫色': '紫色',
+  '白色': '白色',
+  '自定义颜色': '自訂顏色',
   '来源': '來源',
   '全部来源': '全部來源',
   '重命名': '重新命名',

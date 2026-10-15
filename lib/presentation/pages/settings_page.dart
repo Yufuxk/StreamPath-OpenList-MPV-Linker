@@ -19,6 +19,7 @@ import '../../core/errors/app_exception.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../data/models/appearance_config.dart';
+import '../../data/models/accent_color_preset.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/media_library_config.dart';
 import '../../data/models/media_library_item.dart';
@@ -414,7 +415,8 @@ class SettingsPageState extends State<SettingsPage> {
           previousAppearance.style != appearance.style ||
           previousAppearance.material != appearance.material ||
           previousAppearance.glassOpacity != appearance.glassOpacity ||
-          previousAppearance.fontFamily != appearance.fontFamily;
+          previousAppearance.fontFamily != appearance.fontFamily ||
+          previousAppearance.accentColor != appearance.accentColor;
       final currentConfig = appState.configStore.current;
       final profileId = _selectedProfileId ?? ServerProfile.newId();
       final profile = _draft.buildProfile(profileId: profileId);
@@ -739,7 +741,8 @@ class SettingsPageState extends State<SettingsPage> {
           previousAppearance.style != defaultAppearance.style ||
           previousAppearance.material != defaultAppearance.material ||
           previousAppearance.glassOpacity != defaultAppearance.glassOpacity ||
-          previousAppearance.fontFamily != defaultAppearance.fontFamily;
+          previousAppearance.fontFamily != defaultAppearance.fontFamily ||
+          previousAppearance.accentColor != defaultAppearance.accentColor;
 
       if (appearanceChanged &&
           !await appearanceController.apply(defaultAppearance)) {
@@ -2292,6 +2295,21 @@ class SettingsPageState extends State<SettingsPage> {
                     setState(() => _draft.videoPlaylistSimpleNaming = value),
               ),
               SPToggleTile(
+                key: const Key('video-playlist-insert-decimal-episodes'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('按小数集号插入番外篇'),
+                subtitle: const AppText(
+                  '仅用于已识别剧集的隐式播放列表；季归属明确且在集数范围内时，忽略首播日期插入正片之间',
+                ),
+                value: _draft.videoPlaylistInsertDecimalEpisodes,
+                onChanged:
+                    _draft.videoPlaylistMode != VideoPlaylistMode.implicit
+                    ? null
+                    : (value) => setState(
+                        () => _draft.videoPlaylistInsertDecimalEpisodes = value,
+                      ),
+              ),
+              SPToggleTile(
                 key: const Key('external-audio-injection'),
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('自动加载 WebDAV 外挂音轨'),
@@ -3390,6 +3408,52 @@ class SettingsPageState extends State<SettingsPage> {
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                  ),
+                  const SizedBox(height: 16),
+                  SPDropdownButtonFormField<int>(
+                    key: const Key('accent-color-selector'),
+                    initialValue: _draft.accentColor,
+                    decoration: InputDecoration(
+                      labelText: context.l10n.text('强调色'),
+                    ),
+                    items: [
+                      for (final preset in AccentColorPreset.values)
+                        DropdownMenuItem(
+                          value: preset.argb,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                  color: Color(preset.argb),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outline,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              AppText(preset.label),
+                            ],
+                          ),
+                        ),
+                      if (!AccentColorPreset.values.any(
+                        (preset) => preset.argb == _draft.accentColor,
+                      ))
+                        DropdownMenuItem(
+                          value: _draft.accentColor,
+                          child: const AppText('自定义颜色'),
+                        ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _draft.accentColor = value);
+                      }
+                    },
                   ),
                   const SizedBox(height: 16),
                   const AppText('上次浏览目录'),

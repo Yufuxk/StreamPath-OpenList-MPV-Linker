@@ -221,6 +221,165 @@ void main() {
       true,
     );
   });
+  for (final scenario in [(false, false), (true, false), (true, true)]) {
+    testWidgets('影视库元数据标题小数插入：开关 ${scenario.$1}，另一季缓存 ${scenario.$2}', (
+      tester,
+    ) async {
+      final fixture = await tester.runAsync(() async {
+        final temp = await Directory.systemTemp.createTemp('sp_decimal_queue_');
+        final root = LocalRootConfig(
+          rootId: 'decimal',
+          displayName: 'Media',
+          path: temp.path,
+        );
+        final config = StreamPathConfigStore.forPath(
+          p.join(temp.path, 'config.json'),
+        );
+        await config.save(
+          StreamPathConfig(
+            localRoots: [root],
+            playerExecutable: 'mpv.exe',
+            videoPlaylistInsertDecimalEpisodes: scenario.$1,
+            subtitleInjectionEnabled: false,
+            autoSeasonTransitionEnabled: false,
+          ),
+        );
+        final progress = await PlaybackProgressService.open(
+          p.join(temp.path, 'progress.db'),
+        );
+        final player = _NamingPlayer(configStore: config);
+        final app = _NamingAppState(
+          configStore: config,
+          playerService: player,
+          progressService: progress,
+          directoryCache: DirectoryCache(boxName: 'decimal_queue'),
+          playbackHistoryStore: PlaybackHistoryStore.forPath(
+            p.join(temp.path, 'history.json'),
+          ),
+        );
+        final store = await app.getFilmCatalogStore();
+        final id = await store.addRoot(
+          sourceId: root.sourceId,
+          kind: MediaSourceKind.local,
+          path: 'Show',
+          type: FilmMediaType.tv,
+          name: 'Show',
+        );
+        final generation = await store.beginScan(id);
+        await Directory(p.join(temp.path, 'Show')).create();
+        const names = ['regular-11.mkv', 'regular-12.mkv', 'special.mkv'];
+        for (final name in names) {
+          await File(p.join(temp.path, 'Show', name)).writeAsBytes([0]);
+        }
+        await store.stage((await store.root(id))!, generation, [
+          for (final name in names)
+            FilmScanEntry(
+              path: 'Show/$name',
+              parentPath: 'Show',
+              name: name,
+              mediaKind: 'video',
+            ),
+        ]);
+        await store.commitScan(id, generation, cancelled: () => false);
+        await store.bind(
+          await store.resources(),
+          const FilmWork(
+            type: FilmMediaType.tv,
+            tmdbId: 1,
+            title: 'Show',
+            originalTitle: 'Show',
+            overview: '',
+            language: 'zh-CN',
+          ),
+        );
+        await store.mapEpisodes({
+          for (final resource in await store.resources())
+            resource: switch (resource.name) {
+              'regular-11.mkv' => (1, 11),
+              'regular-12.mkv' => (1, 12),
+              _ => (0, 1),
+            },
+        });
+        final workId = (await store.resources()).first.workId!;
+        await store.saveSeason(workId, 1, 'zh-CN', {
+          'episodes': [
+            {'episode_number': 11, 'air_date': '2024-01-01'},
+            {'episode_number': 12, 'air_date': '2024-01-08'},
+          ],
+        });
+        await store.saveSeason(workId, 0, 'zh-CN', {
+          'episodes': [
+            {'episode_number': 1, 'name': '第11.5话', 'air_date': '2025-01-01'},
+          ],
+        });
+        if (scenario.$2) {
+          await store.saveSeason(workId, 2, 'zh-CN', {
+            'episodes': [
+              {'episode_number': 11},
+              {'episode_number': 12},
+            ],
+          });
+        }
+        await app.initializeFilmPlayback();
+        return (
+          temp,
+          app,
+          player,
+          progress,
+          root,
+          (await store.resources()).firstWhere(
+            (resource) => resource.name == 'regular-11.mkv',
+          ),
+        );
+      });
+      final (temp, app, player, progress, root, first) = fixture!;
+      final key = GlobalKey<BrowserPageState>();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          await app.closeCatalog();
+          app.dispose();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          await progress.close();
+          await temp.delete(recursive: true);
+        });
+      });
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            home: Scaffold(
+              body: BrowserPage(key: key, localRoot: root, playbackOnly: true),
+            ),
+          ),
+        ),
+      );
+      var done = false;
+      await tester.runAsync(() async {
+        key.currentState!
+            .playLibraryItem(first.playbackItem)
+            .then((_) => done = true);
+      });
+      await pumpUntil(
+        tester,
+        () => done,
+        reason: 'Decimal episode queue preparation completes',
+      );
+      expect(player.plan, isNotNull);
+      expect(
+        player.plan!.items.map((item) => (item.season, item.episode)),
+        scenario.$1 && !scenario.$2
+            ? [(1, 11), (0, 1), (1, 12)]
+            : [(1, 11), (1, 12), (0, 1)],
+      );
+      final store = await tester.runAsync(app.getFilmCatalogStore);
+      final special = await tester.runAsync(
+        () => store!.resourceAt(root.sourceId, 'Show/special.mkv'),
+      );
+      expect((special!.season, special.episode), (0, 1));
+    });
+  }
+
   testWidgets(
     '真实 MPV 切集全部失败后关闭仍保留下一集并成功恢复',
     (tester) async {

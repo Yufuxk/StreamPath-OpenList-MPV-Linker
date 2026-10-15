@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import '../../data/models/appearance_config.dart';
+import '../../data/models/accent_color_preset.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
@@ -69,6 +70,7 @@ class SettingsConfigDraft {
   bool externalAudioInjectionEnabled = true;
   VideoPlaylistMode videoPlaylistMode = VideoPlaylistMode.implicit;
   bool videoPlaylistSimpleNaming = true;
+  bool videoPlaylistInsertDecimalEpisodes = false;
   bool autoSeasonTransitionEnabled = true;
   bool allowSeasonGap = false;
   MediaLibrarySharingMode mediaLibrarySharingMode =
@@ -98,6 +100,7 @@ class SettingsConfigDraft {
   WindowMaterialPreference windowMaterial = WindowMaterialPreference.automatic;
   double glassOpacity = AppearanceConfig.defaultGlassOpacity;
   String? interfaceFontFamily;
+  int accentColor = AccentColorPreset.blue.argb;
   DirectoryMemoryMode directoryMemoryMode = DirectoryMemoryMode.temporary;
   AppLanguage language = AppLanguage.simplifiedChinese;
 
@@ -156,6 +159,8 @@ class SettingsConfigDraft {
     externalAudioInjectionEnabled = player.externalAudioInjectionEnabled;
     videoPlaylistMode = player.videoPlaylistMode;
     videoPlaylistSimpleNaming = player.videoPlaylistSimpleNaming;
+    videoPlaylistInsertDecimalEpisodes =
+        player.videoPlaylistInsertDecimalEpisodes;
     autoSeasonTransitionEnabled = player.autoSeasonTransitionEnabled;
     allowSeasonGap = player.allowSeasonGap;
     hiddenExtensionsEnabled = player.hiddenExtensionsEnabled;
@@ -200,6 +205,7 @@ class SettingsConfigDraft {
     windowMaterial = appearance.material;
     glassOpacity = appearance.glassOpacity;
     interfaceFontFamily = appearance.fontFamily;
+    accentColor = appearance.accentColor;
     directoryMemoryMode = appearance.directoryMemoryMode;
     language = fullConfig.language;
     directoryFreshnessController.text = expirationConfig
@@ -246,6 +252,7 @@ class SettingsConfigDraft {
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
+    videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
     allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
@@ -317,6 +324,7 @@ class SettingsConfigDraft {
     material: windowMaterial,
     glassOpacity: glassOpacity,
     fontFamily: interfaceFontFamily,
+    accentColor: accentColor,
     directoryMemoryMode: directoryMemoryMode,
   );
 

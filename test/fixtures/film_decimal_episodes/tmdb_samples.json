@@ -1,0 +1,437 @@
+[
+  {
+    "language": "zh-CN",
+    "tmdb_id": 36581,
+    "seasons": {
+      "0": {
+        "season_number": 0,
+        "air_date": "2011-05-25",
+        "episodes": [
+          {
+            "name": "第腐汰悼と犯话 （20.5话 tv未放送）",
+            "air_date": "2011-05-25",
+            "episode_number": 1
+          },
+          {
+            "name": "第腐汰悼遗血と犯话（21.5话 tv未放送）",
+            "air_date": "2011-06-22",
+            "episode_number": 2
+          },
+          {
+            "name": "静信述怀1",
+            "air_date": null,
+            "episode_number": 3
+          },
+          {
+            "name": "静信述怀2",
+            "air_date": null,
+            "episode_number": 4
+          },
+          {
+            "name": "静信述怀3",
+            "air_date": null,
+            "episode_number": 5
+          },
+          {
+            "name": "静信述怀4",
+            "air_date": null,
+            "episode_number": 6
+          },
+          {
+            "name": "静信述怀5",
+            "air_date": null,
+            "episode_number": 7
+          },
+          {
+            "name": "静信述怀6",
+            "air_date": null,
+            "episode_number": 8
+          },
+          {
+            "name": "静信述怀7",
+            "air_date": null,
+            "episode_number": 9
+          },
+          {
+            "name": "静信述怀8",
+            "air_date": null,
+            "episode_number": 10
+          },
+          {
+            "name": "静信述怀9",
+            "air_date": null,
+            "episode_number": 11
+          }
+        ]
+      },
+      "1": {
+        "season_number": 1,
+        "air_date": "2010-07-09",
+        "episodes": [
+          {
+            "name": "第遗血话",
+            "air_date": "2010-07-09",
+            "episode_number": 1
+          },
+          {
+            "name": "第腐堕话",
+            "air_date": "2010-07-16",
+            "episode_number": 2
+          },
+          {
+            "name": "第惨话",
+            "air_date": "2010-07-23",
+            "episode_number": 3
+          },
+          {
+            "name": "第死话",
+            "air_date": "2010-07-30",
+            "episode_number": 4
+          },
+          {
+            "name": "第伪话",
+            "air_date": "2010-08-06",
+            "episode_number": 5
+          },
+          {
+            "name": "第髅苦话",
+            "air_date": "2010-08-13",
+            "episode_number": 6
+          },
+          {
+            "name": "第弑魑话",
+            "air_date": "2010-08-20",
+            "episode_number": 7
+          },
+          {
+            "name": "第夜话",
+            "air_date": "2010-08-27",
+            "episode_number": 8
+          },
+          {
+            "name": "第柩话",
+            "air_date": "2010-09-03",
+            "episode_number": 9
+          },
+          {
+            "name": "第悼话",
+            "air_date": "2010-09-10",
+            "episode_number": 10
+          },
+          {
+            "name": "第悼と悲屠话",
+            "air_date": "2010-09-17",
+            "episode_number": 11
+          },
+          {
+            "name": "第悼と腐汰话",
+            "air_date": "2010-10-15",
+            "episode_number": 12
+          },
+          {
+            "name": "第悼と惨话",
+            "air_date": "2010-10-29",
+            "episode_number": 13
+          },
+          {
+            "name": "第悼と死话",
+            "air_date": "2010-11-05",
+            "episode_number": 14
+          },
+          {
+            "name": "第悼と伪话",
+            "air_date": "2010-11-12",
+            "episode_number": 15
+          },
+          {
+            "name": "第悼と髅苦话",
+            "air_date": "2010-11-19",
+            "episode_number": 16
+          },
+          {
+            "name": "第悼と弑魑话",
+            "air_date": "2010-11-26",
+            "episode_number": 17
+          },
+          {
+            "name": "第悼と夜话",
+            "air_date": "2010-12-03",
+            "episode_number": 18
+          },
+          {
+            "name": "第悼と柩话",
+            "air_date": "2010-12-10",
+            "episode_number": 19
+          },
+          {
+            "name": "第腐汰悼话",
+            "air_date": "2010-12-17",
+            "episode_number": 20
+          },
+          {
+            "name": "第腐汰悼と悲屠话",
+            "air_date": "2010-12-24",
+            "episode_number": 21
+          },
+          {
+            "name": "蔡蒐话",
+            "air_date": "2010-12-31",
+            "episode_number": 22
+          }
+        ]
+      }
+    },
+    "retrieved_at": "2026-10-15",
+    "series": "shiki"
+  },
+  {
+    "language": "zh-CN",
+    "tmdb_id": 100565,
+    "seasons": {
+      "0": {
+        "season_number": 0,
+        "air_date": "2021-03-28",
+        "episodes": [
+          {
+            "name": "放送前特辑",
+            "air_date": "2021-03-28",
+            "episode_number": 1
+          },
+          {
+            "name": "总集篇「在战场上绽放的红色虞美人」",
+            "air_date": "2021-06-27",
+            "episode_number": 2
+          },
+          {
+            "name": "第2季影像对谈特别节目",
+            "air_date": "2021-11-14",
+            "episode_number": 3
+          },
+          {
+            "name": "总集篇「若是死得其所」",
+            "air_date": "2021-11-28",
+            "episode_number": 4
+          },
+          {
+            "name": "总集篇「至少生而为人」",
+            "air_date": "2022-03-05",
+            "episode_number": 5
+          }
+        ]
+      },
+      "1": {
+        "season_number": 1,
+        "air_date": "2021-04-11",
+        "episodes": [
+          {
+            "name": "送葬者",
+            "air_date": "2021-04-11",
+            "episode_number": 1
+          },
+          {
+            "name": "先锋战队",
+            "air_date": "2021-04-18",
+            "episode_number": 2
+          },
+          {
+            "name": "我不想死",
+            "air_date": "2021-04-25",
+            "episode_number": 3
+          },
+          {
+            "name": "真正的名字",
+            "air_date": "2021-05-02",
+            "episode_number": 4
+          },
+          {
+            "name": "我也一起",
+            "air_date": "2021-05-09",
+            "episode_number": 5
+          },
+          {
+            "name": "直到最后",
+            "air_date": "2021-05-16",
+            "episode_number": 6
+          },
+          {
+            "name": "能一直记得我们吗？",
+            "air_date": "2021-05-23",
+            "episode_number": 7
+          },
+          {
+            "name": "走吧",
+            "air_date": "2021-05-30",
+            "episode_number": 8
+          },
+          {
+            "name": "再见",
+            "air_date": "2021-06-06",
+            "episode_number": 9
+          },
+          {
+            "name": "感谢",
+            "air_date": "2021-06-13",
+            "episode_number": 10
+          },
+          {
+            "name": "走了",
+            "air_date": "2021-06-20",
+            "episode_number": 11
+          },
+          {
+            "name": "欢迎莅临",
+            "air_date": "2021-10-03",
+            "episode_number": 12
+          },
+          {
+            "name": "那种事，事到如今",
+            "air_date": "2021-10-10",
+            "episode_number": 13
+          },
+          {
+            "name": "请多指教",
+            "air_date": "2021-10-17",
+            "episode_number": 14
+          },
+          {
+            "name": "欢迎归来",
+            "air_date": "2021-10-24",
+            "episode_number": 15
+          },
+          {
+            "name": "即使如此",
+            "air_date": "2021-10-31",
+            "episode_number": 16
+          },
+          {
+            "name": "我不会忘记",
+            "air_date": "2021-11-07",
+            "episode_number": 17
+          },
+          {
+            "name": "真心话",
+            "air_date": "2021-11-21",
+            "episode_number": 18
+          },
+          {
+            "name": "干脆就这么走下去",
+            "air_date": "2021-12-05",
+            "episode_number": 19
+          },
+          {
+            "name": "至死相伴",
+            "air_date": "2021-12-19",
+            "episode_number": 20
+          },
+          {
+            "name": "仅剩如此",
+            "air_date": "2021-12-26",
+            "episode_number": 21
+          },
+          {
+            "name": "辛",
+            "air_date": "2022-03-13",
+            "episode_number": 22
+          },
+          {
+            "name": "管制一号",
+            "air_date": "2022-03-20",
+            "episode_number": 23
+          }
+        ]
+      }
+    },
+    "retrieved_at": "2026-10-15",
+    "series": "86"
+  },
+  {
+    "language": "zh-CN",
+    "tmdb_id": 42589,
+    "seasons": {
+      "0": {
+        "season_number": 0,
+        "air_date": "2012-05-26",
+        "episodes": [
+          {
+            "name": "因果",
+            "air_date": "2012-05-26",
+            "episode_number": 1
+          },
+          {
+            "name": "第 2 集",
+            "air_date": "2013-03-29",
+            "episode_number": 2
+          }
+        ]
+      },
+      "1": {
+        "season_number": 1,
+        "air_date": "2012-01-10",
+        "episodes": [
+          {
+            "name": "素描",
+            "air_date": "2012-01-10",
+            "episode_number": 1
+          },
+          {
+            "name": "思惑",
+            "air_date": "2012-01-17",
+            "episode_number": 2
+          },
+          {
+            "name": "骨架",
+            "air_date": "2012-01-24",
+            "episode_number": 3
+          },
+          {
+            "name": "轮廓",
+            "air_date": "2012-01-31",
+            "episode_number": 4
+          },
+          {
+            "name": "扩散",
+            "air_date": "2012-02-07",
+            "episode_number": 5
+          },
+          {
+            "name": "两人",
+            "air_date": "2012-02-14",
+            "episode_number": 6
+          },
+          {
+            "name": "变调",
+            "air_date": "2012-02-21",
+            "episode_number": 7
+          },
+          {
+            "name": "绀碧",
+            "air_date": "2012-02-28",
+            "episode_number": 8
+          },
+          {
+            "name": "连锁",
+            "air_date": "2012-03-06",
+            "episode_number": 9
+          },
+          {
+            "name": "漆黑",
+            "air_date": "2012-03-13",
+            "episode_number": 10
+          },
+          {
+            "name": "惨剧",
+            "air_date": "2012-03-20",
+            "episode_number": 11
+          },
+          {
+            "name": "死者",
+            "air_date": "2012-03-27",
+            "episode_number": 12
+          }
+        ]
+      }
+    },
+    "retrieved_at": "2026-10-15",
+    "series": "another"
+  }
+]

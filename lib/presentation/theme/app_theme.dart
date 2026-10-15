@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/appearance_config.dart';
+import '../../data/models/accent_color_preset.dart';
 import '../widgets/sp_back_icon.dart';
 import 'glass_tokens.dart';
 import 'page_transitions.dart';
 import 'window_appearance_status.dart';
+import 'accent_color_controller.dart';
 
 /// StreamPath 的轻量桌面主题。
 abstract final class AppTheme {
@@ -100,6 +102,7 @@ abstract final class AppTheme {
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
     Color? systemAccent,
+    int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.light,
     glass: glass,
@@ -107,6 +110,7 @@ abstract final class AppTheme {
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
     systemAccent: systemAccent,
+    accentColor: accentColor,
   );
 
   static ThemeData dark({
@@ -115,6 +119,7 @@ abstract final class AppTheme {
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
     Color? systemAccent,
+    int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.dark,
     glass: glass,
@@ -122,6 +127,7 @@ abstract final class AppTheme {
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
     systemAccent: systemAccent,
+    accentColor: accentColor,
   );
 
   static ThemeData _build(
@@ -131,21 +137,19 @@ abstract final class AppTheme {
     required WindowBackdropType windowBackdrop,
     required String? fontFamily,
     required Color? systemAccent,
+    required int accentColor,
   }) {
     final isDark = brightness == Brightness.dark;
     final generated = ColorScheme.fromSeed(
       seedColor: systemAccent ?? _seedColor,
       brightness: brightness,
     );
-    final opaqueScheme = generated.copyWith(
-      primary: isDark ? const Color(0xFF6EA8FE) : const Color(0xFF2F67D8),
-      onPrimary: isDark ? const Color(0xFF071B34) : const Color(0xFFFFFFFF),
-      primaryContainer: isDark
-          ? const Color(0xFF17365F)
-          : const Color(0xFFDFE9FF),
-      onPrimaryContainer: isDark
-          ? const Color(0xFFD8E7FF)
-          : const Color(0xFF10284D),
+    final accentScheme = AccentColorController.apply(
+      generated,
+      argb: accentColor,
+      glass: glass,
+    );
+    final opaqueScheme = accentScheme.copyWith(
       secondary: isDark ? const Color(0xFF59C3BB) : const Color(0xFF237B75),
       onSecondary: isDark ? const Color(0xFF05201E) : const Color(0xFFFFFFFF),
       secondaryContainer: isDark
@@ -225,9 +229,6 @@ abstract final class AppTheme {
             surfaceContainer: glassTokens.contentSurface,
             surfaceContainerHigh: glassTokens.raisedSurface,
             surfaceContainerHighest: glassTokens.floatingSurface,
-            primaryContainer: isDark
-                ? const Color(0xFF1E4D84)
-                : opaqueScheme.primaryContainer,
           )
         : opaqueScheme;
     final base = ThemeData(
@@ -417,8 +418,21 @@ abstract final class AppTheme {
               ? scheme.primary
               : scheme.surfaceContainerHighest,
         ),
-        trackOutlineColor: WidgetStatePropertyAll(scheme.outlineVariant),
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.transparent
+              : scheme.outlineVariant,
+        ),
+        trackOutlineWidth: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected) ? 0 : 1,
+        ),
       ),
+      progressIndicatorTheme: accentColor == defaultAccentColor
+          ? const ProgressIndicatorThemeData()
+          : ProgressIndicatorThemeData(
+              linearTrackColor: scheme.primaryContainer,
+              circularTrackColor: scheme.primaryContainer,
+            ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           elevation: 2,

@@ -49,6 +49,7 @@ class FilmLibraryPage extends StatefulWidget {
     this.continueShelf,
     this.onContinueSelected,
     this.onContinueMenu,
+    this.onRefreshPlaybackStatus,
     this.sourceId,
   });
   final Future<void> Function(MediaLibraryItem) onOpenItem;
@@ -57,6 +58,7 @@ class FilmLibraryPage extends StatefulWidget {
   final Widget? continueShelf;
   final ValueChanged<MediaLibraryRecord>? onContinueSelected;
   final void Function(MediaLibraryRecord, Offset)? onContinueMenu;
+  final Future<void> Function()? onRefreshPlaybackStatus;
   @override
   State<FilmLibraryPage> createState() => _FilmLibraryPageState();
 }
@@ -81,6 +83,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   bool _catalogReady = false;
   bool _continueReady = true;
   bool _backgroundReady = true;
+  bool _refreshingPlayback = false;
   @override
   void initState() {
     super.initState();
@@ -1230,9 +1233,24 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   }
 
   Future<void> _backgroundMenu(FilmCatalogController c, Offset position) async {
-    final action = await _menu(position, const [
-      PopupMenuItem(value: 'background', child: AppText('设置全局背景')),
+    final action = await _menu(position, [
+      PopupMenuItem(
+        value: 'refresh',
+        enabled: !_refreshingPlayback && widget.onRefreshPlaybackStatus != null,
+        child: const AppText('刷新播放状态'),
+      ),
+      const PopupMenuItem(value: 'background', child: AppText('设置全局背景')),
     ]);
-    if (mounted && action != null) await showFilmArtworkPicker(context, c);
+    if (!mounted) return;
+    if (action == 'background') {
+      await showFilmArtworkPicker(context, c);
+    } else if (action == 'refresh') {
+      setState(() => _refreshingPlayback = true);
+      try {
+        await widget.onRefreshPlaybackStatus!();
+      } finally {
+        if (mounted) setState(() => _refreshingPlayback = false);
+      }
+    }
   }
 }

@@ -236,6 +236,7 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
         material: _config.material,
         glassOpacity: _config.glassOpacity,
         fontFamily: _config.fontFamily,
+        accentColor: _config.accentColor,
       );
       _lastResult = WindowAppearanceResult.classic(
         _capabilities,
@@ -251,7 +252,8 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
       _serializeAppearanceOperation(() async {
         if (_sameWindowAppearance(next, _config) &&
             (!next.isGlass || glassActive)) {
-          if (next.fontFamily != _config.fontFamily) {
+          if (next.fontFamily != _config.fontFamily ||
+              next.accentColor != _config.accentColor) {
             _config = next;
             notifyListeners();
           }

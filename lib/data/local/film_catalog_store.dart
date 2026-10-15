@@ -1763,6 +1763,17 @@ class FilmCatalogStore extends ChangeNotifier {
           );
   }
 
+  Future<Map<int, Map<String, dynamic>>> seasons(int workId) async => {
+    for (final row in await _db.query(
+      'season_metadata',
+      where: 'work_id = ?',
+      whereArgs: [workId],
+    ))
+      row['season_number'] as int: Map<String, dynamic>.from(
+        jsonDecode(row['metadata_json'] as String),
+      ),
+  };
+
   Future<void> saveSeason(
     int workId,
     int number,

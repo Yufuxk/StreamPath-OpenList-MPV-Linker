@@ -101,7 +101,7 @@ void main() {
     await tester.pumpWidget(cover('second.png'));
     expect(tester.widget<Opacity>(layer).opacity, progress);
     await tester.pump(const Duration(milliseconds: 300));
-    expect(tester.widget<Opacity>(layer).opacity, 1);
+    expect(layer, findsNothing);
     expect(tester.takeException(), isNull);
   });
   testWidgets('Synchronous cover does not schedule fade frames', (
@@ -322,7 +322,7 @@ void main() {
         await tester.pumpWidget(frame('/first.png'));
         expect(opacity(), 1);
         await tester.pumpWidget(frame('/second.png'));
-        expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNull);
+        expect(find.byType(RawImage), findsNothing);
         await decode();
         expect(opacity(), 0);
         await tester.pump(const Duration(milliseconds: 300));
@@ -406,7 +406,7 @@ void main() {
     await tester.pumpWidget(cover('/good.png'));
     expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNotNull);
     await tester.pumpWidget(cover('/bad.png'));
-    expect(tester.widget<RawImage>(find.byType(RawImage)).image, isNull);
+    expect(find.byType(RawImage), findsNothing);
     for (var i = 0; i < 20 && find.byType(IconButton).evaluate().isEmpty; i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 10)),

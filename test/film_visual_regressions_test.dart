@@ -160,6 +160,7 @@ void main() {
                     child: Column(
                       children: [
                         FilmPosterHoverSurface(
+                          blurred: true,
                           child: FilmWatchOverlay(
                             store: store,
                             spoilerSensitive: true,
@@ -250,7 +251,7 @@ void main() {
     }
   });
 
-  testWidgets('竖封面进度轨道覆盖整条底边，不透出海报像素', (tester) async {
+  testWidgets('封面进度仅绘制蓝色圆角细条，未播放区域保留海报', (tester) async {
     final boundary = GlobalKey();
     await tester.pumpWidget(
       MaterialApp(
@@ -264,7 +265,9 @@ void main() {
                 height: 261,
                 child: FilmWatchOverlay(
                   fallbackFraction: .3,
-                  child: const ColoredBox(color: Colors.pink),
+                  child: const SizedBox.expand(
+                    child: ColoredBox(color: Colors.pink),
+                  ),
                 ),
               ),
             ),
@@ -283,15 +286,25 @@ void main() {
       () => image!.toByteData(format: ui.ImageByteFormat.rawRgba),
     ))!;
     image!.dispose();
-    final poster = Colors.pink.toARGB32();
-    for (var x = 1; x < 173; x++) {
-      final offset = (260 * 174 + x) * 4;
-      final color =
-          0xff000000 |
+    int pixel(int x, int y) {
+      final offset = (y * 174 + x) * 4;
+      return 0xff000000 |
           bytes.getUint8(offset) << 16 |
           bytes.getUint8(offset + 1) << 8 |
           bytes.getUint8(offset + 2);
-      expect(color, isNot(poster), reason: 'poster exposed at x=$x');
+    }
+
+    final poster = Colors.pink.toARGB32();
+    final accent = AppTheme.dark().colorScheme.primary.toARGB32();
+    expect(pixel(25, 259), accent);
+    expect(pixel(50, 259), accent);
+    expect(pixel(51, 257), isNot(accent));
+    expect(pixel(0, 257), isNot(accent));
+    expect(pixel(25, 256), poster);
+    for (var y = 257; y < 261; y++) {
+      for (var x = 54; x < 174; x++) {
+        expect(pixel(x, y), poster, reason: 'track visible at ($x, $y)');
+      }
     }
     await tester.pumpWidget(const SizedBox.shrink());
   });

@@ -58,6 +58,7 @@ void main() {
           child: Column(
             children: [
               FilmPosterHoverSurface(
+                blurred: true,
                 borderRadius: BorderRadius.zero,
                 child: SizedBox(
                   key: coverKey,

@@ -126,6 +126,8 @@ class _PlaybackLaunchContext {
         webDavFontCacheEnabled: player.webDavFontCacheEnabled,
         externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
         videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
+        videoPlaylistInsertDecimalEpisodes:
+            player.videoPlaylistInsertDecimalEpisodes,
         autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
         allowSeasonGap: player.allowSeasonGap,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,

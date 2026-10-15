@@ -96,15 +96,19 @@ class _FilmPosterHoverScope extends InheritedWidget {
       borderRadius != oldWidget.borderRadius;
 }
 
-/// 海报独立合成，布局尺寸和外部文字始终保持原位。
+/// 海报单独变换，布局尺寸和外部文字始终保持原位。
 class FilmPosterHoverSurface extends StatelessWidget {
   const FilmPosterHoverSurface({
     super.key,
     required this.child,
     this.borderRadius,
+    this.blurred = false,
   });
   final Widget child;
   final BorderRadius? borderRadius;
+
+  /// 已模糊内容沿用固定坐标的位图采样。
+  final bool blurred;
 
   @override
   Widget build(BuildContext context) {
@@ -114,6 +118,10 @@ class FilmPosterHoverSurface extends StatelessWidget {
     final borderColor = theme.brightness == Brightness.dark
         ? Colors.white
         : theme.colorScheme.onSurface;
+    final clipped = ClipRRect(
+      borderRadius: borderRadius ?? scope.borderRadius,
+      child: child,
+    );
     return AnimatedBuilder(
       animation: scope.animation,
       builder: (_, content) {
@@ -147,7 +155,8 @@ class FilmPosterHoverSurface extends StatelessWidget {
               alignment: Alignment.center,
               transform: Matrix4.diagonal3Values(scale, scale, 1)
                 ..setEntry(1, 3, -AppTheme.posterHoverLift * progress),
-              filterQuality: FilterQuality.high,
+              // 清晰封面直接绘制原图，模糊封面保持滤镜采样坐标稳定。
+              filterQuality: blurred ? FilterQuality.high : null,
               // 动效超出占位的部分不扩大鼠标命中区。
               transformHitTests: false,
               child: Stack(
@@ -172,12 +181,7 @@ class FilmPosterHoverSurface extends StatelessWidget {
           ],
         );
       },
-      child: RepaintBoundary(
-        child: ClipRRect(
-          borderRadius: borderRadius ?? scope.borderRadius,
-          child: child,
-        ),
-      ),
+      child: blurred ? RepaintBoundary(child: clipped) : clipped,
     );
   }
 }
@@ -204,7 +208,9 @@ Widget filmCoverFrameBuilder(
   duration: const Duration(milliseconds: 280),
   curve: Curves.easeOut,
   child: child,
-  builder: (_, opacity, image) => Opacity(opacity: opacity, child: image),
+  // 全显后撤掉透明图层，避免悬停变换仍进入整数像素对齐路径。
+  builder: (_, opacity, image) =>
+      opacity == 1 ? image! : Opacity(opacity: opacity, child: image),
 );
 
 /// 海报墙同步命中直接显示，异步首帧沿用封面淡入。
