@@ -19,6 +19,7 @@ abstract final class AppTheme {
   static const double controlGap = 12;
   static const double pageInset = 24;
   static const double controlBarMaxWidth = 1248;
+  static const double videoCacheBlurSigma = 20;
   static const pagePadding = EdgeInsets.all(pageInset);
   static const hoverDuration = Duration(milliseconds: 200);
   static const double posterHoverScale = 1.05;
@@ -94,6 +95,24 @@ abstract final class AppTheme {
     final glass = theme.glass;
     if (!glass.enabled) return surface.withValues(alpha: 1);
     return glass.modalSurface;
+  }
+
+  static ThemeData videoCachePanelTheme(ThemeData theme) {
+    final glass = theme.glass;
+    if (!glass.enabled || theme.brightness != Brightness.dark) return theme;
+    final surface = glass.modalSurface.withValues(alpha: .65);
+    return theme.copyWith(
+      extensions: theme.extensions.values.map(
+        (extension) => extension is GlassTokens
+            ? extension.copyWith(
+                raisedSurface: surface,
+                modalSurface: surface,
+                modalBlurSigma: videoCacheBlurSigma,
+              )
+            : extension,
+      ),
+      dialogTheme: theme.dialogTheme.copyWith(backgroundColor: surface),
+    );
   }
 
   static ThemeData light({

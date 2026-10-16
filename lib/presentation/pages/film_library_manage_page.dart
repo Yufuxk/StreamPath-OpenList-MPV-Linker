@@ -8,6 +8,8 @@ import '../widgets/film_directory_dialog.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/settings_group_card.dart';
 import '../widgets/settings_columns.dart';
+import '../widgets/glass_surface.dart';
+import '../theme/glass_tokens.dart';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -71,6 +73,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   String _probeMode = 'playback';
   bool _hasToken = false;
   bool _scanEnabled = true, _spoilers = false;
+  bool _showPosterContentCount = false;
   int _scanHours = 24;
   bool _saving = false;
   @override
@@ -91,6 +94,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
           await widget.catalog.store.preference('scan_enabled') != false;
       _spoilers =
           await widget.catalog.store.preference('spoiler_protection') == true;
+      _showPosterContentCount = widget.catalog.store.showPosterContentCount;
       _scanHours =
           (await widget.catalog.store.preference('scan_interval_hours')
               as int?) ??
@@ -220,6 +224,69 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
     if (confirm == true) {
       await widget.catalog.run(() => widget.catalog.store.removeRoot(root.id));
     }
+  }
+
+  Widget _statisticsCards(BuildContext context) {
+    final statistics = widget.catalog.statistics;
+    final items = [
+      ('电视剧', statistics.episodes),
+      ('电视剧集', statistics.series),
+      ('电影', statistics.movies),
+      ('其他', statistics.other),
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+        final columns = constraints.maxWidth >= 800 * scale + 48
+            ? 4
+            : constraints.maxWidth >= 400 * scale + 16
+            ? 2
+            : 1;
+        final width = (constraints.maxWidth - 16 * (columns - 1)) / columns;
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            for (final (label, count) in items)
+              SizedBox(
+                key: ValueKey('film-statistics-$label'),
+                width: width,
+                child: GlassSurface(
+                  level: GlassSurfaceLevel.raised,
+                  borderRadius: AppTheme.panelRadius,
+                  border: Border.all(
+                    color: Theme.of(context).glass.panelBorderColor,
+                  ),
+                  showShadow: false,
+                  blur: true,
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          MaterialLocalizations.of(
+                            context,
+                          ).formatDecimal(count),
+                          style: Theme.of(context).textTheme.displaySmall
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      AppText(
+                        label,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
   }
 
   Widget _rootCard(BuildContext context, FilmCatalogRoot root) {
@@ -378,7 +445,9 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
               widget.embedded && !widget.directories ? 0 : 24,
             ),
             children: [
-              if (widget.directories)
+              if (widget.directories) ...[
+                _statisticsCards(context),
+                const SizedBox(height: 16),
                 SettingsGroupCard(
                   icon: SPIcons.folderOpen,
                   title: '管理影视目录',
@@ -442,6 +511,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                     ],
                   ),
                 ),
+              ],
               if (!widget.directories) ...[
                 FilmCatalogTasks(catalog: c, panel: true),
                 const SizedBox(height: 16),
@@ -682,6 +752,21 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                 onChanged: (value) => _settingAction(
                                   () => c.store.setPreference(
                                     'spoiler_protection',
+                                    value,
+                                  ),
+                                ),
+                              ),
+                              SPToggleTile(
+                                key: const Key('film-poster-content-count'),
+                                contentPadding: EdgeInsets.zero,
+                                title: const AppText('显示季数／影片数'),
+                                subtitle: const AppText(
+                                  '在封面年份后显示库内剧集季数或电影资源数（含 ISO、BDMV）',
+                                ),
+                                value: _showPosterContentCount,
+                                onChanged: (value) => _settingAction(
+                                  () => c.store.setPreference(
+                                    'show_poster_content_count',
                                     value,
                                   ),
                                 ),

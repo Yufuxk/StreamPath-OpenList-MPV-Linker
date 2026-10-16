@@ -172,6 +172,7 @@ class FilmCatalogController extends ChangeNotifier {
 
   FilmMediaType? type;
   List<FilmWork> recentWorks = [], movies = [], series = [];
+  FilmLibraryStatistics statistics = const FilmLibraryStatistics();
   final Map<int, FilmWork> rootCovers = {};
   final Map<int, File> rootCoverFiles = {};
   String query = '';
@@ -282,6 +283,9 @@ class FilmCatalogController extends ChangeNotifier {
           .where((root) => sourceId == null || root.sourceId == sourceId)
           .toList();
       final exclusions = await store.directoryExclusions();
+      final statistics = more
+          ? this.statistics
+          : await store.statistics(sourceId: sourceId);
       if (_closed || generation != _queryGeneration) return;
       if (rootId != null && !rootList.any((r) => r.id == rootId && r.enabled)) {
         rootId = null;
@@ -305,6 +309,7 @@ class FilmCatalogController extends ChangeNotifier {
       works = more ? [...works, ...page] : page;
       _loadedFilter = filter;
       roots = rootList;
+      this.statistics = statistics;
       _directoryExclusions = exclusions;
       hasMore = page.length == limit;
       _notify();

@@ -1,5 +1,8 @@
 /// 影视库新增文案：繁体中文、日语、英语。
 const filmCatalogTranslations = <String, List<String>>{
+  '电视剧': ['電視劇', 'エピソード', 'TV episodes'],
+  '电视剧集': ['電視劇集', 'テレビシリーズ', 'TV series'],
+  '其他': ['其他', 'その他', 'Other'],
   '正在加载': ['正在載入', '読み込み中', 'Loading'],
   '右键作品封面，将喜欢的影片加入收藏。': [
     '右鍵點選作品封面，將喜歡的影片加入收藏。',
@@ -824,6 +827,18 @@ const filmCatalogTranslations = <String, List<String>>{
   '扫描间隔': ['掃描間隔', 'スキャン間隔', 'Scan interval'],
   '{hours} 小时': ['{hours} 小時', '{hours} 時間', '{hours} hours'],
   '防剧透': ['防劇透', 'ネタバレを隠す', 'Hide spoilers'],
+  '显示季数／影片数': [
+    '顯示季數／影片數',
+    'シーズン数／映画のリソース数を表示',
+    'Show season / movie resource counts',
+  ],
+  '在封面年份后显示库内剧集季数或电影资源数（含 ISO、BDMV）': [
+    '在封面年份後顯示庫內劇集季數或電影資源數（含 ISO、BDMV）',
+    'ポスターの年の後にライブラリ内のシーズン数または映画のリソース数を表示（ISO、BDMV を含む）',
+    'Show library season or movie resource counts after the poster year (including ISO and BDMV)',
+  ],
+  '{count}季': ['{count}季', '{count}シーズン', '{count} seasons'],
+  '{count}项内容': ['{count}項內容', '{count}件のコンテンツ', '{count} items'],
   '展示剧透': ['展示劇透', 'ネタバレを表示', 'Show spoilers'],
   '刷新播放状态': ['重新整理播放狀態', '再生状態を更新', 'Refresh playback status'],
   '本集已看完': ['本集已看完', 'このエピソードを視聴済みにする', 'Mark this episode watched'],

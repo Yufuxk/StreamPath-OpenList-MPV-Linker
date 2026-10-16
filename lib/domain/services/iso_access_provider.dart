@@ -73,6 +73,7 @@ class IsoBridgeReady {
     bool remoteMenu = false,
     bool bdmv = false,
     String? mountedSessionPath,
+    String? localDiscPath,
   }) {
     final port = (message['port'] as num?)?.toInt();
     final token = message['token'];
@@ -81,7 +82,9 @@ class IsoBridgeReady {
     if (message['type'] != 'ready' ||
         message['version'] != 1 ||
         port == null ||
-        (mountedSessionPath == null ? port <= 0 : port != 0) ||
+        (mountedSessionPath == null && localDiscPath == null
+            ? port <= 0
+            : port != 0) ||
         port > 65535 ||
         token is! String ||
         !RegExp(r'^[0-9a-f]{32}$').hasMatch(token) ||
@@ -147,8 +150,13 @@ class IsoBridgeReady {
       );
     }
     if (remoteMenu &&
-        (mountedSessionPath == null ||
-            message['capability'] != (bdmv ? 'winfsp-bdmv-v1' : 'winfsp-disc-v1') ||
+        (mountedSessionPath == null && localDiscPath == null ||
+            message['capability'] !=
+                (localDiscPath != null
+                    ? 'local-disc-v1'
+                    : bdmv
+                    ? 'winfsp-bdmv-v1'
+                    : 'winfsp-disc-v1') ||
             message['mode'] != 'hdmv' ||
             (!bdmv && totalBytes % 2048 != 0) ||
             titles.isNotEmpty)) {
@@ -157,8 +165,14 @@ class IsoBridgeReady {
     if (mountedSessionPath != null &&
         (!remoteMenu ||
             message['discPath'] !=
-                (bdmv ? p.join(mountedSessionPath, 'disc') : p.join(mountedSessionPath, 'disc', 'disc.iso')))) {
+                (localDiscPath ??
+                    (bdmv
+                        ? p.join(mountedSessionPath, 'disc')
+                        : p.join(mountedSessionPath, 'disc', 'disc.iso'))))) {
       throw const IsoBridgeProtocolException('远程蓝光菜单能力响应无效');
+    }
+    if (localDiscPath != null && message['discPath'] != localDiscPath) {
+      throw const IsoBridgeProtocolException('Cached disc path is invalid');
     }
     if (!remoteMenu && titles.isEmpty) {
       throw const IsoBridgeProtocolException('ISO Bridge 未返回可播放 Title');
@@ -761,6 +775,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         throw const IsoBridgeProtocolException('ISO Bridge hello 响应无效');
       }
       final snapshot = webDavService.credentialSnapshot;
+      final cachedDisc = await webDavService.cachedDiscPath(file);
       onPhase?.call(IsoAccessPhase.probingStream);
       await client.send({
         'type': remoteMenu ? 'open_disc' : 'open',
@@ -769,6 +784,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         'version': 1,
         if (mediaProbe) 'mediaProbe': true,
         if (file is WebDavBdmv) 'sourceKind': 'bdmv',
+        'localPath': ?cachedDisc,
         'url': webDavService.resolveUrl(file.href),
         'origin': snapshot.baseUrl,
         'username': snapshot.username,
@@ -799,6 +815,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         remoteMenu: remoteMenu,
         bdmv: file is WebDavBdmv,
         mountedSessionPath: remoteMenu ? sessionDirectory.path : null,
+        localDiscPath: remoteMenu ? cachedDisc : null,
       );
       if (file is WebDavBdmv) {
         final revision = response['structureRevision'];

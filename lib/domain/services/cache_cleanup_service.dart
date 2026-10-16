@@ -56,6 +56,7 @@ class CacheCleanupService implements CacheCleaner {
         const {},
     Future<Directory> Function()? dataDirectoryProvider,
     Set<String> preservedCacheNames = const {},
+    this.preservedPathsProvider,
     bool deleteRuntimeFiles = true,
   }) : _storeClearers = List.unmodifiable(storeClearers),
        _scopedStoreClearers = Map.unmodifiable(scopedStoreClearers),
@@ -70,6 +71,7 @@ class CacheCleanupService implements CacheCleaner {
   final Map<CacheCleanupScope, List<CacheStoreClearer>> _scopedStoreClearers;
   final Future<Directory> Function() _dataDirectoryProvider;
   final Set<String> _preservedCacheNames;
+  final Future<Set<String>> Function()? preservedPathsProvider;
   final bool _deleteRuntimeFiles;
   bool _clearing = false;
 
@@ -86,6 +88,8 @@ class CacheCleanupService implements CacheCleaner {
       final cacheDir = Directory(p.join(dataDir.path, AppPaths.cacheDirName));
       await cacheDir.create(recursive: true);
       await _validateDirectory(cacheDir, expectedParent: dataDir);
+      final preservedPaths =
+          await preservedPathsProvider?.call() ?? const <String>{};
 
       var clearedStores = 0;
       for (final clearStore in [
@@ -101,8 +105,8 @@ class CacheCleanupService implements CacheCleaner {
 
       final targets = _deleteRuntimeFiles
           ? [
-              ...await _collectCacheTargets(cacheDir, scope),
-              ...await _collectLegacyTargets(dataDir, scope),
+              ...await _collectCacheTargets(cacheDir, scope, preservedPaths),
+              ...await _collectLegacyTargets(dataDir, scope, preservedPaths),
             ]
           : <FileSystemEntity>[];
       for (final target in targets) {
@@ -158,12 +162,14 @@ class CacheCleanupService implements CacheCleaner {
   Future<List<FileSystemEntity>> _collectCacheTargets(
     Directory cacheDir,
     CacheCleanupScope scope,
+    Set<String> preservedPaths,
   ) async {
     final targets = <FileSystemEntity>[];
     await for (final entity in cacheDir.list(followLinks: false)) {
       final name = p.basename(entity.path).toLowerCase();
       if (_isOpenStoreFile(name) ||
           _preservedCacheNames.contains(name) ||
+          _containsPreservedPath(entity.path, preservedPaths) ||
           name == 'local_iso_subtitles') {
         continue;
       }
@@ -179,12 +185,14 @@ class CacheCleanupService implements CacheCleaner {
   Future<List<FileSystemEntity>> _collectLegacyTargets(
     Directory dataDir,
     CacheCleanupScope scope,
+    Set<String> preservedPaths,
   ) async {
     final targets = <FileSystemEntity>[];
     await for (final entity in dataDir.list(followLinks: false)) {
       final name = p.basename(entity.path);
       if (!_isLegacyCacheName(name)) continue;
       if (_preservedCacheNames.contains(name.toLowerCase())) continue;
+      if (_containsPreservedPath(entity.path, preservedPaths)) continue;
       if (scope != CacheCleanupScope.all &&
           _scopeForName(name.toLowerCase()) != scope) {
         continue;
@@ -194,6 +202,9 @@ class CacheCleanupService implements CacheCleaner {
     }
     return targets;
   }
+
+  bool _containsPreservedPath(String target, Set<String> paths) =>
+      paths.any((path) => p.equals(target, path) || p.isWithin(target, path));
 
   Future<void> _validateDeleteTarget(
     FileSystemEntity entity,

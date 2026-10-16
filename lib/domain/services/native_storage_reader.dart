@@ -199,10 +199,14 @@ class NativeStorageReader implements StorageFileReader {
     Object? arg1,
     Object? arg2,
   ]) {
-    if (_closed || _closing || _workerExit.isCompleted) throw const FilmCatalogException('cancelled');
+    if (_closed || _closing || _workerExit.isCompleted) {
+      throw const FilmCatalogException('cancelled');
+    }
     validateFilmPath(path);
     final task = _tail.then((_) {
-      if (_closing || _workerExit.isCompleted) throw const FilmCatalogException('cancelled');
+      if (_closing || _workerExit.isCompleted) {
+        throw const FilmCatalogException('cancelled');
+      }
       return _send(operation, path, arg1, arg2);
     });
     _tail = task.then<void>((_) {}, onError: (Object _, StackTrace _) {});
@@ -247,6 +251,23 @@ class NativeStorageReader implements StorageFileReader {
       throw const FilmCatalogException('imageTooLarge');
     }
     await _command('create', path, TransferableTypedData.fromList([bytes]));
+  }
+
+  Future<void> openStream(String path, int offset) async {
+    await _command('streamOpen', path, offset);
+  }
+
+  Future<Uint8List> readStream(int count) async {
+    if (count <= 0 || count > 1024 * 1024) {
+      throw ArgumentError('Invalid stream read size');
+    }
+    return (await _command('streamRead', '', count) as TransferableTypedData)
+        .materialize()
+        .asUint8List();
+  }
+
+  Future<void> closeStream() async {
+    await _command('streamClose', '');
   }
 
   @override
@@ -362,6 +383,34 @@ class NativeStorageReader implements StorageFileReader {
             throw FilmCatalogException(
               nativeStorageError(result['error'] as int),
             );
+          }
+        } else if (operation == 'streamOpen') {
+          final status = library
+              .lookupFunction<
+                Int32 Function(Pointer<Void>, Pointer<Utf8>, Uint64),
+                int Function(Pointer<Void>, Pointer<Utf8>, int)
+              >('sp_storage_stream_open')(context, path, row[3] as int);
+          if (status < 0) {
+            throw FilmCatalogException(nativeStorageError(status));
+          }
+        } else if (operation == 'streamClose') {
+          library.lookupFunction<
+            Void Function(Pointer<Void>),
+            void Function(Pointer<Void>)
+          >('sp_storage_stream_close')(context);
+        } else if (operation == 'streamRead') {
+          final count = row[3] as int;
+          final buffer = calloc<Uint8>(count);
+          try {
+            final size = library
+                .lookupFunction<
+                  Int32 Function(Pointer<Void>, Pointer<Uint8>, Uint32),
+                  int Function(Pointer<Void>, Pointer<Uint8>, int)
+                >('sp_storage_stream_read')(context, buffer, count);
+            if (size < 0) throw FilmCatalogException(nativeStorageError(size));
+            result = TransferableTypedData.fromList([buffer.asTypedList(size)]);
+          } finally {
+            calloc.free(buffer);
           }
         } else if (operation == 'read') {
           final count = row[4] as int;

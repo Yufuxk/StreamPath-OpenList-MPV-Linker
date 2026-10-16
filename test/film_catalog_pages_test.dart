@@ -151,6 +151,11 @@ void main() {
     );
     await tester.enterText(tokenField, 'test-read-access-token');
     await tester.pump();
+    await Scrollable.ensureVisible(
+      tester.element(find.text('保存凭据')),
+      alignment: .5,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('保存凭据'));
     await settle();
     expect(credentials.token, 'test-read-access-token');
@@ -179,6 +184,18 @@ void main() {
     );
     expect(find.text('已保存 TMDB 凭据'), findsOneWidget);
     final foldersField = find.byKey(const Key('film-excluded-folders-field'));
+    final contentCount = find.byKey(const Key('film-poster-content-count'));
+    await tester.ensureVisible(contentCount);
+    expect(tester.widget<SwitchListTile>(contentCount).value, isFalse);
+    await tester.tap(contentCount);
+    await settle();
+    expect(c.store.showPosterContentCount, isTrue);
+    expect(tester.widget<SwitchListTile>(contentCount).value, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(frame());
+    await settle();
+    await tester.ensureVisible(contentCount);
+    expect(tester.widget<SwitchListTile>(contentCount).value, isTrue);
     await tester.ensureVisible(foldersField);
     await tester.enterText(foldersField, ' Specials, 特典, ,Specials ');
     await tester.ensureVisible(find.byType(SPDropdownButtonFormField<bool>));
@@ -387,7 +404,8 @@ void main() {
         .first;
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
     await settle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(9));
+    expect(find.text('缓存视频…'), findsOneWidget);
     expect(find.text('收藏'), findsOneWidget);
     expect(find.text('刷新元数据'), findsOneWidget);
     await tester.tap(find.text('收藏'));
@@ -463,7 +481,7 @@ void main() {
     await settle();
     await tester.pumpAndSettle();
     expect(find.text('刷新元数据'), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(9));
     expect(find.text('标记已看完'), findsOneWidget);
     expect(find.text('标记未观看'), findsOneWidget);
     await tester.tapAt(const Offset(1100, 700));
@@ -482,7 +500,7 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(4));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
     expect(find.text('季观看状态'), findsNothing);
     expect(find.byType(Dialog), findsNothing);
     await tester.tapAt(const Offset(1100, 700));

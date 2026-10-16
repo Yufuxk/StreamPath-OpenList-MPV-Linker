@@ -16,6 +16,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/data/local/media_library_store.dart';
+import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
@@ -357,6 +358,79 @@ void main() {
       await render(tester, 'continue-progress');
     },
   );
+
+  testWidgets('封面第二行计数四语言、即时开关与放大文字保持单行', (tester) async {
+    await prepare(tester);
+    for (final scale in [1.0, 2.0]) {
+      for (final language in AppLanguage.values) {
+        for (final type in FilmMediaType.values) {
+          final suffix = type == FilmMediaType.tv
+              ? ['2季', '2季', '2シーズン', '2 seasons'][language.index]
+              : ['2项内容', '2項內容', '2件のコンテンツ', '2 items'][language.index];
+          await tester.runAsync(
+            () => c.store.setPreference('show_poster_content_count', false),
+          );
+          await tester.pumpWidget(
+            frame(
+              Scaffold(
+                body: Center(
+                  child: SizedBox(
+                    width: 180,
+                    height: 350,
+                    child: FilmWorkCard(
+                      store: c.store,
+                      work: FilmWork(
+                        type: type,
+                        title: 'Poster title',
+                        originalTitle: 'Poster title',
+                        overview: '',
+                        language: 'zh-CN',
+                        year: 2023,
+                        resourceCount: 2,
+                        seasonCount: 2,
+                      ),
+                      cache: c.images,
+                      onTap: () {},
+                      onMenu: (_) {},
+                    ),
+                  ),
+                ),
+              ),
+              language: language,
+              scale: scale,
+            ),
+          );
+          await settle(tester);
+          expect(find.text('2023'), findsOneWidget);
+          final before = tester.getTopLeft(find.text('Poster title'));
+          await tester.runAsync(
+            () => c.store.setPreference('show_poster_content_count', true),
+          );
+          await tester.pump();
+          final caption = find.text('2023·$suffix');
+          expect(caption, findsOneWidget);
+          expect(tester.widget<Text>(caption).maxLines, 1);
+          if (scale == 1) {
+            expect(
+              tester.renderObject<RenderParagraph>(caption).didExceedMaxLines,
+              isFalse,
+            );
+          }
+          expect(tester.getTopLeft(find.text('Poster title')), before);
+          expect(tester.takeException(), isNull);
+          await render(
+            tester,
+            'poster-count-${language.name}-${type.name}-$scale',
+          );
+          await tester.runAsync(
+            () => c.store.setPreference('show_poster_content_count', false),
+          );
+          await tester.pump();
+          expect(find.text('2023'), findsOneWidget);
+        }
+      }
+    }
+  });
 
   testWidgets(
     'card hover keeps markers aligned with the cover and rounded clipping',
@@ -785,7 +859,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(Dialog), findsNothing);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(4));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
     await render(tester, 'minimal_season_watch_menu');
     await tester.tap(find.text('标记已看完'));
     await settle(tester);

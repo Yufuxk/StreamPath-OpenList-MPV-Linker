@@ -148,6 +148,9 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       ),
   ];
   final Map<String, _LocalDiscRuntime> _sessions = {};
+  Set<String> get playbackFiles => {
+    for (final session in _sessions.values) session.result.devicePath,
+  };
   final Set<IsoLibraryProgressListener> _libraryProgressListeners = {};
   bool _disposed = false;
 

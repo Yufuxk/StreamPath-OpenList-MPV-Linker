@@ -1576,10 +1576,38 @@ static void test_catalog_probe_limits() {
   guard_catalog_probe_request({}, {}, {});
 }
 
+void test_local_cache_sources() {
+  const auto root = std::filesystem::temp_directory_path() /
+      (L"streampath-local-cache-test-" + std::to_wstring(GetCurrentProcessId()));
+  std::filesystem::create_directories(root / L"BDMV");
+  {
+    std::ofstream stream(root / L"BDMV" / L"index.bdmv", std::ios::binary);
+    stream << "0123456789";
+  }
+  {
+    LocalIsoSource iso(root / L"BDMV" / L"index.bdmv");
+    expect_network(iso.size() == 10, "local cache reports file length");
+    expect_network(iso.fetch(2,5) == std::vector<std::uint8_t>({'2','3','4','5'}), "local cache reads exact disk bytes");
+    expect_network(iso.metrics().request_count == 0, "local cache makes no network requests");
+    bool cancelled = false;
+    try { iso.fetch(0,9,[] { return true; }); } catch (const bridge::FetchCancelled&) { cancelled = true; }
+    expect_network(cancelled, "local cache respects generation cancellation");
+    bridge::DiscFiles files;
+    files.add("BDMV", "unused", 0, true);
+    files.add("BDMV/index.bdmv", "unused", 10, false);
+    BdmvSource bdmv(std::move(files), "", "", "", root);
+    expect_network(bdmv.fetch(3,6) == std::vector<std::uint8_t>({'3','4','5','6'}), "local BDMV reads relative file tree");
+    expect_network(bdmv.structure_identity().has_value(), "local BDMV has stable structure identity");
+    expect_network(bdmv.metrics().request_count == 0, "local BDMV makes no network requests");
+  }
+  std::filesystem::remove_all(root);
+}
+
 int main() {
   WSADATA data{};
   if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 1;
   try {
+    test_local_cache_sources();
     test_catalog_probe_limits();
     test_bdmv_manifest_cache_invalidation();
     test_bdmv_lazy_first_read();

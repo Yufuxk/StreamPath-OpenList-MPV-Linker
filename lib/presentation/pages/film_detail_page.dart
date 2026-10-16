@@ -1,6 +1,7 @@
 import '../widgets/transition_content.dart';
 import '../widgets/cinematic_states.dart';
 import '../../data/models/film_playlist.dart';
+import '../widgets/video_cache_widgets.dart';
 import '../widgets/film_playlist_dialog.dart';
 import '../widgets/sp_menu.dart';
 import '../widgets/film_continue_card.dart';
@@ -412,6 +413,25 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               .firstOrNull
           as Map?;
 
+  Future<void> _playDefault(FilmResource resource) async {
+    final app = context.read<AppState>();
+    var selected = resource;
+    for (final version in _resources.where(
+      (r) =>
+          r.sourceId == resource.sourceId &&
+          r.workId == resource.workId &&
+          r.season == resource.season &&
+          r.episode == resource.episode &&
+          r.availability == 'present',
+    )) {
+      if (await app.cachedTarget(version.sourceId, version.path) != null) {
+        selected = version;
+        break;
+      }
+    }
+    if (mounted) await widget.onOpenItem(selected.playbackItem);
+  }
+
   Widget _cards(List<FilmResource> resources, AppState app, FilmWork work) =>
       LayoutBuilder(
         builder: (context, constraints) {
@@ -777,9 +797,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                       if (playable != null)
                                                         FilmDetailPlayButton(
                                                           onPressed: () =>
-                                                              widget.onOpenItem(
-                                                                playable
-                                                                    .playbackItem,
+                                                              _playDefault(
+                                                                playable,
                                                               ),
                                                         ),
                                                       FilmDetailActionButton(
@@ -1117,6 +1136,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
 }
 
 enum _FilmFileAction {
+  cache,
   playlist,
   addPlaylist,
   watched,
@@ -1171,6 +1191,16 @@ class FilmEpisodeCard extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       items: [
+        PopupMenuItem(
+          value: _FilmFileAction.cache,
+          enabled:
+              resource.sourceKind != MediaSourceKind.local &&
+              resource.availability == 'present',
+          child: const SPMenuItemContent(
+            icon: SPIcons.download,
+            child: AppText('缓存视频…'),
+          ),
+        ),
         if (resource.canMarkWatched) ...[
           const PopupMenuItem(
             value: _FilmFileAction.watched,
@@ -1246,6 +1276,13 @@ class FilmEpisodeCard extends StatelessWidget {
     );
     if (!context.mounted || action == null) return;
     switch (action) {
+      case _FilmFileAction.cache:
+        await showVideoCacheDialog(
+          context,
+          catalog,
+          FilmPlaylistScope.resource(resource),
+          title: displayTitle ?? resource.name,
+        );
       case _FilmFileAction.playlist:
       case _FilmFileAction.addPlaylist:
         await showFilmPlaylistDialog(

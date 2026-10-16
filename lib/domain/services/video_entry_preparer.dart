@@ -26,6 +26,7 @@ class VideoEntryPreparer {
     required this.fontMatcher,
     required this.titles,
     Map<String, List<MediaDirectoryEntry>>? directories,
+    this.cached,
   }) {
     if (directories != null) _directories.addAll(directories);
   }
@@ -34,6 +35,7 @@ class VideoEntryPreparer {
   final SubtitleMatcher subtitleMatcher;
   final WebDavFontMatcher fontMatcher;
   final Map<String, String> titles;
+  final Future<PreparedVideoItem?> Function(String path)? cached;
   final _directories = <String, List<MediaDirectoryEntry>>{};
   final _fonts = <String, PreparedVideoItem>{};
   String? sharedLocalFonts;
@@ -43,8 +45,10 @@ class VideoEntryPreparer {
   Future<void> prepareSharedFonts(
     String rootPath, {
     List<MediaDirectoryEntry>? siblings,
+    String? startPath,
   }) async {
     if (!config.sharePlaylistFonts) return;
+    if (startPath != null && await cached?.call(startPath) != null) return;
     final files = siblings ?? await source.fetchDirectory(rootPath);
     final video = files
         .where((e) => e.isVideo || !local && e.isPlayable)
@@ -56,6 +60,8 @@ class VideoEntryPreparer {
   }
 
   Future<PreparedVideoItem> prepare(VideoQueueVersion version) async {
+    final hit = await cached?.call(version.path);
+    if (hit != null) return hit;
     final parent = p.posix
         .dirname(version.path)
         .replaceFirst(RegExp(r'^\.$'), '');

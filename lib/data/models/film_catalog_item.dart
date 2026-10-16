@@ -6,6 +6,17 @@ import 'video_playback_scope.dart';
 
 enum FilmMediaType { movie, tv }
 
+class FilmLibraryStatistics {
+  const FilmLibraryStatistics({
+    this.episodes = 0,
+    this.series = 0,
+    this.movies = 0,
+    this.other = 0,
+  });
+
+  final int episodes, series, movies, other;
+}
+
 /// 可向界面公开的目录库错误，不携带 URL、凭据或底层响应。
 class FilmCatalogException implements Exception {
   const FilmCatalogException(this.code);
@@ -58,6 +69,7 @@ class FilmWork {
     this.metadata = const {},
     this.fetchedAt = 0,
     this.resourceCount = 0,
+    this.seasonCount = 0,
     this.missingCount = 0,
   });
 
@@ -79,6 +91,7 @@ class FilmWork {
     ),
     fetchedAt: row['metadata_fetched_at'] as int,
     resourceCount: row['resource_count'] as int? ?? 0,
+    seasonCount: row['season_count'] as int? ?? 0,
     missingCount: row['missing_count'] as int? ?? 0,
   );
 
@@ -100,6 +113,7 @@ class FilmWork {
   final Map<String, dynamic> metadata;
   final int fetchedAt;
   final int resourceCount;
+  final int seasonCount;
   final int missingCount;
 
   Map<String, Object?> toRow() => {

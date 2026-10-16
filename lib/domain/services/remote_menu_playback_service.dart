@@ -37,7 +37,8 @@ class RemoteMenuPlaybackService {
   final String helperExecutable;
   static const runtimeMissing = '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单';
 
-  Future<String?> unavailableReason() async => (await checkAvailability()).reason;
+  Future<String?> unavailableReason() async =>
+      (await checkAvailability()).reason;
 
   Future<RemoteMenuAvailability> checkAvailability() async {
     try {
@@ -47,13 +48,18 @@ class RemoteMenuPlaybackService {
     }
   }
 
-  Future<String> requireCapability({PlayerConfig? config}) async {
+  Future<String> requireCapability({
+    PlayerConfig? config,
+    bool local = false,
+  }) async {
     final player = config ?? await configLoader();
     final error = LocalDiscPlaybackService.validateExecutable(player);
     if (error != null) throw AppException.config(error);
-    final runtime = await _probe(helperExecutable, ['--check-winfsp']);
-    if (runtime.exitCode != 0) {
-      throw AppException.config(runtimeMissing);
+    if (!local) {
+      final runtime = await _probe(helperExecutable, ['--check-winfsp']);
+      if (runtime.exitCode != 0) {
+        throw AppException.config(runtimeMissing);
+      }
     }
     final commands = await _probe(player.executable, [
       '--no-config',
@@ -131,6 +137,7 @@ class RemoteMenuPlaybackService {
     required Uri endpoint,
     required String sessionKey,
     required String ipcPipeName,
+    String? localDiscPath,
   }) async {
     final script = await MpvScripts.ensureCurrent(
       p.join(sessionDirectory.path, 'iso-current.txt'),
@@ -142,17 +149,20 @@ class RemoteMenuPlaybackService {
     final menuScript = config.menuProgressSharingEnabled
         ? await writeProgressScript(sessionDirectory)
         : null;
-    final cacheScript = await MenuCachePanelScript.write(
-      sessionDirectory,
-      await languageLoader?.call() ?? AppLanguage.simplifiedChinese,
-    );
+    final cacheScript = localDiscPath != null
+        ? null
+        : await MenuCachePanelScript.write(
+            sessionDirectory,
+            await languageLoader?.call() ?? AppLanguage.simplifiedChinese,
+          );
     return buildArgs(
       config,
       endpoint: endpoint,
       ipcPipeName: ipcPipeName,
       scriptPath: script,
+      localDiscPath: localDiscPath,
     )..insertAll(0, [
-      '--script=$cacheScript',
+      if (cacheScript != null) '--script=$cacheScript',
       if (menuScript != null) '--script=$menuScript',
     ]);
   }
@@ -246,13 +256,19 @@ end)
     required Uri endpoint,
     required String ipcPipeName,
     required String scriptPath,
+    String? localDiscPath,
   }) {
     if (endpoint.scheme != 'file' ||
-        endpoint.host.isNotEmpty ||
+        (localDiscPath == null && endpoint.host.isNotEmpty) ||
         endpoint.hasQuery ||
         endpoint.hasFragment ||
-        !{p.join(p.dirname(scriptPath), 'disc', 'disc.iso'),
-          p.join(p.dirname(scriptPath), 'disc')}.contains(endpoint.toFilePath(windows: true))) {
+        !(localDiscPath == null
+                ? {
+                    p.join(p.dirname(scriptPath), 'disc', 'disc.iso'),
+                    p.join(p.dirname(scriptPath), 'disc'),
+                  }
+                : {localDiscPath})
+            .contains(endpoint.toFilePath(windows: true))) {
       throw ArgumentError('Invalid mounted disc path');
     }
     return [

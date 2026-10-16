@@ -214,6 +214,7 @@ class _IsoRuntime {
     required this.journalFile,
     this.probeSourceId = '',
     this.probeTarget = '',
+    this.cachedPath,
     this.cacheSessionId,
     this.performanceTracker,
     this.sharedResumeKey,
@@ -221,6 +222,7 @@ class _IsoRuntime {
   });
 
   final String probeSourceId, probeTarget;
+  final String? cachedPath;
   final Directory sessionDirectory;
   final IsoAccessHandle? handle;
   final PlayerProcessIdentity playerIdentity;
@@ -385,6 +387,13 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ),
   ];
   final Map<String, _IsoRuntime> _runtimes = {};
+  Set<String> get cachedPlaybackFiles => {
+    for (final r in _runtimes.values)
+      if (r.cachedPath != null) r.cachedPath!,
+  };
+  bool get hasNetworkPlayback => _runtimes.values.any(
+    (r) => ['http', 'https'].contains(Uri.tryParse(r.probeTarget)?.scheme),
+  );
   final RemoteMenuPlaybackService remoteMenu;
   final IsoAccessProvider _remoteMenuAccess;
   final Set<String> _uncertainSessionPaths = {};
@@ -476,12 +485,18 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         throw AppException.process('无法确认 StreamPath 进程身份');
       }
 
-      final resolvedIsoUrl = webDavService.resolveUrl(file.href);
+      final cachedPath = await webDavService.cachedDiscPath(file);
+      final resolvedIsoUrl = cachedPath ?? webDavService.resolveUrl(file.href);
       final isoKey = _buildIsoKey(
         profileId: webDavService.sourceId,
         resolvedUrl: webDavService.persistentUrl(file.href),
       );
-      final structureKey = webDavService.crossSessionStructureCache ? isoKey : _buildIsoKey(profileId: webDavService.sourceId, resolvedUrl: resolvedIsoUrl);
+      final structureKey = webDavService.crossSessionStructureCache
+          ? isoKey
+          : _buildIsoKey(
+              profileId: webDavService.sourceId,
+              resolvedUrl: resolvedIsoUrl,
+            );
       final tempRoot = await _rootDirectory();
       final structureCachePath = p.normalize(
         p.absolute(
@@ -640,7 +655,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
       IsoCacheSessionPlan? cachePlan;
       final cacheCoordinator = _cacheCoordinator;
-      if (cacheCoordinator != null) {
+      if (cacheCoordinator != null && cachedPath == null) {
         cachePlan = await cacheCoordinator.buildSessionPlan(
           logicalSourceUrl: resolvedIsoUrl,
           titles: selectedTitles
@@ -782,6 +797,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final runtime = _IsoRuntime(
         probeSourceId: webDavService.sourceId,
         probeTarget: resolvedIsoUrl,
+        cachedPath: cachedPath,
         sessionDirectory: handle.sessionDirectory,
         handle: handle,
         playerIdentity: identity,
@@ -912,10 +928,14 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     var registered = false;
     try {
       final config = await _configLoader();
+      final cachedDisc = await webDavService.cachedDiscPath(file);
       final executable =
           file is WebDavBdmv && precheckedMenuExecutable == config.executable
           ? config.executable
-          : await remoteMenu.requireCapability(config: config);
+          : await remoteMenu.requireCapability(
+              config: config,
+              local: cachedDisc != null,
+            );
       startupTrace?.mark('menuCapabilityConfirmed');
       if (_cancelRequested) return null;
       final owner = await _loadOwnerIdentity();
@@ -976,17 +996,22 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       if (_cancelRequested) return null;
       await subtitles?.refreshDiscRevision();
       startupTrace?.mark('subtitleDiscoveryJoined');
-      final menuPlan = await _cacheCoordinator?.buildMenuPlan(
-        logicalSourceUrl: webDavService.resolveUrl(file.href),
-        totalBytes: handle.totalBytes,
-      );
-      await handle.configureCache(
-        blockCount: menuPlan?.bridgeBlockCount ?? 128,
-        prefetchBlocks: menuPlan?.prefetchBlocks ?? 96,
-        cacheSecs: menuPlan?.cacheSecs ?? 60,
-      );
+      final menuPlan = cachedDisc != null
+          ? null
+          : await _cacheCoordinator?.buildMenuPlan(
+              logicalSourceUrl: webDavService.resolveUrl(file.href),
+              totalBytes: handle.totalBytes,
+            );
+      if (cachedDisc == null) {
+        await handle.configureCache(
+          blockCount: menuPlan?.bridgeBlockCount ?? 128,
+          prefetchBlocks: menuPlan?.prefetchBlocks ?? 96,
+          cacheSecs: menuPlan?.cacheSecs ?? 60,
+        );
+      }
       startupTrace?.mark('cachePlanReady');
       final args = await remoteMenu.prepareArgs(
+        localDiscPath: cachedDisc,
         config: config,
         sessionDirectory: directory,
         endpoint: (handle as RemoteDiscAccessHandle).discUri,
@@ -1048,7 +1073,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       }
       final runtime = _IsoRuntime(
         probeSourceId: webDavService.sourceId,
-        probeTarget: webDavService.resolveUrl(file.href),
+        probeTarget: cachedDisc ?? webDavService.resolveUrl(file.href),
+        cachedPath: cachedDisc,
         sessionDirectory: directory,
         handle: handle,
         playerIdentity: player,
@@ -1090,6 +1116,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
     } on ProcessException catch (error) {
       throw AppException.process('远程蓝光菜单播放器启动失败，请返回标题模式', error);
+    } on TimeoutException catch (error) {
+      if (_cancelRequested) return null;
+      throw AppException.network('ISO Bridge 启动失败', error);
     } on AppException {
       if (_cancelRequested) return null;
       rethrow;
@@ -1235,47 +1264,110 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       ? _getMenuLibraryProgressByKey(isoKey)
       : _getLibraryProgressByKey(isoKey);
 
-  Future<Map<String, dynamic>> portableState({required String profileId, required String resolvedUrl, required PlaybackMode playbackMode}) async {
-    final key = libraryKey(profileId: profileId, resolvedUrl: resolvedUrl, playbackMode: playbackMode);
+  Future<Map<String, dynamic>> portableState({
+    required String profileId,
+    required String resolvedUrl,
+    required PlaybackMode playbackMode,
+  }) async {
+    final key = libraryKey(
+      profileId: profileId,
+      resolvedUrl: resolvedUrl,
+      playbackMode: playbackMode,
+    );
     final selection = await (await _catalog()).load(key);
     final directory = await _watchLaterDirectory(key, create: false);
-    final index = await const MpvWatchLaterSync().buildIndex(directory, selection.order.map((id) => 'bd://mpls/$id'));
+    final index = await const MpvWatchLaterSync().buildIndex(
+      directory,
+      selection.order.map((id) => 'bd://mpls/$id'),
+    );
     final titles = <String, Map<String, num>>{};
     for (final id in selection.order) {
       final record = index.recordFor('bd://mpls/$id');
-      if ((record?.startSeconds ?? 0) > 0) titles[id] = {'position': record!.startSeconds!, if (record.durationSeconds != null) 'duration': record.durationSeconds!};
+      if ((record?.startSeconds ?? 0) > 0) {
+        titles[id] = {
+          'position': record!.startSeconds!,
+          if (record.durationSeconds != null)
+            'duration': record.durationSeconds!,
+        };
+      }
     }
     final menuFile = File(p.join(directory.path, 'menu-resume.json'));
-    final menu = await menuFile.exists() ? _parseMenuProgress(await menuFile.readAsString()) : null;
-    return {'selection': selection.toJson(_now()), 'titles': titles,
-      if (menu != null) 'menu': {for (final field in ['position', 'duration', 'edition', 'editions', 'completed']) field: menu[field]}};
+    final menu = await menuFile.exists()
+        ? _parseMenuProgress(await menuFile.readAsString())
+        : null;
+    return {
+      'selection': selection.toJson(_now()),
+      'titles': titles,
+      if (menu != null)
+        'menu': {
+          for (final field in [
+            'position',
+            'duration',
+            'edition',
+            'editions',
+            'completed',
+          ])
+            field: menu[field],
+        },
+    };
   }
 
   /// 返回将要提交的文件，调用方统一建立恢复快照后再写入。
-  Future<void> planPortableState(Map<String, dynamic> state, {required String profileId, required String resolvedUrl, required PlaybackMode playbackMode, required Map<String, String> files}) async {
-    final key = libraryKey(profileId: profileId, resolvedUrl: resolvedUrl, playbackMode: playbackMode);
+  Future<void> planPortableState(
+    Map<String, dynamic> state, {
+    required String profileId,
+    required String resolvedUrl,
+    required PlaybackMode playbackMode,
+    required Map<String, String> files,
+  }) async {
+    final key = libraryKey(
+      profileId: profileId,
+      resolvedUrl: resolvedUrl,
+      playbackMode: playbackMode,
+    );
     final catalog = await _catalog();
     final all = files.containsKey(catalog.file.path)
-        ? <String, _IsoCatalogRecord>{for (final entry in (jsonDecode(files[catalog.file.path]!)['discs'] as Map).entries) entry.key as String: _IsoCatalogRecord.fromJson(entry.value)}
+        ? <String, _IsoCatalogRecord>{
+            for (final entry
+                in (jsonDecode(files[catalog.file.path]!)['discs'] as Map)
+                    .entries)
+              entry.key as String: _IsoCatalogRecord.fromJson(entry.value),
+          }
         : await catalog._readAll();
     if (!all.containsKey(key)) {
       all[key] = _IsoCatalogRecord.fromJson(state['selection']);
-      files[catalog.file.path] = jsonEncode({'version': 1, 'discs': {for (final entry in all.entries) entry.key: entry.value.toJson(_now())}});
+      files[catalog.file.path] = jsonEncode({
+        'version': 1,
+        'discs': {
+          for (final entry in all.entries)
+            entry.key: entry.value.toJson(_now()),
+        },
+      });
     }
     final directory = await _watchLaterDirectory(key, create: false);
     for (final entry in (state['titles'] as Map).entries) {
       final id = entry.key as String;
-      if (!RegExp(r'^\d{5}$').hasMatch(id)) throw const FormatException('Invalid Blu-ray title');
-      final path = p.join(directory.path, MpvWatchLaterSync.md5FileName('bd://mpls/$id'));
+      if (!RegExp(r'^\d{5}$').hasMatch(id)) {
+        throw const FormatException('Invalid Blu-ray title');
+      }
+      final path = p.join(
+        directory.path,
+        MpvWatchLaterSync.md5FileName('bd://mpls/$id'),
+      );
       if (!await File(path).exists() && !files.containsKey(path)) {
         final position = entry.value['position'] as num;
         final duration = entry.value['duration'] as num?;
-        files[path] = '# bd://mpls/$id\nstart=$position\n${duration == null ? '' : 'duration=$duration\n'}';
+        files[path] =
+            '# bd://mpls/$id\nstart=$position\n${duration == null ? '' : 'duration=$duration\n'}';
       }
     }
     final menu = state['menu'];
     final path = p.join(directory.path, 'menu-resume.json');
-    if (menu != null && !await File(path).exists() && !files.containsKey(path)) files[path] = jsonEncode(menu);
+    if (menu != null &&
+        !await File(path).exists() &&
+        !files.containsKey(path)) {
+      files[path] = jsonEncode(menu);
+    }
   }
 
   void dispose() {

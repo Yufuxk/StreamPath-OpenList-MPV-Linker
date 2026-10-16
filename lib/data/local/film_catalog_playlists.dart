@@ -25,6 +25,59 @@ String _playlistTarget(FilmResource r) =>
     : 'path:${r.pathKey}';
 
 extension FilmCatalogPlaylists on FilmCatalogStore {
+  /// 下载复用同一逻辑分组；整盘额外作为独立缓存单位。
+  Future<List<List<FilmResource>>> cacheResourceGroups(
+    String source,
+    FilmPlaylistScope scope,
+  ) async {
+    if (scope.playlist != null) {
+      final snapshot = await playlistSnapshot(scope.playlist!.id);
+      final result = <List<FilmResource>>[];
+      for (final entry in snapshot.entries.where(
+        (e) => scope.entryId == null || e.id == scope.entryId,
+      )) {
+        if (!entry.available) continue;
+        final group = <FilmResource>[];
+        for (final version in entry.queueItem.versions) {
+          final resource = await resourceAt(source, version.path);
+          if (resource != null &&
+              await playbackVersionAvailable(source, version)) {
+            group.add(resource);
+          }
+        }
+        if (group.isNotEmpty) result.add(group);
+      }
+      return result;
+    }
+    if (scope.resource case final resource?) {
+      return await playbackVersionAvailable(
+            source,
+            VideoQueueVersion(path: resource.path, name: resource.name),
+          )
+          ? [
+              [resource],
+            ]
+          : [];
+    }
+    final groups = await _playlistGroups(_db, source, scope);
+    final discs = (await resources(sourceId: source, workId: scope.workId))
+        .where(
+          (r) =>
+              r.isDisc &&
+              r.availability == 'present' &&
+              (scope.season == null || r.season == scope.season),
+        );
+    for (final disc in discs) {
+      if ((await root(disc.rootId))?.enabled != true) continue;
+      if (disc.type == FilmMediaType.movie && groups.isNotEmpty) {
+        groups.first.add(disc);
+      } else {
+        groups.add([disc]);
+      }
+    }
+    return groups;
+  }
+
   Future<List<FilmPlaylist>> playlists({
     String? sourceId,
     bool editableOnly = false,

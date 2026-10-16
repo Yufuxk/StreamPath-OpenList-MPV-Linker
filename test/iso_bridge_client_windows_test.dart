@@ -12,6 +12,35 @@ import 'package:win32/win32.dart';
 const int _maximumTestMessageBytes = 1024 * 1024;
 
 void main() {
+  test('阻塞读取超时可及时取消，不等待服务端返回', () async {
+    final pipeName =
+        '${r'\\.\pipe\'}streampath_iso_stall_${GetCurrentProcessId()}';
+    final events = ReceivePort();
+    final iterator = StreamIterator<dynamic>(events);
+    final server = await Isolate.spawn(_stalledPipeServer, [
+      pipeName,
+      events.sendPort,
+    ]);
+    addTearDown(() {
+      server.kill(priority: Isolate.immediate);
+      events.close();
+    });
+    await iterator.moveNext();
+    final client = await IsoBridgeClient.connect(
+      pipeName: pipeName,
+      helperPid: GetCurrentProcessId(),
+    );
+    await client.receive();
+    final clock = Stopwatch()..start();
+    await expectLater(
+      client.receive(timeout: const Duration(milliseconds: 150)),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(clock.elapsed, lessThan(const Duration(seconds: 1)));
+    await client.close();
+    await iterator.cancel();
+  });
+
   test('真实 named pipe 可连续 receive、send、receive', () async {
     final suffix =
         'streampath_iso_client_test_${GetCurrentProcessId()}_'
@@ -58,6 +87,37 @@ void main() {
     expect(serverResult['received'], {'type': 'ping', 'version': 1});
     await iterator.cancel();
   });
+}
+
+void _stalledPipeServer(List<Object> arguments) {
+  final name = (arguments[0] as String).toNativeUtf16();
+  final events = arguments[1] as SendPort;
+  final handle = CreateNamedPipe(
+    name,
+    PIPE_ACCESS_DUPLEX,
+    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+    1,
+    4096,
+    4096,
+    0,
+    nullptr,
+  );
+  free(name);
+  if (handle == INVALID_HANDLE_VALUE) {
+    throw StateError('CreateNamedPipe failed');
+  }
+  events.send('ready');
+  try {
+    if (ConnectNamedPipe(handle, nullptr) == 0 &&
+        GetLastError() != ERROR_PIPE_CONNECTED) {
+      throw StateError('ConnectNamedPipe failed');
+    }
+    _writeJsonFrame(handle, {'type': 'hello'});
+    Sleep(2000);
+  } finally {
+    DisconnectNamedPipe(handle);
+    CloseHandle(handle);
+  }
 }
 
 void _pipeServerMain(List<Object> arguments) {

@@ -228,6 +228,198 @@ void main() {
     await store.commitScan(root.id, generation, cancelled: () => false);
   }
 
+  test('影视库统计按条目计数、整剧去重、光盘归电影并排除停用与缺失资源', () async {
+    var stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (0, 0, 0, 0),
+    );
+    final movie = await addRoot();
+    await inventory(movie, [
+      'Movies/a.mkv',
+      'Movies/b.strm',
+      'Movies/unknown.mkv',
+    ]);
+    await store.bind(
+      (await store.resources(rootId: movie.id)).take(2).toList(),
+      _work(FilmMediaType.movie, 1),
+    );
+    final tv = await addRoot(source: 'tv', path: 'TV', type: FilmMediaType.tv);
+    await inventory(tv, [
+      'TV/a.mkv',
+      'TV/b.mkv',
+      'TV/c.strm',
+      'TV/unmapped.mkv',
+      'TV/unknown.mkv',
+    ]);
+    await store.bind(
+      (await store.resources(rootId: tv.id)).take(4).toList(),
+      _work(FilmMediaType.tv, 2),
+    );
+    final episodes = await store.resources(rootId: tv.id);
+    await store.mapEpisodes({
+      episodes[0]: (1, 1),
+      episodes[1]: (1, 1),
+      episodes[2]: (0, 1),
+    });
+    final discs = await addRoot(
+      source: 'disc',
+      path: 'Disc',
+      type: FilmMediaType.tv,
+    );
+    final generation = await store.beginScan(discs.id);
+    await store.stage(discs, generation, [
+      for (final kind in ['iso', 'bdmv'])
+        FilmScanEntry(
+          path: 'Disc/$kind',
+          parentPath: 'Disc',
+          name: kind,
+          mediaKind: kind,
+        ),
+    ]);
+    await store.commitScan(discs.id, generation, cancelled: () => false);
+    stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (3, 1, 4, 3),
+    );
+    stats = await store.statistics(sourceId: 'dav');
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (0, 0, 2, 1),
+    );
+    final secondTv = await addRoot(
+      source: 'tv2',
+      path: 'TV',
+      type: FilmMediaType.tv,
+    );
+    await inventory(secondTv, ['TV/a.mkv']);
+    await store.bind(
+      await store.resources(rootId: secondTv.id),
+      _work(FilmMediaType.tv, 2),
+    );
+    await store.mapEpisodes({
+      (await store.resources(rootId: secondTv.id)).single: (2, 1),
+    });
+    stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (4, 1, 4, 3),
+    );
+    await store.setRootEnabled(tv.id, false);
+    stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (1, 1, 4, 1),
+    );
+    await store.setRootEnabled(secondTv.id, false);
+    await store.setRootEnabled(movie.id, false);
+    final nextGeneration = await store.beginScan(discs.id);
+    await store.stage(discs, nextGeneration, [
+      const FilmScanEntry(
+        path: 'Disc/bdmv',
+        parentPath: 'Disc',
+        name: 'bdmv',
+        mediaKind: 'bdmv',
+      ),
+    ]);
+    await store.commitScan(discs.id, nextGeneration, cancelled: () => false);
+    stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (0, 0, 1, 0),
+    );
+    await store.setRootEnabled(tv.id, true);
+    stats = await store.statistics();
+    expect(
+      (stats.episodes, stats.series, stats.movies, stats.other),
+      (3, 1, 1, 2),
+    );
+    await store.removeRoot(discs.id);
+    expect((await store.statistics()).movies, 0);
+  });
+
+  test('封面计数偏好默认关闭并可保存重载', () async {
+    expect(store.showPosterContentCount, isFalse);
+    await store.setPreference('show_poster_content_count', true);
+    expect(store.showPosterContentCount, isTrue);
+    await store.close();
+    store = await FilmCatalogStore.open(p.join(temp.path, 'catalog.db'));
+    expect(store.showPosterContentCount, isTrue);
+    await store.setPreference('show_poster_content_count', false);
+    expect(store.showPosterContentCount, isFalse);
+  });
+
+  test('封面电影资源包含 video、STRM、ISO 和 BDMV，剧集按季去重并限定来源', () async {
+    final movie = await addRoot();
+    final generation = await store.beginScan(movie.id);
+    await store.stage(movie, generation, [
+      for (final kind in ['video', 'strm', 'iso', 'bdmv'])
+        FilmScanEntry(
+          path: 'Movies/$kind',
+          parentPath: 'Movies',
+          name: kind,
+          mediaKind: kind,
+        ),
+    ]);
+    await store.commitScan(movie.id, generation, cancelled: () => false);
+    await store.bind(
+      await store.resources(rootId: movie.id),
+      _work(FilmMediaType.movie, 1),
+    );
+    expect(
+      (await store.works(type: FilmMediaType.movie)).single.resourceCount,
+      4,
+    );
+    final tvA = await addRoot(
+      source: 'tvA',
+      path: 'TV',
+      type: FilmMediaType.tv,
+    );
+    final tvB = await addRoot(
+      source: 'tvB',
+      path: 'TV',
+      type: FilmMediaType.tv,
+    );
+    for (final root in [tvA, tvB]) {
+      await inventory(root, ['TV/a.mkv', 'TV/b.mkv', 'TV/c.mkv']);
+      await store.bind(
+        await store.resources(rootId: root.id),
+        _work(FilmMediaType.tv, 2),
+      );
+      final resources = await store.resources(rootId: root.id);
+      await store.mapEpisodes({
+        resources[0]: (1, 1),
+        resources[1]: (1, 2),
+        resources[2]: (root == tvA ? 2 : 3, 1),
+      });
+    }
+    expect((await store.works(type: FilmMediaType.tv)).single.seasonCount, 3);
+    expect(
+      (await store.works(
+        type: FilmMediaType.tv,
+        sourceId: 'tvA',
+      )).single.seasonCount,
+      2,
+    );
+    expect(
+      (await store.works(
+        type: FilmMediaType.tv,
+        rootId: tvB.id,
+      )).single.seasonCount,
+      2,
+    );
+    expect(
+      (await store.works(
+        type: FilmMediaType.tv,
+        sourceIds: {'tvA'},
+      )).single.seasonCount,
+      2,
+    );
+    await store.setRootEnabled(tvB.id, false);
+    expect((await store.works(type: FilmMediaType.tv)).single.seasonCount, 2);
+  });
+
   test('通用缓存清理保留永久影视库并只删除可重建图片', () async {
     final data = Directory(p.join(temp.path, 'stream_path_data'));
     final library = Directory(p.join(data.path, 'library'));

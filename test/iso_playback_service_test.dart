@@ -114,12 +114,24 @@ class _FakeIsoHandle implements IsoAccessHandle {
 
 class _FakeRemoteHandle extends _FakeIsoHandle
     implements RemoteDiscAccessHandle {
-  _FakeRemoteHandle(super.sessionDirectory);
+  _FakeRemoteHandle(super.sessionDirectory, {this.localDiscPath});
+  final String? localDiscPath;
   @override
-  Uri get discUri =>
-      Uri.file('${sessionDirectory.path}\\disc\\disc.iso', windows: true);
+  Uri get discUri => Uri.file(
+    localDiscPath ?? '${sessionDirectory.path}\\disc\\disc.iso',
+    windows: true,
+  );
   @override
   List<IsoBridgeTitle> get titles => const [];
+}
+
+class _CachedDiscService extends WebDAVService {
+  _CachedDiscService(this.path)
+    : super(client: WebDavClient(baseUrl: 'http://127.0.0.1:1/offline/'));
+  final String path;
+
+  @override
+  Future<String?> cachedDiscPath(WebDavFile file) async => path;
 }
 
 class _FakeMenuService extends RemoteMenuPlaybackService {
@@ -132,7 +144,7 @@ class _FakeMenuService extends RemoteMenuPlaybackService {
   final String? capabilityExecutable;
   int capabilityChecks = 0;
   @override
-  Future<String> requireCapability({PlayerConfig? config}) async {
+  Future<String> requireCapability({PlayerConfig? config, bool local = false}) async {
     capabilityChecks++;
     return capabilityExecutable ?? r'C:\Menu\mpv.exe';
   }
@@ -390,6 +402,50 @@ void main() {
       pending.complete(null);
       await Future<void>.delayed(Duration.zero);
       expect(launched, isFalse);
+    });
+  }
+
+  for (final folder in [false, true]) {
+    test('自选目录缓存 ${folder ? "BDMV" : "ISO"} 菜单完成参数生成和播放器启动', () async {
+      final cachedPath = p.join(
+        tempDirectory.path,
+        'selected-cache',
+        folder ? 'DISC' : 'DISC.iso',
+      );
+      final remote = _FakeIsoAccessProvider(
+        handleFactory: (directory) =>
+            _FakeRemoteHandle(directory, localDiscPath: cachedPath),
+      );
+      final service = buildService(
+        _FakeIsoAccessProvider(),
+        remoteProvider: remote,
+        menuService: _FakeMenuService(),
+      );
+      addTearDown(service.dispose);
+      final launch = (await service.startRemoteMenu(
+        webDavService: _CachedDiscService(cachedPath),
+        file: folder
+            ? WebDavBdmv(
+                name: 'DISC',
+                href: 'http://127.0.0.1:1/offline/DISC/',
+                rootPath: 'DISC',
+                files: const [],
+              )
+            : isoFile,
+      ))!;
+      expect(launch.args, contains('--bluray-device=$cachedPath'));
+      expect(launch.args.last, 'bd://menu');
+      expect(
+        launch.args.any((arg) => arg.endsWith('sp-menu-cache.lua')),
+        isFalse,
+      );
+      expect(remote.handle!.configuredBlockCount, isNull);
+      expect(remote.handle!.attachedPid, playerIdentity.pid);
+      await service.terminateSession(launch.sessionDirectoryPath);
+      alive[_helperIdentity.pid] = false;
+      await service.sessionSnapshot(launch.sessionDirectoryPath);
+      expect(remote.handle!.cleaned, isTrue);
+      expect(service.isBusy, isFalse);
     });
   }
 

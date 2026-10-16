@@ -30,6 +30,7 @@ import 'features/cache_control/store/cache_intelligence_learning_store.dart';
 import 'features/cache_control/store/cache_policy_config_store.dart';
 import 'features/cache_control/store/media_metadata_store.dart';
 import 'features/cache_expiration/store/cache_expiration_config_store.dart';
+import 'features/video_cache/video_cache_models.dart';
 import 'presentation/pages/auto_connect_gate.dart';
 import 'presentation/pages/app_shell_page.dart';
 import 'presentation/localization/app_localizations.dart';
@@ -159,7 +160,19 @@ Future<void> main() async {
     metadataStore: metadataStore,
     intelligence: cacheIntelligence,
   );
+  late final AppState appState;
   final cacheCleaner = CacheCleanupService(
+    preservedPathsProvider: () async {
+      await appState.restoreVideoCache();
+      if (appState.videoCacheRestoreError case final error?) {
+        throw CacheCleanupBlockedException(error);
+      }
+      return {
+        for (final file
+            in appState.videoCache?.files.values ?? const <VideoCacheFile>[])
+          p.join(file.data['root'] as String, 'StreamPathCache'),
+      };
+    },
     preservedCacheNames: {
       CacheIntelligenceLearningStore.fileName,
       'iso_catalog.json',
@@ -211,7 +224,7 @@ Future<void> main() async {
   }
 
   // 组装 WebDAV、播放器、缓存与界面状态。
-  final appState = AppState(
+  appState = AppState(
     configStore: configStore,
     playbackHistoryStore: playbackHistoryStore,
     progressService: progressService,
@@ -236,6 +249,7 @@ Future<void> main() async {
     // ignore: avoid_print
     print('Navigation location restore failed: $error');
   }
+  await appState.restoreVideoCache();
   appState.scheduleWebDavFontCachePrune();
   appState.startFilmScanSchedule();
 

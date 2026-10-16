@@ -52,7 +52,10 @@ class WebDAVService implements DirectoryRepository {
   final String? Function(WebDavFile file, String target)? strmUrlResolver;
   final String Function(String href)? persistentUrlResolver;
   final bool crossSessionStructureCache;
-  String persistentUrl(String href) => persistentUrlResolver?.call(href) ?? resolveUrl(href);
+  String persistentUrl(String href) =>
+      persistentUrlResolver?.call(href) ?? resolveUrl(href);
+
+  Future<String?> cachedDiscPath(WebDavFile file) async => null;
 
   /// 正在进行的加载（key → Future），用于请求合并。
   final Map<String, Future<List<WebDavFile>>> _inFlight = {};

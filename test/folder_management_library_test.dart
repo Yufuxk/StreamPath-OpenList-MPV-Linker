@@ -1,6 +1,8 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -233,6 +235,8 @@ void main() {
     );
     await _settle(tester);
     expect(find.byType(Checkbox), findsNothing);
+    await tester.ensureVisible(find.text('编辑影视目录'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('编辑影视目录'));
     await _settle(tester);
     Checkbox option(String text) => tester.widget<Checkbox>(
@@ -326,6 +330,171 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('影视库四项统计随目录关闭、启用和资源扫描自动更新', (tester) async {
+    tester.view.physicalSize = const Size(1280, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final (app, c) = await _fixture(tester);
+    await tester.pumpWidget(
+      _frame(app, FilmLibraryManagePage(catalog: c, directories: true)),
+    );
+    await _settle(tester);
+    String count(String label) => tester
+        .widget<Text>(
+          find
+              .descendant(
+                of: find.byKey(ValueKey('film-statistics-$label')),
+                matching: find.byType(Text),
+              )
+              .first,
+        )
+        .data!;
+    expect(count('电视剧'), '0');
+    expect(count('电视剧集'), '0');
+    expect(count('电影'), '1');
+    expect(count('其他'), '1');
+    final toggle = find.byKey(
+      ValueKey('film-root-enabled-${c.roots.single.id}'),
+    );
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await _settle(tester);
+    expect(count('电影'), '0');
+    expect(count('其他'), '0');
+    await tester.tap(toggle);
+    await _settle(tester);
+    expect(count('电影'), '1');
+    expect(count('其他'), '1');
+    await tester.runAsync(() async {
+      final root = c.roots.single;
+      final generation = await c.store.beginScan(root.id);
+      await c.store.stage(root, generation, [
+        const FilmScanEntry(
+          path: 'Library/new.iso',
+          parentPath: 'Library',
+          name: 'new.iso',
+          mediaKind: 'iso',
+        ),
+      ]);
+      await c.store.commitScan(root.id, generation, cancelled: () => false);
+    });
+    await _settle(tester);
+    expect(count('电影'), '1');
+    expect(count('其他'), '0');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('统计卡片四语言、材质、宽窄窗与放大字号不溢出', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final (app, c) = await _fixture(tester);
+    await tester.runAsync(() async {
+      for (final (family, path) in [
+        ('LibraryStatisticsTest', r'C:\Windows\Fonts\msyh.ttc'),
+        ('Segoe Fluent Icons', r'C:\Windows\Fonts\SegoeIcons.ttf'),
+      ]) {
+        final font = File(path);
+        if (await font.exists()) {
+          final loader = FontLoader(family)
+            ..addFont(
+              Future.value(ByteData.sublistView(await font.readAsBytes())),
+            );
+          await loader.load();
+        }
+      }
+    });
+    c.statistics = const FilmLibraryStatistics(
+      episodes: 2022,
+      series: 123,
+      movies: 64,
+      other: 1,
+    );
+    for (final language in AppLanguage.values) {
+      for (final (name, theme) in [
+        ('light', AppTheme.light(fontFamily: 'LibraryStatisticsTest')),
+        ('dark', AppTheme.dark(fontFamily: 'LibraryStatisticsTest')),
+        (
+          'light-glass',
+          AppTheme.light(glass: true, fontFamily: 'LibraryStatisticsTest'),
+        ),
+        (
+          'dark-glass',
+          AppTheme.dark(glass: true, fontFamily: 'LibraryStatisticsTest'),
+        ),
+      ]) {
+        for (final width in [480.0, 1280.0]) {
+          tester.view.physicalSize = Size(width, 1100);
+          for (final scale in [1.0, 2.0]) {
+            await tester.pumpWidget(
+              ChangeNotifierProvider<AppState>.value(
+                value: app,
+                child: MaterialApp(
+                  locale: language.locale,
+                  supportedLocales: AppLanguage.values.map(
+                    (item) => item.locale,
+                  ),
+                  localizationsDelegates: const [
+                    AppLocalizations.delegate,
+                    GlobalMaterialLocalizations.delegate,
+                    GlobalWidgetsLocalizations.delegate,
+                    GlobalCupertinoLocalizations.delegate,
+                  ],
+                  theme: theme,
+                  builder: (context, child) => MediaQuery(
+                    data: MediaQuery.of(
+                      context,
+                    ).copyWith(textScaler: TextScaler.linear(scale)),
+                    child: child!,
+                  ),
+                  home: RepaintBoundary(
+                    key: const Key('statistics-preview'),
+                    child: FilmLibraryManagePage(catalog: c, directories: true),
+                  ),
+                ),
+              ),
+            );
+            await tester.pumpAndSettle();
+            final l10n = AppLocalizations(language);
+            for (final label in ['电视剧', '电视剧集', '电影', '其他']) {
+              final card = find.byKey(ValueKey('film-statistics-$label'));
+              expect(
+                find.descendant(
+                  of: card,
+                  matching: find.text(l10n.text(label)),
+                ),
+                findsOneWidget,
+              );
+              expect(tester.getRect(card).right, lessThanOrEqualTo(width - 24));
+            }
+            expect(find.text('2,022'), findsOneWidget);
+            expect(tester.takeException(), isNull);
+            if (Platform.environment['FILM_STATISTICS_RENDER'] == '1' &&
+                language == AppLanguage.simplifiedChinese &&
+                (name == 'dark' || name == 'light')) {
+              await tester.runAsync(() async {
+                final boundary = tester.renderObject<RenderRepaintBoundary>(
+                  find.byKey(const Key('statistics-preview')),
+                );
+                final image = await boundary.toImage(pixelRatio: 1);
+                final bytes = await image.toByteData(
+                  format: ui.ImageByteFormat.png,
+                );
+                image.dispose();
+                final file = File(
+                  'build/library-statistics-preview/$name-$width-$scale.png',
+                );
+                await file.parent.create(recursive: true);
+                await file.writeAsBytes(bytes!.buffer.asUint8List());
+              });
+            }
+          }
+        }
+      }
+    }
+  });
+
   testWidgets('影视目录卡片限制宽度、宽窗并列且窄窗不溢出', (tester) async {
     tester.view.physicalSize = const Size(1920, 1080);
     tester.view.devicePixelRatio = 1;
@@ -409,7 +578,11 @@ void main() {
           );
         }
         final edit = find.text(AppLocalizations(language).text('编辑影视目录'));
-        await tester.ensureVisible(edit);
+        await tester.scrollUntilVisible(
+          edit,
+          250,
+          scrollable: find.byType(Scrollable).last,
+        );
         await tester.pumpAndSettle();
         await tester.tap(edit);
         await _settle(tester);

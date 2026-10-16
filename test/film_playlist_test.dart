@@ -40,7 +40,11 @@ void main() {
           path: 'Shows/$name',
           parentPath: 'Shows',
           name: name,
-          mediaKind: name.endsWith('.strm') ? 'strm' : 'video',
+          mediaKind: name.endsWith('.iso')
+              ? 'iso'
+              : name.endsWith('.strm')
+              ? 'strm'
+              : 'video',
         ),
     ]);
     await store.commitScan(root.id, generation, cancelled: () => false);
@@ -76,6 +80,41 @@ void main() {
         root.displayName,
         FilmPlaylistScope.work(rows.first.workId!, season: season),
       );
+
+  test('缓存范围复用季集分组并独立纳入整盘，单项固定版本', () async {
+    final rows = await seed([
+      'S01E01.mkv',
+      'S01E02.mkv',
+      'S02E01.mkv',
+      'S01E01.iso',
+    ]);
+    final work = rows.first.workId!;
+    final season = await store.cacheResourceGroups(
+      root.sourceId,
+      FilmPlaylistScope.work(work, season: 1),
+    );
+    expect(season.expand((g) => g).map((r) => r.name).toSet(), {
+      'S01E01.mkv',
+      'S01E02.mkv',
+      'S01E01.iso',
+    });
+    final disc = rows.singleWhere((r) => r.isDisc);
+    expect(
+      (await store.cacheResourceGroups(
+        root.sourceId,
+        FilmPlaylistScope.resource(disc),
+      )).single.single.id,
+      disc.id,
+    );
+    await store.setRootEnabled(root.id, false);
+    expect(
+      await store.cacheResourceGroups(
+        root.sourceId,
+        FilmPlaylistScope.work(work),
+      ),
+      isEmpty,
+    );
+  });
 
   test(
     'list cover follows member order, skips missing metadata and updates after removal',

@@ -2,11 +2,23 @@
 class BdmvSource final : public RemoteSource {
  public:
   BdmvSource(bridge::DiscFiles files, std::string origin,
-             std::string username, std::string password)
+             std::string username, std::string password, std::filesystem::path local_root = {})
       : files(std::move(files)), origin_(std::move(origin)),
-        username_(std::move(username)), password_(std::move(password)) {}
+        username_(std::move(username)), password_(std::move(password)), local_root_(std::move(local_root)) {}
   bridge::DiscFiles files;
   std::optional<bridge::StructureCacheIdentity> structure_identity() const {
+    if (!local_root_.empty()) {
+      std::wstring snapshot = local_root_.wstring();
+      for (const auto& file : files.entries) {
+        snapshot += wide_from_utf8(file.path) + L":" + std::to_wstring(file.size);
+        if (!file.directory && file.size > 0) {
+          LocalIsoSource local(local_root_ / wide_from_utf8(file.path));
+          snapshot += local.validator();
+        }
+      }
+      return bridge::make_structure_cache_identity(files.bytes,
+          bridge::StructureCacheValidatorKind::strong_etag, snapshot);
+    }
     std::vector<const bridge::DiscFile*> sorted;
     for (const auto& file : files.entries) sorted.push_back(&file);
     std::sort(sorted.begin(), sorted.end(), [](const auto* a, const auto* b) { return a->path < b->path; });
@@ -45,6 +57,11 @@ class BdmvSource final : public RemoteSource {
     const auto* file = files.at(start);
     if (!file || end < start || end >= file->base + file->size)
       throw BridgeException("invalid_disc", "BDMV read crosses file boundary");
+    if (!local_root_.empty()) {
+      LocalIsoSource local(local_root_ / wide_from_utf8(file->path));
+      local.fetch_stream(start - file->base, end - file->base, cancelled, consume);
+      return;
+    }
     auto source = acquire(*file);
     source->fetch_stream(start - file->base, end - file->base, cancelled, consume);
   }
@@ -66,6 +83,7 @@ class BdmvSource final : public RemoteSource {
     return result;
   }
  private:
+  std::filesystem::path local_root_;
   static std::optional<std::pair<bridge::StructureCacheValidatorKind, std::wstring>> manifest_validator(const bridge::DiscFile& file) {
     if (file.etag.size() >= 2 && file.etag.front() == '"' && file.etag.back() == '"' &&
         std::all_of(file.etag.begin() + 1, file.etag.end() - 1,

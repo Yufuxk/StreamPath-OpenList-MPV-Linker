@@ -3,6 +3,36 @@ import 'package:streampath/domain/services/iso_access_provider.dart';
 import 'package:streampath/domain/services/iso_bridge_client.dart';
 
 void main() {
+  test('缓存蓝光菜单只接受预先解析的本地路径', () {
+    const path = r'C:\cache\disc.iso';
+    final message = <String, Object>{
+      'type': 'ready',
+      'version': 1,
+      'port': 0,
+      'token': '0123456789abcdef0123456789abcdef',
+      'totalBytes': 4096,
+      'titles': <Object>[],
+      'capability': 'local-disc-v1',
+      'mode': 'hdmv',
+      'discPath': path,
+    };
+    final ready = IsoBridgeReady.fromMessage(
+      message,
+      remoteMenu: true,
+      mountedSessionPath: r'C:\session',
+      localDiscPath: path,
+    );
+    expect(ready.discPath, path);
+    expect(
+      () => IsoBridgeReady.fromMessage(
+        {...message, 'discPath': r'C:\other.iso'},
+        remoteMenu: true,
+        mountedSessionPath: r'C:\session',
+        localDiscPath: path,
+      ),
+      throwsA(isA<IsoBridgeProtocolException>()),
+    );
+  });
   test('ready 响应解析 Title、章节与流长度', () {
     final ready = IsoBridgeReady.fromMessage({
       'type': 'ready',

@@ -11,6 +11,7 @@ import '../../data/models/film_catalog_item.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
+import '../widgets/video_cache_widgets.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/film_segmented_control.dart';
 import '../widgets/directory_scroll_view.dart';
@@ -117,7 +118,13 @@ class _AppShellPageState extends State<AppShellPage>
       if (mounted) {
         final app = context.read<AppState>();
         app.onImplicitVideoError = _notice;
-        unawaited(app.restoreImplicitVideoControls());
+        if (app.videoCacheRestoreError != null) {
+          _notice(app.videoCacheRestoreError!);
+        }
+        unawaited(() async {
+          await app.restoreImplicitVideoControls();
+          app.downloadsPlaybackRestored();
+        }());
         unawaited(_watchFilmTasks());
       }
       if (mounted && widget.initialError != null) {
@@ -383,7 +390,10 @@ class _AppShellPageState extends State<AppShellPage>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      VideoCacheOverlay(child: _buildShell(context));
+
+  Widget _buildShell(BuildContext context) {
     const width = WindowTitleBar.compactSidebarWidth;
     final immersive = _detailChrome[_selected]!.value != null;
     final pinned = !immersive;

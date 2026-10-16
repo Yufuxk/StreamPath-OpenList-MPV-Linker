@@ -376,7 +376,17 @@ class FilmWorkCard extends StatefulWidget {
 
 class _FilmWorkCardState extends State<FilmWorkCard> {
   @override
-  Widget build(BuildContext context) => GestureDetector(
+  Widget build(BuildContext context) {
+    final store = widget.store;
+    return store == null
+        ? _buildCard(context)
+        : ListenableBuilder(
+            listenable: store,
+            builder: (context, _) => _buildCard(context),
+          );
+  }
+
+  Widget _buildCard(BuildContext context) => GestureDetector(
     onSecondaryTapDown: (details) => widget.onMenu(details.globalPosition),
     child: FilmPosterHover(
       child: Card(
@@ -393,6 +403,19 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
             padding: const EdgeInsets.symmetric(vertical: 2),
             child: LayoutBuilder(
               builder: (context, constraints) {
+                final work = widget.work;
+                final subtitle = [
+                  if (work.year != null) '${work.year}',
+                  if (widget.store?.showPosterContentCount == true)
+                    context.l10n.format(
+                      work.type == FilmMediaType.tv ? '{count}季' : '{count}项内容',
+                      {
+                        'count': work.type == FilmMediaType.tv
+                            ? work.seasonCount
+                            : work.resourceCount,
+                      },
+                    ),
+                ].join('·');
                 final defaults = DefaultTextStyle.of(context).style;
                 double textHeight(String text, TextStyle style) {
                   final painter = TextPainter(
@@ -412,9 +435,7 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                       widget.work.title,
                       defaults.merge(Theme.of(context).textTheme.titleSmall),
                     ) +
-                    (widget.work.year == null
-                        ? 0
-                        : textHeight('${widget.work.year}', defaults)) +
+                    (subtitle.isEmpty ? 0 : textHeight(subtitle, defaults)) +
                     (widget.work.missingCount > 0
                         ? textHeight(context.l10n.text('包含缺失位置'), defaults)
                         : 0);
@@ -456,8 +477,12 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleSmall,
                         ),
-                        if (widget.work.year != null)
-                          Text('${widget.work.year}'),
+                        if (subtitle.isNotEmpty)
+                          Text(
+                            subtitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         if (widget.work.missingCount > 0)
                           const AppText('包含缺失位置'),
                       ],

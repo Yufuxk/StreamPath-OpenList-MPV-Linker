@@ -117,6 +117,7 @@ void main() {
 
   tearDown(() async {
     appearanceController.dispose();
+    await appState.prepareForClose();
     appState.dispose();
     await filmCatalog.close();
     for (var attempt = 0; attempt < 10 && tempDir.existsSync(); attempt++) {

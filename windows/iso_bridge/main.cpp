@@ -1299,6 +1299,7 @@ class WinHttpRangeSource final : public RemoteSource {
       concurrent_transfer_started_;
 };
 
+#include "local_disc_source.inc"
 #include "bdmv_source.inc"
 
 struct DiscReadContext {
@@ -3045,8 +3046,10 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     const bool remote_menu = json_string(*open, "type") == "open_disc";
     const auto transport = json_string(*open, "transport");
-    const bool virtual_disc = remote_menu && transport == "winfsp";
-    if (transport.has_value() && !virtual_disc) {
+    const auto local_path = json_string(*open, "localPath");
+    const bool local_menu = remote_menu && local_path.has_value();
+    const bool virtual_disc = remote_menu && transport == "winfsp" && !local_menu;
+    if (transport.has_value() && !virtual_disc && !local_menu) {
       throw BridgeException("protocol_error", "Unsupported disc transport");
     }
     if (remote_menu && json_string(*open, "mode") != "hdmv") {
@@ -3096,9 +3099,15 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       }
       if (!files.find("BDMV/index.bdmv") || files.bytes == 0)
         throw BridgeException("invalid_disc", "Missing BDMV structure");
-      folder_source = std::make_shared<BdmvSource>(std::move(files), *origin, *username, *password);
+      folder_source = std::make_shared<BdmvSource>(std::move(files), *origin, *username, *password,
+          local_path ? std::filesystem::path(wide_from_utf8(*local_path)) : std::filesystem::path{});
       source = folder_source;
       structure_identity = folder_source->structure_identity();
+    } else if (local_path) {
+      auto local_source = std::make_shared<LocalIsoSource>(std::filesystem::path(wide_from_utf8(*local_path)));
+      structure_identity = bridge::make_structure_cache_identity(local_source->size(),
+          bridge::StructureCacheValidatorKind::strong_etag, local_source->validator());
+      source = std::move(local_source);
     } else {
       auto iso_source = std::make_shared<WinHttpRangeSource>(*url, *origin, *username, *password);
       structure_identity = bridge::make_structure_cache_identity(iso_source->size(),
@@ -3179,7 +3188,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     const std::string token = random_token();
     std::unique_ptr<bridge::RemoteDiscProvider> remote_disc;
-    if (remote_menu && !virtual_disc) {
+    if (remote_menu && !virtual_disc && !local_menu) {
       if (source->size() % bridge::RemoteDiscProvider::kSectorBytes != 0) {
         throw BridgeException("invalid_disc", "Invalid ISO sector length");
       }
@@ -3187,7 +3196,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     std::unique_ptr<LoopbackHttpServer> server;
     std::uint16_t port = 0;
-    if (!virtual_disc) {
+    if (!virtual_disc && !local_menu) {
       server = std::make_unique<LoopbackHttpServer>(api, cache, titles, token,
           bluray_metrics, bridge_started, remote_disc.get());
       port = server->start();
@@ -3210,7 +3219,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
           bluray_metrics.snapshot(),
           source->remote_transfer_active_microseconds(),
           server ? server->first_media_response_ready_us() : 0,
-          mounted_disc ? (mounted_disc->failed() ? "network_error" : "") : server->last_error_code(),
+          mounted_disc ? (mounted_disc->failed() ? "network_error" : "") : server ? server->last_error_code() : "",
           final_snapshot, remote_disc != nullptr
               ? std::optional<std::uint64_t>(remote_disc->cancelled_generations())
               : std::nullopt, mounted_disc ? mounted_disc->metrics_json() : "");
@@ -3234,7 +3243,10 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     if (remote_menu) {
       ready.pop_back();
-      if (virtual_disc) {
+      if (local_menu) {
+        ready += R"(,"capability":"local-disc-v1","mode":"hdmv","discPath":)" +
+            bridge::json_escape(*local_path) + "}";
+      } else if (virtual_disc) {
         ready += std::string(R"(,"capability":)") + bridge::json_escape(bdmv ? "winfsp-bdmv-v1" : "winfsp-disc-v1") +
             R"(,"mode":"hdmv","discPath":)" +
             bridge::json_escape(utf8_from_wide((bdmv ? mount_path : mount_path / L"disc.iso").wstring())) + "}";

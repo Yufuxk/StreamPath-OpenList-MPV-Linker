@@ -270,7 +270,8 @@ class MpvPlaybackProgressSynchronizer {
       )) {
         final index = _entryIndexFor(record, entries);
         if (index == null) continue;
-        final cutoff = ignoreBefore[stripUserInfo(entries[index].url)];
+        final cutoff =
+            ignoreBefore[stripUserInfo(entries[index].persistentTarget)];
         if (cutoff != null &&
             (record.recordedAt ?? 0) <= cutoff.millisecondsSinceEpoch) {
           continue;
@@ -280,7 +281,7 @@ class MpvPlaybackProgressSynchronizer {
         final watchLaterUrl = index < watchLaterUrls.length
             ? watchLaterUrls[index]
             : entry.url;
-        final cleanUrl = stripUserInfo(entry.url);
+        final cleanUrl = stripUserInfo(entry.persistentTarget);
         if (record.outcome == MpvProgressOutcome.completed) {
           await progressService.deleteProgress(cleanUrl, profileId: profileId);
           await progressService.deleteTemporaryProgress(
@@ -329,7 +330,7 @@ class MpvPlaybackProgressSynchronizer {
       if (record?.startSeconds == null && watchLaterUrl != entry.url) {
         record = watchLaterIndex.recordFor(entry.url);
       }
-      final cutoff = ignoreBefore[stripUserInfo(entry.url)];
+      final cutoff = ignoreBefore[stripUserInfo(entry.persistentTarget)];
       if (cutoff != null &&
           (record == null ||
               !(await record.file.lastModified()).isAfter(cutoff))) {
@@ -339,7 +340,7 @@ class MpvPlaybackProgressSynchronizer {
       if (start == null) continue;
       final watchLaterDuration = record?.durationSeconds;
       await progressService.saveProgress(
-        url: stripUserInfo(entry.url),
+        url: stripUserInfo(entry.persistentTarget),
         positionMs: (start * 1000).round(),
         durationMs: _durationMs(watchLaterDuration ?? journal?.durationSeconds),
         profileId: profileId,
@@ -377,12 +378,13 @@ class MpvPlaybackProgressSynchronizer {
         entries,
       );
       if (entryIndex == null) continue;
-      final cutoff = ignoreBefore[stripUserInfo(entries[entryIndex].url)];
+      final cutoff =
+          ignoreBefore[stripUserInfo(entries[entryIndex].persistentTarget)];
       if (cutoff != null &&
           (record.recordedAt ?? 0) <= cutoff.millisecondsSinceEpoch) {
         continue;
       }
-      final cleanUrl = stripUserInfo(entries[entryIndex].url);
+      final cleanUrl = stripUserInfo(entries[entryIndex].persistentTarget);
       if (record.outcome == MpvTemporaryProgressOutcome.cleared) {
         await progressService.deleteTemporaryProgress(
           cleanUrl,

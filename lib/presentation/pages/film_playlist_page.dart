@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_playlist.dart';
+import '../widgets/video_cache_widgets.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -263,6 +264,13 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
         Offset.zero & overlay.size,
       ),
       items: [
+        const PopupMenuItem(
+          value: 'cache',
+          child: SPMenuItemContent(
+            icon: SPIcons.download,
+            child: AppText('缓存视频…'),
+          ),
+        ),
         PopupMenuItem(
           value: 'refresh',
           enabled: workIds.isNotEmpty,
@@ -322,7 +330,14 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       await _load();
       return;
     }
-    if (action == 'playlist' || action == 'addPlaylist') {
+    if (action == 'cache') {
+      await showVideoCacheDialog(
+        context,
+        widget.catalog,
+        FilmPlaylistScope.playlist(snapshot.playlist, entryId: entryId),
+        title: entryId == null ? list.name : entries.single.title,
+      );
+    } else if (action == 'playlist' || action == 'addPlaylist') {
       await showFilmPlaylistDialog(
         context,
         widget.catalog,

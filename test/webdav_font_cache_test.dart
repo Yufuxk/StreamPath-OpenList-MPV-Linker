@@ -17,6 +17,21 @@ void main() {
     base.deleteSync(recursive: true);
   });
 
+  test('字体过期维护保留位于旧字体会话目录内的视频下载', () async {
+    final video = File(
+      '${base.path}/streampath-fonts-retired/StreamPathCache/video.mkv',
+    );
+    await video.parent.create(recursive: true);
+    await video.writeAsString('download');
+    final unused = await Directory(
+      '${base.path}/streampath-fonts-unused',
+    ).create();
+    final cache = WebDavFontCache(directory: base);
+    await cache.prune(() async => {}, preservedPaths: {video.parent.path});
+    expect(await video.readAsString(), 'download');
+    expect(await unused.exists(), isFalse);
+  });
+
   test('同来源续播视频复用字体，引用清除后删除缓存', () async {
     const source = WebDavFontDirectory(
       name: 'Fonts',

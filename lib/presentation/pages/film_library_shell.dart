@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../features/video_cache/video_cache_source.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/errors/app_exception.dart';
@@ -8,6 +9,8 @@ import '../../data/models/film_catalog_item.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../../data/models/playback_history.dart';
 import '../../data/models/film_playlist.dart';
+import '../../domain/repositories/media_directory_source.dart';
+import '../../domain/services/webdav_media_source_adapter.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../widgets/sp_notice.dart';
@@ -28,6 +31,7 @@ class FilmLibraryShell extends StatefulWidget {
 
 class FilmLibraryShellState extends State<FilmLibraryShell> {
   final _hosts = <String, BrowserPage>{};
+  final _cacheSources = <String, MediaDirectorySource>{};
   final _keys = <String, GlobalKey<BrowserPageState>>{};
   bool _playbackMenuOpen = false;
   Future<void>? _restoreFuture;
@@ -76,8 +80,11 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
         : null;
     final native = app.nativeSource(sourceId);
     final server = app.serverSource(sourceId);
+    final cached = _cacheSources[sourceId];
     final service = local
         ? null
+        : cached is WebDavMediaSourceAdapter
+        ? cached.service
         : native?.service ?? server?.service ?? app.mountedService(sourceId);
     if (local ? root == null : service == null) return null;
     if (_hosts[sourceId] case final host?) {
@@ -91,13 +98,14 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       key: key,
       localRoot: root,
       webDavSource: service,
-      directorySource: native ?? server,
+      directorySource: cached ?? native ?? server,
       playbackOnly: true,
     );
   }
 
   Future<void> _restore() async {
     final app = context.read<AppState>();
+    await app.restoreVideoCache();
     await app.initializeFilmPlayback();
     final histories = await app.filmPlaybackHistoryStore.loadAll();
     if (!mounted) return;
@@ -123,17 +131,25 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       }
     }
     if (!mounted) return;
+    for (final source in sources) {
+      if (app.videoCache?.hasSource(source) == true) {
+        _cacheSources[source] = await app.videoCacheSource(source);
+      }
+    }
     void restoreHosts() => setState(() {
       for (final source in sources) {
         _hostFor(source);
       }
     });
     restoreHosts();
-    for (final source in sources.where(
-      (id) =>
-          app.mediaSourceKind(id).isNativeStorage ||
-          app.mediaSourceKind(id).isMediaServer,
-    )) {
+    for (final source
+        in sources
+            .where(
+              (id) =>
+                  app.mediaSourceKind(id).isNativeStorage ||
+                  app.mediaSourceKind(id).isMediaServer,
+            )
+            .where((id) => !_cacheSources.containsKey(id))) {
       try {
         await app.mountMediaConnection(source);
       } on FilmCatalogException {
@@ -144,6 +160,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
     if (sources.any(
       (source) =>
           !source.startsWith('local:') &&
+          !_cacheSources.containsKey(source) &&
           app.configStore.current.mountedProfileIds.contains(source) &&
           app.mountedService(source) == null,
     )) {
@@ -163,9 +180,23 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   Future<void> play(MediaLibraryItem item) => _play(item);
   Future<void> playPlaylist(FilmPlaylistSnapshot snapshot, int index) async {
     final entry = snapshot.entries[index];
-    final resource = entry.resource;
+    var resource = entry.resource;
     if (resource == null) return;
-    await context.read<AppState>().initializeFilmPlayback();
+    final app = context.read<AppState>();
+    if (entry.pinnedPath == null) {
+      for (final version in entry.queueItem.versions) {
+        if (await app.cachedTarget(snapshot.playlist.sourceId, version.path) !=
+            null) {
+          resource = await (await app.getFilmCatalogStore()).resourceAt(
+            snapshot.playlist.sourceId,
+            version.path,
+          );
+          break;
+        }
+      }
+    }
+    if (resource == null || !mounted) return;
+    await app.initializeFilmPlayback();
     await _withHost(
       resource.playbackItem,
       (host) => host.playFilmPlaylist(snapshot, index),
@@ -207,6 +238,27 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   ) async {
     final app = context.read<AppState>();
     try {
+      await app.restoreVideoCache();
+      final cached = await app.cachedTarget(
+        item.sourceId,
+        item.discRootPath ?? item.targetPath,
+      );
+      final existing = _cacheSources[item.sourceId];
+      if (existing is VideoCacheSource &&
+          existing.identity != await app.videoCacheIdentity(item.sourceId)) {
+        _cacheSources.remove(item.sourceId);
+      }
+      if (cached != null) {
+        _cacheSources[item.sourceId] ??= await app.videoCacheSource(
+          item.sourceId,
+        );
+        if (!mounted) return;
+        _hostFor(item.sourceId);
+        setState(() {});
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted) await action(_keys[item.sourceId]!.currentState!);
+        return;
+      }
       if ((item.sourceKind.isNativeStorage &&
               app.nativeSource(item.sourceId) == null) ||
           (item.sourceKind.isMediaServer &&
@@ -218,6 +270,12 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
         await app.mountProfile(item.sourceId);
       }
       if (!mounted) return;
+      if (app.videoCache?.hasSource(item.sourceId) == true) {
+        _cacheSources[item.sourceId] ??= await app.videoCacheSource(
+          item.sourceId,
+          original: app.directorySource(item.sourceId),
+        );
+      }
       final host = _hostFor(item.sourceId);
       if (host == null) throw AppException.config('来源不可用，请在文件夹中重新挂载');
       setState(() {});

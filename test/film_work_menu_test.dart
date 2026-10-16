@@ -150,8 +150,9 @@ void main() {
     await tester.tap(find.byType(FilmWorkCard), buttons: kSecondaryMouseButton);
     await settle();
     expect(opened, 0);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(8));
-    expect(find.byType(SPMenuItemContent), findsNWidgets(8));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(9));
+    expect(find.byType(SPMenuItemContent), findsNWidgets(9));
+    expect(find.text('缓存视频…'), findsOneWidget);
     expect(
       find.descendant(
         of: find.widgetWithText(SPMenuItemContent, '标记已看完'),

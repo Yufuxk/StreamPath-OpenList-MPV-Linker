@@ -2,3 +2,13 @@
 abstract interface class PlaybackMediaEntry {
   String get url;
 }
+
+abstract interface class PlaybackProgressTarget {
+  String? get progressTarget;
+}
+
+extension PlaybackEntryProgress on PlaybackMediaEntry {
+  String get persistentTarget => this is PlaybackProgressTarget
+      ? (this as PlaybackProgressTarget).progressTarget ?? url
+      : url;
+}

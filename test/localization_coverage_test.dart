@@ -10,6 +10,7 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_translation_catalog.dart';
 import 'package:streampath/presentation/localization/film_catalog_translations.dart';
 import 'package:streampath/presentation/localization/app_update_translations.dart';
+import 'package:streampath/presentation/localization/video_cache_translations.dart';
 import 'package:streampath/presentation/widgets/playback_bar.dart';
 
 void main() {
@@ -44,6 +45,7 @@ void main() {
     for (final entry in {
       ...filmCatalogTranslations,
       ...appUpdateTranslations,
+      ...videoCacheTranslations,
     }.entries) {
       expect(entry.value, hasLength(3), reason: entry.key);
       for (final language in AppLanguage.values) {

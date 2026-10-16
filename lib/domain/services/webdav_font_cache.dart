@@ -217,45 +217,52 @@ class WebDavFontCache {
     await temp.rename(manifest.path);
   }
 
-  Future<void> prune(Future<Set<String>> Function() loadActiveSessionKeys) =>
-      _enqueue(() async {
-        final activeSessionKeys = await loadActiveSessionKeys();
-        final root = await _root();
-        final retainedDirectories = <String>{};
-        await for (final entity in root.list()) {
-          if (entity is! File || p.extension(entity.path) != '.json') continue;
-          final Object? raw;
-          try {
-            raw = jsonDecode(await entity.readAsString());
-          } on FormatException {
-            await entity.delete();
-            continue;
-          }
-          if (raw is! Map<String, dynamic>) {
-            await entity.delete();
-            continue;
-          }
-          final refs =
-              (raw['sessionKeys'] as List?)?.whereType<String>() ??
-              const <String>[];
-          final name = raw['directory'];
-          if (name is String &&
-              name.startsWith('streampath-fonts-') &&
-              p.basename(name) == name) {
-            if (refs.any(activeSessionKeys.contains)) {
-              retainedDirectories.add(name);
-              continue;
-            }
-          }
-          await entity.delete();
+  Future<void> prune(
+    Future<Set<String>> Function() loadActiveSessionKeys, {
+    Set<String> preservedPaths = const {},
+  }) => _enqueue(() async {
+    final activeSessionKeys = await loadActiveSessionKeys();
+    final root = await _root();
+    final retainedDirectories = <String>{};
+    await for (final entity in root.list()) {
+      if (entity is! File || p.extension(entity.path) != '.json') continue;
+      final Object? raw;
+      try {
+        raw = jsonDecode(await entity.readAsString());
+      } on FormatException {
+        await entity.delete();
+        continue;
+      }
+      if (raw is! Map<String, dynamic>) {
+        await entity.delete();
+        continue;
+      }
+      final refs =
+          (raw['sessionKeys'] as List?)?.whereType<String>() ??
+          const <String>[];
+      final name = raw['directory'];
+      if (name is String &&
+          name.startsWith('streampath-fonts-') &&
+          p.basename(name) == name) {
+        if (refs.any(activeSessionKeys.contains)) {
+          retainedDirectories.add(name);
+          continue;
         }
-        await for (final entity in root.list()) {
-          if (entity is! Directory) continue;
-          final name = p.basename(entity.path);
-          if (name.startsWith('streampath-fonts-') &&
-              !retainedDirectories.contains(name)) {
-            await entity.delete(recursive: true);
-          }
-        }
-      });
+      }
+      await entity.delete();
+    }
+    await for (final entity in root.list()) {
+      if (entity is! Directory) continue;
+      final name = p.basename(entity.path);
+      if (preservedPaths.any(
+        (path) => p.equals(entity.path, path) || p.isWithin(entity.path, path),
+      )) {
+        continue;
+      }
+      if (name.startsWith('streampath-fonts-') &&
+          !retainedDirectories.contains(name)) {
+        await entity.delete(recursive: true);
+      }
+    }
+  });
 }

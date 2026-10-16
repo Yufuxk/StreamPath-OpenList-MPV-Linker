@@ -265,6 +265,7 @@ void main() {
           positionMs: 25000,
           durationMs: 120000,
         );
+        await source.store.setPreference('show_poster_content_count', true);
         final package = await source.transfer.export(collections: true);
         preview = await FilmLibraryTransfer.preflight(package);
         expect(
@@ -278,6 +279,7 @@ void main() {
         await target.transfer.import(preview, categories, {
           'old': 'new',
         }, matches: (_) async => true);
+        expect(target.store.showPosterContentCount, isTrue);
         expect(await target.store.collections(customOnly: true), isEmpty);
         final imported = (await target.store.works(type: null)).single;
         expect(imported.tmdbId, 123);
@@ -300,6 +302,7 @@ void main() {
           durationMs: 120000,
         );
         categories.add('collections');
+        await target.store.setPreference('show_poster_content_count', false);
         final first = await target.transfer.import(preview, categories, {
           'old': 'new',
         }, matches: (_) async => true);
@@ -308,6 +311,7 @@ void main() {
         }, matches: (_) async => true);
         expect(first['collections'], 1);
         expect(second['collections'], 0);
+        expect(target.store.showPosterContentCount, isFalse);
         expect(await target.store.collections(customOnly: true), hasLength(1));
         expect(
           await target.store.works(type: null, collectionId: collection),

@@ -208,6 +208,9 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
       'value_json': jsonEncode(value),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     if (key == 'spoiler_protection') spoilerProtection = value == true;
+    if (key == 'show_poster_content_count') {
+      showPosterContentCount = value == true;
+    }
     _changed();
   }
 

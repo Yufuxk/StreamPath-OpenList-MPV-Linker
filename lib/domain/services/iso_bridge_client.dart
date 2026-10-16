@@ -137,6 +137,8 @@ class IsoBridgeClient {
     final handle = _handle;
     if (handle == INVALID_HANDLE_VALUE) return;
     _handle = INVALID_HANDLE_VALUE;
+    // 先取消 worker 中的同步读取，避免 CloseHandle 阻塞界面线程。
+    CancelIoEx(handle, nullptr);
     CloseHandle(handle);
   }
 

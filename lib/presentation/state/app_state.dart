@@ -1,4 +1,7 @@
 import '../../domain/services/film_scan_scheduler.dart';
+import '../../features/video_cache/video_cache_service.dart';
+import '../../features/video_cache/video_cache_models.dart';
+import '../../features/video_cache/video_cache_source.dart';
 import '../../data/local/media_connection_store.dart';
 import '../../data/models/media_connection.dart';
 import '../../domain/services/native_storage_source.dart';
@@ -72,6 +75,317 @@ import '../../features/cache_expiration/store/cache_expiration_config_store.dart
 /// 持有所有核心服务实例与当前连接信息；页面通过
 /// `context.read<AppState>()` 获取，通过 [ChangeNotifier] 感知变化。
 class AppState extends ChangeNotifier {
+  Future<VideoCacheService>? _videoCache;
+  VideoCacheService? videoCache;
+  final videoCacheReady = ValueNotifier<VideoCacheService?>(null);
+  Timer? _downloadPlaybackTimer;
+  void Function()? _videoCacheDownloadListener;
+  bool _checkingDownloads = false;
+  int _downloadPreparation = 0;
+  bool _downloadSessionsRestored = false;
+  Completer<void>? _downloadPlaybackIdle;
+  String? videoCacheRestoreError;
+  final _invalidVideoCaches = <String>{};
+  String get _videoCacheDataPath {
+    final config = p.dirname(_configStore.configFilePath);
+    return p.basename(config) == 'config' ? p.dirname(config) : config;
+  }
+
+  String get videoCacheDirectory =>
+      videoCache?.targetDirectory ?? p.join(_videoCacheDataPath, 'video_cache');
+
+  Future<VideoCacheService> getVideoCache() => _videoCache ??= () async {
+    await getMediaConnections();
+    final service = await VideoCacheService.open(
+      resolveTransfer: videoCacheTransfer,
+      dataDirectory: Directory(_videoCacheDataPath),
+    );
+    videoCache = service;
+    if (_disposed || _closing) {
+      await service.close();
+      return service;
+    }
+    videoCacheReady.value = service;
+    void watchTasks() {
+      if (service.hasPending) {
+        _downloadPlaybackTimer ??= Timer.periodic(
+          const Duration(seconds: 1),
+          (_) => unawaited(_updateDownloadPlayback()),
+        );
+      } else {
+        _downloadPlaybackTimer?.cancel();
+        _downloadPlaybackTimer = null;
+      }
+    }
+
+    _videoCacheDownloadListener = watchTasks;
+    service.changes.addListener(watchTasks);
+    watchTasks();
+    await _updateDownloadPlayback();
+    return service;
+  }();
+
+  Future<void> restoreVideoCache() async {
+    final data = _videoCacheDataPath;
+    if (_videoCache != null ||
+        await File(p.join(data, 'library', 'video_cache.db')).exists() ||
+        await File(p.join(data, 'config', 'video_cache.json')).exists()) {
+      try {
+        await getVideoCache();
+      } on VideoCacheException {
+        videoCacheRestoreError = '视频缓存索引无法读取，请检查缓存目录。';
+        _videoCache = null;
+      } on FileSystemException {
+        videoCacheRestoreError = '视频缓存索引无法读取，请检查缓存目录。';
+        _videoCache = null;
+      } on FormatException {
+        videoCacheRestoreError = '视频缓存索引无法读取，请检查缓存目录。';
+        _videoCache = null;
+      }
+    }
+  }
+
+  Future<void> _updateDownloadPlayback() async {
+    if (_checkingDownloads || videoCache == null || _closing || _disposed) {
+      return;
+    }
+    _checkingDownloads = true;
+    _downloadPlaybackIdle = Completer<void>();
+    try {
+      final network =
+          !_downloadSessionsRestored ||
+          _downloadPreparation > 0 ||
+          await _playerService.hasNetworkPlayback() ||
+          (await _filmPlayerService?.hasNetworkPlayback() ?? false) ||
+          (await _audioPlayerService?.hasNetworkPlayback() ?? false) ||
+          (_isoPlaybackService?.hasNetworkPlayback ?? false) ||
+          (_filmIsoPlaybackService?.hasNetworkPlayback ?? false);
+      await videoCache!.setPlaybackSuspended(network);
+    } on VideoCacheException catch (error) {
+      onImplicitVideoError?.call(error.message);
+    } finally {
+      _checkingDownloads = false;
+      _downloadPlaybackIdle!.complete();
+    }
+  }
+
+  void downloadsPlaybackRestored() {
+    _downloadSessionsRestored = true;
+    unawaited(_updateDownloadPlayback());
+  }
+
+  Future<Map<String, dynamic>> videoCacheTransfer(
+    String id,
+    String path,
+    bool strm,
+  ) async {
+    final connections = await getMediaConnections();
+    final connection = connections.connections
+        .where((c) => c.id == id)
+        .firstOrNull;
+    if (connection != null) {
+      if (!connection.enabled) throw const VideoCacheException('缓存来源不可用');
+      final secrets = await connections.secrets(id);
+      final identity = videoCacheId(
+        '${connection.kind.name}\n${connection.url}\n${connection.username}\n${secrets['serverId'] ?? ''}\n${secrets['userId'] ?? ''}',
+      );
+      if (connection.kind.isNativeStorage && !strm) {
+        return {
+          'kind': 'native',
+          'config': connection.toJson(),
+          'password': secrets['password'] as String? ?? '',
+          'identity': identity,
+          'progress': PlaybackProgressService.logicalTarget(id, path),
+        };
+      }
+      if (connection.kind.isMediaServer) {
+        final api = mediaServerApi(connection, credentials: secrets);
+        try {
+          final user = (await api.request('Users/${api.userId}')).data as Map;
+          if ((user['Policy'] as Map?)?['EnableContentDownloading'] == false) {
+            throw const VideoCacheException('缓存来源认证失败或没有下载权限');
+          }
+          final row = await (await getFilmCatalogStore()).serverResource(
+            id,
+            path,
+          );
+          if (row == null) throw const VideoCacheException('缓存来源文件不存在');
+          final info = await api.playback(
+            row['item_id'] as String,
+            mediaSourceId: row['media_source_id'] as String,
+          );
+          return {
+            'kind': 'http',
+            'url': info.url,
+            'origin': connection.url,
+            'headers': {'X-Emby-Token': api.token!},
+            'identity': identity,
+            'progress': PlaybackProgressService.logicalTarget(id, path),
+          };
+        } finally {
+          api.close();
+        }
+      }
+      await mountMediaConnection(id);
+      final source = nativeSource(id)!;
+      final parent = p.posix.dirname(path);
+      final entry = (await source.fetchDirectory(
+        parent == '.' ? '' : parent,
+      )).where((e) => e.logicalPath == path).firstOrNull;
+      if (entry == null) throw const VideoCacheException('缓存来源文件不存在');
+      final url = await source.service.fetchStrmUrl(entry);
+      if (url == null) throw const VideoCacheException('缓存来源文件不存在');
+      // 同来源指针交给下载专用原生连接，外部 HTTP 地址不附带存储凭据。
+      final target = Uri.parse(url), bridge = Uri.parse(source.bridge.baseUrl);
+      if (target.origin == bridge.origin) {
+        final relative = target.pathSegments
+            .skip(bridge.pathSegments.where((s) => s.isNotEmpty).length)
+            .join('/');
+        return {
+          'kind': 'native',
+          'config': connection.toJson(),
+          'password': secrets['password'] as String? ?? '',
+          'nativePath': relative,
+          'identity': identity,
+          'progress': PlaybackProgressService.logicalTarget(id, path),
+        };
+      }
+      return {
+        'kind': 'http',
+        'url': url,
+        'origin': connection.url,
+        'headers': <String, String>{},
+        'identity': identity,
+        'progress': PlaybackProgressService.logicalTarget(id, path),
+      };
+    }
+    final profile = _configStore.current.profiles
+        .where((p) => p.profileId == id)
+        .firstOrNull;
+    if (profile == null) throw const VideoCacheException('缓存来源不可用');
+    final service = WebDAVService(
+      client: WebDavClient(
+        baseUrl: profile.serverUrl,
+        username: profile.username,
+        password: profile.password,
+      ),
+      profileId: id,
+    );
+    var url = service.fullUrl(path);
+    if (strm) {
+      final value = await service.fetchStrmUrl(
+        WebDavFile(name: p.posix.basename(path), href: url, isDirectory: false),
+      );
+      if (value == null) throw const VideoCacheException('缓存来源文件不存在');
+      url = value;
+    }
+    final clean = Uri.parse(
+      url,
+    ).replace(userInfo: '', query: '', fragment: '').toString();
+    return {
+      'kind': 'http',
+      'url': url,
+      'origin': profile.serverUrl,
+      'headers': {
+        if (profile.username.isNotEmpty)
+          'Authorization':
+              'Basic ${base64Encode(utf8.encode('${profile.username}:${profile.password}'))}',
+      },
+      'identity': videoCacheId(
+        'webdav\n${profile.serverUrl}\n${profile.username}',
+      ),
+      'progress': clean,
+    };
+  }
+
+  Future<String?> videoCacheIdentity(String id) async {
+    final connection = mediaConnections.where((c) => c.id == id).firstOrNull;
+    if (connection != null) {
+      if (!connection.enabled) return null;
+      final secrets = await (await getMediaConnections()).secrets(id);
+      return videoCacheId(
+        '${connection.kind.name}\n${connection.url}\n${connection.username}\n${secrets['serverId'] ?? ''}\n${secrets['userId'] ?? ''}',
+      );
+    }
+    final profile = _configStore.current.profiles
+        .where((p) => p.profileId == id)
+        .firstOrNull;
+    return profile == null
+        ? null
+        : videoCacheId('webdav\n${profile.serverUrl}\n${profile.username}');
+  }
+
+  Future<CachedPlaybackTarget?> cachedTarget(
+    String source,
+    String path, {
+    bool notifyInvalid = false,
+  }) async {
+    final cache = videoCache;
+    if (cache == null) return null;
+    final identity = await videoCacheIdentity(source);
+    if (identity == null) return null;
+    final target = await cache.lookup(source, path, identity: identity);
+    final key = '$source\n$identity\n$path';
+    if (target != null) {
+      _invalidVideoCaches.remove(key);
+    } else if (notifyInvalid &&
+        cache.bundles.values.any(
+          (b) =>
+              b['source'] == source &&
+              b['path'] == path &&
+              b['identity'] == identity &&
+              cache.complete(b),
+        ) &&
+        _invalidVideoCaches.add(key)) {
+      onImplicitVideoError?.call('本地视频缓存已失效，将尝试在线播放。');
+    }
+    return target;
+  }
+
+  Future<PreparedVideoItem?> cachedVideo(String source, String path) async =>
+      (await cachedTarget(source, path))?.prepared();
+
+  Set<String> get cachedPlaybackFiles => {
+    ..._playerService.playbackFiles,
+    ...?_filmPlayerService?.playbackFiles,
+    ..._localDiscPlaybackService.playbackFiles,
+    ...?_filmLocalDiscPlaybackService?.playbackFiles,
+    ...?_isoPlaybackService?.cachedPlaybackFiles,
+    ...?_filmIsoPlaybackService?.cachedPlaybackFiles,
+  };
+
+  Future<MediaDirectorySource> videoCacheSource(
+    String id, {
+    MediaDirectorySource? original,
+  }) async {
+    final cache = await getVideoCache();
+    final identity = await videoCacheIdentity(id);
+    if (!cache.hasSource(id) || identity == null) {
+      if (original != null) return original;
+      await mountMediaConnectionIfConfigured(id);
+      return directorySource(id);
+    }
+    final kind = mediaSourceKind(id);
+    final profile = _configStore.current.profiles
+        .where((p) => p.profileId == id)
+        .firstOrNull;
+    final base =
+        profile?.serverUrl ?? 'https://cache.invalid/${videoCacheId(id)}/';
+    return VideoCacheSource(
+      cache,
+      MediaSourceDescriptor(sourceId: id, kind: kind, displayName: id),
+      identity: identity,
+      baseUrl: base,
+      persistent: (path) => kind == MediaSourceKind.webdav
+          ? resolveHref(base, path)
+          : PlaybackProgressService.logicalTarget(id, path),
+      remote: () async {
+        await mountMediaConnectionIfConfigured(id);
+        return directorySource(id);
+      },
+    );
+  }
+
   AppState({
     required StreamPathConfigStore configStore,
     required PlaybackHistoryStore playbackHistoryStore,
@@ -95,6 +409,7 @@ class AppState extends ChangeNotifier {
     OpenListIndexService? openListIndexService,
     OpenListIndexUpdateScheduler? openListIndexScheduler,
     NavigationLocationStore? navigationLocationStore,
+    VideoCacheService? videoCacheService,
   }) : _configStore = configStore,
        // ignore: prefer_initializing_formals
        _cachePolicyConfigStore = cachePolicyConfigStore,
@@ -148,6 +463,9 @@ class AppState extends ChangeNotifier {
           onPlaybackRecovery: (event) => _playbackRecoveryEvents.add(event),
         );
     _playerService.onVideoProgress = _recordVideoWatch;
+    _playerService.beforeNetworkLoad = () async {
+      await videoCache?.setPlaybackSuspended(true);
+    };
     _playerService.videoResetBefore = (source, path) async =>
         (await getFilmCatalogStore()).manualWatchResetAt(source, path);
     _audioPlayerService =
@@ -170,6 +488,11 @@ class AppState extends ChangeNotifier {
         openListIndexScheduler ??
         OpenListIndexUpdateScheduler(service: _openListIndexService);
     refreshOpenListIndexSchedule();
+    if (videoCacheService != null) {
+      videoCache = videoCacheService;
+      _videoCache = Future.value(videoCacheService);
+      videoCacheReady.value = videoCacheService;
+    }
   }
 
   final StreamPathConfigStore _configStore;
@@ -217,8 +540,12 @@ class AppState extends ChangeNotifier {
       final records = film ? _filmMediaLibraryStore : _mediaLibraryStore;
       for (final history in rows) {
         final sourceId = history.sourceId!;
-        if (mediaSourceKind(sourceId).isNativeStorage ||
-            mediaSourceKind(sourceId).isMediaServer) {
+        final cachedSource = videoCache?.hasSource(sourceId) == true
+            ? await videoCacheSource(sourceId)
+            : null;
+        if (cachedSource == null &&
+            (mediaSourceKind(sourceId).isNativeStorage ||
+                mediaSourceKind(sourceId).isMediaServer)) {
           try {
             await mountMediaConnection(sourceId);
           } on FilmCatalogException {
@@ -226,6 +553,7 @@ class AppState extends ChangeNotifier {
           }
         }
         final service =
+            (cachedSource as WebDavMediaSourceAdapter?)?.service ??
             _nativeSources[sourceId]?.service ??
             _serverSources[sourceId]?.service ??
             mountedService(sourceId) ??
@@ -236,7 +564,8 @@ class AppState extends ChangeNotifier {
         if (service == null && local == null) continue;
         final MediaDirectorySource source = local != null
             ? localMediaSource(local)
-            : _nativeSources[sourceId] ??
+            : cachedSource ??
+                  _nativeSources[sourceId] ??
                   _serverSources[sourceId] ??
                   WebDavMediaSourceAdapter(service!);
         await player.restoreSession(
@@ -252,6 +581,7 @@ class AppState extends ChangeNotifier {
         final items = history.queueItems;
         final preparer = VideoEntryPreparer(
           source: source,
+          cached: (path) => cachedVideo(sourceId, path),
           config: _configStore.current.toPlayerConfig(),
           subtitleMatcher: _subtitleMatcher,
           fontMatcher: _webDavFontMatcher,
@@ -264,6 +594,7 @@ class AppState extends ChangeNotifier {
         );
         await preparer.prepareSharedFonts(
           history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
+          startPath: history.playlistRelativePaths[history.videoIndex],
         );
         Future<void> target(
           int index,
@@ -315,6 +646,8 @@ class AppState extends ChangeNotifier {
         }
 
         final plan = ImplicitVideoPlan(
+          isCached: (version) async =>
+              await cachedTarget(sourceId, version.path) != null,
           items: items,
           index: history.videoIndex,
           prepare: preparer.prepare,
@@ -1101,6 +1434,13 @@ class AppState extends ChangeNotifier {
 
   Future<void> prepareForClose() => _closePreparation ??= () async {
     _closing = true;
+    if (_videoCacheDownloadListener case final listener?) {
+      videoCache?.changes.removeListener(listener);
+      _videoCacheDownloadListener = null;
+    }
+    _downloadPlaybackTimer?.cancel();
+    await _downloadPlaybackIdle?.future;
+    if (_videoCache != null) await (await _videoCache!).close();
     catalogWritesSuspended = true;
     await _filmImportFinished;
     _filmScanScheduler?.stop();
@@ -1322,10 +1662,23 @@ class AppState extends ChangeNotifier {
   }
 
   Future<T> withMediaPlaybackPriority<T>(Future<T> Function() operation) async {
-    final catalog = _filmCatalog;
-    if (catalog == null) return operation();
-    final probe = (await catalog).mediaProbe;
-    return probe == null ? operation() : probe.withPlaybackPriority(operation);
+    _downloadPreparation++;
+    try {
+      try {
+        await videoCache?.setPlaybackSuspended(true);
+      } on VideoCacheException catch (error) {
+        onImplicitVideoError?.call(error.message);
+      }
+      final catalog = _filmCatalog;
+      if (catalog == null) return await operation();
+      final probe = (await catalog).mediaProbe;
+      return await (probe == null
+          ? operation()
+          : probe.withPlaybackPriority(operation));
+    } finally {
+      _downloadPreparation--;
+      unawaited(_updateDownloadPlayback());
+    }
   }
 
   Future<GlobalSearchIndex> getGlobalSearchIndex() =>
@@ -1419,6 +1772,9 @@ class AppState extends ChangeNotifier {
     }
     _filmProgressService = progress;
     _filmPlayerService = player;
+    player.beforeNetworkLoad = () async {
+      await videoCache?.setPlaybackSuspended(true);
+    };
     if (_filmCatalogStore != null) {
       await importFilmWatchProgress(await _filmCatalogStore!);
     }
@@ -1519,41 +1875,46 @@ class AppState extends ChangeNotifier {
   late final StreamController<String> _cacheWarnings;
   late final StreamController<PlaybackRecoveryEvent> _playbackRecoveryEvents;
 
-  Future<void> pruneWebDavFontCache() =>
-      _playerService.pruneWebDavFontCache(() async {
-        final active = <String>{};
-        for (final history in [
-          ...await _playbackHistoryStore.loadAll(),
-          ...await _filmPlaybackHistoryStore.loadAll(),
-        ]) {
-          if (history.kind != PlaybackHistoryKind.video) continue;
-          final sourceId = history.sourceId;
-          if (sourceId == null || sourceId.isEmpty) continue;
-          active.add(WebDavFontCache.sessionKey(sourceId, history.sessionId));
-        }
-        for (final library in [
-          _mediaLibraryStore,
-          _filmMediaLibraryStore,
-        ].whereType<MediaLibraryStore>()) {
-          for (final profile in _configStore.current.profiles) {
-            final records = await library.playbackHistory(
-              profile.profileId,
-              audio: false,
-            );
-            for (final record in records) {
-              if (record.continueDismissed || !record.item.kind.isVideoLane) {
-                continue;
-              }
-              final sessionId = record.playbackSessionId;
-              if (sessionId == null) continue;
-              active.add(
-                WebDavFontCache.sessionKey(record.item.sourceId, sessionId),
-              );
+  Future<void> pruneWebDavFontCache() => _playerService.pruneWebDavFontCache(
+    () async {
+      final active = <String>{};
+      for (final history in [
+        ...await _playbackHistoryStore.loadAll(),
+        ...await _filmPlaybackHistoryStore.loadAll(),
+      ]) {
+        if (history.kind != PlaybackHistoryKind.video) continue;
+        final sourceId = history.sourceId;
+        if (sourceId == null || sourceId.isEmpty) continue;
+        active.add(WebDavFontCache.sessionKey(sourceId, history.sessionId));
+      }
+      for (final library in [
+        _mediaLibraryStore,
+        _filmMediaLibraryStore,
+      ].whereType<MediaLibraryStore>()) {
+        for (final profile in _configStore.current.profiles) {
+          final records = await library.playbackHistory(
+            profile.profileId,
+            audio: false,
+          );
+          for (final record in records) {
+            if (record.continueDismissed || !record.item.kind.isVideoLane) {
+              continue;
             }
+            final sessionId = record.playbackSessionId;
+            if (sessionId == null) continue;
+            active.add(
+              WebDavFontCache.sessionKey(record.item.sourceId, sessionId),
+            );
           }
         }
-        return active;
-      });
+      }
+      return active;
+    },
+    preservedPaths: {
+      for (final file in videoCache?.files.values ?? const <VideoCacheFile>[])
+        p.join(file.data['root'] as String, 'StreamPathCache'),
+    },
+  );
 
   void scheduleWebDavFontCachePrune() {
     unawaited(
@@ -1598,6 +1959,15 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_videoCacheDownloadListener case final listener?) {
+      videoCache?.changes.removeListener(listener);
+      _videoCacheDownloadListener = null;
+    }
+    videoCacheReady.dispose();
+    _downloadPlaybackTimer?.cancel();
+    if (!_closing && _videoCache != null) {
+      unawaited(_videoCache!.then((s) => s.close()));
+    }
     _disposed = true;
     startupReady.removeListener(_startFilmSchedule);
     _filmScanScheduler?.stop();

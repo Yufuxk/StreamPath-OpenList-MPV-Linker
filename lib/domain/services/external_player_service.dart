@@ -14,6 +14,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/playback_media_entry.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
@@ -429,6 +430,7 @@ class ExternalPlayerService {
   final void Function(PlaybackRecoveryEvent event)? onPlaybackRecovery;
   Future<void> Function(VideoProgressUpdate)? onVideoProgress;
   Future<DateTime?> Function(String sourceId, String path)? videoResetBefore;
+  Future<void> Function()? beforeNetworkLoad;
 
   final PlaybackLinkRecoveryProvider _linkRecoveryProvider;
   final PlaybackServerRestarter _serverRestarter;
@@ -437,8 +439,9 @@ class ExternalPlayerService {
   late final WebDavFontCache _fontCache;
 
   Future<void> pruneWebDavFontCache(
-    Future<Set<String>> Function() loadActiveSessionKeys,
-  ) => _fontCache.prune(loadActiveSessionKeys);
+    Future<Set<String>> Function() loadActiveSessionKeys, {
+    Set<String> preservedPaths = const {},
+  }) => _fontCache.prune(loadActiveSessionKeys, preservedPaths: preservedPaths);
 
   /// 缓存系统集成层诊断日志；默认输出到 flutter run 控制台。
   final void Function(String message) _cacheLogger;
@@ -480,6 +483,31 @@ class ExternalPlayerService {
   }
 
   final Map<String, _PlayerSessionRuntime> _sessions = {};
+  int _networkPreparations = 0;
+  Future<bool> hasNetworkPlayback() async {
+    if (_networkPreparations > 0) return true;
+    for (final runtime in _sessions.values.toList()) {
+      final index = runtime.currentPlaylistPos ?? 0;
+      final entry = index >= 0 && index < runtime.entries.length
+          ? runtime.entries[index]
+          : null;
+      if ((entry != null &&
+                  ['http', 'https'].contains(Uri.tryParse(entry.url)?.scheme) ||
+              entry == null &&
+                  runtime.launchContext?.isLocal != true &&
+                  !runtime.profileId.startsWith('local:')) &&
+          await isPlayerRunning(runtime.sessionId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Set<String> get playbackFiles => {
+    for (final session in _sessions.values)
+      for (final entry in session.entries)
+        if (entry.progressTarget != null) entry.url,
+  };
   final Map<String, _PlaybackRecoveryState> _recoveryStates = {};
   final Map<String, int> _launchOwnership = {};
   final SessionProgressSyncCoordinator _progressSyncCoordinator =
@@ -763,6 +791,13 @@ class ExternalPlayerService {
     }
 
     // ── 2. 认证注入 ───────────────────────────────────────────
+    if (entries.any(
+      (entry) =>
+          entry.progressTarget == null &&
+          ['http', 'https'].contains(Uri.tryParse(entry.url)?.scheme),
+    )) {
+      await beforeNetworkLoad?.call();
+    }
     final isMpv = _isMpvExecutable(config.executable);
     if (!launchContext.isLocal && isMpv && launchContext.recovery.enabled) {
       unawaited(_serverRestarter.capture(launchContext.recovery.baseUrl));
@@ -1242,7 +1277,9 @@ class ExternalPlayerService {
       // 再兜底一次：任何异常只跳过注入，绝不阻断播放。
       // 同时登记「URL → 会话」映射并订阅码率就绪回调，供后台
       // 码率上报后通过 mpv IPC 动态更新本次播放缓存参数。
-      if (!launchContext.isLocal && _cachePolicy != null) {
+      if (!launchContext.isLocal &&
+          entries[playlistStart].progressTarget == null &&
+          _cachePolicy != null) {
         try {
           final cacheArgs = await _cachePolicy.buildCacheArgs(
             sessionId: resolvedSessionId,
@@ -1485,7 +1522,10 @@ class ExternalPlayerService {
     }
     // 曲目检测始终启动：首集为 TS 时仍需发现后续非 TS；TS 稳定起播
     // 后也由此进入轻量顺序预读阶段。runtime 已注册，无需一秒竞态等待。
-    if (!launchContext.isLocal && isMpv && _cachePolicy != null) {
+    if (!launchContext.isLocal &&
+        entries[playlistStart].progressTarget == null &&
+        isMpv &&
+        _cachePolicy != null) {
       unawaited(
         _monitorDurationForCache(
           runtime,
@@ -1623,6 +1663,10 @@ class ExternalPlayerService {
             if (!_isRuntimeCurrent(runtime, generation)) continue;
           }
         }
+        if (!['http', 'https'].contains(Uri.tryParse(lastTrackUrl)?.scheme)) {
+          if (!await _shouldContinueRuntimeWork(runtime)) return;
+          continue;
+        }
         final currentState = policy.sessionState(sessionId);
         final timePos = lines.length > 3 ? double.tryParse(lines[3]) : null;
         final seeking = lines.length > 13
@@ -1720,6 +1764,10 @@ class ExternalPlayerService {
     int generation = 0,
   }) async {
     final sessionId = runtime.sessionId;
+    if (!['http', 'https'].contains(Uri.tryParse(track)?.scheme)) {
+      policy.stopMonitor(sessionId, clearSession: true);
+      return;
+    }
     try {
       _logCache(
         'Track changed: ${_redactUrlForLog(track)} '
@@ -2387,6 +2435,10 @@ class ExternalPlayerService {
       return true;
     }
     if (failure == null) return false;
+    if (runtime.entries[_failureEntryIndex(runtime, failure)].progressTarget !=
+        null) {
+      return false;
+    }
     state.recovering = true;
 
     // 媒体失败后 MPV 可能自动跳到下一集。先定向结束旧进程并保存失败
@@ -2756,9 +2808,15 @@ class ExternalPlayerService {
   }
 
   Future<MpvWatchLaterRecord?> portableWatchLater(String target) async {
-    final directory = _watchLaterDir ?? Directory(p.join((await AppPaths.cacheDirectory()).path, 'mpv-watch-later'));
+    final directory =
+        _watchLaterDir ??
+        Directory(
+          p.join((await AppPaths.cacheDirectory()).path, 'mpv-watch-later'),
+        );
     if (!await directory.exists()) return null;
-    return (await const MpvWatchLaterSync().buildIndex(directory, [target])).recordFor(target);
+    return (await const MpvWatchLaterSync().buildIndex(directory, [
+      target,
+    ])).recordFor(target);
   }
 
   /// 脚本/播放列表文件存放目录（watch_later 目录或数据目录）。
@@ -3291,7 +3349,7 @@ class ExternalPlayerService {
       await _writeImplicitQueue(runtime, controller);
       await _writeSeasonEntries(runtime);
       final progress = await _progressService?.getResumeProgress(
-        runtime.entries[entry.index].url,
+        runtime.entries[entry.index].persistentTarget,
         profileId: runtime.profileId,
       );
       final start =
@@ -3467,6 +3525,7 @@ class ExternalPlayerService {
     runtime.queueWindowBusy = append;
     if (!append) runtime.pendingQueueIndex = index;
     if (!append && !retry) runtime.queueAttemptedPaths.clear();
+    var networkPreparation = false;
     try {
       if (!append) await plan.pending?.call(index);
       final item = plan.items[index];
@@ -3474,9 +3533,25 @@ class ExternalPlayerService {
         plan.failed?.call('播放列表条目不可用，请检查来源或资源');
         return false;
       }
-      final preferred = versionPath == null
+      var preferred = versionPath == null
           ? plan.selected[plan.index]
           : item.versions.firstWhere((v) => v.path == versionPath);
+      if (versionPath == null && plan.isCached != null) {
+        for (final candidate in item.orderedVersions(preferred)) {
+          if (await plan.isCached!(candidate)) {
+            preferred = candidate;
+            break;
+          }
+        }
+      }
+      final current = runtime.queueEntries[runtime.queueGeneration];
+      if (append &&
+          plan.isCached != null &&
+          current != null &&
+          !['http', 'https'].contains(Uri.tryParse(current.url)?.scheme) &&
+          !await plan.isCached!(preferred ?? item.versions.first)) {
+        return false;
+      }
       final (version, prepared) = await item.prepareVersion(
         plan.prepare,
         preferred: preferred,
@@ -3491,6 +3566,12 @@ class ExternalPlayerService {
       }
       plan.prepared[version.path] = prepared;
       final entry = prepared.entry;
+      if (entry.progressTarget == null &&
+          ['http', 'https'].contains(Uri.tryParse(entry.url)?.scheme)) {
+        networkPreparation = true;
+        _networkPreparations++;
+        await beforeNetworkLoad?.call();
+      }
       if (!append) await syncActiveProgress(runtime.sessionId);
       final base = await _scriptBase();
       final generation = runtime.rollingQueue
@@ -3553,7 +3634,7 @@ class ExternalPlayerService {
         }
         if (!append) {
           final progress = await _progressService?.getResumeProgress(
-            entry.url,
+            entry.progressTarget ?? entry.url,
             profileId: runtime.profileId,
           );
           await controller.setProperty(
@@ -3648,6 +3729,7 @@ class ExternalPlayerService {
       if (!append) plan.failed?.call('无法切换播放集数，请关闭播放器后重试');
       return false;
     } finally {
+      if (networkPreparation) _networkPreparations--;
       runtime.queueBusy = false;
       runtime.queueWindowBusy = false;
     }
@@ -3668,6 +3750,7 @@ class ExternalPlayerService {
           for (final entry in runtime.entries)
             {
               'url': entry.url,
+              'progressTarget': entry.progressTarget,
               'title': entry.title,
               'catalogPath': entry.catalogPath,
             },
@@ -3703,6 +3786,7 @@ class ExternalPlayerService {
         url: value['url'] as String,
         title: value['title'] as String?,
         catalogPath: value['catalogPath'] as String?,
+        progressTarget: value['progressTarget'] as String?,
       );
       runtime.entries.add(entry);
       runtime.watchLaterUrls.add(entry.url);

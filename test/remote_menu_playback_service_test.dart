@@ -137,6 +137,42 @@ end)
       throwsArgumentError,
     );
   });
+  test('缓存菜单仅接受已核验的本地 ISO 或 BDMV 路径', () {
+    for (final path in [
+      r'G:\自选缓存\DISC.iso',
+      r'G:\自选缓存\DISC',
+      r'\\nas\cache\DISC.iso',
+    ]) {
+      final args = RemoteMenuPlaybackService.buildArgs(
+        const PlayerConfig(name: 'MPV', executable: 'mpv'),
+        endpoint: Uri.file(path, windows: true),
+        ipcPipeName: 'p',
+        scriptPath: r'C:\session\state.lua',
+        localDiscPath: path,
+      );
+      expect(args, contains('--bluray-device=$path'));
+      expect(args.last, 'bd://menu');
+      for (final other in [
+        Uri.file(r'G:\other\DISC.iso', windows: true),
+        Uri.file(r'C:\session\disc\disc.iso', windows: true),
+        Uri.file(path, windows: true).replace(query: 'secret=1'),
+        Uri.file(path, windows: true).replace(fragment: 'part'),
+        Uri.parse('https://example.com/DISC.iso'),
+      ]) {
+        expect(
+          () => RemoteMenuPlaybackService.buildArgs(
+            const PlayerConfig(name: 'MPV', executable: 'mpv'),
+            endpoint: other,
+            ipcPipeName: 'p',
+            scriptPath: r'C:\session\state.lua',
+            localDiscPath: path,
+          ),
+          throwsArgumentError,
+        );
+      }
+    }
+  });
+
   test('WinFsp ready 限定会话内挂载路径，不能被旧协议冒充', () {
     final ready = <String, dynamic>{
       'type': 'ready',

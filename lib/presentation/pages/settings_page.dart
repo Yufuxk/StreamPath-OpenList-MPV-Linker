@@ -30,6 +30,7 @@ import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
 import '../../data/models/special_playlist_mode.dart';
 import '../../domain/services/cache_cleanup_service.dart';
+import '../widgets/video_cache_widgets.dart';
 import '../../domain/services/diagnostic_service.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/openlist_index_service.dart';
@@ -2773,6 +2774,8 @@ class SettingsPageState extends State<SettingsPage> {
   Widget _buildCachePage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      const VideoCacheSettingsCard(),
+      const SizedBox(height: 16),
       SettingsColumns(
         children: [
           Column(

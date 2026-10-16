@@ -141,6 +141,7 @@ class ImplicitVideoPlan {
     required this.index,
     required this.prepare,
     this.isAvailable,
+    this.isCached,
     required this.activated,
     this.pending,
     this.failed,
@@ -149,6 +150,7 @@ class ImplicitVideoPlan {
   int index;
   final Future<PreparedVideoItem> Function(VideoQueueVersion) prepare;
   final Future<bool> Function(VideoQueueVersion)? isAvailable;
+  final Future<bool> Function(VideoQueueVersion)? isCached;
   final Future<void> Function(int, VideoQueueVersion) activated;
   final Future<void> Function(int)? pending;
   final void Function(String)? failed;

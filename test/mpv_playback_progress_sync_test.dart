@@ -41,6 +41,68 @@ void main() {
 
   const synchronizer = MpvPlaybackProgressSynchronizer();
 
+  test('本地缓存的日志与 watch_later 写回原来源进度', () async {
+    const local = r'C:\cache\StreamPathCache\episode.mkv';
+    const remote = 'https://nas.invalid/Show/E01.mkv';
+    const entries = [MediaEntry(url: local, progressTarget: remote)];
+    await writeJournal([
+      {
+        'outcome': 'position',
+        'playlist_pos': 0,
+        'path': local,
+        'position': 42,
+        'duration': 100,
+        'recorded_at': DateTime.now().millisecondsSinceEpoch,
+      },
+    ]);
+    await watchLaterFile(local).writeAsString('start=43\nduration=100\n');
+    await synchronizer.sync(
+      progressService: progressService,
+      profileId: 'source-a',
+      watchLaterDirectory: watchLaterDir,
+      entries: entries,
+      journalFile: journalFile,
+    );
+    expect(
+      (await progressService.getResumeProgress(
+        remote,
+        profileId: 'source-a',
+      ))!.positionMs,
+      43000,
+    );
+    expect(
+      await progressService.getResumeProgress(local, profileId: 'source-a'),
+      isNull,
+    );
+    await writeJournal([
+      {
+        'outcome': 'temporary_checkpoint',
+        'playlist_pos': 0,
+        'path': local,
+        'position': 42,
+        'duration': 100,
+        'recorded_at': DateTime.now().millisecondsSinceEpoch,
+      },
+    ]);
+    await synchronizer.syncTemporaryCheckpoints(
+      progressService: progressService,
+      profileId: 'source-a',
+      entries: entries,
+      journalFile: journalFile,
+    );
+    expect(
+      (await progressService.getTemporaryProgress(
+        remote,
+        profileId: 'source-a',
+      ))!.positionMs,
+      42000,
+    );
+    expect(
+      await progressService.getTemporaryProgress(local, profileId: 'source-a'),
+      isNull,
+    );
+  });
+
   test('人工重置拒绝旧日志与 watch_later，允许操作后的零秒采样', () async {
     const url = 'http://host/dav/one.mp4';
     final reset = DateTime.now();

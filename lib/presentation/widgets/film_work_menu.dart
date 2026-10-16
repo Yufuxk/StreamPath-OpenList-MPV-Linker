@@ -1,4 +1,5 @@
 import 'sp_icons.dart';
+import 'video_cache_widgets.dart';
 import 'sp_menu.dart';
 import 'film_collection_dialog.dart';
 import 'film_watch_menu.dart';
@@ -14,6 +15,7 @@ import 'sp_notice.dart';
 import 'film_match_dialog.dart';
 
 enum _WorkAction {
+  cache,
   watched,
   unwatched,
   favorite,
@@ -39,11 +41,15 @@ Future<void> showFilmWorkMenu(
   var favorite = false;
   var watchable = false;
   var playlistable = false;
+  var cacheable = false;
   final loaded = await catalog.run(() async {
     favorite = await catalog.store.isFavorite(work.id);
     final resources = await catalog.store.resources(
       workId: work.id,
       sourceId: catalog.sourceId,
+    );
+    cacheable = resources.any(
+      (r) => !r.sourceId.startsWith('local:') && r.availability == 'present',
     );
     watchable = resources.any((r) => r.canMarkWatched);
     playlistable = resources.any(
@@ -71,6 +77,14 @@ Future<void> showFilmWorkMenu(
       Offset.zero & overlay.size,
     ),
     items: [
+      PopupMenuItem(
+        enabled: cacheable,
+        value: _WorkAction.cache,
+        child: SPMenuItemContent(
+          icon: SPIcons.download,
+          child: AppText('缓存视频…'),
+        ),
+      ),
       if (onRemove != null)
         const PopupMenuItem(
           value: _WorkAction.remove,
@@ -145,6 +159,15 @@ Future<void> showFilmWorkMenu(
     ],
   );
   if (!context.mounted || action == null) return;
+  if (action == _WorkAction.cache) {
+    await showVideoCacheDialog(
+      context,
+      catalog,
+      FilmPlaylistScope.work(work.id),
+      title: work.title,
+    );
+    return;
+  }
   if (action == _WorkAction.playlist || action == _WorkAction.addPlaylist) {
     await showFilmPlaylistDialog(
       context,

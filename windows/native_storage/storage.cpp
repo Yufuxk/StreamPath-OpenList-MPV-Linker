@@ -31,7 +31,21 @@ struct Storage {
   std::string root, url, user, password, domain;
   std::atomic<bool> cancelled{false};
   bool passive = true;
+  smb2fh* stream_smb = nullptr;
+  nfsfh* stream_nfs = nullptr;
+  CURLM* stream_multi = nullptr;
+  std::vector<uint8_t> stream_bytes;
+  uint64_t stream_offset = 0;
+  bool stream_done = false, stream_paused = false;
+  CURLcode stream_result = CURLE_OK;
+  void closeStream() {
+    if(stream_smb) { smb2_close(smb,stream_smb); stream_smb=nullptr; }
+    if(stream_nfs) { nfs_close(nfs,stream_nfs); stream_nfs=nullptr; }
+    if(stream_multi) { curl_multi_remove_handle(stream_multi,ftp); curl_multi_cleanup(stream_multi); stream_multi=nullptr; }
+    stream_bytes.clear();
+  }
   ~Storage() {
+    closeStream();
     if(smb) smb2_destroy_context(smb);
     if(nfs) nfs_destroy_context(nfs);
     if(ftp) curl_easy_cleanup(ftp);
@@ -319,6 +333,71 @@ SP_API int sp_storage_read(Storage* ctx,const char* path,uint64_t offset,uint8_t
   if(status==CURLE_BAD_DOWNLOAD_RESUME||status==CURLE_RANGE_ERROR||status==CURLE_FTP_COULDNT_USE_REST)return -4;
   if(status!=CURLE_OK && !(status==CURLE_WRITE_ERROR&&transfer.bounded))return -5;
   std::memcpy(buffer,transfer.bytes.data(),transfer.bytes.size());return static_cast<int>(transfer.bytes.size());
+}
+// 下载连接独占上下文，连续读取保持同一个远端文件句柄。
+SP_API void sp_storage_stream_close(Storage* ctx) { ctx->closeStream(); }
+SP_API int sp_storage_stream_open(Storage* ctx,const char* path,uint64_t offset) {
+  if(!safe(path))return -7;
+  ctx->closeStream(); ctx->cancelled=false; ctx->stream_offset=offset;
+  const auto remote=pathFor(ctx,path);
+  if(ctx->smb) {
+    ctx->stream_smb=smb2_open(ctx->smb,remote.c_str(),O_RDONLY);
+    return ctx->stream_smb?0:-5;
+  }
+  if(ctx->nfs) return nfs_open(ctx->nfs,remote.c_str(),O_RDONLY,&ctx->stream_nfs)<0?-5:0;
+  configureFtp(ctx,ftpUrl(ctx,path));
+  ctx->stream_done=false;ctx->stream_paused=false;ctx->stream_result=CURLE_OK;
+  curl_easy_setopt(ctx->ftp,CURLOPT_TIMEOUT,0L);
+  curl_easy_setopt(ctx->ftp,CURLOPT_LOW_SPEED_LIMIT,1L);
+  curl_easy_setopt(ctx->ftp,CURLOPT_LOW_SPEED_TIME,60L);
+  curl_easy_setopt(ctx->ftp,CURLOPT_RESUME_FROM_LARGE,static_cast<curl_off_t>(offset));
+  curl_easy_setopt(ctx->ftp,CURLOPT_WRITEDATA,ctx);
+  curl_easy_setopt(ctx->ftp,CURLOPT_WRITEFUNCTION,+[](char* data,size_t size,size_t count,void* raw)->size_t {
+    auto* value=static_cast<Storage*>(raw);
+    if(value->cancelled)return 0;
+    const auto length=size*count;
+    if(value->stream_bytes.size()+length>1024U*1024U) {
+      value->stream_paused=true;return CURL_WRITEFUNC_PAUSE;
+    }
+    value->stream_bytes.insert(value->stream_bytes.end(),data,data+length);return length;
+  });
+  ctx->stream_multi=curl_multi_init();
+  return ctx->stream_multi&&curl_multi_add_handle(ctx->stream_multi,ctx->ftp)==CURLM_OK?0:-5;
+}
+SP_API int sp_storage_stream_read(Storage* ctx,uint8_t* buffer,uint32_t count) {
+  if(!count||count>1024U*1024U)return -7;
+  if(ctx->cancelled)return -8;
+  int result=0;
+  if(ctx->smb) {
+    if(!ctx->stream_smb)return -5;
+    result=smb2_pread(ctx->smb,ctx->stream_smb,buffer,std::min(count,smb2_get_max_read_size(ctx->smb)),ctx->stream_offset);
+  } else if(ctx->nfs) {
+    if(!ctx->stream_nfs)return -5;
+    result=nfs_pread(ctx->nfs,ctx->stream_nfs,buffer,std::min<size_t>(count,nfs_get_readmax(ctx->nfs)),ctx->stream_offset);
+  } else {
+    if(!ctx->stream_multi)return -5;
+    if(ctx->stream_paused) { ctx->stream_paused=false;curl_easy_pause(ctx->ftp,CURLPAUSE_CONT); }
+    while(!ctx->cancelled&&ctx->stream_bytes.empty()&&!ctx->stream_done) {
+      int running=0;
+      if(curl_multi_perform(ctx->stream_multi,&running)!=CURLM_OK)return -5;
+      int remaining=0;
+      while(auto* message=curl_multi_info_read(ctx->stream_multi,&remaining)) {
+        if(message->msg==CURLMSG_DONE) {ctx->stream_done=true;ctx->stream_result=message->data.result;}
+      }
+      if(ctx->stream_bytes.empty()&&!ctx->stream_done) {
+        int descriptors=0;curl_multi_wait(ctx->stream_multi,nullptr,0,100,&descriptors);
+      }
+    }
+    if(ctx->cancelled)return -8;
+    if(ctx->stream_bytes.empty()&&ctx->stream_result!=CURLE_OK) {
+      return ctx->stream_result==CURLE_BAD_DOWNLOAD_RESUME||ctx->stream_result==CURLE_FTP_COULDNT_USE_REST?-4:-5;
+    }
+    result=static_cast<int>(std::min<size_t>(count,ctx->stream_bytes.size()));
+    std::memcpy(buffer,ctx->stream_bytes.data(),result);
+    ctx->stream_bytes.erase(ctx->stream_bytes.begin(),ctx->stream_bytes.begin()+result);
+  }
+  if(result>0)ctx->stream_offset+=result;
+  return ctx->cancelled?-8:result<0?error(result):result;
 }
 SP_API int sp_storage_create_file(Storage* ctx,const char* path,const uint8_t* bytes,uint32_t count) {
   if(!safe(path)||count>16*1024*1024)return -7;

@@ -29,6 +29,12 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 
 import 'helpers/pump_until.dart';
+import 'package:streampath/features/video_cache/video_cache_models.dart';
+import 'package:streampath/features/video_cache/video_cache_source.dart';
+import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
+import 'package:streampath/data/models/server_profile.dart';
+import 'package:streampath/core/errors/app_exception.dart';
 
 final _widgetPlayerIdentity = PlayerProcessIdentity(
   pid: 4242,
@@ -54,6 +60,8 @@ class _BlockingIsoProvider implements IsoAccessProvider {
   WebDavFile? preparedFile;
   bool remoteMenu = false;
   Object? prepareError;
+  String? preparedCachedPath;
+  WebDavCredentialSnapshot? preparedCredentials;
 
   @override
   Future<IsoAccessHandle> prepare({
@@ -66,6 +74,8 @@ class _BlockingIsoProvider implements IsoAccessProvider {
   }) async {
     _sessionDirectory = sessionDirectory;
     preparedFile = file;
+    preparedCachedPath = await webDavService.cachedDiscPath(file);
+    preparedCredentials = webDavService.credentialSnapshot;
     final error = prepareError;
     if (error != null) {
       onPhase?.call(IsoAccessPhase.startingBridge);
@@ -86,7 +96,7 @@ class _BlockingIsoProvider implements IsoAccessProvider {
   void cancel() {
     final completed = _completed;
     if (completed != null && !completed.isCompleted) {
-      completed.completeError(Exception('cancelled'));
+      completed.completeError(AppException.network('ISO 流式播放已取消'));
     }
   }
 
@@ -114,7 +124,7 @@ class _WidgetMenuService extends RemoteMenuPlaybackService {
       ? const RemoteMenuAvailability(executable: r'C:\Tools\mpv.exe')
       : const RemoteMenuAvailability(reason: 'unavailable');
   @override
-  Future<String> requireCapability({PlayerConfig? config}) async => r'C:\Tools\mpv.exe';
+  Future<String> requireCapability({PlayerConfig? config, bool local = false}) async => r'C:\Tools\mpv.exe';
   @override
   Future<void> waitUntilReady({required Directory sessionDirectory,
     required Duration timeout, required Future<bool> Function() playerExited,
@@ -268,6 +278,18 @@ void main() {
       directoryCache: directoryCache,
       isoPlaybackService: isoPlaybackService,
     );
+    await configStore.save(
+      configStore.current.upsertProfile(
+        ServerProfile(
+          profileId: 'iso-fixture',
+          name: 'Fixture',
+          serverUrl: 'http://${server.address.address}:${server.port}/dav',
+          username: 'user',
+          password: 'secret',
+        ),
+        activate: true,
+      ),
+    );
     await appState.connect(
       baseUrl: 'http://${server.address.address}:${server.port}/dav',
       username: 'user',
@@ -315,7 +337,7 @@ void main() {
   }
 
   Widget buildBrowser({AppLanguage language = AppLanguage.simplifiedChinese,
-      bool glass = false}) =>
+      bool glass = false, Widget home = const BrowserPage()}) =>
       ChangeNotifierProvider<AppState>.value(
         value: appState,
         child: MaterialApp(
@@ -330,7 +352,7 @@ void main() {
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
-          home: const BrowserPage(),
+          home: home,
         ),
       );
 
@@ -357,6 +379,214 @@ void main() {
     expect(find.text('已取消 ISO 播放'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('宿主已挂载后新完成的自选目录 ISO 缓存仍从本地起播', (tester) async {
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    late String cachedPath;
+    await tester.runAsync(() async {
+      final cache = await appState.getVideoCache();
+      final identity = await appState.videoCacheIdentity(
+        appState.webDavService!.sourceId,
+      );
+      expect(identity, isNotNull);
+      final custom = await Directory(
+        p.join(tempDirectory.path, 'selected-directory'),
+      ).create();
+      cachedPath = p.join(custom.path, 'DISC.iso');
+      await File(cachedPath).writeAsBytes(List.filled(1024, 0));
+      cache.files['cached-disc'] = VideoCacheFile({
+        'id': 'cached-disc',
+        'source': appState.webDavService!.sourceId,
+        'path': 'DISC.iso',
+        'destination': cachedPath,
+        'size': 1024,
+        'state': 'completed',
+      });
+      cache.bundles['cached-disc'] = {
+        'id': 'cached-disc',
+        'source': appState.webDavService!.sourceId,
+        'identity': identity,
+        'path': 'DISC.iso',
+        'kind': 'iso',
+        'main': 'cached-disc',
+        'files': ['cached-disc'],
+        'root': custom.path,
+        'directories': {'': []},
+      };
+      await cache.saveDirectory(tempDirectory.path);
+      expect(
+        await appState.cachedTarget(
+          appState.webDavService!.sourceId,
+          'DISC.iso',
+        ),
+        isNotNull,
+      );
+    });
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('蓝光菜单播放'));
+    if (find.text('标题/播放列表模式').evaluate().isNotEmpty) {
+      await tester.tap(find.text('标题/播放列表模式'));
+    }
+    await waitForWidget(tester, find.text('正在读取本地缓存光盘…'));
+    expect(isoProvider.preparedCachedPath, cachedPath);
+    expect(find.text('本地缓存光盘播放'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('iso-streaming-cancel')));
+    await settleBrowser(tester);
+    expect(isoPlaybackService.isBusy, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  for (final placeholder in [false, true]) {
+    testWidgets('缓存来源中的未缓存 ISO 恢复真实路径与凭据（占位地址：$placeholder）', (tester) async {
+      late VideoCacheSource offline;
+      await tester.runAsync(() async {
+        final cache = await appState.getVideoCache();
+        final service = appState.webDavService!;
+        final identity = (await appState.videoCacheIdentity(service.sourceId))!;
+        if (placeholder) {
+          cache.files['other'] = VideoCacheFile({
+            'id': 'other',
+            'source': service.sourceId,
+            'path': 'other.mkv',
+            'root': tempDirectory.path,
+            'destination': p.join(tempDirectory.path, 'other.mkv'),
+            'size': 1,
+            'state': 'completed',
+          });
+          cache.bundles['other'] = {
+            'source': service.sourceId,
+            'identity': identity,
+            'path': 'other.mkv',
+            'files': ['other'],
+            'directories': {
+              '': [
+                {
+                  'name': 'DISC.iso',
+                  'path': 'DISC.iso',
+                  'directory': false,
+                  'size': 1024,
+                  'modified': null,
+                },
+              ],
+            },
+          };
+        }
+        offline = VideoCacheSource(
+          cache,
+          MediaSourceDescriptor(
+            sourceId: service.sourceId,
+            kind: MediaSourceKind.webdav,
+            displayName: 'Fixture',
+          ),
+          identity: identity,
+          baseUrl: placeholder
+              ? 'https://cache.invalid/source/'
+              : service.baseUrl,
+          persistent: service.fullUrl,
+          remote: () async => WebDavMediaSourceAdapter(service),
+        );
+      });
+      await tester.pumpWidget(
+        buildBrowser(home: BrowserPage(directorySource: offline)),
+      );
+      await settleBrowser(tester);
+      await tester.tap(find.text('DISC.iso'));
+      await waitForWidget(tester, find.text('正在探测 ISO 流式读取…'));
+      expect(isoProvider.preparedCredentials!.username, 'user');
+      expect(isoProvider.preparedCredentials!.password, 'secret');
+      expect(
+        isoProvider.preparedFile!.href,
+        appState.webDavService!.fullUrl('DISC.iso'),
+      );
+      expect(isoProvider.preparedCachedPath, isNull);
+      await tester.tap(find.byKey(const Key('iso-streaming-cancel')));
+      await settleBrowser(tester);
+      expect(isoPlaybackService.isBusy, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  test('后台缓存查询不弹出起播回退提示，实际起播失效只提示一次', () async {
+    final cache = await appState.getVideoCache();
+    final source = appState.webDavService!.sourceId;
+    final identity = await appState.videoCacheIdentity(source);
+    cache.files['missing'] = VideoCacheFile({
+      'id': 'missing',
+      'source': source,
+      'path': 'missing.iso',
+      'destination': p.join(tempDirectory.path, 'missing.iso'),
+      'size': 1024,
+      'state': 'completed',
+    });
+    cache.bundles['missing'] = {
+      'id': 'missing',
+      'source': source,
+      'identity': identity,
+      'path': 'missing.iso',
+      'files': ['missing'],
+    };
+    final notices = <String>[];
+    appState.onImplicitVideoError = notices.add;
+    expect(await appState.cachedTarget(source, 'missing.iso'), isNull);
+    expect(await appState.cachedVideo(source, 'missing.iso'), isNull);
+    expect(notices, isEmpty);
+    await appState.cachedTarget(source, 'missing.iso', notifyInvalid: true);
+    await appState.cachedTarget(source, 'missing.iso', notifyInvalid: true);
+    expect(notices, ['本地视频缓存已失效，将尝试在线播放。']);
+  });
+
+  testWidgets('蓝光菜单 Bridge 超时关闭进度窗口并显示失败', (tester) async {
+    isoProvider.remoteMenu = true;
+    isoProvider.prepareError = TimeoutException('fixture bridge timeout');
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('蓝光菜单播放'));
+    await tester.tap(find.text('蓝光菜单播放'));
+    await waitForWidget(tester, find.text('蓝光菜单播放失败'));
+    expect(find.byKey(const Key('iso-streaming-dialog')), findsNothing);
+    expect(find.text('蓝光菜单播放失败'), findsOneWidget);
+    expect(isoPlaybackService.isBusy, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('菜单未预期错误保留诊断并结束进度弹窗', (tester) async {
+    isoProvider.remoteMenu = true;
+    final error = ArgumentError('Invalid mounted disc path');
+    isoProvider.prepareError = error;
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('蓝光菜单播放'));
+    final reports = <FlutterErrorDetails>[];
+    final originalHandler = FlutterError.onError;
+    FlutterError.onError = reports.add;
+    await tester.tap(find.text('蓝光菜单播放'));
+    await waitForWidget(tester, find.text('蓝光菜单播放失败'));
+    FlutterError.onError = originalHandler;
+    expect(reports.single.exception, same(error));
+    expect(find.byKey(const Key('iso-streaming-dialog')), findsNothing);
+    expect(find.text('蓝光菜单播放失败'), findsOneWidget);
+    expect(isoPlaybackService.isBusy, isFalse);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('蓝光菜单探测中取消可关闭窗口并释放任务', (tester) async {
+    isoProvider.remoteMenu = true;
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('蓝光菜单播放'));
+    await tester.tap(find.text('蓝光菜单播放'));
+    await waitForWidget(tester, find.text('正在探测 ISO 流式读取…'));
+    await tester.tap(find.byKey(const Key('iso-streaming-cancel')));
+    await settleBrowser(tester);
+    expect(find.byKey(const Key('iso-streaming-dialog')), findsNothing);
+    expect(isoPlaybackService.isBusy, isFalse);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('ISO 服务繁忙时不再打开流式播放弹窗', (tester) async {

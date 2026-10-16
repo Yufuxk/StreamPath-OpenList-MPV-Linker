@@ -8,6 +8,9 @@ import '../../domain/services/film_video_timeline.dart';
 import '../../domain/services/video_entry_preparer.dart';
 import '../../data/local/playback_history_store.dart';
 import '../../data/models/webdav_bdmv.dart';
+import '../widgets/video_cache_widgets.dart';
+import '../../features/video_cache/video_cache_source.dart';
+import '../../domain/services/native_storage_source.dart';
 import '../../domain/services/webdav_bdmv_service.dart';
 import 'dart:async';
 import '../../domain/services/remote_menu_playback_service.dart';
@@ -342,6 +345,7 @@ class _IsoStreamingDialog extends StatefulWidget {
     required this.webDavService,
     required this.file,
     this.remoteMenu = false,
+    this.cached = false,
     this.menuUnavailableReason,
     this.subtitles,
     this.startupClock,
@@ -359,6 +363,7 @@ class _IsoStreamingDialog extends StatefulWidget {
   final String? precheckedMenuExecutable;
   final VoidCallback? cancelPreparation;
   final bool remoteMenu;
+  final bool cached;
   final String? menuUnavailableReason;
 
   @override
@@ -437,6 +442,19 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
     } on FileSystemException {
       if (!mounted) return;
       Navigator.of(context).pop(const _IsoDialogResult.failed('ISO 会话文件读写失败'));
+    } catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'ISO playback',
+          context: ErrorDescription('while preparing disc playback'),
+        ),
+      );
+      if (!mounted) return;
+      Navigator.of(
+        context,
+      ).pop(const _IsoDialogResult.failed('ISO Bridge 启动失败'));
     }
   }
 
@@ -471,7 +489,8 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       : switch (_progress.phase) {
           IsoPlaybackPhase.checkingPlayer => '正在检查 MPV 播放器…',
           IsoPlaybackPhase.startingBridge => '正在启动 ISO Bridge…',
-          IsoPlaybackPhase.probingStream => '正在探测 ISO 流式读取…',
+          IsoPlaybackPhase.probingStream =>
+            widget.cached ? '正在读取本地缓存光盘…' : '正在探测 ISO 流式读取…',
           IsoPlaybackPhase.parsingTitles => '正在解析 Blu-ray Title/MPLS…',
           IsoPlaybackPhase.selectingTitles => '正在等待标题选择…',
           IsoPlaybackPhase.launching => '正在启动 ISO 播放器…',
@@ -489,7 +508,11 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       child: SPDialog(
         key: const Key('iso-streaming-dialog'),
         title: AppText(
-          widget.file is WebDavBdmv ? 'BDMV 远程播放系统' : 'ISO 远程播放系统',
+          widget.cached
+              ? '本地缓存光盘播放'
+              : widget.file is WebDavBdmv
+              ? 'BDMV 远程播放系统'
+              : 'ISO 远程播放系统',
         ),
         content: SizedBox(
           width: 420,
@@ -508,7 +531,9 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               const LinearProgressIndicator(),
               const SizedBox(height: 12),
               AppText(
-                widget.file is WebDavBdmv
+                widget.cached
+                    ? '正在使用完整本地缓存，无需连接原始服务器。'
+                    : widget.file is WebDavBdmv
                     ? '仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。'
                     : '仅支持未加密 Blu-ray ISO；播放期间请保持网络连接。',
               ),
@@ -824,6 +849,14 @@ class BrowserPageState extends State<BrowserPage> {
         Offset.zero & overlay.size,
       ),
       items: [
+        if (watchResource != null)
+          const PopupMenuItem(
+            value: 'cache',
+            child: SPMenuItemContent(
+              icon: SPIcons.download,
+              child: AppText('缓存视频…'),
+            ),
+          ),
         if (controls?.onPressed != null)
           PopupMenuItem(
             value: 'play',
@@ -874,6 +907,14 @@ class BrowserPageState extends State<BrowserPage> {
     );
     if (!mounted) return;
     switch (selected) {
+      case 'cache':
+        final catalog = await context.read<AppState>().getFilmCatalog();
+        if (!mounted) return;
+        await showVideoCacheDialog(
+          context,
+          catalog,
+          FilmPlaylistScope.resource(watchResource!),
+        );
       case 'refresh':
         if (record.playbackSessionId != null) {
           await _refreshLibraryPlaybackStatus(record.playbackSessionId!);
@@ -1096,7 +1137,9 @@ class BrowserPageState extends State<BrowserPage> {
         : appState.isoPlaybackService;
     final localRoot = widget.localRoot;
     if (localRoot == null) {
-      _webDavSourceService = widget.webDavSource ?? appState.webDavService!;
+      _webDavSourceService = widget.directorySource is WebDavMediaSourceAdapter
+          ? (widget.directorySource as WebDavMediaSourceAdapter).service
+          : widget.webDavSource ?? appState.webDavService!;
       _source =
           widget.directorySource ??
           WebDavMediaSourceAdapter(_webDavSourceService!);
@@ -1672,6 +1715,7 @@ class BrowserPageState extends State<BrowserPage> {
       subtitleMatcher: app.subtitleMatcher,
       fontMatcher: app.webDavFontMatcher,
       titles: titles,
+      cached: (path) => app.cachedVideo(source.descriptor.sourceId, path),
     );
     final prepare = history.filmPlaylistId != null
         ? _customVideoPreparation(preparer, store)
@@ -1679,6 +1723,7 @@ class BrowserPageState extends State<BrowserPage> {
     if (history.filmPlaylistId == null) {
       await preparer.prepareSharedFonts(
         history.videoQueueRootPath ?? history.dirCrumbs.join('/'),
+        startPath: history.playlistRelativePaths[history.videoIndex],
       );
     }
     Future<void> target(
@@ -1732,6 +1777,8 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     final plan = ImplicitVideoPlan(
+      isCached: (version) async =>
+          await app.cachedTarget(_sourceId, version.path) != null,
       items: items,
       index: history.videoIndex,
       prepare: prepare,
@@ -2147,7 +2194,7 @@ class BrowserPageState extends State<BrowserPage> {
 
   Future<void> _playRemoteBdmvPrepared(String path, {String? sessionId}) async {
     if (_preparingBdmv) return;
-    final service = _service;
+    final original = _source;
     final startupTrace = DiscStartupTrace();
     startupTrace.mark('menuCapabilityStarted');
     final menuAvailability = _isoPlaybackService?.remoteMenu
@@ -2159,9 +2206,10 @@ class BrowserPageState extends State<BrowserPage> {
     menuAvailability?.ignore();
     setState(() => _preparingBdmv = true);
     try {
+      final service = (await _discSourceForPath(path)).service;
       final disc = await WebDavBdmvService.discover(service, path);
       startupTrace.mark('manifestReady');
-      if (!mounted || service != _service) return;
+      if (!mounted || original != _source) return;
       await _playIso(
         disc,
         sessionId: sessionId,
@@ -2175,6 +2223,18 @@ class BrowserPageState extends State<BrowserPage> {
     } finally {
       if (mounted) setState(() => _preparingBdmv = false);
     }
+  }
+
+  Future<WebDavMediaSourceAdapter> _discSourceForPath(String path) async {
+    final app = context.read<AppState>();
+    if (await app.cachedTarget(_sourceId, path, notifyInvalid: true) != null) {
+      return await app.videoCacheSource(_sourceId) as WebDavMediaSourceAdapter;
+    }
+    if (_source is VideoCacheSource) {
+      await app.mountMediaConnectionIfConfigured(_sourceId);
+      return app.directorySource(_sourceId) as WebDavMediaSourceAdapter;
+    }
+    return _source as WebDavMediaSourceAdapter;
   }
 
   Future<void> _playIso(
@@ -2202,7 +2262,6 @@ class BrowserPageState extends State<BrowserPage> {
   }) async {
     final trace = startupTrace ?? DiscStartupTrace();
     final isoService = _isoPlaybackService;
-    final webDavService = _service;
     if (isoService == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SPNotice(content: AppText('ISO 远程播放测试模块初始化失败，视频和音频播放不受影响')),
@@ -2248,12 +2307,43 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
 
+    final path = file is WebDavBdmv
+        ? file.rootPath
+        : file is StorageMediaEntry
+        ? file.logicalPath
+        : SpecialVideoPlaylistCollector.directChildPath(
+            _source,
+            _currentPath,
+            file,
+          )!;
+    final source = await _discSourceForPath(path);
+    if (!mounted) return;
+    final webDavService = source.service;
+    if (file is! WebDavBdmv && webDavService.baseUrl != _service.baseUrl) {
+      file = StorageMediaEntry(
+        name: file.name,
+        href: webDavService.fullUrl(path),
+        isDirectory: false,
+        size: file.size,
+        modified: file.modified,
+        kind: source.descriptor.kind,
+        logicalPath: path,
+      );
+    }
+    final cachedDisc = await webDavService.cachedDiscPath(file);
     Stopwatch? startupClock;
     var remoteMenu = false;
     RemoteMenuAvailability? availability;
-    final String? menuReasonInitial;
+    String? menuReasonInitial;
     if (titleOnly) {
       menuReasonInitial = 'disabled';
+    } else if (cachedDisc != null) {
+      try {
+        await isoService.remoteMenu.requireCapability(local: true);
+        menuReasonInitial = null;
+      } on AppException catch (error) {
+        menuReasonInitial = error.message;
+      }
     } else if (menuAvailability != null) {
       availability = await menuAvailability;
       menuReasonInitial = availability.reason;
@@ -2345,7 +2435,7 @@ class BrowserPageState extends State<BrowserPage> {
     trace.mark('subtitleDiscoveryStarted');
     final subtitlePreparation =
         _createIsoSubtitles(
-          _source,
+          source,
           file,
           cancelled: file is WebDavBdmv ? () => preparationCancelled : null,
         ).then((value) {
@@ -2368,6 +2458,7 @@ class BrowserPageState extends State<BrowserPage> {
         file: file,
         subtitles: subtitlePreparation,
         remoteMenu: remoteMenu,
+        cached: cachedDisc != null,
         menuUnavailableReason: titleOnly ? null : menuReason,
       ),
     );
@@ -2999,6 +3090,8 @@ class BrowserPageState extends State<BrowserPage> {
     final preparers = <Object, Future<VideoEntryPreparer>>{};
     final sourceId = base.source.descriptor.sourceId;
     return (version) async {
+      final hit = await base.cached?.call(version.path);
+      if (hit != null) return hit;
       final r = await store.resourceAt(sourceId, version.path);
       final parent = p.posix
           .dirname(version.path)
@@ -3011,6 +3104,7 @@ class BrowserPageState extends State<BrowserPage> {
           subtitleMatcher: base.subtitleMatcher,
           fontMatcher: base.fontMatcher,
           titles: base.titles,
+          cached: base.cached,
         );
         await value.prepareSharedFonts(parent);
         return value;
@@ -3174,6 +3268,9 @@ class BrowserPageState extends State<BrowserPage> {
     final config = app.configStore.current.toPlayerConfig();
     final store = await app.getFilmCatalogStore();
     final custom = playlistSnapshot != null || playlistHistory != null;
+    final cachedStart =
+        await app.cachedTarget(sourceId, targetPath, notifyInvalid: true) !=
+        null;
     var items =
         playlistSnapshot?.queueItems ??
         playlistHistory?.queueItems ??
@@ -3208,6 +3305,7 @@ class BrowserPageState extends State<BrowserPage> {
       );
     }
     if (!custom &&
+        !cachedStart &&
         scope == VideoPlaybackScope.directory &&
         config.autoSeasonTransitionEnabled &&
         !(mapped?.type == FilmMediaType.tv &&
@@ -3298,6 +3396,7 @@ class BrowserPageState extends State<BrowserPage> {
       subtitleMatcher: app.subtitleMatcher,
       fontMatcher: app.webDavFontMatcher,
       titles: titleMap,
+      cached: (path) => app.cachedVideo(source.descriptor.sourceId, path),
       directories: {
         rootPath: rootFiles,
         for (final item in ordered) item.parentPath: item.siblings,
@@ -3307,11 +3406,23 @@ class BrowserPageState extends State<BrowserPage> {
         ? _customVideoPreparation(preparer, store)
         : preparer.prepare;
     if (!custom) {
-      await preparer.prepareSharedFonts(rootPath, siblings: rootFiles);
+      await preparer.prepareSharedFonts(
+        rootPath,
+        siblings: rootFiles,
+        startPath: targetPath,
+      );
     }
-    final requestedVersion = items[index].versions.firstWhere(
+    var requestedVersion = items[index].versions.firstWhere(
       (v) => v.path == targetPath,
     );
+    if (playlistSnapshot?.entries[index].pinnedPath == null && custom) {
+      for (final candidate in items[index].versions) {
+        if (await app.cachedTarget(sourceId, candidate.path) != null) {
+          requestedVersion = candidate;
+          break;
+        }
+      }
+    }
     final available = widget.playbackOnly
         ? (VideoQueueVersion version) =>
               store.playbackVersionAvailable(sourceId, version)
@@ -3427,6 +3538,8 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     final plan = ImplicitVideoPlan(
+      isCached: (version) async =>
+          await app.cachedTarget(_sourceId, version.path) != null,
       items: items,
       index: index,
       prepare: prepare,
@@ -3453,7 +3566,7 @@ class BrowserPageState extends State<BrowserPage> {
     plan.prepared[version.path] = initial;
     try {
       final progress = await progressStore.getResumeProgress(
-        initial.entry.url,
+        initial.entry.progressTarget ?? initial.entry.url,
         profileId: sourceId,
       );
       final resume = progress != null && !progress.isFinishedNearEnd()
@@ -3586,7 +3699,15 @@ class BrowserPageState extends State<BrowserPage> {
                 video,
               ));
     final config = appState.configStore.current;
-    final scan = playbackScope == VideoPlaybackScope.singleItem
+    final cachedStart =
+        targetPath != null &&
+        await appState.cachedTarget(
+              _sourceId,
+              targetPath,
+              notifyInvalid: true,
+            ) !=
+            null;
+    final scan = playbackScope == VideoPlaybackScope.singleItem || cachedStart
         ? const SpecialVideoScanResult([], false)
         : await const SpecialVideoPlaylistCollector().collect(
             source: _source,
@@ -3636,7 +3757,14 @@ class BrowserPageState extends State<BrowserPage> {
       );
       await Future.wait(
         batch.map((f) async {
-          final url = await _service.fetchStrmUrl(f);
+          if (await appState.cachedTarget(
+                _sourceId,
+                ordered.firstWhere((i) => i.entry == f).path,
+              ) !=
+              null) {
+            return;
+          }
+          final url = cachedStart ? null : await _service.fetchStrmUrl(f);
           if (url != null) strmUrls[f.href] = url;
         }),
       );
@@ -3652,11 +3780,19 @@ class BrowserPageState extends State<BrowserPage> {
     for (var i = 0; i < ordered.length; i++) {
       final item = ordered[i];
       final v = item.entry;
+      final cached = await appState.cachedTarget(_sourceId, item.path);
+      if (cachedStart && cached == null) {
+        playlistIncomplete = true;
+        if (clickedIndex >= 0) break;
+        continue;
+      }
       String? url;
       try {
-        url = v is WebDavFile && v.isStrm
-            ? strmUrls[v.href]
-            : await _resolvedMediaUrl(v);
+        url =
+            cached?.path ??
+            (v is WebDavFile && v.isStrm
+                ? strmUrls[v.href]
+                : await _resolvedMediaUrl(v));
       } on AppException {
         if (item.path == targetPath) {
           _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
@@ -3678,18 +3814,23 @@ class BrowserPageState extends State<BrowserPage> {
       entries.add(
         MediaEntry(
           url: url,
+          progressTarget: cached?.progressTarget,
           title: titles[i],
           catalogPath: item.path,
-          externalAudioTracks: !_isLocal
-              ? const ExternalAudioMatcher().matchFor(
-                  v,
-                  item.siblings,
-                  baseUrl: _service.baseUrl,
-                )
-              : const [],
-          subtitle: subtitleInjectionEnabled
-              ? await _resolvedSubtitleFor(v, item.siblings)
-              : null,
+          externalAudioTracks:
+              cached?.prepared().entry.externalAudioTracks ??
+              (!_isLocal
+                  ? const ExternalAudioMatcher().matchFor(
+                      v,
+                      item.siblings,
+                      baseUrl: _service.baseUrl,
+                    )
+                  : const []),
+          subtitle:
+              cached?.prepared().entry.subtitle ??
+              (subtitleInjectionEnabled
+                  ? await _resolvedSubtitleFor(v, item.siblings)
+                  : null),
         ),
       );
     }
@@ -3705,7 +3846,8 @@ class BrowserPageState extends State<BrowserPage> {
     }
     final playStart = clickedIndex;
     final seasonLookup =
-        playbackScope == VideoPlaybackScope.directory &&
+        !cachedStart &&
+            playbackScope == VideoPlaybackScope.directory &&
             config.autoSeasonTransitionEnabled &&
             playStart == entries.length - 1 &&
             p.basename(config.playerExecutable).toLowerCase().contains('mpv')
@@ -3723,6 +3865,12 @@ class BrowserPageState extends State<BrowserPage> {
       var remainingLocalBytes = WebDavFontLocalizer.maxSessionBytes;
       final localFontDeadline = DateTime.now().add(const Duration(seconds: 30));
       for (final item in activeVideos) {
+        final cached = await appState.cachedTarget(_sourceId, item.path);
+        if (cached != null) {
+          localFonts.add(cached.prepared().localFontDirectory);
+          remoteFonts.add(null);
+          continue;
+        }
         if (_isLocal) {
           if (!localCache.containsKey(item.parentPath)) {
             final fonts = await _resolvedLocalFontsFor(
@@ -3822,7 +3970,7 @@ class BrowserPageState extends State<BrowserPage> {
     PlaybackProgress? progress;
     try {
       progress = await _progressService.getResumeProgress(
-        entries[playStart].url,
+        entries[playStart].progressTarget ?? entries[playStart].url,
         profileId: _sourceId,
       );
       // 已看完（时长已知且位置接近片尾，剩余不足 1 分钟）→ 从头播放，
@@ -4426,7 +4574,15 @@ class BrowserPageState extends State<BrowserPage> {
     }
     try {
       await service.saveProgress(
-        url: stripUserInfo(url),
+        url: stripUserInfo(
+          videoSessionId == null
+              ? url
+              : context.read<AppState>().videoCache?.progressTargetFor(
+                      profileId ?? _sourceId,
+                      url,
+                    ) ??
+                    url,
+        ),
         positionMs: (position * 1000).round(),
         durationMs: duration != null && duration > 0
             ? (duration * 1000).round()
@@ -4479,7 +4635,11 @@ class BrowserPageState extends State<BrowserPage> {
     final sourceId = session.history.sourceId ?? _sourceId;
     if (positionMs == null && session.lastReportedUrl != null) {
       final progress = await _progressService.getResumeProgress(
-        session.lastReportedUrl!,
+        context.read<AppState>().videoCache?.progressTargetFor(
+              sourceId,
+              session.lastReportedUrl!,
+            ) ??
+            session.lastReportedUrl!,
         profileId: sourceId,
       );
       positionMs = progress?.positionMs;

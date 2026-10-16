@@ -1,4 +1,5 @@
 import 'sp_icons.dart';
+import 'video_cache_widgets.dart';
 import 'sp_menu.dart';
 import 'film_playlist_dialog.dart';
 import '../../data/models/film_playlist.dart';
@@ -31,6 +32,14 @@ Future<void> showFilmWatchMenu(
       Offset.zero & overlay.size,
     ),
     items: [
+      if (catalog != null && playlistScope != null)
+        const PopupMenuItem(
+          value: 'cache',
+          child: SPMenuItemContent(
+            icon: SPIcons.download,
+            child: AppText('缓存视频…'),
+          ),
+        ),
       const PopupMenuItem(
         value: 'watched',
         child: SPMenuItemContent(icon: SPIcons.view, child: AppText('标记已看完')),
@@ -70,7 +79,9 @@ Future<void> showFilmWatchMenu(
     ],
   );
   if (action == null || !context.mounted) return;
-  if (action == 'playlist' || action == 'addPlaylist') {
+  if (action == 'cache') {
+    await showVideoCacheDialog(context, catalog!, playlistScope!, title: title);
+  } else if (action == 'playlist' || action == 'addPlaylist') {
     await showFilmPlaylistDialog(
       context,
       catalog!,

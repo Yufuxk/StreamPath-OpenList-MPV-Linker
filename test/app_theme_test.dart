@@ -6,6 +6,30 @@ import 'package:streampath/presentation/theme/page_transitions.dart';
 import 'package:streampath/presentation/theme/window_appearance_status.dart';
 
 void main() {
+  test('缓存面板暗色玻璃使用65%底色和20px模糊，其他主题保持原值', () {
+    for (final backdrop in [
+      WindowBackdropType.systemAcrylic,
+      WindowBackdropType.mica,
+    ]) {
+      final original = AppTheme.dark(glass: true, windowBackdrop: backdrop);
+      final originalSurface = original.glass.modalSurface;
+      final scoped = AppTheme.videoCachePanelTheme(original);
+      expect(scoped.glass.raisedSurface.a, closeTo(.65, .001));
+      expect(scoped.glass.modalSurface.a, closeTo(.65, .001));
+      expect(scoped.dialogTheme.backgroundColor, scoped.glass.modalSurface);
+      expect(scoped.glass.modalBlurSigma, 20);
+      expect(scoped.glass.borderColor, original.glass.borderColor);
+      expect(original.glass.modalSurface, originalSurface);
+    }
+    for (final original in [
+      AppTheme.dark(),
+      AppTheme.light(),
+      AppTheme.light(glass: true),
+    ]) {
+      expect(AppTheme.videoCachePanelTheme(original), same(original));
+    }
+  });
+
   test('无背景 Acrylic 控制栏使用旧版灰色及10到20%，自定义背景保持原参数', () {
     for (final opacity in [0.60, 0.95]) {
       final theme = AppTheme.dark(glass: true, glassOpacity: opacity);

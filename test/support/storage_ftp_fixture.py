@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, sys.argv[2])
 from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.handlers import FTPHandler, ThrottledDTPHandler
 from pyftpdlib.servers import FTPServer
 
 logging.getLogger("pyftpdlib").setLevel(logging.CRITICAL)
@@ -33,6 +33,10 @@ class FixtureFTPHandler(FTPHandler):
 
 
 FixtureFTPHandler.authorizer = authorizer
+if len(sys.argv) > 3 and sys.argv[3] == "cache":
+    class CacheDataHandler(ThrottledDTPHandler):
+        write_limit = 4 * 1024 * 1024
+    FixtureFTPHandler.dtp_handler = CacheDataHandler
 server = FTPServer(("127.0.0.1", 0), FixtureFTPHandler)
 print(json.dumps({"port": server.socket.getsockname()[1]}), flush=True)
 server.serve_forever()

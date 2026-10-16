@@ -100,6 +100,8 @@ extension FilmCatalogPortability on FilmCatalogStore {
       await _db.execute('DETACH DATABASE recovery');
     }
     spoilerProtection = await preference('spoiler_protection') == true;
+    showPosterContentCount =
+        await preference('show_poster_content_count') == true;
     _changed();
   }
 
@@ -132,6 +134,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
                     'background',
                     'sections',
                     'spoiler_protection',
+                    'show_poster_content_count',
                   ].contains(row['key']),
                 )
                 .toList();
@@ -414,6 +417,8 @@ extension FilmCatalogPortability on FilmCatalogStore {
         }
       }
     });
+    showPosterContentCount =
+        await preference('show_poster_content_count') == true;
     _changed();
     return result;
   }

@@ -463,6 +463,7 @@ class FilmLibraryTransfer {
               'background',
               'sections',
               'spoiler_protection',
+              'show_poster_content_count',
             ].contains(row['key'])) {
               throw const FilmCatalogException('invalidImport');
             }

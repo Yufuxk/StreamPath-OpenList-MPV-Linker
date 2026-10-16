@@ -6,6 +6,7 @@ import '../../data/models/app_language.dart';
 import 'app_translation_catalog.dart';
 import 'film_catalog_translations.dart';
 import 'app_update_translations.dart';
+import 'video_cache_translations.dart';
 
 /// StreamPath 项目文案的本地化入口。
 class AppLocalizations {
@@ -21,7 +22,10 @@ class AppLocalizations {
       const AppLocalizations(AppLanguage.simplifiedChinese);
 
   String text(String source) {
-    final film = appUpdateTranslations[source] ?? filmCatalogTranslations[source];
+    final film =
+        videoCacheTranslations[source] ??
+        appUpdateTranslations[source] ??
+        filmCatalogTranslations[source];
     if (film != null && language != AppLanguage.simplifiedChinese) {
       return film[language.index - 1];
     }

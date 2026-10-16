@@ -50,6 +50,11 @@ abstract final class SPIcons {
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );
+  static const chevronDown = IconData(
+    0xE70D,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
   static const close = IconData(
     0xE8BB,
     fontFamily: _font,

@@ -37,6 +37,23 @@ void main() {
     expect(await resource.readAsString(), 'in use');
   });
 
+  test('普通清理保留位于运行时缓存目录内的自定义视频缓存', () async {
+    final video = File(
+      p.join(cacheDir.path, 'custom', 'StreamPathCache', 'video.mkv'),
+    );
+    await video.parent.create(recursive: true);
+    await video.writeAsString('download');
+    final temporary = File(p.join(cacheDir.path, 'obsolete.tmp'));
+    await temporary.writeAsString('temporary');
+    await CacheCleanupService(
+      storeClearers: const [],
+      dataDirectoryProvider: () async => dataDir,
+      preservedPathsProvider: () async => {video.parent.path},
+    ).clear();
+    expect(await video.readAsString(), 'download');
+    expect(await temporary.exists(), isFalse);
+  });
+
   test('清空新布局缓存和旧平铺残留，同时保留配置与打开的存储文件', () async {
     final configFile = File(p.join(configDir.path, 'stream_path_config.json'));
     final hiveFile = File(p.join(cacheDir.path, 'directory_cache.hive'));

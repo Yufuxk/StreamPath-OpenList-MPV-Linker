@@ -66,6 +66,7 @@ class FilmCatalogStore extends ChangeNotifier {
   }
 
   bool spoilerProtection = false;
+  bool showPosterContentCount = false;
   static const _watchSchema = '''CREATE TABLE film_watch_state (
     source_id TEXT NOT NULL, work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     season_number INTEGER NOT NULL, episode_number INTEGER NOT NULL,
@@ -449,6 +450,8 @@ class FilmCatalogStore extends ChangeNotifier {
     final store = FilmCatalogStore._(db);
     store.spoilerProtection =
         await store.preference('spoiler_protection') == true;
+    store.showPosterContentCount =
+        await store.preference('show_poster_content_count') == true;
     return store;
   }
 
@@ -1118,6 +1121,33 @@ class FilmCatalogStore extends ChangeNotifier {
           )).single['count']
           as int;
 
+  Future<FilmLibraryStatistics> statistics({String? sourceId}) async {
+    final row = (await _db.rawQuery(
+      '''WITH classified AS (
+        SELECT r.work_id, CASE
+          WHEN r.media_kind IN ('iso', 'bdmv') OR w.media_type = 'movie' THEN 'movie'
+          WHEN w.media_type = 'tv' AND r.season_number IS NOT NULL
+            AND r.episode_number IS NOT NULL THEN 'episode'
+          ELSE 'other' END AS kind
+        FROM resources r JOIN catalog_roots c ON c.id = r.root_id
+        LEFT JOIN works w ON w.id = r.work_id
+        WHERE r.availability = 'present' AND $_rootEnabledSql
+        ${sourceId == null ? '' : 'AND c.source_id = ?'}
+      ) SELECT COUNT(CASE WHEN kind = 'episode' THEN 1 END) AS episodes,
+        COUNT(DISTINCT CASE WHEN kind = 'episode' THEN work_id END) AS series,
+        COUNT(CASE WHEN kind = 'movie' THEN 1 END) AS movies,
+        COUNT(CASE WHEN kind = 'other' THEN 1 END) AS other
+      FROM classified''',
+      [?sourceId],
+    )).single;
+    return FilmLibraryStatistics(
+      episodes: row['episodes'] as int,
+      series: row['series'] as int,
+      movies: row['movies'] as int,
+      other: row['other'] as int,
+    );
+  }
+
   Future<List<FilmWork>> works({
     required FilmMediaType? type,
     String query = '',
@@ -1135,6 +1165,7 @@ class FilmCatalogStore extends ChangeNotifier {
     final daily = sectionId == 'daily' ? await dailySelection() : null;
     final rows = await _db.rawQuery(
       '''SELECT w.*, COUNT(r.id) AS resource_count,
+      COUNT(DISTINCT r.season_number) AS season_count,
       SUM(CASE WHEN r.availability = 'missing' THEN 1 ELSE 0 END) AS missing_count
       FROM works w JOIN resources r ON r.work_id = w.id
       JOIN catalog_roots c ON c.id = r.root_id

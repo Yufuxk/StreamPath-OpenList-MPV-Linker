@@ -116,6 +116,18 @@ class AudioPlayerService {
   final PlayerProcessController _processController;
   Directory? _watchLaterDirectory;
   final Map<String, _AudioSessionRuntime> _sessions = {};
+  Future<bool> hasNetworkPlayback() async {
+    for (final runtime in _sessions.values.toList()) {
+      if (runtime.entries.any(
+            (e) => ['http', 'https'].contains(Uri.tryParse(e.url)?.scheme),
+          ) &&
+          await isPlayerRunning(runtime.sessionId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   final Map<String, int> _launchOwnership = {};
   final SessionProgressSyncCoordinator _progressSyncCoordinator =
       SessionProgressSyncCoordinator();
