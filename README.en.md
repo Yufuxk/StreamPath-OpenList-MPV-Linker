@@ -65,7 +65,7 @@ Updates preserve the data of the current application copy. Installed and portabl
 The top of **Folders → Media Library** displays catalog statistics for enabled directories:
 
 - **TV Episodes:** Counts individual episode entries.
-- **TV Series:** Counts complete series as distinct titles.
+- **TV Series:** Counts distinct TV series.
 - **Movies:** Includes regular movies, ISO images, and BDMV content.
 - **Other:** Counts unrecognized entries.
 

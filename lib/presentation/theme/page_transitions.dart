@@ -77,6 +77,7 @@ class _RouteTransitionScope extends StatefulWidget {
 
 class _RouteTransitionScopeState extends State<_RouteTransitionScope> {
   bool get _moving =>
+      StreamPathTransitionScope.of(context) ||
       widget.route?.offstage == true ||
       widget.animation.status != AnimationStatus.completed ||
       widget.secondaryAnimation.status == AnimationStatus.forward ||

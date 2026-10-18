@@ -1,5 +1,7 @@
 import '../widgets/transition_content.dart';
+import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
+import '../widgets/skeleton_scope.dart';
 import '../../data/models/film_playlist.dart';
 import '../widgets/video_cache_widgets.dart';
 import '../widgets/film_playlist_dialog.dart';
@@ -123,13 +125,13 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   bool _refreshing = false;
   bool _backdropChecked = false;
   int _generation = 0;
+  bool _initialLoadStarted = false;
   @override
   void initState() {
     super.initState();
     _work = widget.initialWork;
     widget.catalog.store.addListener(_load);
     final app = context.read<AppState>();
-    unawaited(_listenToProgress(app));
     _playbackStores = [
       app.filmMediaLibraryStore,
       app.mediaLibraryStore,
@@ -137,9 +139,19 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     for (final store in _playbackStores) {
       store.addListener(_load);
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _load();
-    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initialLoadStarted && !StreamPathTransitionScope.of(context)) {
+      _initialLoadStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(_listenToProgress(context.read<AppState>()));
+        unawaited(_load());
+      });
+    }
   }
 
   @override
@@ -294,6 +306,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   Future<void> _load() async {
+    if (StreamPathTransitionScope.read(context)) return;
     final app = context.read<AppState>();
     final generation = ++_generation;
     await widget.catalog.run(() async {
@@ -441,33 +454,55 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             spacing: 16,
             runSpacing: 16,
             children: [
+              if (resources.isEmpty && _loading)
+                SizedBox(
+                  width: width,
+                  child: SkeletonRegion(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Column(
+                      children: [
+                        const AspectRatio(aspectRatio: 16 / 9),
+                        Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: SizedBox(
+                            height: MediaQuery.textScalerOf(context).scale(40),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               for (var i = 0; i < resources.length; i++)
                 SizedBox(
                   width: width,
-                  child: FilmEpisodeCard(
-                    resource: resources[i],
-                    catalog: widget.catalog,
-                    episode: _episode(resources[i]),
-                    probe: _probes[resources[i].id],
-                    state: filmResourceState(app, resources[i]),
-                    displayTitle: work.title,
-                    artworkPath: work.backdropPath,
-                    version:
-                        work.type == FilmMediaType.movie && resources.length > 1
-                        ? i + 1
-                        : null,
-                    onOpenItem: widget.onOpenItem,
-                    onChanged: _load,
-                    selected: _selected.contains(resources[i].id),
-                    onSelected: work.type != FilmMediaType.tv
-                        ? null
-                        : (selected) => setState(() {
-                            if (selected) {
-                              _selected.add(resources[i].id);
-                            } else {
-                              _selected.remove(resources[i].id);
-                            }
-                          }),
+                  child: SkeletonRegion(
+                    borderRadius: BorderRadius.circular(8),
+                    child: FilmEpisodeCard(
+                      resource: resources[i],
+                      catalog: widget.catalog,
+                      episode: _episode(resources[i]),
+                      probe: _probes[resources[i].id],
+                      state: filmResourceState(app, resources[i]),
+                      displayTitle: work.title,
+                      artworkPath: work.backdropPath,
+                      version:
+                          work.type == FilmMediaType.movie &&
+                              resources.length > 1
+                          ? i + 1
+                          : null,
+                      onOpenItem: widget.onOpenItem,
+                      onChanged: _load,
+                      selected: _selected.contains(resources[i].id),
+                      onSelected: work.type != FilmMediaType.tv
+                          ? null
+                          : (selected) => setState(() {
+                              if (selected) {
+                                _selected.add(resources[i].id);
+                              } else {
+                                _selected.remove(resources[i].id);
+                              }
+                            }),
+                    ),
                   ),
                 ),
             ],
@@ -493,12 +528,23 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     ].whereType<Map>().toList();
     return FilmShelf(
       title: '演职人员',
-      count: people.length,
+      titleWidget: Align(
+        alignment: Alignment.centerLeft,
+        child: SkeletonRegion(
+          child: AppText(
+            '演职人员',
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontSize: 22),
+          ),
+        ),
+      ),
+      count: people.isEmpty && _loading ? 8 : people.length,
       height: 84 + MediaQuery.textScalerOf(context).scale(14) * 4,
       itemWidth: 112,
       horizontal: true,
       builder: (_, i) {
-        final person = people[i];
+        final person = people.isEmpty ? <String, dynamic>{} : people[i];
         return Column(
           children: [
             GestureDetector(
@@ -534,36 +580,52 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                       }
                     },
               child: _CreditAvatar(
-                child: ClipOval(
-                  child: FilmArtwork(
-                    cache: c.images,
-                    path: person['profile_path'] as String?,
-                    target: 'w185',
-                    width: 68,
-                    height: 68,
-                    borderRadius: 0,
+                child: SkeletonRegion(
+                  borderRadius: BorderRadius.circular(999),
+                  child: ClipOval(
+                    child: FilmArtwork(
+                      cache: c.images,
+                      path: StreamPathTransitionScope.of(context)
+                          ? null
+                          : person['profile_path'] as String?,
+                      target: 'w185',
+                      width: 68,
+                      height: 68,
+                      borderRadius: 0,
+                    ),
                   ),
                 ),
               ),
             ),
             const SizedBox(height: 8),
-            Text(
-              person['name'] as String? ?? '',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleSmall,
+            SkeletonRegion(
+              child: SizedBox(
+                width: people.isEmpty ? 76 : null,
+                child: Text(
+                  person['name'] as String? ?? '',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
             ),
-            Text(
-              person['character'] != null
-                  ? context.l10n.format('饰 {role}', {
-                      'role': person['character'],
-                    })
-                  : context.l10n.text(
-                      jobs[person['job']] ?? (person['job'] ?? '') as String,
-                    ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
+            SkeletonRegion(
+              child: SizedBox(
+                width: people.isEmpty ? 96 : null,
+                child: Text(
+                  person['character'] != null
+                      ? context.l10n.format('饰 {role}', {
+                          'role': person['character'],
+                        })
+                      : context.l10n.text(
+                          jobs[person['job']] ??
+                              (person['job'] ?? '') as String,
+                        ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
             ),
           ],
         );
@@ -585,30 +647,39 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                 item: target.playbackItem,
                 updatedAt: DateTime.now(),
               ));
-    if (record == null) return const SizedBox.shrink();
+    if (record == null && !_loading) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AppText(
-          _continueRecord == null ? '开始播放' : '继续播放',
-          style: Theme.of(context).textTheme.titleLarge,
+        SkeletonRegion(
+          child: AppText(
+            _continueRecord == null ? '开始播放' : '继续播放',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
         ),
         const SizedBox(height: 12),
         SizedBox(
           width: FilmContinueCard.landscapeWidth,
           height: FilmContinueCard.landscapeHeight,
-          child: FilmContinueCard(
-            catalog: widget.catalog,
-            record: record,
-            positionMs: _continuePositionMs,
-            durationMs: _continueDurationMs,
-            onMenu: widget.onContinueMenu == null
-                ? null
-                : (position) => widget.onContinueMenu!(record, position),
-            onTap: () =>
-                _continueRecord != null && widget.onContinueSelected != null
-                ? widget.onContinueSelected!(record)
-                : widget.onOpenItem(record.item),
+          child: SkeletonRegion(
+            borderRadius: AppTheme.panelRadius,
+            child: record == null
+                ? const SizedBox.expand()
+                : FilmContinueCard(
+                    catalog: widget.catalog,
+                    record: record,
+                    positionMs: _continuePositionMs,
+                    durationMs: _continueDurationMs,
+                    onMenu: widget.onContinueMenu == null
+                        ? null
+                        : (position) =>
+                              widget.onContinueMenu!(record, position),
+                    onTap: () =>
+                        _continueRecord != null &&
+                            widget.onContinueSelected != null
+                        ? widget.onContinueSelected!(record)
+                        : widget.onOpenItem(record.item),
+                  ),
           ),
         ),
         const SizedBox(height: 24),
@@ -624,9 +695,23 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   Widget _buildPage(BuildContext context) {
     final c = widget.catalog;
     final app = context.watch<AppState>();
-    final work = _work;
+    final work =
+        _work ??
+        (_loading
+            ? FilmWork(
+                id: widget.workId,
+                type: FilmMediaType.movie,
+                title: '',
+                originalTitle: '',
+                overview: '',
+                language: '',
+              )
+            : null);
     final theme = Theme.of(context);
     final topInset = MediaQuery.paddingOf(context).top;
+    final poster = filmConnectedPoster(context);
+    final moving = StreamPathTransitionScope.of(context);
+    final initialSkeleton = _loading && _work == null;
     final numbers = _resources.map((r) => r.season).toSet().toList()
       ..sort((a, b) => (a ?? 9999).compareTo(b ?? 9999));
     final playable = _resources
@@ -641,120 +726,161 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     );
     return StreamPathTransitionBuilder(
       listenable: c,
-      builder: (context) => _loading && work == null
-          ? const SizedBox.shrink()
-          : Scaffold(
-              body: Stack(
-                children: [
-                  Positioned.fill(
-                    child: work == null
-                        ? const Center(child: AppText('影视目录库操作失败'))
-                        : Stack(
-                            children: [
-                              if (work.backdropPath != null)
-                                Positioned.fill(
-                                  child: FilmDetailBackdrop(
-                                    catalog: c,
-                                    workId: work.id,
-                                    path: work.backdropPath,
-                                    textColors: _textColors,
-                                  ),
+      builder: (context) => SkeletonScope(
+        ready: !_loading,
+        enabled: !moving,
+        child: Scaffold(
+          backgroundColor: poster == null ? null : Colors.transparent,
+          body: Stack(
+            children: [
+              if (poster != null)
+                Positioned.fill(
+                  child: FilmConnectedReveal(
+                    part: FilmConnectedPart.background,
+                    child: ColoredBox(color: theme.scaffoldBackgroundColor),
+                  ),
+                ),
+              Positioned.fill(
+                child: work == null
+                    ? const Center(child: AppText('影视目录库操作失败'))
+                    : Stack(
+                        children: [
+                          if (work.backdropPath != null)
+                            Positioned.fill(
+                              child: FilmConnectedReveal(
+                                part: FilmConnectedPart.background,
+                                child: FilmDetailBackdrop(
+                                  catalog: c,
+                                  workId: work.id,
+                                  path: work.backdropPath,
+                                  textColors: _textColors,
+                                  fadeFirstFrame: poster != null,
                                 ),
-                              if (_loading)
-                                const SizedBox.shrink()
-                              else
-                                DirectoryScrollView(
-                                  controller: _scroll,
-                                  builder: (scrollController) => ListView(
-                                    key: const Key('film-detail-scroll'),
-                                    controller: scrollController,
-                                    padding: EdgeInsets.fromLTRB(
-                                      24,
-                                      topInset + 68,
-                                      24,
-                                      32,
+                              ),
+                            ),
+                          DirectoryScrollView(
+                            controller: _scroll,
+                            builder: (scrollController) => ListView(
+                              key: const Key('film-detail-scroll'),
+                              controller: scrollController,
+                              padding: EdgeInsets.fromLTRB(
+                                24,
+                                topInset + 68,
+                                24,
+                                32,
+                              ),
+                              children: [
+                                if (c.error != null)
+                                  AppText(
+                                    filmCatalogErrorText(c.error!),
+                                    style: TextStyle(
+                                      color: theme.colorScheme.error,
                                     ),
-                                    children: [
-                                      if (c.error != null)
-                                        AppText(
-                                          filmCatalogErrorText(c.error!),
-                                          style: TextStyle(
-                                            color: theme.colorScheme.error,
-                                          ),
-                                        ),
-                                      Wrap(
-                                        spacing: 24,
-                                        runSpacing: 16,
-                                        children: [
-                                          GestureDetector(
-                                            onSecondaryTapDown: (details) =>
-                                                _posterMenu(
-                                                  details.globalPosition,
+                                  ),
+                                Wrap(
+                                  spacing: 24,
+                                  runSpacing: 16,
+                                  children: [
+                                    GestureDetector(
+                                      onSecondaryTapDown: (details) =>
+                                          _posterMenu(details.globalPosition),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: Builder(
+                                          builder: (_) {
+                                            final artwork = FilmWatchOverlay(
+                                              rootId: widget.catalog.rootId,
+                                              store: c.store,
+                                              workId: work.id,
+                                              child: FilmArtwork(
+                                                key: const Key(
+                                                  'film-detail-poster',
                                                 ),
-                                            child: ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              child: FilmWatchOverlay(
-                                                rootId: widget.catalog.rootId,
-                                                store: c.store,
-                                                workId: work.id,
-                                                child: FilmArtwork(
-                                                  key: const Key(
-                                                    'film-detail-poster',
-                                                  ),
-                                                  cache: c.images,
-                                                  path: work.posterPath,
-                                                  fallbackPath: work.posterPath,
-                                                  target: 'w500',
-                                                  width: 180,
-                                                ),
+                                                cache: c.images,
+                                                path: work.posterPath,
+                                                fallbackPath: work.posterPath,
+                                                target: 'w500',
+                                                width: 180,
+                                                provider: moving && _loading
+                                                    ? poster?.provider
+                                                    : null,
+                                                showCachedImmediately:
+                                                    poster != null,
                                               ),
-                                            ),
-                                          ),
-                                          ConstrainedBox(
-                                            constraints: const BoxConstraints(
-                                              maxWidth: 700,
-                                            ),
-                                            child: FilmAdaptiveForeground(
-                                              controller: _textColors,
-                                              textKeys: [
-                                                _titleTextKey,
-                                                _originalTitleTextKey,
-                                                _metadataTextKey,
-                                                _genresTextKey,
-                                                _overviewTextKey,
-                                              ],
-                                              scrollController: _scroll,
-                                              builder: (context, foreground) => Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  FilmArtwork(
-                                                    cache: c.images,
-                                                    path:
-                                                        work.metadata['logo_path']
+                                            );
+                                            return poster == null
+                                                ? artwork
+                                                : FilmSharedPoster(
+                                                    anchor: poster,
+                                                    child: FilmConnectedReveal(
+                                                      part: FilmConnectedPart
+                                                          .poster,
+                                                      child: artwork,
+                                                    ),
+                                                  );
+                                          },
+                                        ),
+                                      ),
+                                    ),
+                                    FilmConnectedReveal(
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 700,
+                                        ),
+                                        child: FilmAdaptiveForeground(
+                                          controller: _textColors,
+                                          textKeys: [
+                                            _titleTextKey,
+                                            _originalTitleTextKey,
+                                            _metadataTextKey,
+                                            _genresTextKey,
+                                            _overviewTextKey,
+                                          ],
+                                          scrollController: _scroll,
+                                          builder: (context, foreground) => Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-logo',
+                                                ),
+                                                child: FilmArtwork(
+                                                  cache: c.images,
+                                                  path: moving && poster != null
+                                                      ? null
+                                                      : work.metadata['logo_path']
                                                             as String?,
-                                                    target: 'original',
-                                                    transparent: true,
-                                                    width: 420,
-                                                    height: 90,
-                                                    placeholder: Align(
-                                                      alignment:
-                                                          Alignment.centerLeft,
-                                                      child: Text(
-                                                        key: _titleTextKey,
-                                                        work.title,
-                                                        style: theme
-                                                            .textTheme
-                                                            .headlineMedium
-                                                            ?.copyWith(
-                                                              color: foreground,
-                                                            ),
-                                                      ),
+                                                  target: 'original',
+                                                  transparent: true,
+                                                  width: 420,
+                                                  height: 90,
+                                                  placeholder: Align(
+                                                    alignment:
+                                                        Alignment.centerLeft,
+                                                    child: Text(
+                                                      key: _titleTextKey,
+                                                      work.title,
+                                                      style: theme
+                                                          .textTheme
+                                                          .headlineMedium
+                                                          ?.copyWith(
+                                                            color: foreground,
+                                                          ),
                                                     ),
                                                   ),
-                                                  const SizedBox(height: 8),
-                                                  Text(
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-original-title',
+                                                ),
+                                                child: SizedBox(
+                                                  width: initialSkeleton
+                                                      ? 240
+                                                      : null,
+                                                  child: Text(
                                                     key: _originalTitleTextKey,
                                                     work.originalTitle,
                                                     style: theme
@@ -766,8 +892,21 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                               FontWeight.w400,
                                                         ),
                                                   ),
-                                                  const SizedBox(height: 14),
-                                                  KeyedSubtree(
+                                                ),
+                                              ),
+                                              const SizedBox(height: 14),
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-metadata',
+                                                ),
+                                                child: SizedBox(
+                                                  width: initialSkeleton
+                                                      ? 300
+                                                      : null,
+                                                  height: initialSkeleton
+                                                      ? 28
+                                                      : null,
+                                                  child: KeyedSubtree(
                                                     key: _metadataTextKey,
                                                     child: _metadata(
                                                       work,
@@ -775,8 +914,18 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                       foreground,
                                                     ),
                                                   ),
-                                                  const SizedBox(height: 8),
-                                                  Text(
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-genres',
+                                                ),
+                                                child: SizedBox(
+                                                  width: initialSkeleton
+                                                      ? 260
+                                                      : null,
+                                                  child: Text(
                                                     key: _genresTextKey,
                                                     (work.metadata['genres']
                                                                 as List? ??
@@ -789,26 +938,40 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                           color: foreground,
                                                         ),
                                                   ),
-                                                  const SizedBox(height: 16),
-                                                  Wrap(
-                                                    spacing: 12,
-                                                    runSpacing: 8,
-                                                    children: [
-                                                      if (playable != null)
-                                                        FilmDetailPlayButton(
-                                                          onPressed: () =>
-                                                              _playDefault(
-                                                                playable,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 16),
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-actions',
+                                                ),
+                                                child: Wrap(
+                                                  spacing: 12,
+                                                  runSpacing: 8,
+                                                  children: [
+                                                    if (playable != null ||
+                                                        _loading)
+                                                      FilmDetailPlayButton(
+                                                        onPressed:
+                                                            playable == null
+                                                            ? null
+                                                            : () =>
+                                                                  _playDefault(
+                                                                    playable,
+                                                                  ),
+                                                      ),
+                                                    Opacity(
+                                                      opacity: _loading ? 0 : 1,
+                                                      child: FilmDetailActionButton(
+                                                        onPressed: _loading
+                                                            ? null
+                                                            : () => c.run(
+                                                                () => c.store
+                                                                    .setFavorite(
+                                                                      work.id,
+                                                                      !_favorite,
+                                                                    ),
                                                               ),
-                                                        ),
-                                                      FilmDetailActionButton(
-                                                        onPressed: () => c.run(
-                                                          () => c.store
-                                                              .setFavorite(
-                                                                work.id,
-                                                                !_favorite,
-                                                              ),
-                                                        ),
                                                         icon: Icon(
                                                           _favorite
                                                               ? SPIcons
@@ -822,10 +985,33 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                               : '收藏',
                                                         ),
                                                       ),
-                                                    ],
-                                                  ),
-                                                  const SizedBox(height: 16),
-                                                  work.overview.isEmpty
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              const SizedBox(height: 16),
+                                              SkeletonRegion(
+                                                key: const Key(
+                                                  'film-skeleton-overview',
+                                                ),
+                                                child: SizedBox(
+                                                  width: initialSkeleton
+                                                      ? 700
+                                                      : null,
+                                                  height: initialSkeleton
+                                                      ? MediaQuery.textScalerOf(
+                                                                  context,
+                                                                ).scale(
+                                                                  theme
+                                                                          .textTheme
+                                                                          .bodyMedium!
+                                                                          .fontSize! *
+                                                                      1.55,
+                                                                ) *
+                                                                4 +
+                                                            48
+                                                      : null,
+                                                  child: work.overview.isEmpty
                                                       ? AppText(
                                                           '暂无简介',
                                                           style: TextStyle(
@@ -878,18 +1064,29 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                 ),
                                                           ),
                                                         ),
-                                                ],
+                                                ),
                                               ),
-                                            ),
+                                            ],
                                           ),
-                                        ],
+                                        ),
                                       ),
+                                    ),
+                                  ],
+                                ),
+                                FilmConnectedReveal(
+                                  part: FilmConnectedPart.secondary,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
                                       const SizedBox(height: 28),
                                       _playEntry(app, work),
                                       _credits(work, c),
-                                      AppText(
-                                        '关联资源',
-                                        style: theme.textTheme.titleLarge,
+                                      SkeletonRegion(
+                                        child: AppText(
+                                          '关联资源',
+                                          style: theme.textTheme.titleLarge,
+                                        ),
                                       ),
                                       const SizedBox(height: 12),
                                       if (_selected.isNotEmpty)
@@ -925,9 +1122,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                             padding: const EdgeInsets.only(
                                               bottom: 12,
                                             ),
-                                            child: AppText(
-                                              '季',
-                                              style: theme.textTheme.titleLarge,
+                                            child: SkeletonRegion(
+                                              child: AppText(
+                                                '季',
+                                                style:
+                                                    theme.textTheme.titleLarge,
+                                              ),
                                             ),
                                           ),
                                           Wrap(
@@ -938,145 +1138,155 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                 SizedBox(
                                                   width: 156,
                                                   child: FilmPosterHover(
-                                                    child: Card(
-                                                      key: ValueKey(
-                                                        'film-season-${number ?? 'unmapped'}',
-                                                      ),
-                                                      clipBehavior:
-                                                          Clip.antiAlias,
-                                                      shape: RoundedRectangleBorder(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              8,
-                                                            ),
-                                                        side: BorderSide(
-                                                          color:
-                                                              _activeSeason ==
-                                                                  number
-                                                              ? theme
-                                                                    .colorScheme
-                                                                    .primary
-                                                              : theme
-                                                                    .dividerColor,
-                                                          width:
-                                                              _activeSeason ==
-                                                                  number
-                                                              ? 2
-                                                              : .5,
+                                                    child: SkeletonRegion(
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            8,
+                                                          ),
+                                                      child: Card(
+                                                        key: ValueKey(
+                                                          'film-season-${number ?? 'unmapped'}',
                                                         ),
-                                                      ),
-                                                      child: InkWell(
-                                                        hoverColor:
-                                                            Colors.transparent,
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              8,
-                                                            ),
-                                                        onSecondaryTapDown:
-                                                            number == null
-                                                            ? null
-                                                            : (
-                                                                details,
-                                                              ) => showFilmWatchMenu(
-                                                                context,
-                                                                catalog: c,
-                                                                playlistScope:
-                                                                    FilmPlaylistScope.work(
-                                                                      work.id,
-                                                                      season:
-                                                                          number,
-                                                                    ),
-                                                                title:
-                                                                    '${work.title} S${number.toString().padLeft(2, '0')}',
-                                                                position: details
-                                                                    .globalPosition,
-                                                                resources: _resources
-                                                                    .where(
-                                                                      (r) =>
-                                                                          r.season ==
-                                                                          number,
-                                                                    )
-                                                                    .toList(),
+                                                        clipBehavior:
+                                                            Clip.antiAlias,
+                                                        shape: RoundedRectangleBorder(
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                8,
                                                               ),
-                                                        onTap: () => setState(
-                                                          () => _activeSeason =
-                                                              number,
+                                                          side: BorderSide(
+                                                            color:
+                                                                _activeSeason ==
+                                                                    number
+                                                                ? theme
+                                                                      .colorScheme
+                                                                      .primary
+                                                                : theme
+                                                                      .dividerColor,
+                                                            width:
+                                                                _activeSeason ==
+                                                                    number
+                                                                ? 2
+                                                                : .5,
+                                                          ),
                                                         ),
-                                                        child: Column(
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .start,
-                                                          children: [
-                                                            FilmPosterHoverSurface(
-                                                              child: FilmWatchOverlay(
-                                                                rootId: widget
-                                                                    .catalog
-                                                                    .rootId,
-                                                                store: c.store,
-                                                                workId: work.id,
-                                                                season: number,
-                                                                child: ClipRect(
-                                                                  child: FilmArtwork(
-                                                                    cache: c
-                                                                        .images,
-                                                                    path:
-                                                                        (_seasons[number]?['poster_path']
-                                                                            as String?) ??
-                                                                        work.posterPath,
-                                                                    borderRadius:
-                                                                        0,
+                                                        child: InkWell(
+                                                          hoverColor: Colors
+                                                              .transparent,
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                8,
+                                                              ),
+                                                          onSecondaryTapDown:
+                                                              number == null
+                                                              ? null
+                                                              : (
+                                                                  details,
+                                                                ) => showFilmWatchMenu(
+                                                                  context,
+                                                                  catalog: c,
+                                                                  playlistScope:
+                                                                      FilmPlaylistScope.work(
+                                                                        work.id,
+                                                                        season:
+                                                                            number,
+                                                                      ),
+                                                                  title:
+                                                                      '${work.title} S${number.toString().padLeft(2, '0')}',
+                                                                  position: details
+                                                                      .globalPosition,
+                                                                  resources: _resources
+                                                                      .where(
+                                                                        (r) =>
+                                                                            r.season ==
+                                                                            number,
+                                                                      )
+                                                                      .toList(),
+                                                                ),
+                                                          onTap: () => setState(
+                                                            () =>
+                                                                _activeSeason =
+                                                                    number,
+                                                          ),
+                                                          child: Column(
+                                                            crossAxisAlignment:
+                                                                CrossAxisAlignment
+                                                                    .start,
+                                                            children: [
+                                                              FilmPosterHoverSurface(
+                                                                child: FilmWatchOverlay(
+                                                                  rootId: widget
+                                                                      .catalog
+                                                                      .rootId,
+                                                                  store:
+                                                                      c.store,
+                                                                  workId:
+                                                                      work.id,
+                                                                  season:
+                                                                      number,
+                                                                  child: ClipRect(
+                                                                    child: FilmArtwork(
+                                                                      cache: c
+                                                                          .images,
+                                                                      path:
+                                                                          (_seasons[number]?['poster_path']
+                                                                              as String?) ??
+                                                                          work.posterPath,
+                                                                      borderRadius:
+                                                                          0,
+                                                                    ),
                                                                   ),
                                                                 ),
                                                               ),
-                                                            ),
-                                                            Padding(
-                                                              padding:
-                                                                  const EdgeInsets.all(
-                                                                    12,
-                                                                  ),
-                                                              child: Column(
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .start,
-                                                                children: [
-                                                                  Text(
-                                                                    number ==
-                                                                            null
-                                                                        ? context.l10n.text(
-                                                                            '集号待确认',
-                                                                          )
-                                                                        : number ==
-                                                                              0
-                                                                        ? context.l10n.text(
-                                                                            '特别篇',
-                                                                          )
-                                                                        : context.l10n.format(
-                                                                            '第 {season} 季',
-                                                                            {
-                                                                              'season': number,
-                                                                            },
-                                                                          ),
-                                                                  ),
-                                                                  Text(
-                                                                    context.l10n.format(
-                                                                      '{count} 个资源',
-                                                                      {
-                                                                        'count': _resources
-                                                                            .where(
-                                                                              (
-                                                                                r,
-                                                                              ) =>
-                                                                                  r.season ==
-                                                                                  number,
-                                                                            )
-                                                                            .length,
-                                                                      },
+                                                              Padding(
+                                                                padding:
+                                                                    const EdgeInsets.all(
+                                                                      12,
                                                                     ),
-                                                                  ),
-                                                                ],
+                                                                child: Column(
+                                                                  crossAxisAlignment:
+                                                                      CrossAxisAlignment
+                                                                          .start,
+                                                                  children: [
+                                                                    Text(
+                                                                      number ==
+                                                                              null
+                                                                          ? context.l10n.text(
+                                                                              '集号待确认',
+                                                                            )
+                                                                          : number ==
+                                                                                0
+                                                                          ? context.l10n.text(
+                                                                              '特别篇',
+                                                                            )
+                                                                          : context.l10n.format(
+                                                                              '第 {season} 季',
+                                                                              {
+                                                                                'season': number,
+                                                                              },
+                                                                            ),
+                                                                    ),
+                                                                    Text(
+                                                                      context.l10n.format(
+                                                                        '{count} 个资源',
+                                                                        {
+                                                                          'count': _resources
+                                                                              .where(
+                                                                                (
+                                                                                  r,
+                                                                                ) =>
+                                                                                    r.season ==
+                                                                                    number,
+                                                                              )
+                                                                              .length,
+                                                                        },
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
                                                               ),
-                                                            ),
-                                                          ],
+                                                            ],
+                                                          ),
                                                         ),
                                                       ),
                                                     ),
@@ -1092,16 +1302,19 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                             padding: const EdgeInsets.symmetric(
                                               vertical: 16,
                                             ),
-                                            child: Text(
-                                              number == null
-                                                  ? context.l10n.text('集号待确认')
-                                                  : number == 0
-                                                  ? context.l10n.text('特别篇')
-                                                  : context.l10n.format(
-                                                      '第 {season} 季',
-                                                      {'season': number},
-                                                    ),
-                                              style: theme.textTheme.titleLarge,
+                                            child: SkeletonRegion(
+                                              child: Text(
+                                                number == null
+                                                    ? context.l10n.text('集号待确认')
+                                                    : number == 0
+                                                    ? context.l10n.text('特别篇')
+                                                    : context.l10n.format(
+                                                        '第 {season} 季',
+                                                        {'season': number},
+                                                      ),
+                                                style:
+                                                    theme.textTheme.titleLarge,
+                                              ),
                                             ),
                                           ),
                                           _cards(
@@ -1119,18 +1332,24 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                     ],
                                   ),
                                 ),
-                            ],
+                              ],
+                            ),
                           ),
-                  ),
-                  if (!_loading)
-                    Positioned(
-                      top: topInset - 10,
-                      left: 4,
-                      child: FilmDetailBackButton(scrollController: _scroll),
-                    ),
-                ],
+                        ],
+                      ),
               ),
-            ),
+              if (!_loading || poster != null)
+                Positioned(
+                  top: topInset - 10,
+                  left: 4,
+                  child: FilmConnectedReveal(
+                    child: FilmDetailBackButton(scrollController: _scroll),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'film_watch_overlay.dart';
+import 'skeleton_scope.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/models/media_library_item.dart';
@@ -130,58 +131,61 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
             ),
         ],
       );
-      return GestureDetector(
-        onSecondaryTapDown: widget.onMenu == null
-            ? null
-            : (details) => widget.onMenu!(details.globalPosition),
-        child: FilmPosterHover(
-          borderRadius: AppTheme.panelRadius,
-          child: Card(
-            key: ValueKey('film-continue-${widget.record.recordKey}'),
-            margin: EdgeInsets.zero,
-            clipBehavior: Clip.none,
-            borderOnForeground: false,
-            child: InkWell(
-              hoverColor: Colors.transparent,
-              borderRadius: AppTheme.panelRadius,
-              onTap: widget.onTap,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: cover),
-                  Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          data['title'] as String,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        if (data['season'] != null)
+      return SkeletonLoadBoundary(
+        ready: snapshot.connectionState == ConnectionState.done,
+        child: GestureDetector(
+          onSecondaryTapDown: widget.onMenu == null
+              ? null
+              : (details) => widget.onMenu!(details.globalPosition),
+          child: FilmPosterHover(
+            borderRadius: AppTheme.panelRadius,
+            child: Card(
+              key: ValueKey('film-continue-${widget.record.recordKey}'),
+              margin: EdgeInsets.zero,
+              clipBehavior: Clip.none,
+              borderOnForeground: false,
+              child: InkWell(
+                hoverColor: Colors.transparent,
+                borderRadius: AppTheme.panelRadius,
+                onTap: widget.onTap,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: cover),
+                    Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           Text(
-                            '${context.l10n.format('第 {season} 季', {'season': data['season']})} · ${context.l10n.format('第 {episode} 集', {'episode': data['episode']})}${data['episodeTitle'] == null ? '' : ' · ${data['episodeTitle']}'}',
+                            data['title'] as String,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
+                            style: Theme.of(context).textTheme.titleSmall,
                           ),
-                        if (widget.poster && widget.positionMs != null)
-                          Text(
-                            context.l10n.format('已播放 {time}', {
-                              'time': Duration(
-                                milliseconds: widget.positionMs!,
-                              ).toString().split('.').first,
-                            }),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                      ],
+                          if (data['season'] != null)
+                            Text(
+                              '${context.l10n.format('第 {season} 季', {'season': data['season']})} · ${context.l10n.format('第 {episode} 集', {'episode': data['episode']})}${data['episodeTitle'] == null ? '' : ' · ${data['episodeTitle']}'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          if (widget.poster && widget.positionMs != null)
+                            Text(
+                              context.l10n.format('已播放 {time}', {
+                                'time': Duration(
+                                  milliseconds: widget.positionMs!,
+                                ).toString().split('.').first,
+                              }),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

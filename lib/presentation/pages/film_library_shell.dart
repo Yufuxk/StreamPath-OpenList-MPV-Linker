@@ -17,6 +17,7 @@ import '../widgets/sp_notice.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/app_background.dart';
 import '../widgets/transition_content.dart';
+import '../widgets/film_connected_transition.dart';
 import 'browser_page.dart';
 import 'film_library_page.dart';
 
@@ -30,6 +31,7 @@ class FilmLibraryShell extends StatefulWidget {
 }
 
 class FilmLibraryShellState extends State<FilmLibraryShell> {
+  final _heroes = FilmConnectedHeroController();
   final _hosts = <String, BrowserPage>{};
   final _cacheSources = <String, MediaDirectorySource>{};
   final _keys = <String, GlobalKey<BrowserPageState>>{};
@@ -59,6 +61,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   @override
   void dispose() {
     _backgroundCatalog?.removeListener(_backgroundChanged);
+    _heroes.dispose();
     super.dispose();
   }
 
@@ -320,6 +323,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
                 else
                   const SizedBox.expand(),
                 Navigator(
+                  observers: [_heroes],
                   onGenerateRoute: (_) => MaterialPageRoute<void>(
                     builder: (_) => FilmLibraryPage(
                       sourceId: widget.sourceId,

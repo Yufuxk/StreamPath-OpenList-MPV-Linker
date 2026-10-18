@@ -1058,7 +1058,7 @@ Windows runner 通过 `WM_NCCALCSIZE` 将 Flutter 客户区扩展到窗口最上
 窗口关闭等待后台任务结束后回复原生；扫描操作的错误由发起调用方接收，关闭与写入暂停使用独立的完成 Future 同步任务结束。隐式队列的控制恢复及退出暂停命令只作用于保有 IPC 管道的会话，已结束会话的队列快照供显式续播使用。
 非 Windows 构建继续使用系统窗口装饰。
 
-Windows 页面路由统一使用 30 个逻辑像素的水平 Shared Axis 过渡，进入 220ms、返回 180ms，
+Windows 普通页面路由使用 30 个逻辑像素的水平 Shared Axis 过渡，进入 220ms、返回 180ms，
 按导航方向先以 30% 时间淡出退出页，再以 70% 时间淡入进入页，曲线使用 easeOutCubic／easeInCubic。
 State 持有并释放 CurvedAnimation，支持父动画交接、中途反向和委托转场；主题底色按透明度补偿，
 push、pop、replace、返回结果及清栈语义由原 Navigator 管理。
@@ -1074,6 +1074,19 @@ push、pop、replace、返回结果及清栈语义由原 Navigator 管理。
 媒体中心与设置共用全窗口 AdaptiveFilmBackdrop 及已解码帧；背景路径沿用影视目录库的原有保存方式。
 页面 Scaffold 与标题栏在自定义背景下透明，子路由轻壳透明，常驻背景作用域内关闭转场底色补偿。
 未设置背景时沿用主题材质底色；详情与精选橱窗保持各自的影片背景。
+
+影视库主页的作品卡片与筛选墙在封面已解码且完整可见时使用 FilmConnectedDetailRoute：
+保留内层 Navigator，由 FilmLibraryShell 持有并释放 FilmConnectedHeroController；仅共享详情路由参与 Hero 预布局。每个卡片实例的
+FilmPosterAnchor 为唯一 tag；Hero 在独立 Overlay 内以 420ms easeInOutCubic 移动，起点包含悬停变换，
+返回重新读取源位置、裁剪及响应式尺寸。源封面未就绪沿用普通轻壳路由；源卡片卸载、过滤或移出视口时返回淡出，
+不飞往旧坐标。详情沿用 FilmDetailPage 的现有布局，封面外的信息区域使用 SkeletonScope／SkeletonRegion，
+以真实控件的布局矩形绘制同位置骨架。资料及已挂载图片首帧就绪、首个布局帧后至少 700ms 且切页静止后，
+用 240ms easeOutCubic 统一替换；缺图和失败沿用原文字占位或重试入口，返回及同页刷新不重放骨架。
+资源查询、播放进度初始化、徽标和背景解码在运动结束后启动；普通详情入口在原轻壳结束后进入同一骨架，
+首张背景以现有 220ms 曲线渐显。飞行复用 w342 Provider，静止后恢复 w500 与原缓存回退，
+缓存容量、画质、材质、播放及数据库路径不变。骨架框架由 skeleton_scope.dart 提供，SkeletonLoadBoundary 报告
+已挂载异步组件的就绪状态；实际页面接入仅限详情页。详见[共享封面过渡说明](影视库共享封面过渡实施与验证.md)
+及[详情页骨架说明](详情页骨架过渡实施与验证.md)。
 
 文件夹标签由显式 TabController 与 StreamPathSectionSwitcher 承载，只支持标签点击及键盘切换，
 正文不处理左右拖拽。局部分类按顺序进行 220ms／30px 分段淡出淡入，冷分类在静止帧后初始化，

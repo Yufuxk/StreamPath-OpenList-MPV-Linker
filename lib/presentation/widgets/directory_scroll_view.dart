@@ -22,6 +22,46 @@ class DirectoryScrollView extends StatefulWidget {
   final bool hideScrollbar;
   final Axis scrollDirection;
 
+  static ({Rect viewport, Offset strength})? edgeMaskOf(BuildContext context) {
+    final state = context.findAncestorStateOfType<_DirectoryScrollViewState>();
+    if (state == null || state.widget.scrollDirection != Axis.horizontal) {
+      return null;
+    }
+    final box = state.context.findRenderObject()! as RenderBox;
+    return (
+      viewport: MatrixUtils.transformRect(
+        box.getTransformTo(null),
+        Offset.zero & box.size,
+      ),
+      strength: state._edgeStrength,
+    );
+  }
+
+  static Shader edgeShader(Rect bounds, Offset strength, {double scale = 1}) {
+    final fade = (96 * scale / bounds.width).clamp(0.0, 1 / 3);
+    final colors = <Color>[];
+    final stops = <double>[];
+    for (var i = 0; i <= 12; i++) {
+      final t = i / 12;
+      stops.add(fade * t);
+      colors.add(
+        Colors.white.withValues(
+          alpha: 1 - strength.dx * (1 - Curves.easeInOutSine.transform(t)),
+        ),
+      );
+    }
+    for (var i = 0; i <= 12; i++) {
+      final t = i / 12;
+      stops.add(1 - fade + fade * t);
+      colors.add(
+        Colors.white.withValues(
+          alpha: 1 - strength.dy * Curves.easeInOutSine.transform(t),
+        ),
+      );
+    }
+    return LinearGradient(colors: colors, stops: stops).createShader(bounds);
+  }
+
   @override
   State<DirectoryScrollView> createState() => _DirectoryScrollViewState();
 }
@@ -29,6 +69,7 @@ class DirectoryScrollView extends StatefulWidget {
 class _DirectoryScrollViewState extends State<DirectoryScrollView> {
   ScrollController? _ownedController;
   bool _fadeLeft = false, _fadeRight = false;
+  Offset _edgeStrength = Offset.zero;
 
   void _updateEdges(ScrollMetrics metrics) {
     final horizontal = metrics.axis == Axis.horizontal;
@@ -67,40 +108,15 @@ class _DirectoryScrollViewState extends State<DirectoryScrollView> {
             ),
             duration: AppTheme.hoverDuration,
             child: body,
-            builder: (_, strength, child) => ShaderMask(
-              blendMode: BlendMode.dstIn,
-              shaderCallback: (bounds) {
-                final fade = (96 / bounds.width).clamp(0.0, 1 / 3);
-                final colors = <Color>[];
-                final stops = <double>[];
-                for (var i = 0; i <= 12; i++) {
-                  final t = i / 12;
-                  stops.add(fade * t);
-                  colors.add(
-                    Colors.white.withValues(
-                      alpha:
-                          1 -
-                          strength.dx * (1 - Curves.easeInOutSine.transform(t)),
-                    ),
-                  );
-                }
-                for (var i = 0; i <= 12; i++) {
-                  final t = i / 12;
-                  stops.add(1 - fade + fade * t);
-                  colors.add(
-                    Colors.white.withValues(
-                      alpha:
-                          1 - strength.dy * Curves.easeInOutSine.transform(t),
-                    ),
-                  );
-                }
-                return LinearGradient(
-                  colors: colors,
-                  stops: stops,
-                ).createShader(bounds);
-              },
-              child: child,
-            ),
+            builder: (_, strength, child) {
+              _edgeStrength = strength;
+              return ShaderMask(
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (bounds) =>
+                    DirectoryScrollView.edgeShader(bounds, strength),
+                child: child,
+              );
+            },
           )
         : body;
     final scrollbar = Scrollbar(

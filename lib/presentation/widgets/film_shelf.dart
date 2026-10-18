@@ -5,6 +5,7 @@ import 'film_watch_overlay.dart';
 import 'dart:ui';
 import 'dart:math' as math;
 import 'dart:io';
+import 'film_connected_transition.dart';
 import '../../data/models/film_collection.dart';
 
 import 'package:flutter/material.dart';
@@ -29,6 +30,7 @@ class FilmShelf extends StatefulWidget {
     this.onShowAll,
     this.horizontal = false,
     this.maxItems = 15,
+    this.titleWidget,
   });
   static const double defaultHeight = 304;
   static const double defaultItemWidth = 174;
@@ -55,6 +57,7 @@ class FilmShelf extends StatefulWidget {
   }
 
   final String title;
+  final Widget? titleWidget;
   final int count;
   final double height, itemWidth;
   final IndexedWidgetBuilder builder;
@@ -88,12 +91,14 @@ class _FilmShelfState extends State<FilmShelf>
           Row(
             children: [
               Expanded(
-                child: AppText(
-                  widget.title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleLarge?.copyWith(fontSize: 22),
-                ),
+                child:
+                    widget.titleWidget ??
+                    AppText(
+                      widget.title,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.titleLarge?.copyWith(fontSize: 22),
+                    ),
               ),
               if (widget.onShowAll != null)
                 TextButton(
@@ -362,6 +367,7 @@ class FilmWorkCard extends StatefulWidget {
     required this.cache,
     required this.onTap,
     required this.onMenu,
+    this.onOpenPoster,
   });
   final FilmCatalogStore? store;
   final int? rootId;
@@ -370,11 +376,76 @@ class FilmWorkCard extends StatefulWidget {
   final FilmCatalogImageCache cache;
   final VoidCallback onTap;
   final ValueChanged<Offset> onMenu;
+  final ValueChanged<FilmPosterAnchor?>? onOpenPoster;
   @override
   State<FilmWorkCard> createState() => _FilmWorkCardState();
 }
 
 class _FilmWorkCardState extends State<FilmWorkCard> {
+  FilmPosterAnchor _poster = FilmPosterAnchor();
+
+  @override
+  void didUpdateWidget(FilmWorkCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.work.id != widget.work.id ||
+        oldWidget.work.posterPath != widget.work.posterPath) {
+      _poster = FilmPosterAnchor();
+    }
+  }
+
+  void _open() {
+    final open = widget.onOpenPoster;
+    if (open == null) {
+      widget.onTap();
+      return;
+    }
+    final provider = _poster.sourceProvider;
+    ImageCacheStatus? status;
+    provider?.obtainKey(ImageConfiguration.empty).then((key) {
+      status = PaintingBinding.instance.imageCache.statusForKey(key);
+    });
+    if (_poster.visible &&
+        _poster.ready &&
+        status != null &&
+        !status!.pending &&
+        (status!.live || status!.keepAlive)) {
+      _poster.provider = provider;
+      _poster.beginFlight(Navigator.of(context));
+      _poster.prepareReturn();
+      open(_poster);
+    } else {
+      open(null);
+    }
+  }
+
+  Widget _artwork() {
+    final artwork = FilmWatchOverlay(
+      store: widget.store,
+      workId: widget.work.id,
+      rootId: widget.rootId,
+      sourceIds: widget.sourceIds,
+      onStatusDecoration: widget.onOpenPoster == null
+          ? null
+          : (decorate) => _poster.decorate = decorate,
+      child: FilmArtwork(
+        cache: widget.cache,
+        path: widget.work.posterPath,
+        borderRadius: 0,
+        showCachedImmediately: true,
+      ),
+    );
+    return widget.onOpenPoster == null
+        ? artwork
+        : AspectRatio(
+            aspectRatio: 2 / 3,
+            child: FilmSharedPoster(
+              anchor: _poster,
+              source: true,
+              child: artwork,
+            ),
+          );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = widget.store;
@@ -398,7 +469,7 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
         child: InkWell(
           hoverColor: Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-          onTap: widget.onTap,
+          onTap: _open,
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 2),
             child: LayoutBuilder(
@@ -454,18 +525,7 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                             child: FilmPosterHoverSurface(
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
-                                child: FilmWatchOverlay(
-                                  store: widget.store,
-                                  workId: widget.work.id,
-                                  rootId: widget.rootId,
-                                  sourceIds: widget.sourceIds,
-                                  child: FilmArtwork(
-                                    cache: widget.cache,
-                                    path: widget.work.posterPath,
-                                    borderRadius: 0,
-                                    showCachedImmediately: true,
-                                  ),
-                                ),
+                                child: _artwork(),
                               ),
                             ),
                           ),
@@ -509,6 +569,7 @@ class FilmPosterGrid extends StatelessWidget {
     required this.onOpen,
     required this.onMenu,
     this.controller,
+    this.onOpenPoster,
   });
   final FilmCatalogStore? store;
   final int? rootId;
@@ -518,6 +579,7 @@ class FilmPosterGrid extends StatelessWidget {
   final ValueChanged<FilmWork> onOpen;
   final void Function(FilmWork, Offset) onMenu;
   final ScrollController? controller;
+  final void Function(FilmWork, FilmPosterAnchor?)? onOpenPoster;
   @override
   Widget build(BuildContext context) => DirectoryScrollView(
     controller: controller,
@@ -532,12 +594,16 @@ class FilmPosterGrid extends StatelessWidget {
       ),
       itemCount: works.length,
       itemBuilder: (_, i) => FilmWorkCard(
+        key: ValueKey(works[i].id),
         store: store,
         rootId: rootId,
         sourceIds: sourceIds,
         work: works[i],
         cache: cache,
         onTap: () => onOpen(works[i]),
+        onOpenPoster: onOpenPoster == null
+            ? null
+            : (poster) => onOpenPoster!(works[i], poster),
         onMenu: (position) => onMenu(works[i], position),
       ),
     ),

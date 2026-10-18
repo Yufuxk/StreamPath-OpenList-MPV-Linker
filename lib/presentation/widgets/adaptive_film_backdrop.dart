@@ -29,6 +29,7 @@ class AdaptiveFilmBackdrop extends StatefulWidget {
     this.watchStore,
     this.workId,
     this.textColors,
+    this.fadeFirstFrame = false,
   }) : assert(path == null || file == null);
 
   final FilmCatalogImageCache cache;
@@ -40,6 +41,7 @@ class AdaptiveFilmBackdrop extends StatefulWidget {
   final FilmCatalogStore? watchStore;
   final int? workId;
   final FilmBackdropTextController? textColors;
+  final bool fadeFirstFrame;
 
   @override
   State<AdaptiveFilmBackdrop> createState() => _AdaptiveFilmBackdropState();
@@ -274,7 +276,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
       _current = _BackdropFrame(file, provider, info, thumbnailPath);
       _layout = null;
       _layoutInputs = null;
-      if (_previous == null) {
+      if (_previous == null && !widget.fadeFirstFrame) {
         _transition.value = 1;
       } else {
         _transition.forward(from: 0);

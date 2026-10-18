@@ -9,8 +9,13 @@ import 'glass_surface.dart';
 
 /// 固定占位上的微光呼吸，不改变加载期间的布局。
 class CinematicSkeleton extends StatefulWidget {
-  const CinematicSkeleton({super.key, this.showLines = true});
+  const CinematicSkeleton({
+    super.key,
+    this.showLines = true,
+    this.borderRadius = AppTheme.panelRadius,
+  });
   final bool showLines;
+  final BorderRadius borderRadius;
 
   @override
   State<CinematicSkeleton> createState() => _CinematicSkeletonState();
@@ -48,12 +53,12 @@ class _CinematicSkeletonState extends State<CinematicSkeleton>
     return ExcludeSemantics(
       child: IgnorePointer(
         child: ClipRRect(
-          borderRadius: AppTheme.panelRadius,
+          borderRadius: widget.borderRadius,
           child: AnimatedBuilder(
             animation: _pulse,
             builder: (_, child) => DecoratedBox(
               decoration: BoxDecoration(
-                borderRadius: AppTheme.panelRadius,
+                borderRadius: widget.borderRadius,
                 border: Border.all(color: glow.withValues(alpha: .10)),
                 gradient: LinearGradient(
                   colors: [

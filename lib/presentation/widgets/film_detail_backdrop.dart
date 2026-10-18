@@ -14,6 +14,7 @@ class FilmDetailBackdrop extends StatelessWidget {
     this.style = FilmBackdropStyle.detail,
     this.textColors,
     this.onImageReady,
+    this.fadeFirstFrame = false,
     this.artworkKey = const Key('film-detail-backdrop'),
   });
   final FilmCatalogController catalog;
@@ -23,6 +24,7 @@ class FilmDetailBackdrop extends StatelessWidget {
   final FilmBackdropStyle style;
   final FilmBackdropTextController? textColors;
   final VoidCallback? onImageReady;
+  final bool fadeFirstFrame;
 
   @override
   Widget build(BuildContext context) => AdaptiveFilmBackdrop(
@@ -34,5 +36,6 @@ class FilmDetailBackdrop extends StatelessWidget {
     style: style,
     textColors: textColors,
     onImageReady: onImageReady,
+    fadeFirstFrame: fadeFirstFrame,
   );
 }

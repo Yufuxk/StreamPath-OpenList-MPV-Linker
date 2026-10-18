@@ -8,6 +8,7 @@ import '../localization/app_text.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_watch_state.dart';
+import 'skeleton_scope.dart';
 import '../state/app_state.dart';
 import 'film_artwork.dart';
 
@@ -59,6 +60,7 @@ class FilmWatchOverlay extends StatefulWidget {
     this.revealLabel = '展示剧透',
     this.footer,
     this.hoverSurface = false,
+    this.onStatusDecoration,
   });
   final Widget child;
   final bool spoilerSensitive, showStatus;
@@ -66,8 +68,10 @@ class FilmWatchOverlay extends StatefulWidget {
   final bool revealBelow;
   final String revealLabel;
   final Widget? footer;
+
   /// 根据实际遮罩状态选择封面悬停的绘制方式。
   final bool hoverSurface;
+  final ValueChanged<Widget Function(Widget)>? onStatusDecoration;
   final double? fallbackFraction;
   final FilmCatalogStore? store;
   final int? workId, season, rootId;
@@ -292,64 +296,103 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       }
       artwork = ClipRect(child: artwork);
     }
-    final content = Stack(
-      children: [
-        artwork,
-        if (blocked && widget.canReveal && !widget.revealBelow)
-          Positioned.fill(
-            child: Center(
-              child: TextButton(
-                onPressed: reveal,
-                child: AppText(widget.revealLabel),
+    final unwatched =
+        widget.showStatus && _state?.status == FilmWatchStatus.unwatched;
+    final visibleFraction = showProgress ? fraction : null;
+    widget.onStatusDecoration?.call(
+      _WatchStatusDecoration.snapshot(unwatched, visibleFraction),
+    );
+    final content = _WatchStatusDecoration(
+      unwatched: unwatched,
+      fraction: visibleFraction,
+      reveal: blocked && widget.canReveal && !widget.revealBelow
+          ? Positioned.fill(
+              child: Center(
+                child: TextButton(
+                  onPressed: reveal,
+                  child: AppText(widget.revealLabel),
+                ),
               ),
-            ),
-          ),
-        if (widget.showStatus && _state?.status == FilmWatchStatus.unwatched)
-          Positioned(
-            top: 0,
-            right: 0,
-            child: IgnorePointer(
-              child: CustomPaint(
-                size: const Size(28, 28),
-                painter: _UnwatchedCorner(),
-              ),
-            ),
-          ),
-        if (showProgress)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: IgnorePointer(
-              child: LinearProgressIndicator(
-                value: fraction,
-                minHeight: _progressHeight,
-                color: Theme.of(context).colorScheme.primary,
-                backgroundColor: Colors.transparent,
-                borderRadius: BorderRadius.circular(_progressHeight / 2),
-                trackGap: 0,
-                stopIndicatorRadius: 0,
-              ),
-            ),
-          ),
-      ],
+            )
+          : null,
+      child: artwork,
     );
     if (!widget.revealBelow) {
       return widget.hoverSurface
           ? FilmPosterHoverSurface(blurred: blocked, child: content)
           : content;
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        content,
-        if (blocked && widget.canReveal)
-          TextButton(onPressed: reveal, child: AppText(widget.revealLabel))
-        else if (!blocked && widget.footer != null)
-          widget.footer!,
-      ],
+    return SkeletonLoadBoundary(
+      ready: !pendingOverview,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          content,
+          if (blocked && widget.canReveal)
+            TextButton(onPressed: reveal, child: AppText(widget.revealLabel))
+          else if (!blocked && widget.footer != null)
+            widget.footer!,
+        ],
+      ),
     );
   }
+}
+
+class _WatchStatusDecoration extends StatelessWidget {
+  const _WatchStatusDecoration({
+    required this.unwatched,
+    required this.fraction,
+    required this.child,
+    this.reveal,
+  });
+  final bool unwatched;
+  final double? fraction;
+  final Widget child;
+  final Widget? reveal;
+
+  // 飞行只持有装饰数值，不持有源 State 或重复查询观看状态。
+  static Widget Function(Widget) snapshot(bool unwatched, double? fraction) =>
+      (child) => _WatchStatusDecoration(
+        unwatched: unwatched,
+        fraction: fraction,
+        child: child,
+      );
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    children: [
+      child,
+      ?reveal,
+      if (unwatched)
+        Positioned(
+          top: 0,
+          right: 0,
+          child: IgnorePointer(
+            child: CustomPaint(
+              size: const Size(28, 28),
+              painter: _UnwatchedCorner(),
+            ),
+          ),
+        ),
+      if (fraction != null)
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: IgnorePointer(
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: _progressHeight,
+              color: Theme.of(context).colorScheme.primary,
+              backgroundColor: Colors.transparent,
+              borderRadius: BorderRadius.circular(_progressHeight / 2),
+              trackGap: 0,
+              stopIndicatorRadius: 0,
+            ),
+          ),
+        ),
+    ],
+  );
 }
 
 class _UnwatchedCorner extends CustomPainter {

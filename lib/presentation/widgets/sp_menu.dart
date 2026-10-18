@@ -70,6 +70,9 @@ class SPMenuSurface extends StatelessWidget {
   }
 }
 
+/// 当前菜单的全局锚点，用于关联触发控件的悬停状态。
+final spMenuAnchor = ValueNotifier<Offset?>(null);
+
 Future<T?> showSPMenu<T>({
   required BuildContext context,
   required RelativeRect position,
@@ -80,34 +83,50 @@ Future<T?> showSPMenu<T>({
   bool? requestFocus,
   Color? color,
   ShapeBorder? shape,
-}) => showMenu<T>(
-  context: context,
-  position: position,
-  useRootNavigator: useRootNavigator,
-  constraints: constraints,
-  requestFocus: requestFocus,
-  color: Colors.transparent,
-  surfaceTintColor: Colors.transparent,
-  elevation: 0,
-  shadowColor: Colors.transparent,
-  shape:
-      shape ??
-      const RoundedRectangleBorder(borderRadius: AppTheme.dropdownBorderRadius),
-  clipBehavior: Clip.antiAlias,
-  menuPadding: EdgeInsets.zero,
-  items: [
-    _SPMenuPanel<T>(
-      items,
-      initialValue: initialValue,
-      maxHeight: math.min(
-        constraints?.maxHeight ?? double.infinity,
-        MediaQuery.sizeOf(context).height -
-            MediaQuery.paddingOf(context).vertical -
-            32,
-      ),
-    ),
-  ],
-);
+}) async {
+  final overlay =
+      Navigator.of(
+            context,
+            rootNavigator: useRootNavigator,
+          ).overlay!.context.findRenderObject()!
+          as RenderBox;
+  final anchor = overlay.localToGlobal(Offset(position.left, position.top));
+  spMenuAnchor.value = anchor;
+  try {
+    return await showMenu<T>(
+      context: context,
+      position: position,
+      useRootNavigator: useRootNavigator,
+      constraints: constraints,
+      requestFocus: requestFocus,
+      color: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      shadowColor: Colors.transparent,
+      shape:
+          shape ??
+          const RoundedRectangleBorder(
+            borderRadius: AppTheme.dropdownBorderRadius,
+          ),
+      clipBehavior: Clip.antiAlias,
+      menuPadding: EdgeInsets.zero,
+      items: [
+        _SPMenuPanel<T>(
+          items,
+          initialValue: initialValue,
+          maxHeight: math.min(
+            constraints?.maxHeight ?? double.infinity,
+            MediaQuery.sizeOf(context).height -
+                MediaQuery.paddingOf(context).vertical -
+                32,
+          ),
+        ),
+      ],
+    );
+  } finally {
+    if (identical(spMenuAnchor.value, anchor)) spMenuAnchor.value = null;
+  }
+}
 
 class _SPMenuPanel<T> extends PopupMenuEntry<T> {
   const _SPMenuPanel(this.items, {this.initialValue, required this.maxHeight});

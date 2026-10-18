@@ -1,4 +1,5 @@
 import '../widgets/transition_content.dart';
+import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
 import 'film_playlist_page.dart';
 import 'film_library_shell.dart';
@@ -696,164 +697,177 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                     ),
                   ),
                 ),
-              Padding(
-                padding: EdgeInsets.only(left: widget.sidebarInset),
-                child: Theme(
-                  data: Theme.of(context).copyWith(
-                    inputDecorationTheme: Theme.of(context).inputDecorationTheme
-                        .copyWith(
-                          fillColor: Theme.of(context).colorScheme.surface
-                              .withValues(
-                                alpha:
-                                    Theme.of(context).brightness ==
-                                        Brightness.dark
-                                    ? .28
-                                    : .64,
-                              ),
-                        ),
-                  ),
-                  child: Scaffold(
-                    backgroundColor: Colors.transparent,
-                    appBar: AppBar(
-                      toolbarHeight: _toolbarHeight(c),
-                      titleSpacing: AppTheme.pageInset,
-                      backgroundColor: Colors.transparent,
-                      shape: const Border(),
-                      title: MediaQuery(
-                        data: MediaQuery.of(context),
-                        child: _toolbar(c, switching),
-                      ),
-                    ),
-                    body: IgnorePointer(
-                      ignoring: switching,
-                      child: ExcludeFocus(
-                        excluding: switching,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            StreamPathTransitionBuilder(
-                              listenable: c.taskChanges,
-                              builder: (context) =>
-                                  c.busy || c.scraping || c.scrapeError != null
-                                  ? Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: AppTheme.pageInset,
-                                      ),
-                                      child: SizedBox(
-                                        height: 44,
-                                        child: FilmCatalogTasks(
-                                          catalog: c,
-                                          compact: true,
-                                        ),
-                                      ),
-                                    )
-                                  : const SizedBox.shrink(),
-                            ),
-                            if (state.hasError ||
-                                c.error != null ||
-                                syncError != null)
-                              Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: AppText(
-                                  filmCatalogErrorText(
-                                    state.hasError
-                                        ? 'catalogStorageFailed'
-                                        : c.error ?? syncError!,
-                                  ),
-                                  style: TextStyle(
-                                    color: Theme.of(context).colorScheme.error,
-                                  ),
+              FilmConnectedHomeContent(
+                child: Padding(
+                  padding: EdgeInsets.only(left: widget.sidebarInset),
+                  child: Theme(
+                    data: Theme.of(context).copyWith(
+                      inputDecorationTheme: Theme.of(context)
+                          .inputDecorationTheme
+                          .copyWith(
+                            fillColor: Theme.of(context).colorScheme.surface
+                                .withValues(
+                                  alpha:
+                                      Theme.of(context).brightness ==
+                                          Brightness.dark
+                                      ? .28
+                                      : .64,
                                 ),
-                              ),
-                            Expanded(
-                              child: IndexedStack(
-                                index: _browse ? 1 : 0,
-                                children: [
-                                  DirectoryScrollView(
-                                    controller: _homeScroll,
-                                    builder: (_) => CustomScrollView(
-                                      key: const Key('film-home-scroll'),
-                                      controller: _homeScroll,
-                                      slivers: [
-                                        SliverPadding(
-                                          padding: AppTheme.pagePadding,
-                                          sliver: SliverMainAxisGroup(
-                                            slivers: [
-                                              for (final section
-                                                  in c.homeSections.where(
-                                                    (s) => s.enabled,
-                                                  ))
-                                                SliverToBoxAdapter(
-                                                  key: ValueKey(section.id),
-                                                  child: _homeSection(
-                                                    c,
-                                                    section,
-                                                  ),
-                                                ),
-                                              if (!c.loading &&
-                                                  c.works.isEmpty &&
-                                                  c.enabledRoots.isEmpty)
-                                                const SliverToBoxAdapter(
-                                                  child: ImmersiveEmptyState(
-                                                    icon: SPIcons.movies,
-                                                    title: '暂无已匹配作品',
-                                                    description:
-                                                        '暂无已匹配作品，请添加影视目录并整理文件',
-                                                  ),
-                                                ),
-                                            ],
+                          ),
+                    ),
+                    child: Scaffold(
+                      backgroundColor: Colors.transparent,
+                      appBar: AppBar(
+                        toolbarHeight: _toolbarHeight(c),
+                        titleSpacing: AppTheme.pageInset,
+                        backgroundColor: Colors.transparent,
+                        shape: const Border(),
+                        title: MediaQuery(
+                          data: MediaQuery.of(context),
+                          child: _toolbar(c, switching),
+                        ),
+                      ),
+                      body: IgnorePointer(
+                        ignoring: switching,
+                        child: ExcludeFocus(
+                          excluding: switching,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              StreamPathTransitionBuilder(
+                                listenable: c.taskChanges,
+                                builder: (context) =>
+                                    c.busy ||
+                                        c.scraping ||
+                                        c.scrapeError != null
+                                    ? Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: AppTheme.pageInset,
+                                        ),
+                                        child: SizedBox(
+                                          height: 44,
+                                          child: FilmCatalogTasks(
+                                            catalog: c,
+                                            compact: true,
                                           ),
                                         ),
-                                      ],
+                                      )
+                                    : const SizedBox.shrink(),
+                              ),
+                              if (state.hasError ||
+                                  c.error != null ||
+                                  syncError != null)
+                                Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: AppText(
+                                    filmCatalogErrorText(
+                                      state.hasError
+                                          ? 'catalogStorageFailed'
+                                          : c.error ?? syncError!,
+                                    ),
+                                    style: TextStyle(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.error,
                                     ),
                                   ),
-                                  !_browse
-                                      ? const SizedBox.shrink()
-                                      : c.works.isEmpty && c.loading
-                                      ? const SizedBox.shrink()
-                                      : c.works.isEmpty
-                                      ? DirectoryScrollView(
-                                          controller: _scroll,
-                                          builder: (controller) => ListView(
-                                            controller: controller,
-                                            children: const [
-                                              ImmersiveEmptyState(
-                                                icon: SPIcons.movies,
-                                                title: '暂无已匹配作品',
-                                                description:
-                                                    '暂无已匹配作品，请添加影视目录并整理文件',
-                                              ),
-                                            ],
+                                ),
+                              Expanded(
+                                child: IndexedStack(
+                                  index: _browse ? 1 : 0,
+                                  children: [
+                                    DirectoryScrollView(
+                                      controller: _homeScroll,
+                                      builder: (_) => CustomScrollView(
+                                        key: const Key('film-home-scroll'),
+                                        controller: _homeScroll,
+                                        slivers: [
+                                          SliverPadding(
+                                            padding: AppTheme.pagePadding,
+                                            sliver: SliverMainAxisGroup(
+                                              slivers: [
+                                                for (final section
+                                                    in c.homeSections.where(
+                                                      (s) => s.enabled,
+                                                    ))
+                                                  SliverToBoxAdapter(
+                                                    key: ValueKey(section.id),
+                                                    child: _homeSection(
+                                                      c,
+                                                      section,
+                                                    ),
+                                                  ),
+                                                if (!c.loading &&
+                                                    c.works.isEmpty &&
+                                                    c.enabledRoots.isEmpty)
+                                                  const SliverToBoxAdapter(
+                                                    child: ImmersiveEmptyState(
+                                                      icon: SPIcons.movies,
+                                                      title: '暂无已匹配作品',
+                                                      description:
+                                                          '暂无已匹配作品，请添加影视目录并整理文件',
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
                                           ),
-                                        )
-                                      : NotificationListener<
-                                          ScrollMetricsNotification
-                                        >(
-                                          onNotification: (_) {
-                                            _schedulePrefetch();
-                                            return false;
-                                          },
-                                          child: FilmPosterGrid(
-                                            store: c.store,
-                                            rootId: c.rootId,
-                                            works: c.works,
-                                            cache: c.images,
+                                        ],
+                                      ),
+                                    ),
+                                    !_browse
+                                        ? const SizedBox.shrink()
+                                        : c.works.isEmpty && c.loading
+                                        ? const SizedBox.shrink()
+                                        : c.works.isEmpty
+                                        ? DirectoryScrollView(
                                             controller: _scroll,
-                                            onOpen: (work) =>
-                                                _openWork(c, work),
-                                            onMenu: (work, position) =>
-                                                showFilmWorkMenu(
-                                                  context,
-                                                  catalog: c,
-                                                  work: work,
-                                                  position: position,
+                                            builder: (controller) => ListView(
+                                              controller: controller,
+                                              children: const [
+                                                ImmersiveEmptyState(
+                                                  icon: SPIcons.movies,
+                                                  title: '暂无已匹配作品',
+                                                  description:
+                                                      '暂无已匹配作品，请添加影视目录并整理文件',
                                                 ),
+                                              ],
+                                            ),
+                                          )
+                                        : NotificationListener<
+                                            ScrollMetricsNotification
+                                          >(
+                                            onNotification: (_) {
+                                              _schedulePrefetch();
+                                              return false;
+                                            },
+                                            child: FilmPosterGrid(
+                                              store: c.store,
+                                              rootId: c.rootId,
+                                              works: c.works,
+                                              cache: c.images,
+                                              controller: _scroll,
+                                              onOpen: (work) =>
+                                                  _openWork(c, work),
+                                              onOpenPoster: (work, poster) =>
+                                                  _openWork(
+                                                    c,
+                                                    work,
+                                                    poster: poster,
+                                                  ),
+                                              onMenu: (work, position) =>
+                                                  showFilmWorkMenu(
+                                                    context,
+                                                    catalog: c,
+                                                    work: work,
+                                                    position: position,
+                                                  ),
+                                            ),
                                           ),
-                                        ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -866,30 +880,38 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       );
     },
   );
-  Future<void> _openWork(FilmCatalogController c, FilmWork work) async {
+  Future<void> _openWork(
+    FilmCatalogController c,
+    FilmWork work, {
+    FilmPosterAnchor? poster,
+  }) async {
+    if (_detailRoute != null) return;
     final chrome = context.read<ValueNotifier<double?>?>();
     chrome?.value = 0;
-    final route = MaterialPageRoute<void>(
-      builder: (_) => StreamPathTransitionContent(
-        shellBuilder: (_) => const StreamPathPageShell(),
-        contentBuilder: (_) => FilmDetailPage(
-          catalog: c,
-          workId: work.id,
-          initialWork: work,
-          onOpenItem: widget.onOpenItem,
-          onContinueSelected: widget.onContinueSelected,
-          onContinueMenu: widget.onContinueMenu,
-        ),
-      ),
+    Widget detail(BuildContext context) => FilmDetailPage(
+      catalog: c,
+      workId: work.id,
+      initialWork: work,
+      onOpenItem: widget.onOpenItem,
+      onContinueSelected: widget.onContinueSelected,
+      onContinueMenu: widget.onContinueMenu,
     );
+    final route = poster != null
+        ? FilmConnectedDetailRoute(poster: poster, builder: detail)
+        : MaterialPageRoute<void>(
+            builder: (_) => StreamPathTransitionContent(
+              shellBuilder: (_) => const StreamPathPageShell(),
+              contentBuilder: detail,
+            ),
+          );
     _detailRoute = route;
     await Navigator.of(context).push(route);
     await route.completed;
-    if (mounted &&
-        _detailRoute == route &&
-        ModalRoute.of(context)?.isActive == true) {
+    if (mounted && _detailRoute == route) {
       _detailRoute = null;
-      chrome?.value = _featuredRoute?.isActive == true ? 0 : null;
+      if (ModalRoute.of(context)?.isActive == true) {
+        chrome?.value = _featuredRoute?.isActive == true ? 0 : null;
+      }
     }
   }
 
@@ -918,11 +940,13 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       c.refresh(home: false);
     },
     builder: (_, i) => FilmWorkCard(
+      key: ValueKey((sectionId, title, works[i].id)),
       store: c.store,
       sourceIds: c.sourceId == null ? null : {c.sourceId!},
       work: works[i],
       cache: c.images,
       onTap: () => _openWork(c, works[i]),
+      onOpenPoster: (poster) => _openWork(c, works[i], poster: poster),
       onMenu: (position) => showFilmWorkMenu(
         context,
         catalog: c,

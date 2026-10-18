@@ -11,7 +11,9 @@ import '../localization/app_localizations.dart';
 import '../theme/app_theme.dart';
 import 'film_logo_layout.dart';
 import 'sp_icons.dart';
+import 'sp_menu.dart';
 import 'cinematic_states.dart';
+import 'skeleton_scope.dart';
 
 /// 固定卡片命中区域；仅 FilmPosterHoverSurface 内的海报参与动效。
 class FilmPosterHover extends StatefulWidget {
@@ -31,6 +33,8 @@ class FilmPosterHover extends StatefulWidget {
 class _FilmPosterHoverState extends State<FilmPosterHover>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _hovered = false;
+  bool _menuOpen = false;
 
   @override
   void initState() {
@@ -40,9 +44,25 @@ class _FilmPosterHoverState extends State<FilmPosterHover>
       duration: AppTheme.hoverDuration,
       value: widget.hovered == true ? 1 : 0,
     );
+    spMenuAnchor.addListener(_menuChanged);
+  }
+
+  void _menuChanged() {
+    final anchor = spMenuAnchor.value;
+    final hovered = widget.hovered ?? _hovered;
+    if (!hovered && !_menuOpen) return;
+    var menuOpen = false;
+    if (anchor != null && hovered) {
+      final box = context.findRenderObject()! as RenderBox;
+      menuOpen = (Offset.zero & box.size).contains(box.globalToLocal(anchor));
+    }
+    if (_menuOpen == menuOpen) return;
+    _menuOpen = menuOpen;
+    if (!menuOpen) _animate(widget.hovered ?? _hovered);
   }
 
   void _animate(bool hovered) {
+    if (_menuOpen) return;
     _controller.animateTo(
       hovered ? 1 : 0,
       duration: AppTheme.hoverDuration,
@@ -60,6 +80,7 @@ class _FilmPosterHoverState extends State<FilmPosterHover>
 
   @override
   void dispose() {
+    spMenuAnchor.removeListener(_menuChanged);
     _controller.dispose();
     super.dispose();
   }
@@ -74,8 +95,14 @@ class _FilmPosterHoverState extends State<FilmPosterHover>
     return widget.hovered != null
         ? content
         : MouseRegion(
-            onEnter: (_) => _animate(true),
-            onExit: (_) => _animate(false),
+            onEnter: (_) {
+              _hovered = true;
+              _animate(true);
+            },
+            onExit: (_) {
+              _hovered = false;
+              _animate(false);
+            },
             child: content,
           );
   }
@@ -238,6 +265,7 @@ class FilmArtwork extends StatefulWidget {
     this.logoGlyphSize,
     this.fallbackPath,
     this.showCachedImmediately = false,
+    this.provider,
   }) : assert(logoGlyphSize == null || transparent);
   final FilmCatalogImageCache cache;
   final String? path;
@@ -255,13 +283,16 @@ class FilmArtwork extends StatefulWidget {
 
   /// 作品与合集海报同步命中时跳过渐显，其他图片保留原策略。
   final bool showCachedImmediately;
+
+  /// 共享元素在运动期间复用源封面，静止后恢复原目标尺寸。
+  final ImageProvider<Object>? provider;
   @override
   State<FilmArtwork> createState() => _FilmArtworkState();
 }
 
 class _FilmArtworkState extends State<FilmArtwork> {
   Future<File>? _image;
-  void _load() => _image = widget.path == null
+  void _load() => _image = widget.path == null || widget.provider != null
       ? null
       : widget.cache.get(widget.path!, target: widget.target);
 
@@ -276,7 +307,8 @@ class _FilmArtworkState extends State<FilmArtwork> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.cache != widget.cache ||
         oldWidget.path != widget.path ||
-        oldWidget.target != widget.target) {
+        oldWidget.target != widget.target ||
+        oldWidget.provider != widget.provider) {
       _load();
     }
   }
@@ -291,37 +323,50 @@ class _FilmArtworkState extends State<FilmArtwork> {
         color: widget.transparent
             ? Colors.transparent
             : Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: FutureBuilder<File>(
-          key: ValueKey((widget.cache, widget.path, widget.target)),
-          future: _image,
-          initialData: known,
-          builder: (context, state) {
-            final fallback = state.hasError ? null : _readyFallback();
-            final file = state.data;
-            if (file != null || fallback != null) {
-              final provider = file != null
-                  ? filmArtworkProvider(file, target: widget.target)
-                  : fallback!;
-              return _renderImage(
-                provider,
-                fallback: fallback,
-                fit: widget.transparent ? BoxFit.contain : BoxFit.cover,
-                alignment: widget.transparent
-                    ? Alignment.centerLeft
-                    : Alignment.center,
-              );
-            }
-            if (widget.logoGlyphSize != null &&
-                widget.path != null &&
-                !state.hasError) {
-              return const SizedBox.expand();
-            }
-            if (!widget.transparent && widget.path != null && !state.hasError) {
-              return const CinematicSkeleton(showLines: false);
-            }
-            return _placeholder(retry: state.hasError);
-          },
-        ),
+        child: widget.provider != null
+            ? _renderImage(widget.provider!, fit: BoxFit.cover)
+            : FutureBuilder<File>(
+                key: ValueKey((widget.cache, widget.path, widget.target)),
+                future: _image,
+                initialData: known,
+                builder: (context, state) {
+                  final fallback = state.hasError ? null : _readyFallback();
+                  final file = state.data;
+                  if (file != null || fallback != null) {
+                    final provider = file != null
+                        ? filmArtworkProvider(file, target: widget.target)
+                        : fallback!;
+                    return _renderImage(
+                      provider,
+                      fallback: fallback,
+                      fit: widget.transparent ? BoxFit.contain : BoxFit.cover,
+                      alignment: widget.transparent
+                          ? Alignment.centerLeft
+                          : Alignment.center,
+                    );
+                  }
+                  if (widget.logoGlyphSize != null &&
+                      widget.path != null &&
+                      !state.hasError) {
+                    return const SkeletonLoadBoundary(
+                      ready: false,
+                      child: SizedBox.expand(),
+                    );
+                  }
+                  if (!widget.transparent &&
+                      widget.path != null &&
+                      !state.hasError) {
+                    return const SkeletonLoadBoundary(
+                      ready: false,
+                      child: CinematicSkeleton(showLines: false),
+                    );
+                  }
+                  return SkeletonLoadBoundary(
+                    ready: widget.path == null || state.hasError,
+                    child: _placeholder(retry: state.hasError),
+                  );
+                },
+              ),
       ),
     );
     return SizedBox(
@@ -378,7 +423,10 @@ class _FilmArtworkState extends State<FilmArtwork> {
       filterQuality: filterQuality,
       frameBuilder: (context, child, frame, synchronouslyLoaded) {
         if (!widget.transparent && frame == null && fallback == null) {
-          return const CinematicSkeleton(showLines: false);
+          return const SkeletonLoadBoundary(
+            ready: false,
+            child: CinematicSkeleton(showLines: false),
+          );
         }
         final image = frame != null || fallback == null
             ? child
@@ -389,15 +437,23 @@ class _FilmArtworkState extends State<FilmArtwork> {
                 filterQuality: filterQuality,
               );
         if (widget.transparent) {
-          return _logoOutline(context, image);
+          return SkeletonLoadBoundary(
+            ready: frame != null,
+            child: _logoOutline(context, image),
+          );
         }
-        return (widget.showCachedImmediately
-            ? filmPosterFrameBuilder
-            : filmCoverFrameBuilder)(
-          context,
-          image,
-          frame ?? (fallback == null ? null : 0),
-          synchronouslyLoaded,
+        if (widget.showCachedImmediately && fallback != null) return image;
+        return SkeletonLoadBoundary(
+          ready: frame != null || fallback != null,
+          child:
+              (widget.showCachedImmediately
+              ? filmPosterFrameBuilder
+              : filmCoverFrameBuilder)(
+                context,
+                image,
+                frame ?? (fallback == null ? null : 0),
+                synchronouslyLoaded,
+              ),
         );
       },
       errorBuilder: (_, _, _) => _placeholder(retry: true),

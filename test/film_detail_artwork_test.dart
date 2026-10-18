@@ -1,4 +1,7 @@
 import 'package:streampath/presentation/widgets/transition_content.dart';
+import 'package:streampath/presentation/widgets/film_connected_transition.dart';
+import 'package:streampath/presentation/widgets/skeleton_scope.dart';
+import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -10,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -29,6 +33,8 @@ import 'package:streampath/presentation/pages/film_library_page.dart';
 import 'package:streampath/presentation/pages/film_library_shell.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/presentation/theme/window_appearance_status.dart';
+import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_library_background.dart';
@@ -56,7 +62,7 @@ void main() {
   late PlaybackProgressService progress;
   late List<FilmWork> works;
 
-  Future<void> prepare(WidgetTester tester) async {
+  Future<void> prepare(WidgetTester tester, {int count = 3}) async {
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -91,7 +97,7 @@ void main() {
       final root = (await catalog.store.root(rootId))!;
       final generation = await catalog.store.beginScan(rootId);
       await catalog.store.stage(root, generation, [
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < count; i++)
           FilmScanEntry(
             path: '$i.mkv',
             parentPath: '',
@@ -118,7 +124,7 @@ void main() {
       image.dispose();
       picture.dispose();
       await catalog.images.directory.create(recursive: true);
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < count; i++) {
         await catalog.store.bind(
           [resources[i]],
           FilmWork(
@@ -177,6 +183,206 @@ void main() {
     value: app,
     child: MaterialApp(theme: AppTheme.dark(), home: home),
   );
+
+  testWidgets('详情骨架覆盖原布局，缓存命中也不会闪现，替换保留正文 State', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: original.title,
+          originalTitle: 'Original film title',
+          overview: 'A synopsis that fills the existing overview area. ' * 20,
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          year: 2026,
+          metadata: {
+            ...original.metadata,
+            'vote_average': 8.5,
+            'runtime': 90,
+            'genres': ['Animation', 'Adventure'],
+            'credits': {
+              'cast': [
+                for (var i = 0; i < 12; i++)
+                  {
+                    'id': i + 1,
+                    'name': 'Actor $i',
+                    'character': 'Character $i',
+                  },
+              ],
+            },
+          },
+        ),
+      );
+      works = await catalog.store.works(type: null);
+    });
+    final imageKey = GlobalKey();
+    await tester.pumpWidget(
+      frame(
+        RepaintBoundary(
+          key: imageKey,
+          child: FilmDetailPage(
+            catalog: catalog,
+            workId: original.id,
+            initialWork: works.single,
+            onOpenItem: (_) async {},
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    final detailRoute = ModalRoute.of(
+      tester.element(find.byType(FilmDetailPage)),
+    )!;
+    final avatar = find
+        .byWidgetPredicate(
+          (w) =>
+              w is SkeletonRegion &&
+              w.borderRadius == BorderRadius.circular(999),
+        )
+        .first;
+    await tester.tap(avatar, warnIfMissed: false);
+    await tester.pump();
+    expect(
+      detailRoute.isCurrent,
+      isTrue,
+      reason: 'Skeleton avatars must not open a related page',
+    );
+    final regions = <String, Rect>{};
+    for (final name in [
+      'logo',
+      'original-title',
+      'metadata',
+      'genres',
+      'actions',
+      'overview',
+    ]) {
+      final region = find.byKey(Key('film-skeleton-$name'));
+      final block = find.descendant(
+        of: region,
+        matching: find.byType(CinematicSkeleton),
+      );
+      expect(block, findsOneWidget);
+      regions[name] = tester.getRect(region);
+      expect(tester.getRect(block), regions[name]);
+      expect(
+        tester.widget<CinematicSkeleton>(block).borderRadius,
+        AppTheme.controlRadius,
+      );
+    }
+    final logo = find.byWidgetPredicate(
+      (w) => w is FilmArtwork && w.transparent,
+    );
+    final logoState = tester.state(logo);
+    Future<void> capture(String name) async {
+      await tester.runAsync(() async {
+        final boundary =
+            imageKey.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary;
+        final image = await boundary.toImage();
+        final png = await image.toByteData(format: ui.ImageByteFormat.png);
+        final directory = Directory('build/detail-skeleton')
+          ..createSync(recursive: true);
+        await File(
+          p.join(directory.path, '$name.png'),
+        ).writeAsBytes(png!.buffer.asUint8List());
+        image.dispose();
+      });
+    }
+
+    await capture('widget-skeleton');
+    await tester.pump(const Duration(milliseconds: 450));
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('film-skeleton-logo')),
+        matching: find.byType(CinematicSkeleton),
+      ),
+      findsOneWidget,
+    );
+    await settle(tester);
+    expect(find.byType(CinematicSkeleton), findsNothing);
+    expect(tester.state(logo), same(logoState));
+    for (final entry in regions.entries) {
+      expect(
+        tester.getRect(find.byKey(Key('film-skeleton-${entry.key}'))),
+        entry.value,
+      );
+    }
+    await capture('widget-content');
+    expect(find.byType(SkeletonScope), findsOneWidget);
+    await tester.tap(avatar);
+    await settle(tester);
+    expect(find.byType(FilmRelatedPage), findsOneWidget);
+    Navigator.of(tester.element(find.byType(FilmRelatedPage))).pop();
+    await settle(tester);
+    expect(find.byType(CinematicSkeleton), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('详情骨架适配四语言、明暗与材质主题、窄窗及双倍字号', (tester) async {
+    await prepare(tester, count: 1);
+    const locales = [
+      Locale('zh', 'CN'),
+      Locale('zh', 'TW'),
+      Locale('ja'),
+      Locale('en'),
+    ];
+    for (var i = 0; i < 8; i++) {
+      final light = i.isOdd;
+      final theme = (light ? AppTheme.light : AppTheme.dark)(
+        glass: i % 3 != 0,
+        windowBackdrop: i % 3 == 1
+            ? WindowBackdropType.systemAcrylic
+            : WindowBackdropType.mica,
+      );
+      tester.view.physicalSize = i < 4
+          ? const Size(1280, 900)
+          : const Size(760, 1100);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            key: ValueKey(i),
+            theme: theme,
+            locale: locales[i % 4],
+            supportedLocales: locales,
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(i < 4 ? 1 : 2)),
+              child: child!,
+            ),
+            home: FilmDetailPage(
+              catalog: catalog,
+              workId: works.single.id,
+              initialWork: works.single,
+              onOpenItem: (_) async {},
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(CinematicSkeleton), findsWidgets);
+      expect(tester.takeException(), isNull, reason: 'Skeleton case $i');
+      await settle(tester);
+      expect(find.byType(CinematicSkeleton), findsNothing);
+      expect(tester.takeException(), isNull, reason: 'Content case $i');
+    }
+  });
 
   testWidgets('season hover stays inside its fixed selection frame', (
     tester,
@@ -237,6 +443,25 @@ void main() {
         ),
       ),
     );
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    for (final heading in [find.text('季'), find.text('第 1 季')]) {
+      expect(heading, findsWidgets);
+      for (final element in heading.evaluate()) {
+        expect(
+          find.ancestor(
+            of: find.byWidget(element.widget),
+            matching: find.byType(SkeletonRegion),
+          ),
+          findsWidgets,
+        );
+      }
+    }
+    expect(find.byType(CinematicSkeleton), findsWidgets);
     await settle(tester);
     final season = find.byKey(const ValueKey('film-season-1'));
     await tester.ensureVisible(season);
@@ -1636,7 +1861,7 @@ void main() {
     });
   }
 
-  testWidgets('自定义主页背景在切页和返回中保持原帧，轻壳没有顶栏或占位块', (tester) async {
+  testWidgets('共享封面背景交叉过渡保留主页帧，不绘制切页占位块', (tester) async {
     await prepare(tester);
     await tester.runAsync(() async {
       final background = await catalog.images.cached(
@@ -1680,7 +1905,7 @@ void main() {
       image.dispose();
       return result;
     }))!;
-    final baseline = await pixel();
+    var previousPixel = await pixel();
     PaintingBinding.instance.imageCache.clear();
     Future<void> checkFrames(int count) async {
       for (var frame = 0; frame < count; frame++) {
@@ -1689,24 +1914,21 @@ void main() {
         expect(tester.widget<RawImage>(sharp).image, same(decoded));
         final current = await pixel();
         for (var channel = 0; channel < 4; channel++) {
-          expect(current[channel], closeTo(baseline[channel], 2));
+          expect(
+            (current[channel] - previousPixel[channel]).abs(),
+            lessThanOrEqualTo(48),
+          );
         }
+        previousPixel = current;
       }
     }
 
     await tester.tap(find.byType(FilmWorkCard).first);
     await tester.pump();
     await checkFrames(12);
-    final shell = tester.widget<Scaffold>(
-      find.descendant(
-        of: find.byType(StreamPathPageShell),
-        matching: find.byType(Scaffold),
-      ),
-    );
-    expect(shell.appBar, isNull);
-    expect(shell.body, isNull);
-    expect(shell.backgroundColor, Colors.transparent);
-    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(find.byType(StreamPathPageShell), findsNothing);
+    expect(find.byType(FilmDetailPage), findsOneWidget);
+    expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
     await settle(tester);
     Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
     await tester.pump();
@@ -1716,7 +1938,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('点击立即导航，轻壳后加载原图且首张背景静态显示', (tester) async {
+  testWidgets('共享封面立即导航，飞行后加载原图并渐显首张背景', (tester) async {
     await prepare(tester);
     await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
     await settle(tester);
@@ -1736,7 +1958,7 @@ void main() {
           .untracked,
       isTrue,
     );
-    // 使用生产 Windows 路由契约，正文在结束帧后挂载。
+    // 已解码封面先进入共享路由，大图和资源在飞行后准备。
     await tester.pumpWidget(
       ChangeNotifierProvider<AppState>.value(
         value: app,
@@ -1750,8 +1972,9 @@ void main() {
     await tester.tap(find.byType(FilmWorkCard).first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.byType(StreamPathPageShell), findsOneWidget);
-    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(find.byType(StreamPathPageShell), findsNothing);
+    expect(find.byType(FilmDetailPage), findsOneWidget);
+    expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
     expect(backdropImages(), findsNothing);
     await settle(tester);
     final images = tester.widgetList<RawImage>(backdropImages()).toList();
@@ -1827,8 +2050,9 @@ void main() {
       await tester.tap(card);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(find.byType(StreamPathPageShell), findsOneWidget);
-      expect(find.byType(FilmDetailPage), findsNothing);
+      expect(find.byType(StreamPathPageShell), findsNothing);
+      expect(find.byType(FilmDetailPage), findsOneWidget);
+      expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
       expect(
         PaintingBinding.instance.imageCache.statusForKey(provider).untracked,
         isTrue,
@@ -1836,7 +2060,7 @@ void main() {
       await settle(tester);
       final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
       expect(route, isA<MaterialPageRoute<void>>());
-      expect(route.transitionDuration, const Duration(milliseconds: 220));
+      expect(route.transitionDuration, const Duration(milliseconds: 420));
       expect(
         PaintingBinding.instance.imageCache.statusForKey(provider).keepAlive,
         isTrue,
@@ -1908,6 +2132,726 @@ void main() {
     stdout.writeln(
       'IMAGE_CACHE_20_CYCLES initial_bytes=$initialBytes final_bytes=${cache.currentSizeBytes} live=${cache.liveImageCount} pending=${cache.pendingImageCount}',
     );
+  });
+
+  testWidgets('共享详情在骨架最短停留期间返回，不在反向运动中揭示正文', (tester) async {
+    await prepare(tester, count: 1);
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('daily_selection', {
+        'date': DateTime.now().toIso8601String().substring(0, 10),
+        'ids': [works.single.id],
+      });
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    await tester.tap(
+      find
+          .byWidgetPredicate(
+            (w) => w is FilmWorkCard && w.work.id == works.single.id,
+          )
+          .first,
+    );
+    await tester.pump();
+    await tester.pump();
+    final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
+    expect(route, isA<FilmConnectedDetailRoute>());
+    await tester.pump(const Duration(milliseconds: 420));
+    await tester.pump();
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+    }
+    expect(
+      tester.widget<SkeletonScope>(find.byType(SkeletonScope)).ready,
+      isTrue,
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 160));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(route.animation!.status, AnimationStatus.reverse);
+    final region = find.byKey(const Key('film-skeleton-logo'));
+    final opacity = tester
+        .widget<Opacity>(
+          find.descendant(of: region, matching: find.byType(Opacity)).first,
+        )
+        .opacity;
+    expect(
+      opacity,
+      0,
+      reason: 'Pending content must stay concealed while returning',
+    );
+    expect(
+      find.descendant(of: region, matching: find.byType(CinematicSkeleton)),
+      findsOneWidget,
+    );
+    await settle(tester);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final dpr in [1.0, 1.5, 2.0]) {
+    testWidgets('共享封面：每日精选最右侧进入与返回 DPR=$dpr', (tester) async {
+      await prepare(tester, count: 20);
+      await tester.runAsync(() async {
+        await catalog.store.setPreference('daily_selection', {
+          'date': DateTime.now().toIso8601String().substring(0, 10),
+          'ids': works.take(10).map((w) => w.id).toList(),
+        });
+        await catalog.refresh();
+      });
+      tester.view.devicePixelRatio = dpr;
+      tester.view.physicalSize = Size(1280 * dpr, 900 * dpr);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+            builder: (_, child) => RepaintBoundary(
+              key: const Key('connected-frame'),
+              child: child!,
+            ),
+            home: const FilmLibraryShell(sidebarInset: 64),
+          ),
+        ),
+      );
+      await settle(tester);
+      final shelf = find.byWidgetPredicate(
+        (w) => w is FilmShelf && w.title == '每日精选',
+      );
+      final cards = find.descendant(
+        of: shelf,
+        matching: find.byType(FilmWorkCard),
+      );
+      final visible = cards.evaluate().where((e) {
+        final rect = tester.getRect(find.byWidget(e.widget));
+        return rect.left >= 64 && rect.right <= 1280 && rect.bottom <= 900;
+      }).toList();
+      expect(visible.length, greaterThan(3));
+      final card = find.byWidget(visible.last.widget);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(card));
+      await settle(tester);
+      final sourceHero = find.descendant(of: card, matching: find.byType(Hero));
+      final sourceTag = tester.widget<Hero>(sourceHero).tag;
+      final sourceArtwork = find.descendant(
+        of: card,
+        matching: find.byType(FilmArtwork),
+      );
+      final sourceState = tester.state(sourceArtwork);
+      final start = tester.getRect(sourceHero);
+      final points = [
+        Offset(start.right - 8, start.top + 8),
+        Offset(start.right - 8, start.top + 100),
+        start.center,
+      ];
+      Future<List<int>> sampleCover([List<Offset>? locations]) async =>
+          (await tester.runAsync(() async {
+            final boundary = tester.renderObject<RenderRepaintBoundary>(
+              find.byKey(const Key('connected-frame')),
+            );
+            final image = await boundary.toImage();
+            final bytes = (await image.toByteData(
+              format: ui.ImageByteFormat.rawRgba,
+            ))!.buffer.asUint8List();
+            final result = <int>[];
+            for (final point in locations ?? points) {
+              final offset =
+                  (point.dy.floor() * image.width + point.dx.floor()) * 4;
+              result.addAll(bytes.sublist(offset, offset + 4));
+            }
+            image.dispose();
+            return result;
+          }))!;
+      final sourcePixels = await sampleCover();
+      final work = tester.widget<FilmWorkCard>(card).work;
+      expect(start.right, greaterThan(1200));
+      await tester.tap(card);
+      await tester.pump();
+      await tester.pump();
+      final flight = find.byKey(const Key('film-connected-flight'));
+      expect(flight, findsOneWidget);
+      final first = tester.getRect(flight);
+      expect(
+        StreamPathTransitionScope.read(
+          tester.element(find.byType(FilmLibraryPage, skipOffstage: false)),
+        ),
+        isTrue,
+      );
+      final flightPixels = await sampleCover();
+      for (var channel = 0; channel < sourcePixels.length; channel++) {
+        expect(
+          flightPixels[channel],
+          closeTo(sourcePixels[channel], 6),
+          reason:
+              'Poster, watch marker and rail edge must hand over in the same frame',
+        );
+      }
+      expect(first.left, closeTo(start.left, .5));
+      expect(first.top, closeTo(start.top, .5));
+      expect(first.width, closeTo(start.width, .5));
+      expect(
+        find.ancestor(of: flight, matching: find.byType(Scrollable)),
+        findsNothing,
+      );
+      final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
+      expect(route, isA<FilmConnectedDetailRoute>());
+      expect(route.transitionDuration.inMilliseconds, 420);
+      expect(backdropImages(), findsNothing);
+      await tester.pump(const Duration(milliseconds: 210));
+      final middle = tester.getRect(flight);
+      expect(middle.left, lessThan(start.left));
+      expect(middle.left, greaterThan(24));
+      await tester.pump(const Duration(milliseconds: 210));
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(route.animation!.status, AnimationStatus.completed);
+      await tester.pump();
+      for (var frame = 0; frame < 4; frame++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump();
+        final center = tester.getCenter(
+          find.byKey(const Key('film-detail-poster')),
+        );
+        final pixels = await sampleCover([center]);
+        for (var channel = 0; channel < 4; channel++) {
+          expect(
+            pixels[channel],
+            closeTo(sourcePixels[8 + channel], 6),
+            reason:
+                'The cached fallback must remain fully visible while upgrading the detail poster',
+          );
+        }
+      }
+      await settle(tester);
+      expect(flight, findsNothing);
+      final destination = tester.getRect(
+        find.byKey(const Key('film-detail-poster')),
+      );
+      expect(
+        StreamPathTransitionScope.read(
+          tester.element(find.byType(FilmLibraryPage, skipOffstage: false)),
+        ),
+        isFalse,
+      );
+      expect(destination, const Rect.fromLTWH(24, 68, 180, 270));
+      final nav = Navigator.of(tester.element(find.byType(FilmDetailPage)));
+      await mouse.moveTo(Offset.zero);
+      nav.pop();
+      await tester.pump();
+      await tester.pump();
+      expect(flight, findsOneWidget);
+      expect(tester.getRect(flight).left, closeTo(destination.left, .5));
+      await tester.pump(const Duration(milliseconds: 210));
+      expect(tester.getRect(flight).left, greaterThan(24));
+      await settle(tester);
+      expect(find.byType(FilmDetailPage), findsNothing);
+      expect(flight, findsNothing);
+      final returnedHero = find.byWidgetPredicate(
+        (w) => w is Hero && w.tag == sourceTag,
+      );
+      expect(
+        tester.state(
+          find.descendant(of: returnedHero, matching: find.byType(FilmArtwork)),
+        ),
+        same(sourceState),
+      );
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is FilmWorkCard && w.work.id == work.id,
+        ),
+        findsWidgets,
+      );
+      expect(tester.takeException(), isNull);
+      await mouse.removePointer();
+    });
+  }
+
+  testWidgets('共享封面：横纵滚动、重复点击、窗口变化、中途返回与源卡片消失', (tester) async {
+    await prepare(tester, count: 20);
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('daily_selection', {
+        'date': DateTime.now().toIso8601String().substring(0, 10),
+        'ids': works.take(10).map((w) => w.id).toList(),
+      });
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    final shelf = find.byWidgetPredicate(
+      (w) => w is FilmShelf && w.title == '每日精选',
+    );
+    final rail = tester
+        .widget<ListView>(
+          find.descendant(of: shelf, matching: find.byType(ListView)),
+        )
+        .controller!;
+    rail.jumpTo(rail.position.maxScrollExtent);
+    await settle(tester);
+    final scrolledOffset = rail.offset;
+    Finder visibleCard() => find.byWidget(
+      find
+          .descendant(of: shelf, matching: find.byType(FilmWorkCard))
+          .evaluate()
+          .firstWhere((e) {
+            final rect = tester.getRect(find.byWidget(e.widget));
+            return rect.left >= 24 && rect.right <= 1280;
+          })
+          .widget,
+    );
+    final card = visibleCard();
+    final sourceTag = tester
+        .widget<Hero>(find.descendant(of: card, matching: find.byType(Hero)))
+        .tag;
+    final ink = tester.widget<InkWell>(
+      find.descendant(of: card, matching: find.byType(InkWell)).first,
+    );
+    ink.onTap!();
+    ink.onTap!();
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(FilmDetailPage), findsOneWidget);
+    final flight = find.byKey(const Key('film-connected-flight'));
+    expect(flight, findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 120));
+    tester.view.physicalSize = const Size(1440, 900);
+    await tester.pump();
+    await settle(tester);
+    expect(
+      tester.getRect(find.byKey(const Key('film-detail-poster'))),
+      const Rect.fromLTWH(24, 68, 180, 270),
+    );
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump();
+    expect(flight, findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 210));
+    tester.view.physicalSize = const Size(1360, 900);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 194));
+    final landing = tester.getRect(flight);
+    final homeHero = find.descendant(
+      of: find.byType(FilmLibraryPage, skipOffstage: false),
+      matching: find.byWidgetPredicate(
+        (w) => w is Hero && w.tag == sourceTag,
+        skipOffstage: false,
+      ),
+    );
+    final latestTarget = tester.getRect(homeHero);
+    expect(landing.width, closeTo(latestTarget.width, 1));
+    expect(landing.left, closeTo(latestTarget.left, 1));
+    ink.onTap!();
+    await settle(tester);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(flight, findsNothing);
+    expect(rail.offset, scrolledOffset.clamp(0, rail.position.maxScrollExtent));
+
+    // 相同入口在飞行中返回，不创建第二个详情或残留 Overlay。
+    await tester.tap(visibleCard());
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 90));
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await settle(tester);
+    expect(flight, findsNothing);
+    expect(find.byType(FilmDetailPage), findsNothing);
+
+    // 源页面在详情期间滚动到其他栏目，返回不能飞向已裁掉的卡片。
+    await tester.tap(visibleCard());
+    await settle(tester);
+    final home = tester
+        .widget<CustomScrollView>(
+          find.byKey(const Key('film-home-scroll'), skipOffstage: false),
+        )
+        .controller!;
+    home.jumpTo(home.position.maxScrollExtent);
+    await tester.pump();
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump();
+    expect(flight, findsNothing);
+    await settle(tester);
+    home.jumpTo(0);
+    await settle(tester);
+
+    // 过滤/栏目变更真正卸载原卡片后使用同一退化路径。
+    await tester.tap(visibleCard());
+    await settle(tester);
+    await tester.runAsync(() async {
+      await catalog.store.setHomeSections([
+        const FilmHomeSection('sources', enabled: true),
+        const FilmHomeSection('daily', enabled: false),
+      ]);
+      await catalog.refresh();
+    });
+    await tester.pump();
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump();
+    expect(flight, findsNothing);
+    await settle(tester);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享封面：文件位置缓存淘汰后仍复用已显示封面飞行', (tester) async {
+    await prepare(tester);
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    final card = find.byType(FilmWorkCard).first;
+    final work = tester.widget<FilmWorkCard>(card).work;
+    final source = find.descendant(
+      of: card,
+      matching: find.byType(FilmSharedPoster),
+    );
+    final anchor = tester.widget<FilmSharedPoster>(source).anchor;
+    final file = catalog.images.knownFile(work.posterPath, 'w342')!;
+    final artwork = find.descendant(
+      of: card,
+      matching: find.byType(FilmArtwork),
+    );
+    final sourceState = tester.state(artwork);
+    final provider = tester
+        .widget<Image>(
+          find.descendant(of: artwork, matching: find.byType(Image)),
+        )
+        .image;
+    final imageKey = await tester.runAsync(
+      () => provider.obtainKey(ImageConfiguration.empty),
+    );
+    expect(
+      PaintingBinding.instance.imageCache.statusForKey(imageKey!).live,
+      isTrue,
+    );
+    await tester.runAsync(() async {
+      for (var i = 0; i < 129; i++) {
+        final path = '/eviction$i.png';
+        await file.copy(
+          p.join(
+            catalog.images.directory.path,
+            '${FilmCatalogImageCache.cacheKey(path, 'w342')}.img',
+          ),
+        );
+        await catalog.images.cached(path, 'w342');
+      }
+    });
+    expect(anchor.visible, isTrue);
+    expect(anchor.ready, isTrue);
+    expect(catalog.images.knownFile(work.posterPath, 'w342'), isNull);
+    expect(
+      PaintingBinding.instance.imageCache.statusForKey(imageKey).live,
+      isTrue,
+    );
+    expect(tester.state(artwork), same(sourceState));
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+    final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)));
+    expect(route, isA<FilmConnectedDetailRoute>());
+    final flight = find.byKey(const Key('film-connected-flight'));
+    expect(flight, findsOneWidget);
+    expect(tester.widget<Image>(flight).image, same(provider));
+    await settle(tester);
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await settle(tester);
+    expect(tester.state(artwork), same(sourceState));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享封面：左侧卡片不同悬停阶段、切换页面与后台恢复后二十次往返', (tester) async {
+    await prepare(tester, count: 20);
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('daily_selection', {
+        'date': DateTime.now().toIso8601String().substring(0, 10),
+        'ids': works.take(10).map((w) => w.id).toList(),
+      });
+      await catalog.refresh();
+    });
+    final selected = ValueNotifier(0);
+    addTearDown(selected.dispose);
+    const library = FilmLibraryShell(sidebarInset: 64);
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: MaterialApp(
+          theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+          home: ValueListenableBuilder<int>(
+            valueListenable: selected,
+            builder: (_, value, _) => IndexedStack(
+              index: value,
+              children: const [library, SizedBox.expand()],
+            ),
+          ),
+        ),
+      ),
+    );
+    await settle(tester);
+    final shelf = find.byWidgetPredicate(
+      (w) => w is FilmShelf && w.title == '每日精选',
+    );
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(1270, 890));
+    for (var round = 0; round < 20; round++) {
+      final index = round % 3;
+      final card = find
+          .descendant(of: shelf, matching: find.byType(FilmWorkCard))
+          .at(index);
+      final source = find.descendant(
+        of: card,
+        matching: find.byType(FilmSharedPoster),
+      );
+      final anchor = tester.widget<FilmSharedPoster>(source).anchor;
+      if (round == 6) {
+        selected.value = 1;
+        await tester.pump();
+        expect(anchor.visible, isFalse);
+        selected.value = 0;
+        await settle(tester);
+      }
+      if (round == 12) {
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        await tester.pump();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await settle(tester);
+      }
+      if (round == 18) {
+        await tester.tap(find.text('播放列表'));
+        await settle(tester);
+        final context = tester.element(find.text('暂无播放列表'));
+        Navigator.of(context).pop();
+        await settle(tester);
+      }
+      await mouse.moveTo(tester.getCenter(card));
+      await tester.pump(Duration(milliseconds: [0, 50, 250][round % 3]));
+      expect(anchor.visible, isTrue);
+      expect(anchor.ready, isTrue);
+      await tester.tap(card);
+      await tester.pump();
+      await tester.pump();
+      expect(
+        ModalRoute.of(tester.element(find.byType(FilmDetailPage))),
+        isA<FilmConnectedDetailRoute>(),
+      );
+      expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
+      if (round % 4 == 0) {
+        await tester.pump(const Duration(milliseconds: 90));
+      } else {
+        await settle(tester);
+      }
+      Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+      await settle(tester);
+      await mouse.moveTo(const Offset(1270, 890));
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+    await mouse.removePointer();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享封面：源重新可见后恢复飞行，连续打开不同作品', (tester) async {
+    await prepare(tester, count: 20);
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('daily_selection', {
+        'date': DateTime.now().toIso8601String().substring(0, 10),
+        'ids': works.take(10).map((w) => w.id).toList(),
+      });
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    final shelf = find.byWidgetPredicate(
+      (w) => w is FilmShelf && w.title == '每日精选',
+    );
+    final card = find
+        .descendant(of: shelf, matching: find.byType(FilmWorkCard))
+        .first;
+    final source = find.descendant(
+      of: card,
+      matching: find.byType(FilmSharedPoster),
+    );
+    final anchor = tester.widget<FilmSharedPoster>(source).anchor;
+    final home = tester
+        .widget<CustomScrollView>(find.byKey(const Key('film-home-scroll')))
+        .controller!;
+    final offset = tester.getRect(source).top + 10;
+    home.jumpTo(offset);
+    await tester.pump();
+    expect(anchor.visible, isFalse);
+    anchor.prepareReturn();
+    await tester.pump();
+    home.jumpTo(0);
+    await settle(tester);
+    expect(tester.widget<FilmSharedPoster>(source).anchor, same(anchor));
+    expect(anchor.visible, isTrue);
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+    final flight = find.byKey(const Key('film-connected-flight'));
+    expect(flight, findsOneWidget);
+    await settle(tester);
+    final firstId = tester
+        .widget<FilmDetailPage>(find.byType(FilmDetailPage))
+        .workId;
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await settle(tester);
+    final other = find
+        .descendant(
+          of: shelf,
+          matching: find.byWidgetPredicate(
+            (w) => w is FilmWorkCard && w.work.id != firstId,
+          ),
+        )
+        .first;
+    await tester.tap(other);
+    await tester.pump();
+    await tester.pump();
+    expect(flight, findsOneWidget);
+    expect(
+      tester.widget<FilmDetailPage>(find.byType(FilmDetailPage)).workId,
+      isNot(firstId),
+    );
+    await settle(tester);
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await settle(tester);
+    expect(flight, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享封面：未解码封面沿用轻壳，不启动空白飞行', (tester) async {
+    await prepare(tester);
+    final work = works.first;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: work.id,
+          type: work.type,
+          tmdbId: work.tmdbId,
+          title: work.title,
+          originalTitle: work.originalTitle,
+          overview: work.overview,
+          language: work.language,
+          posterPath: '/uncached-poster.png',
+          backdropPath: work.backdropPath,
+          metadata: work.metadata,
+        ),
+      );
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: MaterialApp(
+          theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+          home: FilmLibraryPage(onOpenItem: (_) async {}),
+        ),
+      ),
+    );
+    await settle(tester);
+    final card = find
+        .byWidgetPredicate((w) => w is FilmWorkCard && w.work.id == work.id)
+        .first;
+    await tester.tap(
+      find.descendant(of: card, matching: find.text(work.title)),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('film-connected-flight')), findsNothing);
+    expect(find.byType(StreamPathPageShell), findsOneWidget);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    await settle(tester);
+    expect(find.byType(FilmDetailPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('共享封面：返回保留已加载标题徽标', (tester) async {
+    await prepare(tester);
+    final work = works.first;
+    const logoPath = '/return-title-logo.png';
+    await tester.runAsync(() async {
+      final poster = (await catalog.images.cached(work.posterPath!, 'w342'))!;
+      await poster.copy(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(logoPath, 'original')}.img',
+        ),
+      );
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: work.id,
+          type: work.type,
+          tmdbId: work.tmdbId,
+          title: work.title,
+          originalTitle: work.originalTitle,
+          overview: work.overview,
+          language: work.language,
+          posterPath: work.posterPath,
+          backdropPath: work.backdropPath,
+          metadata: {...work.metadata, 'logo_path': logoPath},
+        ),
+      );
+      await catalog.store.setPreference('daily_selection', {
+        'date': DateTime.now().toIso8601String().substring(0, 10),
+        'ids': [work.id],
+      });
+      await catalog.refresh();
+    });
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    await tester.tap(
+      find
+          .byWidgetPredicate((w) => w is FilmWorkCard && w.work.id == work.id)
+          .first,
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
+    await settle(tester);
+    final logo = find.byWidgetPredicate(
+      (w) => w is FilmArtwork && w.transparent,
+    );
+    final state = tester.state(logo);
+    final image = tester
+        .widget<RawImage>(
+          find.descendant(of: logo, matching: find.byType(RawImage)),
+        )
+        .image!;
+    expect(tester.widget<FilmArtwork>(logo).path, logoPath);
+    Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 90));
+    expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
+    expect(
+      StreamPathTransitionScope.of(tester.element(find.byType(FilmDetailPage))),
+      isTrue,
+    );
+    expect(tester.widget<FilmArtwork>(logo).path, logoPath);
+    expect(tester.state(logo), same(state));
+    expect(
+      tester
+          .widget<RawImage>(
+            find.descendant(of: logo, matching: find.byType(RawImage)),
+          )
+          .image!
+          .isCloneOf(image),
+      isTrue,
+    );
+    await settle(tester);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('改变图片路径不保留上一部背景，清理缓存同步废弃文件位置', (tester) async {
