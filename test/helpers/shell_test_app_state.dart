@@ -20,6 +20,7 @@ class ShellTestAppState extends AppState {
     super.mediaLibraryStore,
     super.navigationLocationStore,
     super.videoCacheService,
+    super.playerService,
   });
 
   Future<FilmCatalogController>? _catalog;

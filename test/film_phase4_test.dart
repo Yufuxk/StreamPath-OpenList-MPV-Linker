@@ -58,6 +58,7 @@ void main() {
     int year = 2024,
     List<String> genres = const ['动画'],
     List<String> countries = const ['JP'],
+    String? rating,
   }) async {
     final generation = await store.beginScan(root.id);
     await store.stage(root, generation, [
@@ -88,7 +89,11 @@ void main() {
         language: 'zh-CN',
         posterPath: '/$tmdb.jpg',
         year: year,
-        metadata: {'genres': genres, 'origin_country': countries},
+        metadata: {
+          'genres': genres,
+          'origin_country': countries,
+          'certification': ?rating,
+        },
       ),
     );
     return (await store.resources(
@@ -147,7 +152,7 @@ void main() {
       'true',
     );
     expect(await upgraded.query('film_watch_state'), isEmpty);
-    expect(await upgraded.getVersion(), 8);
+    expect(await upgraded.getVersion(), 9);
     expect(
       temp.listSync().where((f) => f.path.contains('.before-v5-')),
       hasLength(1),
@@ -177,7 +182,7 @@ void main() {
     );
     expect(await store.isFavorite(item.workId!), isTrue);
     expect(await store.probe(item.id), containsPair('duration', 7200));
-    expect(await store.homeSections(), hasLength(10));
+    expect(await store.homeSections(), hasLength(11));
     expect(
       temp.listSync().where((f) => f.path.contains('.before-v4-')),
       hasLength(1),
@@ -231,6 +236,55 @@ void main() {
     expect((remaining.count, remaining.coverPath), (1, '/1.jpg'));
     await store.setRootEnabled(b.id, false);
     expect(await store.categories(), isEmpty);
+  });
+
+  test('影片分级按作品去重、可分页筛选并保留栏目偏好', () async {
+    final a = await root('Rating A'), b = await root('Rating B');
+    await resource(a, 'one.mkv', 101, rating: 'PG-13');
+    await resource(b, 'copy.mkv', 101, rating: 'PG-13');
+    await resource(a, 'two.mkv', 102, rating: 'TV-PG');
+    await resource(a, 'three.mkv', 103);
+    final categories = await store.categories();
+    expect(
+      categories.singleWhere((c) => c.section.id == 'rating:PG-13').count,
+      1,
+    );
+    expect(categories.singleWhere((c) => c.section.id == 'rating:NR').count, 1);
+    expect(
+      (await store.works(type: null, sectionId: 'rating:PG-13')).single.tmdbId,
+      101,
+    );
+    expect(
+      (await store.works(type: null, sectionId: 'rating:TV-PG')).single.tmdbId,
+      102,
+    );
+    expect(
+      (await store.works(type: null, sectionId: 'rating:NR')).single.tmdbId,
+      103,
+    );
+    expect(
+      await store.works(type: null, sectionId: 'rating:PG-13', offset: 1),
+      isEmpty,
+    );
+    expect(await store.categories(sourceId: 'other-source'), isEmpty);
+    final sections = await store.homeSections();
+    await store.setHomeSections([
+      for (final section in sections)
+        section.id == 'ratings' ? section.withEnabled(false) : section,
+    ]);
+    expect(
+      (await store.homeSections())
+          .singleWhere((s) => s.id == 'ratings')
+          .enabled,
+      isFalse,
+    );
+    await store.setRootEnabled(a.id, false);
+    expect(
+      (await store.categories())
+          .where((c) => c.section.categoryGroup == 'ratings')
+          .map((c) => c.section.value),
+      ['PG-13'],
+    );
   });
 
   test('目录改名保留身份，改路径仅重建该根且留下完整备份', () async {

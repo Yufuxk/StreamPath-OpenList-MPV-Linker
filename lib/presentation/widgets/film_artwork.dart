@@ -10,6 +10,7 @@ import '../../domain/services/film_catalog_image_cache.dart';
 import '../localization/app_localizations.dart';
 import '../theme/app_theme.dart';
 import 'film_logo_layout.dart';
+import 'film_play_icon.dart';
 import 'sp_icons.dart';
 import 'sp_menu.dart';
 import 'cinematic_states.dart';
@@ -130,12 +131,16 @@ class FilmPosterHoverSurface extends StatelessWidget {
     required this.child,
     this.borderRadius,
     this.blurred = false,
+    this.showBorder = true,
+    this.clipBehavior = Clip.antiAlias,
   });
   final Widget child;
   final BorderRadius? borderRadius;
 
   /// 已模糊内容沿用固定坐标的位图采样。
   final bool blurred;
+  final bool showBorder;
+  final Clip clipBehavior;
 
   @override
   Widget build(BuildContext context) {
@@ -146,6 +151,7 @@ class FilmPosterHoverSurface extends StatelessWidget {
         ? Colors.white
         : theme.colorScheme.onSurface;
     final clipped = ClipRRect(
+      clipBehavior: clipBehavior,
       borderRadius: borderRadius ?? scope.borderRadius,
       child: child,
     );
@@ -190,18 +196,19 @@ class FilmPosterHoverSurface extends StatelessWidget {
                 fit: StackFit.passthrough,
                 children: [
                   content!,
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: borderRadius ?? scope.borderRadius,
-                          border: Border.all(
-                            color: borderColor.withValues(alpha: 0.10),
+                  if (showBorder)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: borderRadius ?? scope.borderRadius,
+                            border: Border.all(
+                              color: borderColor.withValues(alpha: 0.10),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -209,6 +216,45 @@ class FilmPosterHoverSurface extends StatelessWidget {
         );
       },
       child: blurred ? RepaintBoundary(child: clipped) : clipped,
+    );
+  }
+}
+
+/// 装饰层复用封面悬停进度淡入淡出，点击始终穿透到原封面。
+class FilmPosterHoverPlayIcon extends StatelessWidget {
+  const FilmPosterHoverPlayIcon({super.key});
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: FilmPlayIcon(
+      opacity: context
+          .dependOnInheritedWidgetOfExactType<_FilmPosterHoverScope>()!
+          .animation,
+    ),
+  );
+}
+
+/// 角标跟随封面位移，抵消父级缩放以保持字号与尺寸。
+class FilmPosterHoverAttachment extends StatelessWidget {
+  const FilmPosterHoverAttachment({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scope = context
+        .dependOnInheritedWidgetOfExactType<_FilmPosterHoverScope>()!;
+    return AnimatedBuilder(
+      animation: scope.animation,
+      child: child,
+      builder: (context, child) => Transform.scale(
+        scale:
+            1 / (1 + (AppTheme.posterHoverScale - 1) * scope.animation.value),
+        alignment: AlignmentDirectional.topStart.resolve(
+          Directionality.of(context),
+        ),
+        child: child,
+      ),
     );
   }
 }

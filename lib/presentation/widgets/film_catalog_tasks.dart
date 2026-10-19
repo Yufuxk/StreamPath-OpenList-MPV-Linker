@@ -77,11 +77,6 @@ class FilmCatalogTasks extends StatelessWidget {
             ],
           ),
         ],
-        if (c.scrapeError != null)
-          AppText(
-            filmCatalogErrorText(c.scrapeError!),
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
       ],
     );
     if (!panel) return tasks;
@@ -182,18 +177,6 @@ class FilmCatalogTasks extends StatelessWidget {
                       style: buttonStyle,
                       onPressed: c.toggleScraping,
                       child: AppText(c.scrapePaused ? '继续刮削' : '暂停刮削'),
-                    ),
-                  ),
-                if (c.scrapeError != null)
-                  Tooltip(
-                    message: l10n.text(filmCatalogErrorText(c.scrapeError!)),
-                    child: AppText(
-                      filmCatalogErrorText(c.scrapeError!),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
                     ),
                   ),
               ],

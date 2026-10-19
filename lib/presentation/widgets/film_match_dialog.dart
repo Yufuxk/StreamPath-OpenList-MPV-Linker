@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/utils/file_sort.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../data/local/film_catalog_store.dart';
 import '../../domain/services/film_catalog_matcher.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
@@ -466,6 +467,17 @@ class _FilmEpisodeDialogState extends State<_FilmEpisodeDialog> {
               onPressed: _loading ? null : _makePreview,
               label: const AppText('生成映射预览'),
             ),
+            if (_resources.every((r) => r.workId != null))
+              TextButton(
+                onPressed: _loading
+                    ? null
+                    : () => showFilmVersionMapping(
+                        context,
+                        widget.catalog,
+                        _resources,
+                      ),
+                child: const AppText('设置版本归属'),
+              ),
             const AppText('逐行确认真实文件与目标集；仅保存已勾选行'),
             const AppText('TMDB 未收录的集使用作品名称和图片'),
             if (_loading) const LinearProgressIndicator(),
@@ -502,6 +514,110 @@ class _FilmEpisodeDialogState extends State<_FilmEpisodeDialog> {
             ? null
             : _save,
         child: const AppText('保存季集映射'),
+      ),
+    ],
+  );
+}
+
+Future<bool?> showFilmVersionMapping(
+  BuildContext context,
+  FilmCatalogController catalog,
+  List<FilmResource> resources,
+) => showGlassDialog<bool>(
+  context: context,
+  builder: (_) => _FilmVersionDialog(catalog: catalog, resources: resources),
+);
+
+class _FilmVersionDialog extends StatefulWidget {
+  const _FilmVersionDialog({required this.catalog, required this.resources});
+  final FilmCatalogController catalog;
+  final List<FilmResource> resources;
+  @override
+  State<_FilmVersionDialog> createState() => _FilmVersionDialogState();
+}
+
+class _FilmVersionDialogState extends State<_FilmVersionDialog> {
+  final _name = TextEditingController();
+  final Set<int> _selected = {};
+  bool _saving = false;
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    final ok = await widget.catalog.run(
+      () => widget.catalog.store.assignVersion(
+        widget.resources.where((r) => _selected.contains(r.id)).toList(),
+        _name.text,
+      ),
+    );
+    if (!mounted) return;
+    if (ok) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SPDialog(
+    title: const AppText('设置版本归属'),
+    content: SizedBox(
+      width: 680,
+      height: MediaQuery.sizeOf(context).height * .5,
+      child: Column(
+        children: [
+          TextField(
+            controller: _name,
+            contextMenuBuilder: buildSPTextSelectionMenu,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(labelText: context.l10n.text('版本名称')),
+          ),
+          const SizedBox(height: 12),
+          const AppText('勾选属于同一套版本的文件；不同季使用相同版本名称'),
+          if (_saving) const LinearProgressIndicator(),
+          if (widget.catalog.error != null)
+            AppText(filmCatalogErrorText(widget.catalog.error!)),
+          Expanded(
+            child: DirectoryScrollView(
+              builder: (controller) => ListView(
+                controller: controller,
+                children: [
+                  for (final r in widget.resources)
+                    CheckboxListTile(
+                      value: _selected.contains(r.id),
+                      title: Text(r.name),
+                      subtitle: Text(r.path),
+                      onChanged: _saving
+                          ? null
+                          : (value) => setState(() {
+                              if (value == true) {
+                                _selected.add(r.id);
+                              } else {
+                                _selected.remove(r.id);
+                              }
+                            }),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _saving ? null : () => Navigator.of(context).pop(),
+        child: const AppText('取消'),
+      ),
+      FilledButton(
+        onPressed: _saving || _selected.isEmpty || _name.text.trim().isEmpty
+            ? null
+            : _save,
+        child: const AppText('保存版本归属'),
       ),
     ],
   );

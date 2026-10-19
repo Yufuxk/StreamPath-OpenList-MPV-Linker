@@ -247,6 +247,7 @@ class FilmFileMetadata {
       ]),
       metadata: {
         'provider_ids': provider,
+        'certification': _text(node, 'mpaa'),
         'runtime': int.tryParse(_text(node, 'runtime')),
         'genres': [
           for (final genre in node.findElements('genre'))
@@ -330,6 +331,7 @@ class FilmFileMetadata {
           'plot': work.overview,
           'year': work.year,
           'runtime': work.metadata['runtime'],
+          'mpaa': work.certification,
         }.entries) {
           if (field.value != null) {
             builder.element(field.key, nest: '${field.value}');

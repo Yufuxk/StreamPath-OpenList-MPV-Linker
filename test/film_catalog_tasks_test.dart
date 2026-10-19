@@ -31,7 +31,10 @@ void main() {
   test(
     'close preparation does not replay an already reported scan error',
     () async {
-      final fixture = await _Fixture.create((_) async => []);
+      final fixture = await _Fixture.create(
+        (_) async => [_file('Movies/A.2020.mkv')],
+        credentials: _NoToken(),
+      );
       final c = fixture.controller;
       final images = fixture.controller.images.directory;
       await images.create(recursive: true);
@@ -1186,6 +1189,37 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  testWidgets('任务区域不保留刮削错误文字', (tester) async {
+    final fixture = (await tester.runAsync(
+      () => _Fixture.create((_) async => []),
+    ))!;
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(fixture.close);
+    });
+    fixture.controller.scrapeError = 'invalidToken';
+    for (final compact in [false, true]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 700,
+              height: 300,
+              child: FilmCatalogTasks(
+                catalog: fixture.controller,
+                compact: compact,
+                panel: !compact,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text(filmCatalogErrorText('invalidToken')), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+  });
 
   testWidgets('任务卡片只显示扫描和刮削自己的两条进度', (tester) async {
     final prepared = (await tester.runAsync(() async {

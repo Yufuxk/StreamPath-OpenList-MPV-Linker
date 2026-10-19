@@ -9,6 +9,7 @@ import 'package:ffi/ffi.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/models/film_catalog_item.dart';
+import '../../features/cache_control/engine/bitrate_estimator.dart';
 
 typedef _NewNative = Pointer<Void> Function();
 typedef _DeleteNative = Void Function(Pointer<Void>);
@@ -93,7 +94,7 @@ class MediaInfoProbe {
     String? libraryPath,
     this.maxBytes = 8 * 1024 * 1024,
     this.maxRequests = 32,
-    this.remoteInterval = const Duration(seconds: 1),
+    this.remoteInterval = Duration.zero,
     this.timeout = const Duration(seconds: 45),
   }) : libraryPath =
            libraryPath ??
@@ -215,7 +216,7 @@ void _probeWorker(Map<String, dynamic> args) async {
         requests < (args['maxRequests'] as int) &&
         DateTime.now().isBefore(deadline)) {
       if (cancelled) throw const FilmCatalogException('cancelled');
-      if (remote && requests > 0) {
+      if (remote && requests > 0 && (args['intervalMs'] as int) > 0) {
         await Future.any([
           Future<void>.delayed(
             Duration(milliseconds: args['intervalMs'] as int),
@@ -309,7 +310,7 @@ void _probeWorker(Map<String, dynamic> args) async {
     if (cancelled) throw const FilmCatalogException('cancelled');
     if (expired) throw const FilmCatalogException('probeTimeout');
     reply.send({
-      ...technicalInfoFromMediaInfo(parser.finish()),
+      ...technicalInfoFromMediaInfo(parser.finish(), fileSizeBytes: size),
       'state': complete ? 'complete' : 'partial',
       'readBytes': total,
       'requests': requests,
@@ -357,12 +358,30 @@ num? _number(Object? value) => value is num
     ? num.tryParse(value)
     : null;
 
-Map<String, dynamic> technicalInfoFromMediaInfo(Map<String, dynamic> json) {
+/// 仅使用实测参数计算整体平均码率，光盘不以整盘大小换算。
+num? technicalOverallBitrate(Map<String, dynamic> info, {bool isDisc = false}) {
+  final bitrate = _number(info['bitrate']);
+  if (bitrate != null && bitrate.isFinite && bitrate > 0) return bitrate;
+  if (isDisc) return null;
+  final size = info['fileSize'];
+  final mbps = const BitrateEstimator().estimateFromSizeAndDuration(
+    fileSizeBytes: size is int ? size : null,
+    durationSec: _number(info['duration'])?.toDouble(),
+  );
+  final bps = mbps == null ? null : mbps * 1000000;
+  return bps != null && bps.isFinite && bps > 0 ? bps : null;
+}
+
+Map<String, dynamic> technicalInfoFromMediaInfo(
+  Map<String, dynamic> json, {
+  int? fileSizeBytes,
+}) {
   final tracks = (json['media']?['track'] as List? ?? [])
       .whereType<Map>()
       .toList();
   final general = tracks.where((t) => t['@type'] == 'General').firstOrNull;
-  return {
+  final info = <String, dynamic>{
+    'fileSize': fileSizeBytes,
     'duration': _number(general?['Duration']),
     'bitrate': _number(general?['OverallBitRate']),
     'video': [
@@ -394,6 +413,8 @@ Map<String, dynamic> technicalInfoFromMediaInfo(Map<String, dynamic> json) {
         },
     ],
   };
+  info['bitrate'] = technicalOverallBitrate(info);
+  return info;
 }
 
 Map<String, dynamic> technicalInfoFromMpv(Map<String, dynamic> json) {

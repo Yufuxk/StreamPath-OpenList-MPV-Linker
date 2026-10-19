@@ -283,6 +283,11 @@ bool FlutterWindow::OnCreate() {
         const std::string method = call.method_name();
 
         // Window controls for the custom Flutter title bar.
+        if (method == "activate") {
+          RequestActivation();
+          result->Success(flutter::EncodableValue(GetForegroundWindow() == GetHandle()));
+          return;
+        }
         if (method == "minimize") {
           ::ShowWindow(GetHandle(), SW_MINIMIZE);
           result->Success();
@@ -464,17 +469,22 @@ bool FlutterWindow::SetFullscreen(bool enabled) {
       fullscreen_ = true;
       if (!IsZoomed(window)) ShowWindow(window, SW_MAXIMIZE);
     }
-    // 全屏不采用最大化的工作区与边框约束。
+    // 保留系统最大化状态，客户区覆盖整个显示器。
     SetWindowLongPtr(window, GWL_STYLE,
-                     (windowed_style_ & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE)) |
-                         WS_POPUP);
+                     (windowed_style_ & ~WS_OVERLAPPEDWINDOW) |
+                         WS_POPUP | WS_MAXIMIZE);
     SetWindowPos(window, nullptr, monitor.rcMonitor.left, monitor.rcMonitor.top,
                  monitor.rcMonitor.right - monitor.rcMonitor.left,
                  monitor.rcMonitor.bottom - monitor.rcMonitor.top,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   } else if (fullscreen_) {
     fullscreen_ = false;
-    SetWindowLongPtr(window, GWL_STYLE, windowed_style_ & ~WS_MAXIMIZE);
+    // 触发原生状态恢复，并重新计算最大化工作区。
+    const LONG_PTR restore_style =
+        windowed_placement_.showCmd == SW_SHOWMAXIMIZED
+            ? windowed_style_ & ~WS_MAXIMIZE
+            : windowed_style_ | WS_MAXIMIZE;
+    SetWindowLongPtr(window, GWL_STYLE, restore_style);
     SetWindowPlacement(window, &windowed_placement_);
   }
   constexpr DWORD kCornerPreference = 33;

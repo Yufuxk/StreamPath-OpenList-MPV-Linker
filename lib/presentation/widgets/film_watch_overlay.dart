@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'dart:ui' as ui;
 import 'dart:async';
 import '../localization/app_text.dart';
+import '../theme/app_theme.dart';
 
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
@@ -57,20 +58,28 @@ class FilmWatchOverlay extends StatefulWidget {
     this.showStatus = true,
     this.canReveal = true,
     this.revealBelow = false,
+    this.softEdges = false,
     this.revealLabel = '展示剧透',
     this.footer,
     this.hoverSurface = false,
+    this.foreground,
     this.onStatusDecoration,
   });
   final Widget child;
   final bool spoilerSensitive, showStatus;
   final bool canReveal;
   final bool revealBelow;
+
+  /// 简介在原槽位中使用柔和渐隐与圆角，不影响揭示按钮位置。
+  final bool softEdges;
   final String revealLabel;
   final Widget? footer;
 
   /// 根据实际遮罩状态选择封面悬停的绘制方式。
   final bool hoverSurface;
+
+  /// 与封面一起运动、无需防剧透模糊的角标和操作。
+  final Widget? foreground;
   final ValueChanged<Widget Function(Widget)>? onStatusDecoration;
   final double? fallbackFraction;
   final FilmCatalogStore? store;
@@ -127,6 +136,8 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     super.didUpdateWidget(oldWidget);
     if (widget.store != oldWidget.store && widget.store != null) {
       _store?.watchChanges.removeListener(_scheduleLoad);
+      _revealed = false;
+      _resolvedResource = null;
       _state = null;
       _loaded = false;
       _bind(widget.store!);
@@ -140,11 +151,31 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
         widget.resource?.bindingVersion != oldWidget.resource?.bindingVersion ||
         widget.sourceId != oldWidget.sourceId ||
         widget.path != oldWidget.path) {
-      _revealed = false;
-      _state = null;
-      _loaded = false;
+      final previous = oldWidget.resource;
+      final current = widget.resource;
+      final sameEpisode =
+          previous != null &&
+          current != null &&
+          !previous.isDisc &&
+          !current.isDisc &&
+          previous.type == FilmMediaType.tv &&
+          current.type == FilmMediaType.tv &&
+          previous.workId != null &&
+          previous.workId == current.workId &&
+          previous.season != null &&
+          previous.season == current.season &&
+          previous.episode != null &&
+          previous.episode == current.episode;
+      // 同一集换资源时保留已显示内容，避免临时遮罩卸载图片子树。
+      if (!sameEpisode) {
+        _revealed = false;
+        _state = null;
+        _loaded = false;
+      } else if (_state?.status == FilmWatchStatus.watched) {
+        _revealed = true;
+      }
       _resolvedResource = null;
-      _load();
+      _load(preserveReveal: sameEpisode);
     }
   }
 
@@ -156,7 +187,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool preserveReveal = false}) async {
     final store = _store;
     if (store == null) return;
     _loads++;
@@ -186,7 +217,8 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       if (mounted && generation == _generation) {
         setState(() {
           _resolvedResource = resource;
-          if (_state?.status == FilmWatchStatus.watched &&
+          if (!preserveReveal &&
+              _state?.status == FilmWatchStatus.watched &&
               state?.status != FilmWatchStatus.watched) {
             _revealed = false;
             if (_reveals?.value.contains(_contentKey) == true) {
@@ -228,7 +260,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
         !pendingOverview &&
         (_store?.spoilerProtection ?? false) &&
         _state?.status != FilmWatchStatus.watched &&
-        !(_reveals?.value.contains(_contentKey) ?? _revealed);
+        !((_reveals?.value.contains(_contentKey) ?? false) || _revealed);
     void reveal() {
       if (_reveals != null) {
         _reveals!.value = {..._reveals!.value, _contentKey};
@@ -248,15 +280,16 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       artwork = Opacity(opacity: 0, child: ExcludeSemantics(child: artwork));
     }
     if (blocked) {
+      final softBlur = widget.revealBelow || widget.softEdges;
       artwork = ImageFiltered(
         imageFilter: ui.ImageFilter.blur(
-          sigmaX: widget.revealBelow ? 6 : 16,
-          sigmaY: widget.revealBelow ? 6 : 16,
-          tileMode: widget.revealBelow ? ui.TileMode.decal : ui.TileMode.clamp,
+          sigmaX: softBlur ? 6 : 16,
+          sigmaY: softBlur ? 6 : 16,
+          tileMode: softBlur ? ui.TileMode.decal : ui.TileMode.clamp,
         ),
         child: ExcludeSemantics(child: artwork),
       );
-      if (widget.revealBelow) {
+      if (softBlur) {
         artwork = Opacity(
           opacity: .7,
           child: ShaderMask(
@@ -294,7 +327,9 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
           ),
         );
       }
-      artwork = ClipRect(child: artwork);
+      artwork = widget.softEdges
+          ? ClipRRect(borderRadius: AppTheme.controlRadius, child: artwork)
+          : ClipRect(child: artwork);
     }
     final unwatched =
         widget.showStatus && _state?.status == FilmWatchStatus.unwatched;
@@ -302,7 +337,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     widget.onStatusDecoration?.call(
       _WatchStatusDecoration.snapshot(unwatched, visibleFraction),
     );
-    final content = _WatchStatusDecoration(
+    Widget content = _WatchStatusDecoration(
       unwatched: unwatched,
       fraction: visibleFraction,
       reveal: blocked && widget.canReveal && !widget.revealBelow
@@ -317,6 +352,15 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
           : null,
       child: artwork,
     );
+    if (widget.foreground != null) {
+      content = Stack(
+        fit: StackFit.passthrough,
+        children: [
+          content,
+          Positioned.fill(child: widget.foreground!),
+        ],
+      );
+    }
     if (!widget.revealBelow) {
       return widget.hoverSurface
           ? FilmPosterHoverSurface(blurred: blocked, child: content)

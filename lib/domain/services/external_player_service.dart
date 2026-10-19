@@ -3241,6 +3241,7 @@ class ExternalPlayerService {
   }
 
   Future<void> _finishImplicitQueue(_PlayerSessionRuntime runtime) async {
+    await runtime.implicitPlan?.completed?.call();
     final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
     try {
       if (await controller.connect(timeout: const Duration(seconds: 2))) {
@@ -4203,6 +4204,45 @@ class ExternalPlayerService {
     final runtime = _sessions[sessionId];
     if (runtime == null || runtime.entries.isEmpty) return;
     await _syncProgress(runtime, runtime.entries);
+  }
+
+  /// 跨来源切季先正常退出 MPV；退出确认前不得启动下一来源。
+  Future<bool> closeForFilmBoundary(
+    String sessionId, {
+    int? expectedPid,
+  }) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return expectedPid == null;
+    if (expectedPid != null && runtime.pid != expectedPid) return false;
+    await syncActiveProgress(sessionId);
+    if (await runtime.livenessTracker.sample() !=
+        PlayerProcessLiveness.exited) {
+      if (runtime.ipcPipeName == null) return false;
+      final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
+      try {
+        if (!await controller.connect(timeout: const Duration(seconds: 2))) {
+          return false;
+        }
+        await controller.command(['quit']);
+      } finally {
+        await controller.dispose();
+      }
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (await runtime.livenessTracker.sample() !=
+          PlayerProcessLiveness.exited) {
+        if (DateTime.now().isAfter(deadline)) return false;
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    final synchronized = runtime.exitSyncFuture;
+    if (synchronized != null) {
+      try {
+        await synchronized.timeout(const Duration(seconds: 4));
+      } on TimeoutException {
+        return false;
+      }
+    }
+    return true;
   }
 
   Future<void> sendPause([String? sessionId]) =>

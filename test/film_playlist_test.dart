@@ -583,6 +583,7 @@ void main() {
       await db.execute('DROP TABLE film_playlist_scopes');
       await db.execute('DROP TABLE film_playlist_items');
       await db.execute('DROP TABLE film_playlists');
+      await db.execute('DROP TABLE film_resource_versions');
       await db.setVersion(7);
       await db.close();
       store = await FilmCatalogStore.open('${temp.path}/catalog.db');

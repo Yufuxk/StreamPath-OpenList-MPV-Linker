@@ -405,7 +405,7 @@ void main() {
     expect(access.calls, 0);
   });
 
-  test('完整模式补充播放快照，已探测光盘与 STRM 不反复请求', () async {
+  test('完整模式仅补充普通视频，ISO、BDMV 和已有 STRM 快照不入队', () async {
     final generation = await store.beginScan(root.id);
     await store.stage(root, generation, const [
       FilmScanEntry(
@@ -420,32 +420,207 @@ void main() {
         name: 'sample.iso',
         mediaKind: 'iso',
       ),
+      FilmScanEntry(
+        path: 'disc',
+        parentPath: '',
+        name: 'disc',
+        mediaKind: 'bdmv',
+      ),
+      FilmScanEntry(
+        path: 'sample.mp4',
+        parentPath: '',
+        name: 'sample.mp4',
+        mediaKind: 'video',
+      ),
     ]);
     await store.commitScan(root.id, generation, cancelled: () => false);
     final resources = await store.resources();
-    final iso = resources.singleWhere((r) => r.mediaKind == 'iso');
+    final video = resources.singleWhere((r) => r.mediaKind == 'video');
+    expect(
+      await store.unprobedResources(limit: 10),
+      everyElement(isA<FilmResource>().having((r) => r.isDisc, 'disc', false)),
+    );
     for (final resource in resources) {
       await store.saveProbe(resource.id, {
         'origin': 'MPV',
         'state': 'playback',
       });
     }
-    expect((await store.unprobedResources()).single.id, iso.id);
+    expect((await store.unprobedResources()).single.id, video.id);
     await store.setProbeMode('full');
     final probe = _Probe(), access = _Access();
     final c = controller(probe, access);
     addTearDown(c.close);
     await c.tick();
     expect(probe.calls, 1);
-    expect(await store.probe(iso.id), containsPair('fullProbed', true));
-    await store.saveProbe(iso.id, {
-      'origin': 'MPV',
-      'state': 'playback',
-      'fullProbed': true,
-    });
+    expect(access.calls, 1);
+    expect(await store.probe(video.id), containsPair('fullProbed', true));
     await c.tick();
     expect(probe.calls, 1);
     expect(await store.unprobedResources(), isEmpty);
+  });
+
+  for (final kind in ['video', 'iso', 'bdmv']) {
+    test('$kind 快照复用已知大小与实测时长，仅普通视频补充整体平均码率', () async {
+      final generation = await store.beginScan(root.id);
+      final path = kind == 'bdmv' ? 'disc' : 'sample.$kind';
+      await store.stage(root, generation, [
+        FilmScanEntry(path: path, parentPath: '', name: path, mediaKind: kind),
+      ]);
+      await store.commitScan(root.id, generation, cancelled: () => false);
+      final resource = (await store.resources()).singleWhere(
+        (r) => r.path == path,
+      );
+      await store.saveProbe(resource.id, {
+        'origin': 'MediaInfo',
+        'state': 'partial',
+        'fileSize': 125000000,
+      });
+      final file = File(p.join(temp.path, 'snapshot.json'));
+      final target = p.join(temp.path, path);
+      await file.writeAsString(
+        jsonEncode({
+          'path': target,
+          'duration': 100,
+          'tracks': [
+            {'type': 'video', 'codec': 'h264', 'demux-bitrate': 8000000},
+          ],
+        }),
+      );
+      final probe = _Probe(), access = _Access();
+      final c = controller(
+        probe,
+        access,
+        snapshots: [
+          (
+            sourceId: root.sourceId,
+            target: target,
+            snapshotPath: file.path,
+            resourcePath: path,
+          ),
+        ],
+      );
+      addTearDown(c.close);
+      await c.tick();
+      final info = (await store.probe(resource.id))!;
+      expect(info['fileSize'], 125000000);
+      expect(info['duration'], 100);
+      expect(info['bitrate'], kind == 'video' ? 10000000 : isNull);
+      expect((info['video'] as List).single['bitrate'], 8000000);
+      expect(probe.calls, 0);
+      expect(access.calls, 0);
+    });
+  }
+
+  test('MPV 已知大小和时长立即填充总码率，缓存 MediaInfo 有效码率优先', () async {
+    final resource = (await store.resources()).single;
+    final file = File(p.join(temp.path, 'snapshot.json'));
+    const target = 'https://media.invalid/resolved.mp4';
+    Future<void> write(int duration) => file.writeAsString(
+      jsonEncode({
+        'path': target,
+        'size': 125000000,
+        'duration': duration,
+        'tracks': [
+          {'type': 'video', 'codec': 'h264'},
+        ],
+      }),
+    );
+    final c = controller(
+      _Probe(),
+      _Access(),
+      snapshots: [
+        (
+          sourceId: root.sourceId,
+          target: target,
+          snapshotPath: file.path,
+          resourcePath: resource.path,
+        ),
+      ],
+    );
+    addTearDown(c.close);
+    await write(100);
+    await c.tick();
+    expect(await store.probe(resource.id), containsPair('bitrate', 10000000));
+    await store.saveProbe(resource.id, {
+      'origin': 'MediaInfo',
+      'state': 'partial',
+      'bitrate': 9000000,
+    });
+    await write(200);
+    await file.setLastModified(DateTime.now().add(const Duration(seconds: 1)));
+    await c.tick();
+    expect(await store.probe(resource.id), containsPair('bitrate', 9000000));
+  });
+
+  test('完整探测复用缓存大小与准确时长，MediaInfo 有效码率优先', () async {
+    final generation = await store.beginScan(root.id);
+    await store.stage(root, generation, const [
+      FilmScanEntry(
+        path: 'sample.mp4',
+        parentPath: '',
+        name: 'sample.mp4',
+        mediaKind: 'video',
+      ),
+    ]);
+    await store.commitScan(root.id, generation, cancelled: () => false);
+    final video = (await store.resources()).singleWhere(
+      (r) => r.mediaKind == 'video',
+    );
+    await store.saveProbe(video.id, {
+      'state': 'playback',
+      'fileSize': 125000000,
+      'duration': 100,
+    });
+    await store.setProbeMode('full');
+    final probe = _Probe();
+    final c = controller(probe, _Access());
+    addTearDown(c.close);
+    await c.tick();
+    expect(await store.probe(video.id), containsPair('bitrate', 10000000));
+    await store.clearProbeMetadata();
+    probe.values = {'fileSize': 125000000, 'duration': 100, 'bitrate': 9000000};
+    await c.tick();
+    expect(await store.probe(video.id), containsPair('bitrate', 9000000));
+  });
+
+  test('光盘地址准备直接退出，不枚举目录或启动 helper', () async {
+    final generation = await store.beginScan(root.id);
+    await store.stage(root, generation, const [
+      FilmScanEntry(
+        path: 'absent.iso',
+        parentPath: '',
+        name: 'absent.iso',
+        mediaKind: 'iso',
+      ),
+      FilmScanEntry(
+        path: 'absent-disc',
+        parentPath: '',
+        name: 'absent-disc',
+        mediaKind: 'bdmv',
+      ),
+    ]);
+    await store.commitScan(root.id, generation, cancelled: () => false);
+    final access = FilmProbeAccess();
+    final source = LocalMediaSource(
+      LocalRootConfig(
+        rootId: 'fixture',
+        displayName: 'Fixture',
+        path: temp.path,
+      ),
+    );
+    for (final resource in (await store.resources()).where((r) => r.isDisc)) {
+      await expectLater(
+        access.prepare(resource, source),
+        throwsA(
+          isA<FilmCatalogException>().having(
+            (e) => e.code,
+            'code',
+            'probePlaybackOnly',
+          ),
+        ),
+      );
+    }
   });
 
   for (final state in ['failed', 'partial']) {
@@ -533,6 +708,7 @@ class _Probe extends MediaInfoProbe {
   int calls = 0;
   String resultState = 'complete';
   String? failure;
+  Map<String, dynamic> values = {};
   bool hold = false, cancelled = false;
   final entered = Completer<void>();
   final pending = Completer<Map<String, dynamic>>();
@@ -542,12 +718,17 @@ class _Probe extends MediaInfoProbe {
     Map<String, String> headers = const {},
   }) async {
     calls++;
-    entered.complete();
+    if (!entered.isCompleted) entered.complete();
     if (hold) return pending.future;
     if (failure != null) {
       throw FilmCatalogException(failure!);
     }
-    return {'origin': 'MediaInfo', 'state': resultState, 'video': []};
+    return {
+      'origin': 'MediaInfo',
+      'state': resultState,
+      'video': [],
+      ...values,
+    };
   }
 
   @override
@@ -572,9 +753,6 @@ class _Access extends FilmProbeAccess {
   Future<void> cancel() async {
     cancelled = true;
   }
-
-  @override
-  Future<void> close() async {}
 }
 
 class _FilmNoCredentials extends TmdbCredentialStore {

@@ -12,10 +12,11 @@ class FilmHomeSection {
     'genre' => 'genres',
     'country' => 'countries',
     'decade' => 'years',
+    'rating' => 'ratings',
     _ => null,
   };
   bool get isCategoryGroup =>
-      id == 'genres' || id == 'countries' || id == 'years';
+      id == 'genres' || id == 'countries' || id == 'years' || id == 'ratings';
   String get label => switch (id) {
     'continue' => '继续播放',
     'daily' => '每日精选',
@@ -27,8 +28,10 @@ class FilmHomeSection {
     'genres' => '类型',
     'countries' => '地区',
     'years' => '年份',
+    'ratings' => '影片分级',
     _ when id.startsWith('genre:') => '类型：{value}',
     _ when id.startsWith('country:') => '地区：{value}',
+    _ when id.startsWith('rating:') => '影片分级：{value}',
     _ => '{value} 年代',
   };
   FilmMediaType? get type => switch (id) {
@@ -39,7 +42,7 @@ class FilmHomeSection {
   static const defaults = [
     FilmHomeSection('continue', enabled: true),
     FilmHomeSection('daily', enabled: true),
-    FilmHomeSection('collections', enabled: true),
+    FilmHomeSection('ratings', enabled: true),
     FilmHomeSection('sources', enabled: true),
     FilmHomeSection('recent', enabled: true),
     FilmHomeSection('movies', enabled: true),
@@ -47,6 +50,7 @@ class FilmHomeSection {
     FilmHomeSection('genres', enabled: true),
     FilmHomeSection('countries', enabled: true),
     FilmHomeSection('years', enabled: true),
+    FilmHomeSection('collections', enabled: true),
   ];
 }
 

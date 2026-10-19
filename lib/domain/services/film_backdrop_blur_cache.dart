@@ -95,7 +95,7 @@ class FilmBackdropBlurCache {
           utf8.encode(
             '${stat.size}:${stat.modified.microsecondsSinceEpoch}\n'
             '${input.path}:${inputStat.size}:${inputStat.modified.microsecondsSinceEpoch}\n'
-            'adaptive-blur-v1:768x432:radius18:saturation.84:jpeg80',
+            'adaptive-blur-v2:768x432:radius18:saturation.84:jpeg80',
           ),
         )
         .toString()
@@ -205,7 +205,14 @@ class FilmBackdropBlurCache {
         ..a = 255;
     }
     img.gaussianBlur(image, radius: math.min(18, math.min(width, height) - 1));
-    img.adjustColor(image, saturation: .84);
+    // 在 RGB 内按 HSV 的最大通道降饱和，保留中性灰的亮度。
+    for (final pixel in image) {
+      final value = math.max(pixel.r, math.max(pixel.g, pixel.b));
+      pixel
+        ..r = value + (pixel.r - value) * .84
+        ..g = value + (pixel.g - value) * .84
+        ..b = value + (pixel.b - value) * .84;
+    }
     return img.encodeJpg(image, quality: 80);
   }
 

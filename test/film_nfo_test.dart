@@ -31,7 +31,7 @@ void main() {
       try {
         await Directory('${temp.path}/Movie').create();
         await File('${temp.path}/Movie/movie.nfo').writeAsString(
-          '<movie><title>Local film</title><uniqueid type="imdb">tt123</uniqueid></movie>',
+          '<movie><title>Local film</title><mpaa>PG-13</mpaa><uniqueid type="imdb">tt123</uniqueid></movie>',
         );
         final source = LocalMediaSource(
           LocalRootConfig(
@@ -73,6 +73,7 @@ void main() {
           'en',
         ))!;
         expect(first.work.tmdbId, 0);
+        expect(first.work.certification, 'PG-13');
         expect(first.work.identity, second.work.identity);
         expect(first.work.metadata['provider_ids'], {'imdb': 'tt123'});
         await Directory('${temp.path}/TV/Season 01').create(recursive: true);

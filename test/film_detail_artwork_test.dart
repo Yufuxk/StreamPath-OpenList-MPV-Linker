@@ -6,10 +6,10 @@ import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,6 +48,7 @@ import 'package:streampath/presentation/widgets/film_detail_backdrop.dart';
 import 'package:streampath/presentation/widgets/film_detail_back_button.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
+import 'package:streampath/presentation/widgets/film_certification_badge.dart';
 import 'package:streampath/presentation/widgets/film_play_icon.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/data/models/media_library_item.dart';
@@ -183,6 +184,93 @@ void main() {
     value: app,
     child: MaterialApp(theme: AppTheme.dark(), home: home),
   );
+
+  testWidgets('详情简介仅在溢出时渐隐并可展开收起，缺图演职员显示姓名缩写', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    Future<void> updateOverview(String overview) async {
+      await tester.runAsync(() async {
+        await catalog.store.setPreference('spoiler_protection', false);
+        await catalog.store.refreshWork(
+          FilmWork(
+            id: original.id,
+            type: original.type,
+            tmdbId: original.tmdbId,
+            title: original.title,
+            originalTitle: original.originalTitle,
+            overview: overview,
+            language: original.language,
+            posterPath: original.posterPath,
+            backdropPath: original.backdropPath,
+            metadata: {
+              ...original.metadata,
+              'vote_average': 8.6,
+              'genres': ['Animation', 'Drama'],
+              'credits': {
+                'crew': [
+                  {'name': 'Andy Smith', 'job': 'Director'},
+                  {'name': '丸户史明', 'job': 'Original Story'},
+                  {'name': '𠮷田', 'job': 'Writer'},
+                ],
+              },
+            },
+          ),
+        );
+      });
+    }
+
+    final long =
+        'A long synopsis with enough words to exceed four lines. ' * 24;
+    await updateOverview(long);
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: original.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(
+      find.ancestor(of: find.text(long), matching: find.byType(ShaderMask)),
+      findsOneWidget,
+    );
+    expect(find.text('AS'), findsOneWidget);
+    expect(find.text('丸'), findsOneWidget);
+    expect(find.text('𠮷'), findsOneWidget);
+    final expand = find.widgetWithText(TextButton, '展开简介');
+    await tester.ensureVisible(expand);
+    await tester.tap(expand);
+    await settle(tester);
+    expect(tester.widget<Text>(find.text(long)).maxLines, isNull);
+    expect(
+      find.ancestor(of: find.text(long), matching: find.byType(ShaderMask)),
+      findsNothing,
+    );
+    final collapse = find.widgetWithText(TextButton, '收起简介');
+    await tester.ensureVisible(collapse);
+    await tester.tap(collapse);
+    await settle(tester);
+    expect(tester.widget<Text>(find.text(long)).maxLines, 4);
+    expect(
+      find.ancestor(of: find.text(long), matching: find.byType(ShaderMask)),
+      findsOneWidget,
+    );
+    await updateOverview('Short synopsis.');
+    await settle(tester);
+    expect(find.text('Short synopsis.'), findsOneWidget);
+    expect(find.text('展开简介'), findsNothing);
+    expect(find.text('收起简介'), findsNothing);
+    expect(
+      find.ancestor(
+        of: find.text('Short synopsis.'),
+        matching: find.byType(ShaderMask),
+      ),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('详情骨架覆盖原布局，缓存命中也不会闪现，替换保留正文 State', (tester) async {
     await prepare(tester, count: 1);
@@ -330,6 +418,35 @@ void main() {
 
   testWidgets('详情骨架适配四语言、明暗与材质主题、窄窗及双倍字号', (tester) async {
     await prepare(tester, count: 1);
+    final original = works.single;
+    await tester.runAsync(
+      () => catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: original.title,
+          originalTitle: 'Original title for the detail page',
+          overview: 'A long synopsis for narrow windows and larger text. ' * 20,
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          year: 2026,
+          metadata: {
+            ...original.metadata,
+            'vote_average': 8.6,
+            'runtime': 124,
+            'genres': ['Animation', 'Drama', 'Science Fiction'],
+            'credits': {
+              'crew': [
+                {'name': 'Andy Smith', 'job': 'Original Story'},
+              ],
+            },
+          },
+        ),
+      ),
+    );
+    works = (await tester.runAsync(() => catalog.store.works(type: null)))!;
     const locales = [
       Locale('zh', 'CN'),
       Locale('zh', 'TW'),
@@ -384,17 +501,261 @@ void main() {
     }
   });
 
-  testWidgets('season hover stays inside its fixed selection frame', (
-    tester,
-  ) async {
-    await prepare(tester);
+  testWidgets('详情季切换复用滑动选择框，含特别篇和未映射资源，并保持剧集等高', (tester) async {
+    await prepare(tester, count: 1);
+    final synopsis = 'Detailed episode overview with full context. ' * 120;
+    var playCalls = 0;
     final workId = (await tester.runAsync(() async {
       final rootId = await catalog.store.addRoot(
         sourceId: 'local:season-clip',
         kind: MediaSourceKind.local,
         path: 'TV',
         type: FilmMediaType.tv,
-        name: 'Season clip',
+        name: 'Season switch',
+      );
+      final root = (await catalog.store.root(rootId))!;
+      final generation = await catalog.store.beginScan(rootId);
+      await catalog.store.stage(root, generation, [
+        for (var i = 0; i < 12; i++)
+          FilmScanEntry(
+            path: 'TV/E$i.mkv',
+            parentPath: 'TV',
+            name: 'E$i.mkv',
+            mediaKind: 'video',
+          ),
+      ]);
+      await catalog.store.commitScan(
+        rootId,
+        generation,
+        cancelled: () => false,
+      );
+      await catalog.store.bind(
+        await catalog.store.resources(rootId: rootId),
+        FilmWork(
+          type: FilmMediaType.tv,
+          tmdbId: 888,
+          title: 'Season switch fixture',
+          originalTitle: 'Season switch fixture',
+          overview: '',
+          language: 'zh-CN',
+          posterPath: works.first.posterPath,
+          metadata: const {'presentation_version': 3},
+        ),
+      );
+      final resources = await catalog.store.resources(rootId: rootId);
+      await catalog.store.mapEpisodes({
+        for (var i = 0; i < 11; i++)
+          resources[i]: i < 2
+              ? (1, i + 1)
+              : i == 2
+              ? (0, 1)
+              : (i, 1),
+      });
+      final workId = resources.first.workId!;
+      await catalog.store.saveSeason(workId, 1, 'zh-CN', {
+        'episodes': [
+          {
+            'episode_number': 1,
+            'name': 'Short',
+            'overview': synopsis,
+            'air_date': '2026-10-18',
+            'runtime': 24,
+          },
+          {
+            'episode_number': 2,
+            'name': 'A long title that should occupy one line only',
+            'overview': '',
+          },
+        ],
+      });
+      await catalog.store.saveProbe(resources.first.id, {
+        'duration': 1470,
+        'width': 1920,
+        'height': 1080,
+      });
+      await catalog.store.setPreference('spoiler_protection', true);
+      return workId;
+    }))!;
+    for (final scale in [1.0, 2.0]) {
+      playCalls = 0;
+      tester.view.physicalSize = const Size(760, 1100);
+      await tester.pumpWidget(
+        frame(
+          Builder(
+            builder: (context) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(scale)),
+              child: FilmDetailPage(
+                key: ValueKey(scale),
+                catalog: catalog,
+                workId: workId,
+                onOpenItem: (_) async {
+                  playCalls++;
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      final selector = find.byKey(const Key('film-season-selector'));
+      await tester.ensureVisible(selector);
+      await settle(tester);
+      final control = find.byType(FilmSegmentedControl<int?>);
+      expect(control, findsOneWidget);
+      expect(tester.widget<FilmSegmentedControl<int?>>(control).selected, 1);
+      expect(find.text('第 1 季 (2)'), findsOneWidget);
+      final cards = find.byType(FilmEpisodeCard);
+      expect(cards, findsNWidgets(2));
+      Size cardSize(int index) => tester.getSize(
+        find.descendant(of: cards.at(index), matching: find.byType(Card)).first,
+      );
+      expect(cardSize(0), cardSize(1));
+      final before = cardSize(0);
+      await tester.ensureVisible(find.text('1. Short'));
+      await tester.tap(find.text('1. Short'));
+      await settle(tester);
+      expect(playCalls, 0);
+      expect(
+        find.ancestor(
+          of: find.text(synopsis),
+          matching: find.byType(ImageFiltered),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('1. Short'));
+      await settle(tester);
+      final reveal = find.descendant(
+        of: cards.first,
+        matching: find.text('展示封面'),
+      );
+      await tester.ensureVisible(reveal);
+      await tester.tap(reveal);
+      await settle(tester);
+      expect(cardSize(0), before);
+      expect(cardSize(1), before);
+      final firstCard = find
+          .descendant(of: cards.first, matching: find.byType(Card))
+          .first;
+      final artwork = find
+          .descendant(of: firstCard, matching: find.byType(FilmArtwork))
+          .first;
+      final artworkState = tester.state(artwork);
+      await tester.ensureVisible(find.text('1. Short'));
+      final sourceRect = tester.getRect(cards.first);
+      final neighborRect = tester.getRect(cards.at(1));
+      await tester.tap(find.text('1. Short'));
+      await tester.pump();
+      await tester.pump();
+      final openingHeights = <double>[tester.getSize(firstCard).height];
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 40));
+        openingHeights.add(tester.getSize(firstCard).height);
+      }
+      expect(openingHeights.first, closeTo(before.height, .01));
+      expect(openingHeights[1], greaterThan(openingHeights.first));
+      expect(openingHeights[1], lessThan(openingHeights.last));
+      for (var i = 1; i < openingHeights.length; i++) {
+        expect(openingHeights[i], greaterThanOrEqualTo(openingHeights[i - 1]));
+      }
+      await settle(tester);
+      expect(playCalls, 0);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, isNull);
+      expect(tester.getRect(cards.first), sourceRect);
+      expect(tester.getRect(cards.at(1)), neighborRect);
+      expect(tester.state(artwork), same(artworkState));
+      final synopsisScroll = find.descendant(
+        of: firstCard,
+        matching: find.byType(SingleChildScrollView),
+      );
+      await tester.drag(synopsisScroll, const Offset(0, -100));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<SingleChildScrollView>(synopsisScroll).controller!.offset,
+        greaterThan(0),
+      );
+      await tester.tap(find.text('1. Short'));
+      await tester.pump();
+      final closingStart = tester.getSize(firstCard).height;
+      await tester.pump(const Duration(milliseconds: 80));
+      final closingMiddle = tester.getSize(firstCard).height;
+      expect(closingMiddle, lessThan(closingStart));
+      expect(closingMiddle, greaterThan(before.height));
+      await settle(tester);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, 1);
+      expect(find.byTooltip('收起简介'), findsNothing);
+      await tester.tap(find.text('1. Short'));
+      await settle(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, 1);
+      expect(tester.getRect(cards.first), sourceRect);
+      await tester.tap(find.text('1. Short'));
+      await settle(tester);
+      await tester.tapAt(const Offset(730, 20));
+      await settle(tester);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, 1);
+      await tester.tap(find.text('1. Short'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 80));
+      final interruptedHeight = tester.getSize(firstCard).height;
+      await tester.tap(find.text('1. Short'));
+      await tester.pump();
+      expect(tester.getSize(firstCard).height, closeTo(interruptedHeight, .01));
+      await settle(tester);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, 1);
+      expect(tester.getRect(cards.first), sourceRect);
+      await tester.ensureVisible(artwork);
+      await tester.tap(artwork);
+      await tester.pump();
+      expect(playCalls, 1);
+      await tester.ensureVisible(find.text('1. Short'));
+      await tester.tap(find.text('1. Short'));
+      await settle(tester);
+      await tester.tap(artwork);
+      await settle(tester);
+      expect(playCalls, 2);
+      expect(tester.widget<Text>(find.text(synopsis)).maxLines, 1);
+      await tester.ensureVisible(find.text('特别篇 (1)'));
+      await tester.tap(find.text('特别篇 (1)'));
+      await settle(tester);
+      expect(
+        tester
+            .widget<FilmEpisodeCard>(find.byType(FilmEpisodeCard))
+            .resource
+            .season,
+        0,
+      );
+      await tester.tap(find.text('特别篇 (1)'), buttons: kSecondaryMouseButton);
+      await settle(tester);
+      expect(find.text('标记已看完'), findsOneWidget);
+      await tester.tapAt(const Offset(700, 20));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('集号待确认 (1)'));
+      await tester.tap(find.text('集号待确认 (1)'));
+      await settle(tester);
+      expect(
+        tester
+            .widget<FilmEpisodeCard>(find.byType(FilmEpisodeCard))
+            .resource
+            .season,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('剧集与续播玻璃连接连续，悬停限于封面且角标保持尺寸', (tester) async {
+    await prepare(tester, count: 1);
+    final resource = (await tester.runAsync(() async {
+      final rootId = await catalog.store.addRoot(
+        sourceId: 'local:glass-fixture',
+        kind: MediaSourceKind.local,
+        path: 'TV',
+        type: FilmMediaType.tv,
+        name: 'Glass fixture',
       );
       final root = (await catalog.store.root(rootId))!;
       final generation = await catalog.store.beginScan(rootId);
@@ -411,100 +772,221 @@ void main() {
         generation,
         cancelled: () => false,
       );
-      final resource = (await catalog.store.resources(rootId: rootId)).single;
       await catalog.store.bind(
-        [resource],
+        await catalog.store.resources(rootId: rootId),
         FilmWork(
           type: FilmMediaType.tv,
-          tmdbId: 888,
-          title: 'Season clip fixture',
-          originalTitle: 'Season clip fixture',
+          tmdbId: 777,
+          title: 'Glass fixture',
+          originalTitle: 'Glass fixture',
           overview: '',
           language: 'en',
           posterPath: works.first.posterPath,
+          backdropPath: works.first.backdropPath,
         ),
       );
-      final bound = (await catalog.store.resources()).singleWhere(
-        (r) => r.id == resource.id,
-      );
-      await catalog.store.mapEpisodes({bound: (1, 1)});
-      return bound.workId!;
-    }))!;
-    final boundary = GlobalKey();
-    await tester.pumpWidget(
-      frame(
-        RepaintBoundary(
-          key: boundary,
-          child: FilmDetailPage(
-            catalog: catalog,
-            workId: workId,
-            onOpenItem: (_) async {},
+      final resource = (await catalog.store.resources(rootId: rootId)).single;
+      await catalog.store.mapEpisodes({resource: (1, 1)});
+      await catalog.store.setPreference('spoiler_protection', false);
+      final original = (await catalog.images.cached(
+        works.first.backdropPath!,
+        'original',
+      ))!;
+      for (final target in ['w780', 'w342']) {
+        await original.copy(
+          p.join(
+            catalog.images.directory.path,
+            '${FilmCatalogImageCache.cacheKey(works.first.backdropPath!, target)}.img',
           ),
-        ),
-      ),
-    );
-    for (var i = 0; i < 10; i++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)),
-      );
-      await tester.pump(const Duration(milliseconds: 20));
-    }
-    for (final heading in [find.text('季'), find.text('第 1 季')]) {
-      expect(heading, findsWidgets);
-      for (final element in heading.evaluate()) {
-        expect(
-          find.ancestor(
-            of: find.byWidget(element.widget),
-            matching: find.byType(SkeletonRegion),
-          ),
-          findsWidgets,
         );
       }
-    }
-    expect(find.byType(CinematicSkeleton), findsWidgets);
-    await settle(tester);
-    final season = find.byKey(const ValueKey('film-season-1'));
-    await tester.ensureVisible(season);
-    await settle(tester);
-    final frameFinder = find
-        .descendant(of: season, matching: find.byType(InkWell))
-        .first;
-    final rect = tester.getRect(frameFinder);
+      return (await catalog.store.resources(rootId: rootId)).single;
+    }))!;
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-    await mouse.addPointer(location: const Offset(1200, 850));
-    final samples = <ByteData>[];
-    var imageWidth = 0;
-    for (final hovered in [false, true]) {
-      if (hovered) await mouse.moveTo(rect.center);
-      await tester.pumpAndSettle();
-      final image = (await tester.runAsync(
-        () =>
-            (boundary.currentContext!.findRenderObject()
-                    as RenderRepaintBoundary)
-                .toImage(),
-      ))!;
-      imageWidth = image.width;
-      samples.add(
-        (await tester.runAsync(
-          () async =>
-              (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!,
-        ))!,
-      );
-      image.dispose();
-    }
-    for (final x in [(rect.left - 2).floor(), (rect.right + 1).ceil()]) {
-      for (var y = (rect.top + 50).ceil(); y < (rect.top + 120).floor(); y++) {
-        for (var c = 0; c < 3; c++) {
-          final offset = (y * imageWidth + x) * 4 + c;
-          expect(
-            samples.last.getUint8(offset),
-            closeTo(samples.first.getUint8(offset), 1),
-            reason: 'season escapes frame at ($x, $y)',
+    await mouse.addPointer(location: const Offset(900, 700));
+    for (final dpr in [1.0, 1.25, 1.5, 2.0]) {
+      tester.view.devicePixelRatio = dpr;
+      tester.view.physicalSize = Size(1000 * dpr, 800 * dpr);
+      for (final light in [false, true]) {
+        for (final kind in ['episode', 'continue', 'poster']) {
+          await mouse.moveTo(const Offset(900, 700));
+          final boundary = GlobalKey();
+          var plays = 0;
+          var cardWidth = 300.0;
+          late StateSetter resizeCard;
+          await tester.pumpWidget(
+            frame(
+              Theme(
+                data: light ? AppTheme.light() : AppTheme.dark(),
+                child: Scaffold(
+                  body: RepaintBoundary(
+                    key: boundary,
+                    child: ColoredBox(
+                      color: light ? Colors.black : Colors.white,
+                      child: Padding(
+                        padding: const EdgeInsets.all(40),
+                        child: Align(
+                          alignment: Alignment.topLeft,
+                          child: StatefulBuilder(
+                            builder: (context, setSize) {
+                              resizeCard = setSize;
+                              return SizedBox(
+                                width: cardWidth,
+                                height: kind == 'episode'
+                                    ? null
+                                    : kind == 'poster'
+                                    ? 400
+                                    : 220,
+                                child: kind == 'episode'
+                                    ? FilmEpisodeCard(
+                                        resource: resource,
+                                        catalog: catalog,
+                                        state: '可用',
+                                        artworkPath: works.first.backdropPath,
+                                        probe: const {
+                                          'video': [
+                                            {'width': 1920, 'height': 1080},
+                                          ],
+                                        },
+                                        episode: const {
+                                          'name': 'Glass episode',
+                                          'overview': 'Short overview',
+                                        },
+                                        onOpenItem: (_) async {
+                                          plays++;
+                                        },
+                                        onChanged: () async {},
+                                      )
+                                    : FilmContinueCard(
+                                        catalog: catalog,
+                                        poster: kind == 'poster',
+                                        record: MediaLibraryRecord(
+                                          item: resource.playbackItem,
+                                          updatedAt: DateTime.now(),
+                                        ),
+                                        onTap: () {
+                                          plays++;
+                                        },
+                                      ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           );
+          await settle(tester);
+          if (kind == 'episode' && dpr == 1 && !light) {
+            final imageState = tester.state(find.byType(FilmArtwork));
+            resizeCard(() => cardWidth = 240);
+            await tester.pumpAndSettle();
+            resizeCard(() => cardWidth = 300);
+            await tester.pump();
+            for (final ms in [0, 16, 32, 72, 80]) {
+              await tester.pump(Duration(milliseconds: ms));
+              final cardRect = tester.getRect(find.byType(Card));
+              for (final label in ['1. Glass episode', 'Short overview']) {
+                expect(
+                  tester.getTopLeft(find.text(label)).dx,
+                  closeTo(cardRect.left + 12, .01),
+                  reason:
+                      'Restored episode text moves horizontally: $label at ${ms}ms',
+                );
+              }
+            }
+            expect(tester.state(find.byType(FilmArtwork)), same(imageState));
+            await tester.pumpAndSettle();
+          }
+          final artwork = find.byType(FilmArtwork);
+          final resting = tester.getRect(artwork);
+          final card = tester.getRect(find.byType(Card));
+          final badge = find.text('1920 × 1080');
+          final badgeRest = kind == 'episode' ? tester.getRect(badge) : null;
+          double playOpacity() => tester
+              .widget<FilmPlayIcon>(
+                find.descendant(
+                  of: find.byType(FilmPosterHoverPlayIcon),
+                  matching: find.byType(FilmPlayIcon),
+                ),
+              )
+              .opacity!
+              .value;
+          if (kind == 'episode') expect(playOpacity(), 0);
+          final body = Offset(card.left + 50, resting.bottom + 20);
+          final origin = tester.getTopLeft(find.byKey(boundary));
+          Future<void> checkJunction(String phase) async {
+            final image = (await tester.runAsync(
+              () =>
+                  (boundary.currentContext!.findRenderObject()!
+                          as RenderRepaintBoundary)
+                      .toImage(pixelRatio: dpr),
+            ))!;
+            final bytes = (await tester.runAsync(
+              () => image.toByteData(format: ui.ImageByteFormat.rawRgba),
+            ))!;
+            for (final x in [
+              resting.left + 3,
+              resting.right - 3,
+              resting.center.dx,
+            ]) {
+              final y = resting.bottom - 1;
+              final offset =
+                  (((y - origin.dy) * dpr).floor() * image.width +
+                      ((x - origin.dx) * dpr).floor()) *
+                  4;
+              // 连接处必须由连续底板或封面覆盖，不能漏出对比背景或落成黑线。
+              final green = bytes.getUint8(offset + 1);
+              expect(
+                green,
+                inInclusiveRange(light ? 60 : 35, light ? 255 : 175),
+                reason:
+                    '$kind dpr=$dpr light=$light phase=$phase x=$x green=$green',
+              );
+            }
+            image.dispose();
+          }
+
+          await checkJunction('rest');
+          await mouse.moveTo(body);
+          await tester.pumpAndSettle();
+          expect(tester.getRect(artwork), resting, reason: 'Body hover: $kind');
+          if (kind == 'episode') expect(playOpacity(), 0);
+
+          await mouse.moveTo(resting.center);
+          await tester.pump();
+          for (final ms in [40, 60, 100]) {
+            await tester.pump(Duration(milliseconds: ms));
+            await checkJunction('enter-$ms');
+          }
+          final hovered = tester.getRect(artwork);
+          if (kind == 'episode') expect(playOpacity(), 1);
+          expect(hovered.width, closeTo(resting.width * 1.05, .01));
+          if (badgeRest != null) {
+            final moved = tester.getRect(badge);
+            expect(moved.size.width, closeTo(badgeRest.width, .01));
+            expect(moved.size.height, closeTo(badgeRest.height, .01));
+            expect(moved.top, lessThan(badgeRest.top));
+            expect(moved.left, lessThan(badgeRest.left));
+          }
+          await mouse.moveTo(body);
+          await tester.pump();
+          for (final ms in [40, 60, 100]) {
+            await tester.pump(Duration(milliseconds: ms));
+            await checkJunction('exit-$ms');
+          }
+          expect(tester.getRect(artwork), resting);
+          if (kind == 'episode') expect(playOpacity(), 0);
+          await tester.tapAt(resting.center);
+          await tester.pump();
+          expect(plays, 1);
+          expect(tester.takeException(), isNull);
         }
       }
     }
-    expect(tester.getRect(frameFinder), rect);
     await mouse.removePointer();
   });
 
@@ -910,6 +1392,7 @@ void main() {
     'spoiler mode retains main artwork and uses one overview reveal action',
     (tester) async {
       await prepare(tester);
+      final overview = 'Secret overview with a long paragraph. ' * 30;
       await tester.runAsync(() async {
         await catalog.store.bind(
           [(await catalog.store.resources()).first],
@@ -918,7 +1401,7 @@ void main() {
             tmdbId: works.first.tmdbId,
             title: works.first.title,
             originalTitle: works.first.originalTitle,
-            overview: 'Secret overview',
+            overview: overview,
             language: 'zh-CN',
             posterPath: works.first.posterPath,
             backdropPath: works.first.backdropPath,
@@ -938,7 +1421,7 @@ void main() {
       await settle(tester);
       expect(
         find.ancestor(
-          of: find.text('Secret overview'),
+          of: find.text(overview),
           matching: find.byType(ImageFiltered),
         ),
         findsOneWidget,
@@ -958,7 +1441,7 @@ void main() {
       await tester.pump();
       expect(
         find.ancestor(
-          of: find.text('Secret overview'),
+          of: find.text(overview),
           matching: find.byType(ImageFiltered),
         ),
         findsNothing,
@@ -1068,7 +1551,11 @@ void main() {
         (w) => w is FilmShelf && w.title == '合集',
       );
       final all = find.descendant(of: shelf, matching: find.text('查看全部'));
-      await tester.ensureVisible(all);
+      await tester.scrollUntilVisible(
+        all,
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(all);
       await settle(tester);
       expect(find.byType(AppBar), findsNothing);
@@ -1378,7 +1865,11 @@ void main() {
     await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
     await settle(tester);
     Future<void> openMenu(String title) async {
-      await tester.ensureVisible(find.text(title));
+      await tester.scrollUntilVisible(
+        find.text(title),
+        400,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text(title), buttons: kSecondaryMouseButton);
       await tester.pumpAndSettle();
@@ -1398,6 +1889,138 @@ void main() {
     await tester.tap(find.text('删除合集'));
     await settle(tester);
     expect(find.text('Renamed collection'), findsNothing);
+  });
+
+  testWidgets('资源替换后详情移除旧版本，主页不显示缺失位置标记', (tester) async {
+    await prepare(tester, count: 1);
+    final work = works.single;
+    final original = (await tester.runAsync(
+      () => catalog.store.resources(workId: work.id),
+    ))!.single;
+    late FilmResource current;
+    await tester.runAsync(() async {
+      final root = (await catalog.store.root(original.rootId))!;
+      final generation = await catalog.store.beginScan(root.id);
+      await catalog.store.stage(root, generation, const [
+        FilmScanEntry(
+          path: 'replacement.mkv',
+          parentPath: '',
+          name: 'replacement.mkv',
+          mediaKind: 'video',
+        ),
+      ]);
+      await catalog.store.commitScan(
+        root.id,
+        generation,
+        cancelled: () => false,
+      );
+      current = (await catalog.store.resources(rootId: root.id)).single;
+      await catalog.store.bind([current], work);
+      await catalog.refresh();
+      works = await catalog.store.works(type: null);
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: work.id,
+          initialWork: works.single,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(find.byKey(ValueKey('film-resource-${original.id}')), findsNothing);
+    expect(find.byKey(ValueKey('film-resource-${current.id}')), findsOneWidget);
+    expect(find.text('位置缺失'), findsNothing);
+    await tester.pumpWidget(
+      frame(
+        FilmLibraryPage(
+          onOpenItem: (_) async {},
+          continueShelf: const SizedBox.shrink(),
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(find.text('包含缺失位置'), findsNothing);
+    expect(catalog.movies.single.resourceCount, 1);
+    expect(catalog.movies.single.missingCount, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('影片分级在详情与主页显示并复用海报墙筛选', (tester) async {
+    await prepare(tester, count: 1);
+    final work = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork.fromRow({
+          ...work.toRow(),
+          'id': work.id,
+          'metadata_json': jsonEncode({
+            ...work.metadata,
+            'certification': 'TV-PG',
+          }),
+        }),
+      );
+      await catalog.store.setHomeSections([
+        for (final section in FilmHomeSection.defaults)
+          section.withEnabled(section.id == 'ratings'),
+      ]);
+      await catalog.refresh();
+      works = await catalog.store.works(type: null);
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: work.id,
+          initialWork: works.single,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(
+      tester
+          .widget<FilmCertificationBadge>(find.byType(FilmCertificationBadge))
+          .rating,
+      'TV-PG',
+    );
+    await tester.pumpWidget(
+      frame(
+        FilmLibraryPage(
+          onOpenItem: (_) async {},
+          continueShelf: const SizedBox.shrink(),
+        ),
+      ),
+    );
+    await settle(tester);
+    final shelf = find.byWidgetPredicate(
+      (w) => w is FilmShelf && w.title == '影片分级',
+    );
+    expect(shelf, findsOneWidget);
+    expect(
+      find.descendant(of: shelf, matching: find.text('TV-PG')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: shelf, matching: find.byType(FilmCertificationBadge)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: shelf, matching: find.text('查看全部')),
+      findsNothing,
+    );
+    final card = find.descendant(
+      of: shelf,
+      matching: find.byType(FilmCategoryCard),
+    );
+    await tester.ensureVisible(card);
+    await tester.tap(card);
+    await settle(tester);
+    expect(catalog.sectionId, 'rating:TV-PG');
+    expect(catalog.works.map((w) => w.id), [work.id]);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('分类栏无查看全部，鼠标拖动可访问全部分类并复用海报墙筛选', (tester) async {
@@ -1583,103 +2206,229 @@ void main() {
     },
   );
 
-  testWidgets(
-    'episode artwork and overview share one reveal action below the overview',
-    (tester) async {
-      await prepare(tester);
-      final resource = (await tester.runAsync(() async {
-        final rootId = await catalog.store.addRoot(
-          sourceId: 'local:tv-fixture',
-          kind: MediaSourceKind.local,
-          path: 'TV',
+  testWidgets('episode artwork and overview share one compact reveal action', (
+    tester,
+  ) async {
+    await prepare(tester);
+    final resource = (await tester.runAsync(() async {
+      final rootId = await catalog.store.addRoot(
+        sourceId: 'local:tv-fixture',
+        kind: MediaSourceKind.local,
+        path: 'TV',
+        type: FilmMediaType.tv,
+        name: 'TV fixture',
+      );
+      final root = (await catalog.store.root(rootId))!;
+      final generation = await catalog.store.beginScan(rootId);
+      await catalog.store.stage(root, generation, [
+        const FilmScanEntry(
+          path: 'TV/E1.mkv',
+          parentPath: 'TV',
+          name: 'E1.mkv',
+          mediaKind: 'video',
+        ),
+      ]);
+      await catalog.store.commitScan(
+        rootId,
+        generation,
+        cancelled: () => false,
+      );
+      final resource = (await catalog.store.resources(rootId: rootId)).single;
+      await catalog.store.bind(
+        [resource],
+        FilmWork(
           type: FilmMediaType.tv,
-          name: 'TV fixture',
-        );
-        final root = (await catalog.store.root(rootId))!;
-        final generation = await catalog.store.beginScan(rootId);
-        await catalog.store.stage(root, generation, [
-          const FilmScanEntry(
-            path: 'TV/E1.mkv',
-            parentPath: 'TV',
-            name: 'E1.mkv',
-            mediaKind: 'video',
-          ),
-        ]);
-        await catalog.store.commitScan(
-          rootId,
-          generation,
-          cancelled: () => false,
-        );
-        final resource = (await catalog.store.resources(rootId: rootId)).single;
-        await catalog.store.bind(
-          [resource],
-          FilmWork(
-            type: FilmMediaType.tv,
-            tmdbId: 777,
-            title: 'TV fixture',
-            originalTitle: 'TV fixture',
-            overview: '',
-            language: 'en',
-            posterPath: works.first.posterPath,
-          ),
-        );
-        final bound = (await catalog.store.resources()).firstWhere(
-          (r) => r.id == resource.id,
-        );
-        await catalog.store.mapEpisodes({bound: (1, 1)});
-        await catalog.store.setPreference('spoiler_protection', true);
-        final original = (await catalog.images.cached(
-          works.first.backdropPath!,
-          'original',
-        ))!;
-        await original.copy(
-          p.join(
-            catalog.images.directory.path,
-            '${FilmCatalogImageCache.cacheKey('/still.png', 'w300')}.img',
-          ),
-        );
-        return (await catalog.store.resources()).firstWhere(
-          (r) => r.id == resource.id,
-        );
-      }))!;
-      for (final overview in ['', 'Secret episode overview']) {
-        var menuCalls = 0;
-        await tester.pumpWidget(
-          frame(
-            Scaffold(
-              body: FilmSpoilerScope(
-                key: ValueKey(overview),
-                child: SizedBox(
-                  width: 300,
-                  child: Column(
-                    children: [
-                      Expanded(
+          tmdbId: 777,
+          title: 'TV fixture',
+          originalTitle: 'TV fixture',
+          overview: '',
+          language: 'en',
+          posterPath: works.first.posterPath,
+        ),
+      );
+      final bound = (await catalog.store.resources()).firstWhere(
+        (r) => r.id == resource.id,
+      );
+      await catalog.store.mapEpisodes({bound: (1, 1)});
+      await catalog.store.setPreference('spoiler_protection', true);
+      final original = (await catalog.images.cached(
+        works.first.backdropPath!,
+        'original',
+      ))!;
+      await original.copy(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey('/still.png', 'w300')}.img',
+        ),
+      );
+      return (await catalog.store.resources()).firstWhere(
+        (r) => r.id == resource.id,
+      );
+    }))!;
+    for (final overview in ['', 'Secret episode overview']) {
+      var menuCalls = 0;
+      final cardKey = GlobalKey();
+      await tester.pumpWidget(
+        frame(
+          Scaffold(
+            body: FilmSpoilerScope(
+              key: ValueKey(overview),
+              child: SizedBox(
+                width: 300,
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: RepaintBoundary(
+                        key: cardKey,
                         child: FilmEpisodeCard(
                           resource: resource,
                           catalog: catalog,
                           state: '可用',
                           onOpenItem: (_) async {},
                           onChanged: () async {},
+                          probe: overview.isEmpty ? null : {'duration': 1470},
                           episode: {
                             'name': 'Episode',
                             'still_path': '/still.png',
                             'overview': overview,
+                            'air_date': '2026-10-18',
+                            'runtime': 24,
                           },
                         ),
                       ),
-                      SizedBox(
-                        height: FilmContinueCard.landscapeHeight,
-                        child: FilmContinueCard(
-                          catalog: catalog,
-                          record: MediaLibraryRecord(
-                            item: resource.playbackItem,
-                            updatedAt: DateTime.now(),
-                          ),
-                          onTap: () {},
-                          onMenu: (_) => menuCalls++,
+                    ),
+                    SizedBox(
+                      height: FilmContinueCard.landscapeHeight,
+                      child: FilmContinueCard(
+                        catalog: catalog,
+                        record: MediaLibraryRecord(
+                          item: resource.playbackItem,
+                          updatedAt: DateTime.now(),
                         ),
+                        onTap: () {},
+                        onMenu: (_) => menuCalls++,
                       ),
-                    ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      await tester.runAsync(() async {
+        final boundary =
+            cardKey.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary;
+        final image = await boundary.toImage(
+          pixelRatio: tester.view.devicePixelRatio,
+        );
+        final png = await image.toByteData(format: ui.ImageByteFormat.png);
+        final output = Directory('build/spoiler-edges')
+          ..createSync(recursive: true);
+        await File(
+          p.join(
+            output.path,
+            overview.isEmpty ? 'empty-card.png' : 'synopsis-card.png',
+          ),
+        ).writeAsBytes(png!.buffer.asUint8List());
+        image.dispose();
+      });
+      expect(find.text('${overview.isEmpty ? 24 : 25} 分钟'), findsOneWidget);
+      expect(find.text('展示封面'), findsOneWidget);
+      expect(find.text('展示剧透'), findsNothing);
+      expect(find.byType(ImageFiltered), findsNWidgets(3));
+      final caption = find.byWidgetPredicate(
+        (widget) => widget is FilmWatchOverlay && widget.softEdges,
+      );
+      expect(caption, findsOneWidget);
+      final captionSize = tester.getSize(caption);
+      for (final element in find.byType(ImageFiltered).evaluate()) {
+        final filter = find.byWidget(element.widget);
+        final isCaption = find
+            .ancestor(of: filter, matching: caption)
+            .evaluate()
+            .isNotEmpty;
+        final clip = find
+            .ancestor(
+              of: filter,
+              matching: find.byType(isCaption ? ClipRRect : ClipRect),
+            )
+            .first;
+        expect(tester.getRect(clip), tester.getRect(filter));
+        if (isCaption) {
+          expect(
+            tester.widget<ClipRRect>(clip).borderRadius,
+            AppTheme.controlRadius,
+          );
+        }
+      }
+      expect(
+        find.ancestor(
+          of: find.text('展示封面'),
+          matching: find.byType(ImageFiltered),
+        ),
+        findsNothing,
+      );
+      final continuationMenu = find.descendant(
+        of: find.byType(FilmContinueCard),
+        matching: find.byTooltip('更多操作'),
+      );
+      expect(
+        find.ancestor(
+          of: find.byType(FilmPlayIcon),
+          matching: find.byType(ImageFiltered),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.ancestor(
+          of: continuationMenu,
+          matching: find.byType(ImageFiltered),
+        ),
+        findsNothing,
+      );
+      await tester.tap(continuationMenu);
+      await tester.pump();
+      expect(menuCalls, 1);
+      await tester.tap(find.text('展示封面'));
+      await tester.pump();
+      expect(find.byType(ImageFiltered), findsNothing);
+      expect(find.text('展示封面'), findsNothing);
+      expect(tester.getSize(caption), captionSize);
+    }
+  });
+
+  testWidgets(
+    'synopsis spoiler edges feather into transparent rounded bounds',
+    (tester) async {
+      await prepare(tester);
+      await tester.runAsync(
+        () => catalog.store.setPreference('spoiler_protection', true),
+      );
+      for (final dpr in [1.0, 1.25, 1.5, 2.0]) {
+        tester.view.devicePixelRatio = dpr;
+        final boundaryKey = GlobalKey();
+        await tester.pumpWidget(
+          frame(
+            Scaffold(
+              body: Center(
+                child: RepaintBoundary(
+                  key: boundaryKey,
+                  child: FilmWatchOverlay(
+                    key: ValueKey(dpr),
+                    store: catalog.store,
+                    workId: works.first.id,
+                    spoilerSensitive: true,
+                    showStatus: false,
+                    softEdges: true,
+                    revealLabel: '展示封面',
+                    child: const SizedBox(
+                      width: 280,
+                      height: 40,
+                      child: ColoredBox(color: Colors.white),
+                    ),
                   ),
                 ),
               ),
@@ -1687,41 +2436,40 @@ void main() {
           ),
         );
         await settle(tester);
-        expect(find.text('展示封面'), findsOneWidget);
-        expect(find.text('展示剧透'), findsNothing);
-        expect(find.byType(ImageFiltered), findsNWidgets(3));
-        for (final element in find.byType(ImageFiltered).evaluate()) {
-          final filter = find.byWidget(element.widget);
-          final clip = find
-              .ancestor(of: filter, matching: find.byType(ClipRect))
-              .first;
-          expect(tester.getRect(clip), tester.getRect(filter));
-        }
-        final continuationMenu = find.descendant(
-          of: find.byType(FilmContinueCard),
-          matching: find.byTooltip('更多操作'),
-        );
-        expect(
-          find.ancestor(
-            of: find.byType(FilmPlayIcon),
-            matching: find.byType(ImageFiltered),
-          ),
-          findsNothing,
-        );
-        expect(
-          find.ancestor(
-            of: continuationMenu,
-            matching: find.byType(ImageFiltered),
-          ),
-          findsNothing,
-        );
-        await tester.tap(continuationMenu);
-        await tester.pump();
-        expect(menuCalls, 1);
+        final size = tester.getSize(find.byKey(boundaryKey));
+        final boundary =
+            boundaryKey.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary;
+        await tester.runAsync(() async {
+          final image = await boundary.toImage(pixelRatio: dpr);
+          final rgba = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!.buffer.asUint8List();
+          int alpha(double x, double y) =>
+              rgba[((y * dpr).floor() * image.width + (x * dpr).floor()) * 4 +
+                  3];
+          // 实心输入用于检查边缘透明度，不依赖字体和文本分布。
+          expect(alpha(0, 20), lessThan(15));
+          expect(alpha(3, 20), lessThan(alpha(7, 20)));
+          expect(alpha(7, 20), lessThan(alpha(16, 20)));
+          expect(alpha(40, 0), lessThan(15));
+          expect(alpha(40, 3), lessThan(alpha(40, 7)));
+          expect(alpha(40, 7), lessThan(alpha(40, 15)));
+          expect(alpha(1, 1), lessThan(5));
+          expect(alpha(279, 39), lessThan(5));
+          expect(alpha(40, 20), inInclusiveRange(160, 185));
+          final output = Directory('build/spoiler-edges')
+            ..createSync(recursive: true);
+          final png = await image.toByteData(format: ui.ImageByteFormat.png);
+          await File(
+            p.join(output.path, 'feather-$dpr.png'),
+          ).writeAsBytes(png!.buffer.asUint8List());
+          image.dispose();
+        });
         await tester.tap(find.text('展示封面'));
         await tester.pump();
         expect(find.byType(ImageFiltered), findsNothing);
-        expect(find.text('展示封面'), findsNothing);
+        expect(tester.getSize(find.byKey(boundaryKey)), size);
       }
     },
   );

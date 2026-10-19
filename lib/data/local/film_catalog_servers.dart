@@ -68,6 +68,7 @@ FilmWork _serverWork(
     posterPath: _serverImage(config.id, item, 'Primary'),
     backdropPath: _serverImage(config.id, item, 'Backdrop', index: '0'),
     metadata: {
+      'certification': item['OfficialRating'] as String?,
       'genres': [
         for (final genre in item['Genres'] as List? ?? []) {'name': genre},
       ],
@@ -442,6 +443,14 @@ extension FilmCatalogServerData on FilmCatalogStore {
         }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
     });
+    for (var i = 0; i < entries.length; i++) {
+      final resource = await resourceAt(config.id, entries[i].path);
+      await saveServerVersion(
+        resource!.id,
+        path: versions[i]['Path'] as String?,
+        name: versions[i]['Name'] as String?,
+      );
+    }
     _changed();
   }
 

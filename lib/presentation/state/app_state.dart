@@ -646,6 +646,18 @@ class AppState extends ChangeNotifier {
         }
 
         final plan = ImplicitVideoPlan(
+          completed: history.filmNextItem == null
+              ? null
+              : () async {
+                  final current = (await histories.loadAll())
+                      .where((h) => h.sessionId == history.sessionId)
+                      .firstOrNull;
+                  if (current != null && !current.filmBoundaryReady) {
+                    await histories.upsert(
+                      current.copyWith(filmBoundaryReady: true),
+                    );
+                  }
+                },
           isCached: (version) async =>
               await cachedTarget(sourceId, version.path) != null,
           items: items,

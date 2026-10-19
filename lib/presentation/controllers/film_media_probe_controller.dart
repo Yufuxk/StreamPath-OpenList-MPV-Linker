@@ -138,15 +138,19 @@ class FilmMediaProbeController extends ChangeNotifier {
             previous['state'] != 'complete' ||
             resource.mediaKind == 'iso' ||
             resource.mediaKind == 'bdmv') {
-          final disc =
-              resource.mediaKind == 'iso' || resource.mediaKind == 'bdmv';
-          await store.saveProbe(resource.id, {
+          final disc = resource.isDisc;
+          final merged = <String, dynamic>{
             ...?previous,
             ...info,
-            if (disc) 'fileSize': previous?['fileSize'],
+            'fileSize': disc
+                ? (previous?['fileSize'])
+                : info['fileSize'] ?? previous?['fileSize'],
+            if (!disc) 'duration': info['duration'] ?? previous?['duration'],
             if (disc) 'programme': metadata['programme'],
             if (disc) 'programmeType': metadata['programmeType'],
-          });
+          };
+          merged['bitrate'] = technicalOverallBitrate(merged, isDisc: disc);
+          await store.saveProbe(resource.id, merged);
         }
       }
       if (_closed || await store.probeMode() != 'full') return;
@@ -161,6 +165,7 @@ class FilmMediaProbeController extends ChangeNotifier {
       error = null;
       _notify();
       try {
+        final previous = await store.probe(resource.id);
         final target = await _access.prepare(resource, sourceFor(root));
         if (_preparing > 0 ||
             await isPlaying() ||
@@ -175,12 +180,17 @@ class FilmMediaProbeController extends ChangeNotifier {
         if (_preparing > 0 || _closed) {
           throw const FilmCatalogException('cancelled');
         }
-        await store.saveProbe(resource.id, {
+        final merged = <String, dynamic>{
           ...metadata,
           ...target.metadata,
+          'fileSize': metadata['fileSize'] ?? previous?['fileSize'],
+          'duration': metadata['duration'] ?? previous?['duration'],
+          'bitrate': metadata['bitrate'] ?? previous?['bitrate'],
           'fullProbed': true,
           'fullProbeState': metadata['state'],
-        });
+        };
+        merged['bitrate'] = technicalOverallBitrate(merged);
+        await store.saveProbe(resource.id, merged);
         processed++;
       } on FilmCatalogException catch (e) {
         if (e.code == 'probePlaybackOnly' && !_closed) {
@@ -221,7 +231,6 @@ class FilmMediaProbeController extends ChangeNotifier {
           });
         }
       } finally {
-        await _access.close();
         busy = false;
         _notify();
       }

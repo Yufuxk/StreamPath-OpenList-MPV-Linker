@@ -932,16 +932,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                     ),
                   ],
                 ),
-                if (c.error != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: AppText(
-                      filmCatalogErrorText(c.error!),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
                 const Divider(height: 40),
                 Align(
                   alignment: Alignment.centerLeft,

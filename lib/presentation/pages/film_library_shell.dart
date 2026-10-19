@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../features/video_cache/video_cache_source.dart';
 import 'package:provider/provider.dart';
 
@@ -11,7 +12,11 @@ import '../../data/models/playback_history.dart';
 import '../../data/models/film_playlist.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../../domain/services/webdav_media_source_adapter.dart';
+import '../../domain/services/film_version_resolver.dart';
 import '../localization/app_text.dart';
+import '../localization/app_localizations.dart';
+import '../widgets/glass_dialog.dart';
+import '../widgets/sp_dialog.dart';
 import '../state/app_state.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/film_library_background.dart';
@@ -103,6 +108,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
       webDavSource: service,
       directorySource: cached ?? native ?? server,
       playbackOnly: true,
+      onFilmSourceBoundary: _confirmSourceBoundary,
     );
   }
 
@@ -173,11 +179,114 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   }
 
   Future<void> _play(MediaLibraryItem item, {String? resumeSessionId}) async {
-    await context.read<AppState>().initializeFilmPlayback();
+    final app = context.read<AppState>();
+    await app.initializeFilmPlayback();
+    final version = item.filmVersionContext;
+    if (version != null) {
+      final histories = await app.filmPlaybackHistoryStore.loadAll();
+      final candidates =
+          histories
+              .where(
+                (h) =>
+                    h.filmVersionContext?.identity == version.identity &&
+                    h.filmVersionContext!.signature != version.signature &&
+                    (resumeSessionId == null
+                        ? h.playerPid != null
+                        : h.sessionId == resumeSessionId),
+              )
+              .toList()
+            ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      if (candidates.isNotEmpty) {
+        for (final key in _keys.values.toList()) {
+          if (await key.currentState?.stopFilmVersionSession(
+                version.identity,
+                version.signature,
+                sessionId: candidates.first.sessionId,
+              ) ==
+              false) {
+            return;
+          }
+        }
+      }
+      if (!mounted) return;
+    }
     await _withHost(
       item,
-      (host) => host.playLibraryItem(item, resumeSessionId: resumeSessionId),
+      (host) => host.playLibraryItem(
+        item,
+        resumeSessionId: resumeSessionId,
+        versionSessionHandled: true,
+      ),
     );
+  }
+
+  Future<String?> _confirmSourceBoundary(MediaLibraryItem item) async {
+    if (!mounted) return null;
+    bool? activated;
+    try {
+      activated = await const MethodChannel(
+        'streampath/appearance',
+      ).invokeMethod<bool>('activate');
+    } on PlatformException {
+      activated = false;
+    } on MissingPluginException {
+      activated = false;
+    }
+    if (!mounted) return null;
+    if (activated != true) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SPNotice(content: AppText('请返回主程序后继续播放下一季')));
+      return null;
+    }
+    final store = await context.read<AppState>().getFilmCatalogStore();
+    final resource = await store.resourceAt(item.sourceId, item.targetPath);
+    if (!mounted) return null;
+    if (resource == null || resource.availability != 'present') {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SPNotice(content: AppText('所选版本不可用')));
+      return null;
+    }
+    final proceed = await showGlassDialog<bool>(
+      context: context,
+      builder: (dialogContext) => SPDialog(
+        title: const AppText('继续播放下一季'),
+        content: Text(
+          context.l10n.format('下一季需要切换播放来源：{version}\n第 {season} 季 · {file}', {
+            'version':
+                resource.versionName ?? automaticFilmVersion(resource).name,
+            'season': resource.season ?? '',
+            'file': item.name,
+          }),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const AppText('稍后播放'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const AppText('继续播放'),
+          ),
+        ],
+      ),
+    );
+    if (proceed != true || !mounted) return null;
+    final histories = context.read<AppState>().filmPlaybackHistoryStore;
+    final before = (await histories.loadAll()).map((h) => h.sessionId).toSet();
+    await _play(item);
+    final started = (await histories.loadAll())
+        .where(
+          (h) =>
+              !before.contains(h.sessionId) &&
+              h.playerPid != null &&
+              h.sourceId == item.sourceId &&
+              h.filmVersionContext?.signature ==
+                  item.filmVersionContext?.signature,
+        )
+        .firstOrNull;
+    return started?.sessionId;
   }
 
   Future<void> play(MediaLibraryItem item) => _play(item);

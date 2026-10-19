@@ -16,12 +16,15 @@ import '../models/film_collection.dart';
 import '../models/media_connection.dart';
 import '../models/film_image_reference.dart';
 import '../models/film_playlist.dart';
+import '../models/film_version.dart';
+import '../../domain/services/film_version_resolver.dart';
 import '../../domain/services/film_video_timeline.dart';
 
 part 'film_catalog_phase5.dart';
 part 'film_catalog_servers.dart';
 part 'film_catalog_portability.dart';
 part 'film_catalog_playlists.dart';
+part 'film_catalog_versions.dart';
 
 /// 永久影视目录；远端操作始终在写事务外完成。
 class FilmCatalogStore extends ChangeNotifier {
@@ -318,11 +321,11 @@ class FilmCatalogStore extends ChangeNotifier {
         .openDatabase(
           path,
           options: OpenDatabaseOptions(
-            version: 8,
+            version: 9,
             onConfigure: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
               final version = await db.getVersion();
-              if (version > 0 && version < 8 && path != inMemoryDatabasePath) {
+              if (version > 0 && version < 9 && path != inMemoryDatabasePath) {
                 final backup =
                     '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
                 await db.execute(
@@ -339,6 +342,7 @@ class FilmCatalogStore extends ChangeNotifier {
               }
               await db.execute(_watchSchema);
               await db.execute(_discWatchSchema);
+              await db.execute(_versionSchema);
               for (final statement in _phase5Schema) {
                 await db.execute(statement);
               }
@@ -431,6 +435,7 @@ class FilmCatalogStore extends ChangeNotifier {
                   await db.execute(statement);
                 }
               }
+              if (oldVersion < 9) await db.execute(_versionSchema);
             },
             onOpen: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
@@ -986,9 +991,11 @@ class FilmCatalogStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  static const _resourceSelect = '''SELECT r.*, c.source_id, c.source_kind,
+  static const _resourceSelect =
+      '''SELECT r.*, v.family_key AS version_key, v.family_name AS version_name, c.source_id, c.source_kind,
       c.media_type, c.root_path, c.display_name FROM resources r
-      JOIN catalog_roots c ON c.id = r.root_id''';
+      JOIN catalog_roots c ON c.id = r.root_id
+      LEFT JOIN film_resource_versions v ON v.resource_id = r.id''';
 
   Future<Map<String, FilmScanBinding>> scanBindings(int rootId) =>
       _db.transaction((txn) async {
@@ -1063,6 +1070,7 @@ class FilmCatalogStore extends ChangeNotifier {
       ),
   ];
 
+  /// 展示及操作只枚举现存版本；缺失记录按原身份保留，供重扫恢复。
   Future<List<FilmResource>> resources({
     int? rootId,
     int? workId,
@@ -1072,7 +1080,7 @@ class FilmCatalogStore extends ChangeNotifier {
     int? limit,
     int offset = 0,
   }) async {
-    final clauses = <String>[];
+    final clauses = <String>["r.availability = 'present'"];
     if (enabledOnly) clauses.add(_rootEnabledSql);
     final args = <Object?>[];
     if (rootId != null) {
@@ -1114,6 +1122,7 @@ class FilmCatalogStore extends ChangeNotifier {
             '''SELECT COUNT(*) AS count FROM resources r
       JOIN catalog_roots c ON c.id = r.root_id
       WHERE (r.work_id IS NULL OR (c.media_type = 'tv' AND r.season_number IS NULL))
+      AND r.availability = 'present'
       AND $_rootEnabledSql
       ${sourceId == null ? '' : 'AND c.source_id = ?'}
       ${rootId == null ? '' : 'AND c.id = ?'}''',
@@ -1165,18 +1174,19 @@ class FilmCatalogStore extends ChangeNotifier {
     final daily = sectionId == 'daily' ? await dailySelection() : null;
     final rows = await _db.rawQuery(
       '''SELECT w.*, COUNT(r.id) AS resource_count,
-      COUNT(DISTINCT r.season_number) AS season_count,
-      SUM(CASE WHEN r.availability = 'missing' THEN 1 ELSE 0 END) AS missing_count
+      COUNT(DISTINCT r.season_number) AS season_count
       FROM works w JOIN resources r ON r.work_id = w.id
       JOIN catalog_roots c ON c.id = r.root_id
       WHERE (? IS NULL OR w.media_type = ?) AND (instr(lower(w.title), lower(?)) > 0
         OR instr(lower(w.original_title), lower(?)) > 0)
+      AND r.availability = 'present'
       AND $_rootEnabledSql
       ${sourceId == null ? '' : 'AND c.source_id = ?'}
       ${rootId == null ? '' : 'AND c.id = ?'}
       ${sectionId?.startsWith('genre:') == true ? "AND EXISTS (SELECT 1 FROM json_each(w.metadata_json, '\$.genres') WHERE value = ?)" : ''}
       ${sectionId?.startsWith('country:') == true ? "AND EXISTS (SELECT 1 FROM json_each(w.metadata_json, '\$.origin_country') WHERE value = ?)" : ''}
       ${sectionId?.startsWith('decade:') == true ? 'AND w.year >= ? AND w.year < ?' : ''}
+      ${sectionId?.startsWith('rating:') == true ? "AND COALESCE(NULLIF(TRIM(json_extract(w.metadata_json, '\$.certification')), ''), 'NR') = ?" : ''}
       ${favoritesOnly ? 'AND EXISTS (SELECT 1 FROM work_favorites f WHERE f.work_id = w.id)' : ''}
       ${collectionId == null ? '' : 'AND EXISTS (SELECT 1 FROM collection_members m WHERE m.work_id=w.id AND m.collection_id=?)'}
       ${personId == null ? '' : 'AND EXISTS (SELECT 1 FROM work_people p WHERE p.work_id=w.id AND p.person_id=?)'}
@@ -1206,6 +1216,7 @@ class FilmCatalogStore extends ChangeNotifier {
           int.parse(sectionId!.substring(7)),
           int.parse(sectionId.substring(7)) + 10,
         ],
+        if (sectionId?.startsWith('rating:') == true) sectionId!.substring(7),
         ?collectionId,
         ?personId,
         ...?daily,
@@ -1267,7 +1278,7 @@ class FilmCatalogStore extends ChangeNotifier {
     );
     final lastId = previous.firstOrNull?['work_id'];
     final rows = await _db.rawQuery(
-      '''SELECT DISTINCT w.* FROM works w JOIN resources r ON r.work_id = w.id WHERE r.root_id = ? AND w.poster_path IS NOT NULL ORDER BY CASE WHEN w.id = ? THEN 1 ELSE 0 END, RANDOM()''',
+      '''SELECT DISTINCT w.* FROM works w JOIN resources r ON r.work_id = w.id WHERE r.root_id = ? AND r.availability = 'present' AND w.poster_path IS NOT NULL ORDER BY CASE WHEN w.id = ? THEN 1 ELSE 0 END, RANDOM()''',
       [rootId, lastId],
     );
     FilmWork? work;
@@ -1363,10 +1374,11 @@ class FilmCatalogStore extends ChangeNotifier {
       '''SELECT DISTINCT w.id, w.year,
         w.backdrop_path, w.poster_path,
         json_extract(w.metadata_json, '\$.genres') AS genres_json,
-        json_extract(w.metadata_json, '\$.origin_country') AS countries_json
+        json_extract(w.metadata_json, '\$.origin_country') AS countries_json,
+        COALESCE(NULLIF(TRIM(json_extract(w.metadata_json, '\$.certification')), ''), 'NR') AS certification
         FROM works w JOIN resources r ON r.work_id = w.id
         JOIN catalog_roots c ON c.id = r.root_id
-        WHERE $_rootEnabledSql ${sourceId == null ? '' : 'AND c.source_id = ?'}''',
+        WHERE $_rootEnabledSql AND r.availability = 'present' ${sourceId == null ? '' : 'AND c.source_id = ?'}''',
       [?sourceId],
     );
     final counts = <String, int>{};
@@ -1385,6 +1397,7 @@ class FilmCatalogStore extends ChangeNotifier {
                 .whereType<String>())
           'country:$country',
         if (row['year'] case final int year) 'decade:${year ~/ 10 * 10}',
+        'rating:${row['certification']}',
       };
       final path =
           row['backdrop_path'] as String? ?? row['poster_path'] as String?;
@@ -1552,7 +1565,8 @@ class FilmCatalogStore extends ChangeNotifier {
   Future<List<FilmResource>> unprobedResources({int limit = 1}) async =>
       (await _db.rawQuery(
         '''$_resourceSelect LEFT JOIN resource_probes p ON p.resource_id = r.id
-    WHERE r.availability = ? AND (p.resource_id IS NULL OR
+    WHERE r.availability = ? AND r.media_kind NOT IN ('iso', 'bdmv')
+    AND (p.resource_id IS NULL OR
       (r.media_kind <> 'strm' AND json_extract(p.metadata_json, '\$.state') = 'playback'
        AND COALESCE(json_extract(p.metadata_json, '\$.fullProbed'), 0) = 0))
     AND $_rootEnabledSql

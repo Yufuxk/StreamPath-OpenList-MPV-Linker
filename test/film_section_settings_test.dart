@@ -61,7 +61,8 @@ void main() {
     expect(find.text('类型'), findsOneWidget);
     expect(find.text('地区'), findsOneWidget);
     expect(find.text('年份'), findsOneWidget);
-    expect(find.byType(Checkbox), findsNWidgets(10));
+    expect(find.text('影片分级'), findsOneWidget);
+    expect(find.byType(Checkbox), findsNWidgets(11));
     catalog.saveGate = Completer<void>();
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();

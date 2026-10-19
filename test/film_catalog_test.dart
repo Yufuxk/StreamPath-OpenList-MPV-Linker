@@ -504,9 +504,13 @@ void main() {
     expect(after.episode, 2);
     expect(after.mappingOrigin, 'manual');
     expect(
-      (await store.resources(rootId: root.id)).last.availability,
+      (await store.resourceAt(
+        root.sourceId,
+        'TV/Show.S01E02.mkv',
+      ))!.availability,
       'missing',
     );
+    expect((await store.resources(rootId: root.id)).single.id, resource.id);
     expect((await store.root(root.id))!.status, 'completed');
     expect(await store.works(type: FilmMediaType.tv), hasLength(1));
   });
@@ -906,6 +910,70 @@ void main() {
       }
     });
   }
+
+  test('TMDB 分级随详情请求获取，美区优先、原产地回退及无分级', () async {
+    for (final type in FilmMediaType.values) {
+      for (final includeUS in [true, false]) {
+        final adapter = _ApiAdapter(
+          (options) async => {
+            ..._details(type, 1),
+            'origin_country': ['JP'],
+            type == FilmMediaType.movie ? 'release_dates' : 'content_ratings': {
+              'results': [
+                for (final (country, rating) in [
+                  ('DE', '12'),
+                  ('JP', 'G'),
+                  if (includeUS)
+                    ('US', type == FilmMediaType.movie ? 'PG-13' : 'TV-PG'),
+                ])
+                  {
+                    'iso_3166_1': country,
+                    if (type == FilmMediaType.movie)
+                      'release_dates': [
+                        {'certification': ''},
+                        {'certification': rating},
+                      ]
+                    else
+                      'rating': rating,
+                  },
+              ],
+            },
+          },
+        );
+        final tmdb = TmdbMetadataService(
+          credentials: _MemoryToken(),
+          dio: Dio()..httpClientAdapter = adapter,
+        );
+        addTearDown(tmdb.close);
+        final work = await tmdb.details(type, 1, 'zh-CN');
+        expect(
+          work.certification,
+          includeUS ? (type == FilmMediaType.movie ? 'PG-13' : 'TV-PG') : 'G',
+        );
+        expect(work.metadata['certification_country'], includeUS ? 'US' : 'JP');
+        expect(work.metadata['certification_version'], 1);
+        expect(adapter.requests, hasLength(2));
+        expect(
+          adapter.requests.first.queryParameters['append_to_response'],
+          type == FilmMediaType.movie
+              ? 'credits,release_dates'
+              : 'credits,content_ratings',
+        );
+      }
+    }
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()
+        ..httpClientAdapter = _ApiAdapter(
+          (_) async => _details(FilmMediaType.movie, 1),
+        ),
+    );
+    addTearDown(tmdb.close);
+    expect(
+      (await tmdb.details(FilmMediaType.movie, 1, 'zh-CN')).certification,
+      'NR',
+    );
+  });
 
   test('重复并发详情合并且缺失身份字段明确失败', () async {
     final gate = Completer<void>();
@@ -2498,6 +2566,7 @@ void main() {
     await legacy.execute('DROP TABLE catalog_preferences');
     await legacy.execute('DROP TABLE film_watch_state');
     await legacy.execute('DROP TABLE film_disc_watch_state');
+    await legacy.execute('DROP TABLE film_resource_versions');
     await legacy.execute('ALTER TABLE catalog_settings DROP COLUMN probe_mode');
     for (final table in [
       'film_playlist_scopes',

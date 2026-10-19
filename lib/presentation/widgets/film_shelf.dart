@@ -233,6 +233,8 @@ class FilmCategoryCard extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             FilmPosterHoverSurface(
+              showBorder: false,
+              clipBehavior: Clip.antiAliasWithSaveLayer,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -245,20 +247,7 @@ class FilmCategoryCard extends StatelessWidget {
                     borderRadius: 0,
                   ),
                   const IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Color(0x66000000),
-                            Color(0x99000000),
-                            Color(0xB3000000),
-                          ],
-                          stops: [0, .5, 1],
-                        ),
-                      ),
-                    ),
+                    child: CustomPaint(painter: _FilmCategoryGradient()),
                   ),
                 ],
               ),
@@ -296,6 +285,27 @@ class FilmCategoryCard extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _FilmCategoryGradient extends CustomPainter {
+  const _FilmCategoryGradient();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // 先合成图片与渐变，再由外层圆角统一裁剪。
+    canvas.drawPaint(
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x66000000), Color(0x99000000), Color(0xB3000000)],
+          stops: [0, .5, 1],
+        ).createShader(Offset.zero & size),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FilmCategoryGradient oldDelegate) => false;
 }
 
 class FilmCollectionCard extends StatelessWidget {
@@ -506,10 +516,7 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                       widget.work.title,
                       defaults.merge(Theme.of(context).textTheme.titleSmall),
                     ) +
-                    (subtitle.isEmpty ? 0 : textHeight(subtitle, defaults)) +
-                    (widget.work.missingCount > 0
-                        ? textHeight(context.l10n.text('包含缺失位置'), defaults)
-                        : 0);
+                    (subtitle.isEmpty ? 0 : textHeight(subtitle, defaults));
                 final posterWidth = math.min(
                   constraints.maxWidth,
                   math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
@@ -543,8 +550,6 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                        if (widget.work.missingCount > 0)
-                          const AppText('包含缺失位置'),
                       ],
                     ),
                   ),

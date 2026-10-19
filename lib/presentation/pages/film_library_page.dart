@@ -6,6 +6,7 @@ import 'film_library_shell.dart';
 import '../widgets/sp_menu.dart';
 import '../widgets/sp_controls.dart';
 import '../widgets/sp_control_bar.dart';
+import '../widgets/sp_notice.dart';
 import 'film_related_page.dart';
 import 'film_featured_page.dart';
 import 'dart:async';
@@ -85,11 +86,16 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   bool _continueReady = true;
   bool _backgroundReady = true;
   bool _refreshingPlayback = false;
+  String? _lastCatalogError, _lastScrapeError, _lastSyncError;
+  Object? _lastLoadError;
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_loadMore);
     _sourceId = widget.sourceId;
+    _lastSyncError = _sourceId == null
+        ? null
+        : context.read<AppState>().serverSyncError(_sourceId!);
     _catalog = _loadCatalog(_sourceId);
   }
 
@@ -98,6 +104,8 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     return context.read<AppState>().getFilmCatalog().then((base) async {
       _baseCatalog = base;
       final c = source == null ? base : base.forSource(source);
+      final initialError = c.error;
+      final initialScrapeError = c.scrapeError;
       await c.refresh();
       if (!mounted || generation != _catalogGeneration) {
         if (source != null) await c.close();
@@ -109,7 +117,12 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       if (_homeScroll.hasClients) _homeScroll.jumpTo(0);
       if (_scroll.hasClients) _scroll.jumpTo(0);
       final previous = _controller;
+      previous?.taskChanges.removeListener(_catalogTasksChanged);
       _controller = c;
+      _lastCatalogError = initialError;
+      _lastScrapeError = initialScrapeError;
+      c.taskChanges.addListener(_catalogTasksChanged);
+      _catalogTasksChanged();
       if (AppBackgroundScope.maybeOf(context) == null) {
         context.findAncestorStateOfType<FilmLibraryShellState>()?.setBackground(
           c,
@@ -151,10 +164,38 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     }
   }
 
+  void _catalogTasksChanged() {
+    final c = _controller!;
+    final errors = <String>{
+      if (c.error != null && c.error != _lastCatalogError) c.error!,
+      if (c.scrapeError != null && c.scrapeError != _lastScrapeError)
+        c.scrapeError!,
+    };
+    _lastCatalogError = c.error;
+    _lastScrapeError = c.scrapeError;
+    for (final error in errors) {
+      _showErrorNotice(c, error);
+    }
+  }
+
+  void _showErrorNotice(FilmCatalogController catalog, String error) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _controller != catalog) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SPNotice(content: AppText(filmCatalogErrorText(error))));
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _selectLibrary(String value) {
     final source = value.isEmpty ? null : value;
     if (source == _sourceId) return;
     _serverTimer?.cancel();
+    _lastLoadError = null;
+    _lastSyncError = source == null
+        ? null
+        : context.read<AppState>().serverSyncError(source);
     final previous = _controller;
     if (previous != null && previous.sourceId == null) {
       previous.type = null;
@@ -588,6 +629,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   @override
   void dispose() {
     _serverTimer?.cancel();
+    _controller?.taskChanges.removeListener(_catalogTasksChanged);
     if (_controller?.sourceId != null) unawaited(_controller?.close());
     _search.dispose();
     _scroll.dispose();
@@ -674,6 +716,14 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       final syncError = _sourceId == null
           ? null
           : context.watch<AppState>().serverSyncError(_sourceId!);
+      if (!switching && syncError != _lastSyncError) {
+        _lastSyncError = syncError;
+        if (syncError != null) _showErrorNotice(c, syncError);
+      }
+      if (state.hasError && state.error != _lastLoadError) {
+        _lastLoadError = state.error;
+        _showErrorNotice(c, 'catalogStorageFailed');
+      }
       return StreamPathTransitionBuilder(
         listenable: c,
         builder: (context) => GestureDetector(
@@ -736,10 +786,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                             children: [
                               StreamPathTransitionBuilder(
                                 listenable: c.taskChanges,
-                                builder: (context) =>
-                                    c.busy ||
-                                        c.scraping ||
-                                        c.scrapeError != null
+                                builder: (context) => c.busy || c.scraping
                                     ? Padding(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: AppTheme.pageInset,
@@ -754,24 +801,6 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                       )
                                     : const SizedBox.shrink(),
                               ),
-                              if (state.hasError ||
-                                  c.error != null ||
-                                  syncError != null)
-                                Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: AppText(
-                                    filmCatalogErrorText(
-                                      state.hasError
-                                          ? 'catalogStorageFailed'
-                                          : c.error ?? syncError!,
-                                    ),
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                    ),
-                                  ),
-                                ),
                               Expanded(
                                 child: IndexedStack(
                                   index: _browse ? 1 : 0,
@@ -1006,7 +1035,10 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
         'recent' => _workShelf(c, '最近添加', c.recentWorks, newest: true),
         'movies' => _workShelf(c, '电影', c.movies, type: FilmMediaType.movie),
         'series' => _workShelf(c, '剧集', c.series, type: FilmMediaType.tv),
-        'genres' || 'countries' || 'years' => _categoryShelf(c, section),
+        'genres' ||
+        'countries' ||
+        'years' ||
+        'ratings' => _categoryShelf(c, section),
         _ => _workShelf(
           c,
           filmSectionTitle(context, section),

@@ -137,6 +137,16 @@ When another episode is available, resume playback automatically advances to the
 
 Media duration is taken from probing results when available; otherwise, official metadata is used.
 
+On a TV series details page, use the selector next to the main play button to choose the default version for the entire series. The selector on the right side of each season row allows you to choose a version for that season independently. These selections persist across application restarts.
+
+Selecting a different series-wide version applies it uniformly to all seasons. Each mapped regular episode appears only once, and episodes unavailable in the selected version are hidden. If a version becomes temporarily unavailable, you can manually select another one.
+
+For duplicate files that cannot be distinguished automatically, use **Confirm Version Assignment** to assign a version name.
+
+After changing versions, click Play again to apply the selection. Resume playback uses the progress associated with the selected version.
+
+When automatic season transitions are enabled and the next season requires a different media source, MPV exits first. The main application then prompts you to choose **Continue Playback** or **Play Later**. The player restarts only if you choose to continue.
+
 Go to **Settings → Playback → Playback Behavior** to enable **Insert Specials by Decimal Episode Number** (disabled by default).
 
 For recognized TV series, implicit playlists use decimal episode numbers found in special episode metadata titles to insert specials such as Episode 11.5 between the corresponding regular episodes.

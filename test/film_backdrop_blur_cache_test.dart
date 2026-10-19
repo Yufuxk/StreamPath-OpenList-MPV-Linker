@@ -6,6 +6,44 @@ import 'package:path/path.dart' as p;
 import 'package:streampath/domain/services/film_backdrop_blur_cache.dart';
 
 void main() {
+  testWidgets('预模糊保留中性灰亮度，不产生黑色斑点', (tester) async {
+    await tester.runAsync(() async {
+      final temp = await Directory.systemTemp.createTemp('blur_gray_');
+      final cache = FilmBackdropBlurCache(
+        Directory(p.join(temp.path, 'derived')),
+      );
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawColor(const Color(0xff999999), BlendMode.src);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(64, 64);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      picture.dispose();
+      final source = await File(
+        p.join(temp.path, 'gray.png'),
+      ).writeAsBytes(bytes!.buffer.asUint8List());
+      try {
+        final output = (await cache.get(source))!;
+        final codec = await ui.instantiateImageCodec(
+          await output.readAsBytes(),
+        );
+        final decoded = (await codec.getNextFrame()).image;
+        final pixels = (await decoded.toByteData())!.buffer.asUint8List();
+        decoded.dispose();
+        codec.dispose();
+        for (var i = 0; i < pixels.length; i += 4) {
+          expect(pixels[i], closeTo(153, 3));
+          expect(pixels[i + 1], closeTo(153, 3));
+          expect(pixels[i + 2], closeTo(153, 3));
+        }
+      } finally {
+        cache.close();
+        await cache.clear();
+        await temp.delete(recursive: true);
+      }
+    });
+  });
+
   testWidgets('派生图复用、损坏重建、源版本与清理隔离', (tester) async {
     await tester.runAsync(() async {
       final temp = await Directory.systemTemp.createTemp('blur_cache_');

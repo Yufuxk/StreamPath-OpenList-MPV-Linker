@@ -15,7 +15,12 @@ set(CORE_LIBRARIES "" CACHE INTERNAL "" FORCE)
 FetchContent_Declare(sp_smb2 URL https://codeload.github.com/sahlberg/libsmb2/zip/refs/tags/libsmb2-6.2
   URL_HASH SHA256=51668eac2b9cde94869a8f45f4bb240b265ca5469db4dfbd9b6a79341b0cc08b
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE TIMEOUT 120 INACTIVITY_TIMEOUT 30 EXCLUDE_FROM_ALL)
+# 仅关闭 libsmb2 的旧版 CMake 兼容提示。
+set(sp_saved_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+set(CMAKE_WARN_DEPRECATED OFF CACHE INTERNAL "" FORCE)
 FetchContent_MakeAvailable(sp_smb2)
+set(CMAKE_WARN_DEPRECATED "${sp_saved_warn_deprecated}" CACHE INTERNAL "" FORCE)
+unset(sp_saved_warn_deprecated)
 FetchContent_Declare(sp_nfs URL https://codeload.github.com/sahlberg/libnfs/zip/refs/tags/libnfs-6.0.2
   URL_HASH SHA256=92a78d63b0cc4e97154dcf2a39bca62569a91350c56e257381fbd0c81c85b64d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE TIMEOUT 120 INACTIVITY_TIMEOUT 30 EXCLUDE_FROM_ALL)
@@ -24,6 +29,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/libnfs_patches.cmake)
 set_target_properties(nfs PROPERTIES OUTPUT_NAME libnfs)
 if(MSVC)
   target_compile_options(nfs PRIVATE /utf-8 /FI${CMAKE_CURRENT_SOURCE_DIR}/nfs_msvc_compat.h)
+  # 仅抑制 libnfs 的已知类型转换与符号比较警告。
+  foreach(nfs_target IN ITEMS nfs nfs_nfs nfs_nfs4)
+    target_compile_options(${nfs_target} PRIVATE /wd4018 /wd4244 /wd4267)
+  endforeach()
 endif()
 target_include_directories(nfs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
@@ -41,6 +50,7 @@ set(CURL_USE_LIBSSH OFF CACHE BOOL "" FORCE)
 set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
 set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
 set(BUILD_MISC_DOCS OFF CACHE BOOL "" FORCE)
+set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
 set(CURL_DISABLE_LDAP ON CACHE BOOL "" FORCE)
 set(CURL_DISABLE_LDAPS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(sp_curl URL https://curl.se/download/curl-8.22.0.zip

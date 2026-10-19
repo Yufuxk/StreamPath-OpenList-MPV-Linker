@@ -2,6 +2,7 @@ import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'helpers/pump_until.dart';
 
@@ -23,6 +24,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -37,6 +39,7 @@ import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/data/models/video_playback_scope.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
@@ -51,9 +54,208 @@ import 'package:streampath/presentation/widgets/film_match_dialog.dart';
 import 'package:streampath/presentation/widgets/settings_group_card.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_favorites_wall.dart';
+import 'package:streampath/presentation/widgets/film_catalog_tasks.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
+  for (final language in AppLanguage.values) {
+    testWidgets('影视库临时提示使用底部消息且自动消失 $language', (tester) async {
+      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final fixture = (await tester.runAsync(() async {
+        final temp = await Directory.systemTemp.createTemp('film_notices_');
+        final store = await FilmCatalogStore.open(
+          p.join(temp.path, 'catalog.db'),
+        );
+        final tmdb = TmdbMetadataService(credentials: _NoCredentials());
+        final c = FilmCatalogController(
+          store: store,
+          tmdb: tmdb,
+          images: FilmCatalogImageCache(
+            Directory(p.join(temp.path, 'images')),
+            tmdb,
+          ),
+          sourceFor: (_) => throw StateError('Unexpected source access'),
+        );
+        final progress = await PlaybackProgressService.open(
+          inMemoryDatabasePath,
+          factory: databaseFactoryFfi,
+        );
+        final app = _NoticeApp(
+          c,
+          configStore: StreamPathConfigStore.forPath(
+            p.join(temp.path, 'config.json'),
+          ),
+          playbackHistoryStore: PlaybackHistoryStore.forPath(
+            p.join(temp.path, 'history.json'),
+          ),
+          progressService: progress,
+        );
+        c.error = 'cancelled';
+        c.scrapeError = 'noToken';
+        return (temp, c, progress, app);
+      }))!;
+      final (temp, c, progress, app) = fixture;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          app.dispose();
+          await c.close();
+          await progress.close();
+          await temp.delete(recursive: true);
+        });
+      });
+      final l10n = AppLocalizations(language);
+      final canvasKey = GlobalKey();
+      Future<void> capture(String name) async {
+        if (language != AppLanguage.values.first) return;
+        await tester.pumpAndSettle();
+        final boundary =
+            canvasKey.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary;
+        await tester.runAsync(() async {
+          final image = await boundary.toImage(pixelRatio: 1);
+          try {
+            final bytes = await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            final directory = await Directory(
+              'build/film-notices',
+            ).create(recursive: true);
+            await File(
+              p.join(directory.path, '$name.png'),
+            ).writeAsBytes(bytes!.buffer.asUint8List());
+          } finally {
+            image.dispose();
+          }
+        });
+      }
+
+      Future<void> settle() async {
+        for (var i = 0; i < 8; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+      }
+
+      Future<void> expire() async {
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(SnackBar), findsNothing);
+      }
+
+      void expectNotice(String code) {
+        final text = find.text(l10n.text(filmCatalogErrorText(code)));
+        expect(text, findsOneWidget);
+        expect(
+          find.ancestor(of: text, matching: find.byType(SnackBar)),
+          findsOneWidget,
+        );
+      }
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: RepaintBoundary(
+            key: canvasKey,
+            child: MaterialApp(
+              theme: AppTheme.dark(),
+              locale: language.locale,
+              supportedLocales: AppLanguage.values.map((value) => value.locale),
+              localizationsDelegates: const [
+                AppLocalizations.delegate,
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              home: FilmLibraryPage(onOpenItem: (_) async {}),
+            ),
+          ),
+        ),
+      );
+      await settle();
+      expect(find.byType(SnackBar), findsNothing);
+      expect(
+        find.text(l10n.text(filmCatalogErrorText('cancelled'))),
+        findsNothing,
+      );
+      expect(find.byType(FilmCatalogTasks), findsNothing);
+
+      for (final code in ['cancelled', 'directoryReadFailed', 'cancelled']) {
+        await tester.runAsync(
+          () => c.run(() async {
+            throw FilmCatalogException(code);
+          }),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expectNotice(code);
+        expect(c.error, code);
+        if (code == 'cancelled') await capture('notice-shown');
+        await expire();
+        if (code == 'cancelled') await capture('notice-expired');
+        expect(find.text(l10n.text(filmCatalogErrorText(code))), findsNothing);
+        await tester.runAsync(c.refresh);
+        await tester.pump();
+        expect(find.byType(SnackBar), findsNothing);
+      }
+      c.scrapeError = 'invalidToken';
+      await tester.runAsync(() => c.run(() async {}));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expectNotice('invalidToken');
+      expect(find.byType(FilmCatalogTasks), findsNothing);
+      await expire();
+      c.busy = true;
+      await tester.runAsync(() => c.run(() async {}));
+      await tester.pump();
+      expect(find.text(l10n.text('取消扫描')), findsOneWidget);
+      expect(
+        find.text(l10n.text(filmCatalogErrorText('invalidToken'))),
+        findsNothing,
+      );
+      c.busy = false;
+      await tester.runAsync(() => c.run(() async {}));
+      await tester.pump();
+      expect(find.byType(FilmCatalogTasks), findsNothing);
+
+      if (language == AppLanguage.values.first) {
+        await tester.tap(find.byKey(const ValueKey('film-library-selector')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Notice server').last);
+        await settle();
+        await tester.runAsync(
+          () => c.run(() async {
+            throw const FilmCatalogException('invalidPath');
+          }),
+        );
+        await tester.pump();
+        expect(find.byType(SnackBar), findsNothing);
+        app.setSyncError('serverConnectionFailed');
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expectNotice('serverConnectionFailed');
+        await expire();
+        app.setSyncError('serverConnectionFailed');
+        await tester.pump();
+        expect(find.byType(SnackBar), findsNothing);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.runAsync(
+        () => c.run(() async {
+          throw const FilmCatalogException('invalidPath');
+        }),
+      );
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    });
+  }
   testWidgets('保存凭据后清空输入仍可验证，重进页面保留状态', (tester) async {
     tester.view.physicalSize = const Size(1280, 1000);
     tester.view.devicePixelRatio = 1;
@@ -421,12 +623,16 @@ void main() {
     );
     final dropdown = filter;
     expect(dropdown.items!.map((i) => i.value), [0, ...rootIds]);
-    await tester.tap(
-      find.descendant(
-        of: find.byWidgetPredicate((w) => w is FilmShelf && w.title == '最近添加'),
-        matching: find.text('查看全部'),
-      ),
+    final recentAll = find.descendant(
+      of: find.byWidgetPredicate((w) => w is FilmShelf && w.title == '最近添加'),
+      matching: find.text('查看全部'),
     );
+    await tester.scrollUntilVisible(
+      recentAll,
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(recentAll);
     await settle();
     expect(c.works, hasLength(2));
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
@@ -522,7 +728,7 @@ void main() {
     expect(generic.displayTitle, '剧集作品');
     final genericArtwork = tester.widget<FilmArtwork>(
       find.descendant(
-        of: find.byKey(ValueKey('film-resource-${generic.resource.id}')),
+        of: find.byWidget(generic),
         matching: find.byType(FilmArtwork),
       ),
     );
@@ -545,15 +751,16 @@ void main() {
         .where((w) => w.target == 'w300')
         .single;
     expect(still.path, '/still.jpg');
-    final officialCard = find.byKey(
-      ValueKey(
-        'film-resource-${tester.widgetList<FilmEpisodeCard>(find.byType(FilmEpisodeCard)).singleWhere((card) => card.resource.episode == 1).resource.id}',
-      ),
+    final officialCard = find.byWidget(
+      tester
+          .widgetList<FilmEpisodeCard>(find.byType(FilmEpisodeCard))
+          .singleWhere((card) => card.resource.episode == 1),
     );
     await tester.ensureVisible(officialCard);
     await tester.tap(officialCard);
     expect(opened!.playbackScope, VideoPlaybackScope.directory);
     await tester.tap(officialCard, buttons: kSecondaryMouseButton);
+    await settle();
     await tester.pumpAndSettle();
     expect(find.text('调整季集'), findsOneWidget);
     await tester.tap(find.text('查看来源信息'));
@@ -1127,6 +1334,34 @@ class _FilmApp extends AppState {
   Future<FilmCatalogController> getFilmCatalog() async => catalog;
   @override
   Future<FilmCatalogStore> getFilmCatalogStore() async => catalog.store;
+}
+
+class _NoticeApp extends _FilmApp {
+  _NoticeApp(
+    super.catalog, {
+    required super.configStore,
+    required super.playbackHistoryStore,
+    required super.progressService,
+  });
+  String? _syncError;
+  void setSyncError(String? error) {
+    _syncError = error;
+    notifyListeners();
+  }
+
+  @override
+  String? serverSyncError(String id) => _syncError;
+  @override
+  List<MediaConnection> get mediaConnections => const [
+    MediaConnection(
+      id: 'notice:server',
+      kind: MediaSourceKind.jellyfin,
+      name: 'Notice server',
+      url: 'https://media.invalid',
+    ),
+  ];
+  @override
+  Future<void> refreshMediaServer(String id, {bool metadata = true}) async {}
 }
 
 class _LibraryPlayer extends ExternalPlayerService {

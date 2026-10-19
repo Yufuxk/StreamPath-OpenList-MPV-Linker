@@ -1,8 +1,10 @@
 import 'film_watch_overlay.dart';
+import 'film_card_glass.dart';
 import 'skeleton_scope.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/models/media_library_item.dart';
+import '../../data/models/film_catalog_item.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
 import 'film_artwork.dart';
@@ -68,6 +70,7 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
         ?.where((e) => e['episode_number'] == resource?.episode)
         .firstOrNull;
     return {
+      'resource': resource,
       'title': work?.title ?? item.name,
       'path': widget.poster
           ? work?.posterPath
@@ -87,49 +90,54 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
     future: _metadata,
     builder: (_, snapshot) {
       final data = snapshot.data ?? {'title': widget.record.item.name};
-      final cover = Stack(
-        fit: StackFit.expand,
-        children: [
-          FilmWatchOverlay(
-            hoverSurface: true,
-            store: widget.catalog.store,
-            canReveal: false,
-            spoilerSensitive: data['spoilerSensitive'] == true,
-            fallbackFraction:
-                widget.positionMs != null && (widget.durationMs ?? 0) > 0
-                ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
-                : null,
-            sourceId: widget.record.item.sourceId,
-            path: widget.record.item.targetPath,
-            child: ClipRect(
-              child: FilmArtwork(
-                cache: widget.catalog.images,
-                path: data['path'] as String?,
-                width: double.infinity,
-                height: double.infinity,
-                borderRadius: 0,
-                placeholder: const SizedBox.shrink(),
-              ),
-            ),
-          ),
-          const Center(child: FilmPlayIcon()),
-          if (widget.onMenu != null)
-            Align(
-              alignment: Alignment.topRight,
-              child: Builder(
-                builder: (buttonContext) => IconButton(
-                  tooltip: context.l10n.text('更多操作'),
-                  icon: const Icon(SPIcons.more, color: Colors.white),
-                  onPressed: () {
-                    final box = buttonContext.findRenderObject()! as RenderBox;
-                    widget.onMenu!(
-                      box.localToGlobal(Offset(0, box.size.height)),
-                    );
-                  },
+      final cover = FilmPosterHover(
+        borderRadius: AppTheme.panelRadius,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FilmWatchOverlay(
+              hoverSurface: true,
+              store: widget.catalog.store,
+              resource: data['resource'] as FilmResource?,
+              canReveal: false,
+              spoilerSensitive: data['spoilerSensitive'] == true,
+              fallbackFraction:
+                  widget.positionMs != null && (widget.durationMs ?? 0) > 0
+                  ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
+                  : null,
+              sourceId: widget.record.item.sourceId,
+              path: widget.record.item.targetPath,
+              child: ClipRect(
+                child: FilmArtwork(
+                  cache: widget.catalog.images,
+                  path: data['path'] as String?,
+                  width: double.infinity,
+                  height: double.infinity,
+                  borderRadius: 0,
+                  placeholder: const SizedBox.shrink(),
                 ),
               ),
             ),
-        ],
+            const Center(child: FilmPlayIcon()),
+            if (widget.onMenu != null)
+              Align(
+                alignment: Alignment.topRight,
+                child: Builder(
+                  builder: (buttonContext) => IconButton(
+                    tooltip: context.l10n.text('更多操作'),
+                    icon: const Icon(SPIcons.more, color: Colors.white),
+                    onPressed: () {
+                      final box =
+                          buttonContext.findRenderObject()! as RenderBox;
+                      widget.onMenu!(
+                        box.localToGlobal(Offset(0, box.size.height)),
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
       );
       return SkeletonLoadBoundary(
         ready: snapshot.connectionState == ConnectionState.done,
@@ -137,17 +145,16 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
           onSecondaryTapDown: widget.onMenu == null
               ? null
               : (details) => widget.onMenu!(details.globalPosition),
-          child: FilmPosterHover(
-            borderRadius: AppTheme.panelRadius,
-            child: Card(
-              key: ValueKey('film-continue-${widget.record.recordKey}'),
-              margin: EdgeInsets.zero,
-              clipBehavior: Clip.none,
-              borderOnForeground: false,
-              child: InkWell(
-                hoverColor: Colors.transparent,
-                borderRadius: AppTheme.panelRadius,
-                onTap: widget.onTap,
+          child: Card(
+            margin: EdgeInsets.zero,
+            color: Colors.transparent,
+            clipBehavior: Clip.none,
+            borderOnForeground: false,
+            child: InkWell(
+              hoverColor: Colors.transparent,
+              borderRadius: AppTheme.panelRadius,
+              onTap: widget.onTap,
+              child: FilmCardGlass(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

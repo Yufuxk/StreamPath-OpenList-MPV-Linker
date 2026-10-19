@@ -198,7 +198,9 @@ class TmdbMetadataService {
       return await (_workRequests[key] ??= () async {
         final data = await _request('${type.name}/$id', {
           'language': language,
-          'append_to_response': 'credits',
+          'append_to_response': type == FilmMediaType.movie
+              ? 'credits,release_dates'
+              : 'credits,content_ratings',
         });
         final images = await _request('${type.name}/$id/images', {});
         final backdrops = images['backdrops'];
@@ -405,6 +407,8 @@ class TmdbMetadataService {
         'vote_count': data['vote_count'],
         'runtime': type == FilmMediaType.movie ? data['runtime'] : null,
         if (detail) ...{
+          ..._certification(type, data),
+          'certification_version': 1,
           'belongs_to_collection': data['belongs_to_collection'],
           'logo_path': data['logo_path'],
           'credits': data['credits'],
@@ -415,5 +419,43 @@ class TmdbMetadataService {
         },
       },
     );
+  }
+
+  Map<String, dynamic> _certification(
+    FilmMediaType type,
+    Map<String, dynamic> data,
+  ) {
+    final ratings = <String, String>{};
+    final results =
+        data[type == FilmMediaType.movie ? 'release_dates' : 'content_ratings'];
+    if (results is Map && results['results'] is List) {
+      for (final row in (results['results'] as List).whereType<Map>()) {
+        final country = row['iso_3166_1'];
+        if (country is! String) continue;
+        final values = type == FilmMediaType.movie
+            ? (row['release_dates'] as List? ?? []).whereType<Map>().map(
+                (release) => release['certification'],
+              )
+            : [row['rating']];
+        for (final value in values.whereType<String>()) {
+          if (value.trim().isNotEmpty) {
+            ratings.putIfAbsent(country, () => value.trim());
+            break;
+          }
+        }
+      }
+    }
+    // 优先美区，其次原产地，最后按地区码稳定选择。
+    final countries = <String>{
+      'US',
+      ...(data['origin_country'] as List? ?? []).whereType<String>(),
+      ...ratings.keys.toList()..sort(),
+    };
+    for (final country in countries) {
+      if (ratings[country] case final String rating) {
+        return {'certification': rating, 'certification_country': country};
+      }
+    }
+    return {'certification': 'NR'};
   }
 }

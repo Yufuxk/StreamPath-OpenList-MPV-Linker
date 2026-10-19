@@ -11,6 +11,8 @@ class FilmSegmentedControl<T> extends StatelessWidget {
     required this.selected,
     required this.onSelectionChanged,
     this.direction = Axis.horizontal,
+    this.onSecondaryTapDown,
+    this.compact = false,
   }) : assert(segments.length > 0);
 
   /// 每个选项须提供非空 label。
@@ -18,6 +20,8 @@ class FilmSegmentedControl<T> extends StatelessWidget {
   final T selected;
   final ValueChanged<T> onSelectionChanged;
   final Axis direction;
+  final void Function(T value, Offset position)? onSecondaryTapDown;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -52,10 +56,21 @@ class FilmSegmentedControl<T> extends StatelessWidget {
                     ? scheme.onPrimary.withValues(alpha: .38)
                     : Colors.white.withValues(alpha: .38),
                 backgroundColor: Colors.transparent,
-                minimumSize: Size(0, vertical ? 54 : 34),
+                minimumSize: Size(
+                  0,
+                  vertical
+                      ? 54
+                      : compact
+                      ? 28
+                      : 34,
+                ),
                 padding: EdgeInsets.symmetric(
-                  horizontal: vertical ? 0 : 12,
-                  vertical: 7,
+                  horizontal: vertical
+                      ? 0
+                      : compact
+                      ? 10
+                      : 12,
+                  vertical: compact && !vertical ? 5 : 7,
                 ),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 visualDensity: VisualDensity.standard,
@@ -91,12 +106,24 @@ class FilmSegmentedControl<T> extends StatelessWidget {
           child: segment.label!,
         ),
       );
-      return segment.tooltip == null
+      final button = onSecondaryTapDown == null
           ? content
+          : GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onSecondaryTapDown: segment.enabled
+                  ? (details) => onSecondaryTapDown!(
+                      segment.value,
+                      details.globalPosition,
+                    )
+                  : null,
+              child: content,
+            );
+      return segment.tooltip == null
+          ? button
           : Tooltip(
               message: segment.tooltip!,
               excludeFromSemantics: true,
-              child: content,
+              child: button,
             );
     }
 
@@ -152,7 +179,13 @@ class FilmSegmentedControl<T> extends StatelessWidget {
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
-          constraints: BoxConstraints(minWidth: vertical ? 0 : 180),
+          constraints: BoxConstraints(
+            minWidth: vertical
+                ? 0
+                : compact
+                ? 160
+                : 180,
+          ),
           padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: .6),

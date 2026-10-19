@@ -7,6 +7,7 @@ import 'media_directory_entry.dart';
 import 'media_source.dart';
 import 'web_dav_file.dart';
 import 'video_playback_scope.dart';
+import 'film_version.dart';
 
 /// 个人媒体资产类型。
 enum MediaLibraryKind { directory, video, audio, strm, iso }
@@ -70,6 +71,7 @@ class MediaLibraryItem {
     this.sourceKind = MediaSourceKind.webdav,
     this.playbackMode = PlaybackMode.legacyTitle,
     this.playbackScope = VideoPlaybackScope.directory,
+    this.filmVersionContext,
   });
 
   final String sourceId;
@@ -80,6 +82,20 @@ class MediaLibraryItem {
   final MediaSourceKind sourceKind;
   final PlaybackMode playbackMode;
   final VideoPlaybackScope playbackScope;
+  final FilmPlaybackContext? filmVersionContext;
+
+  MediaLibraryItem withFilmVersion(FilmPlaybackContext value) =>
+      MediaLibraryItem(
+        sourceId: sourceId,
+        parentPath: parentPath,
+        name: name,
+        kind: kind,
+        discRootPath: discRootPath,
+        sourceKind: sourceKind,
+        playbackMode: playbackMode,
+        playbackScope: playbackScope,
+        filmVersionContext: value,
+      );
 
   String get normalizedParentPath => normalizeLibraryPath(parentPath);
 
@@ -107,6 +123,8 @@ class MediaLibraryItem {
     'sourceKind': sourceKind.jsonValue,
     'playbackMode': playbackMode.jsonValue,
     'playbackScope': playbackScope.name,
+    if (filmVersionContext != null)
+      'filmVersionContext': filmVersionContext!.toJson(),
   };
 
   factory MediaLibraryItem.fromJson(Map<String, dynamic> json) {
@@ -134,6 +152,11 @@ class MediaLibraryItem {
       sourceKind: MediaSourceKindJson.fromJson(json['sourceKind']),
       playbackMode: PlaybackModeJson.fromJson(json['playbackMode']),
       playbackScope: parseVideoPlaybackScope(json['playbackScope']),
+      filmVersionContext: json['filmVersionContext'] == null
+          ? null
+          : FilmPlaybackContext.fromJson(
+              (json['filmVersionContext'] as Map).cast<String, dynamic>(),
+            ),
     );
   }
 }

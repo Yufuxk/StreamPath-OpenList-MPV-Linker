@@ -2,6 +2,8 @@ import 'video_queue.dart';
 import 'media_source.dart';
 import 'video_playback_scope.dart';
 import 'video_playlist_mode.dart';
+import 'film_version.dart';
+import 'media_library_item.dart';
 
 enum PlaybackHistoryKind { video, iso }
 
@@ -38,6 +40,11 @@ class PlaybackHistory {
     this.filmPlaylistId,
     this.filmPlaylistEntryIds = const [],
     this.videoPlaylistMode = VideoPlaylistMode.legacy,
+    this.filmVersionContext,
+    this.filmNextItem,
+    this.filmBoundaryReady = false,
+    this.filmBoundaryPrompted = false,
+    this.filmSuccessorSessionId,
   }) : createdAt = createdAt ?? updatedAt;
 
   /// 稳定播放会话 ID；同一条下边栏续播时保持不变。
@@ -107,6 +114,10 @@ class PlaybackHistory {
   final String? filmPlaylistId;
   final List<String> filmPlaylistEntryIds;
   final VideoPlaylistMode videoPlaylistMode;
+  final FilmPlaybackContext? filmVersionContext;
+  final MediaLibraryItem? filmNextItem;
+  final bool filmBoundaryReady, filmBoundaryPrompted;
+  final String? filmSuccessorSessionId;
 
   PlaybackHistory copyWith({
     String? sessionId,
@@ -148,6 +159,12 @@ class PlaybackHistory {
     String? filmPlaylistId,
     List<String>? filmPlaylistEntryIds,
     VideoPlaylistMode? videoPlaylistMode,
+    FilmPlaybackContext? filmVersionContext,
+    MediaLibraryItem? filmNextItem,
+    bool clearFilmNextItem = false,
+    bool? filmBoundaryReady,
+    bool? filmBoundaryPrompted,
+    String? filmSuccessorSessionId,
   }) => PlaybackHistory(
     sessionId: sessionId ?? this.sessionId,
     dirCrumbs: dirCrumbs ?? this.dirCrumbs,
@@ -197,10 +214,23 @@ class PlaybackHistory {
     filmPlaylistId: filmPlaylistId ?? this.filmPlaylistId,
     filmPlaylistEntryIds: filmPlaylistEntryIds ?? this.filmPlaylistEntryIds,
     videoPlaylistMode: videoPlaylistMode ?? this.videoPlaylistMode,
+    filmVersionContext: filmVersionContext ?? this.filmVersionContext,
+    filmNextItem: clearFilmNextItem ? null : filmNextItem ?? this.filmNextItem,
+    filmBoundaryReady: filmBoundaryReady ?? this.filmBoundaryReady,
+    filmBoundaryPrompted: filmBoundaryPrompted ?? this.filmBoundaryPrompted,
+    filmSuccessorSessionId:
+        filmSuccessorSessionId ?? this.filmSuccessorSessionId,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'sessionId': sessionId,
+    if (filmVersionContext != null)
+      'filmVersionContext': filmVersionContext!.toJson(),
+    if (filmNextItem != null) 'filmNextItem': filmNextItem!.toJson(),
+    if (filmBoundaryReady) 'filmBoundaryReady': true,
+    if (filmBoundaryPrompted) 'filmBoundaryPrompted': true,
+    if (filmSuccessorSessionId != null)
+      'filmSuccessorSessionId': filmSuccessorSessionId,
     if (filmPlaylistId != null) 'filmPlaylistId': filmPlaylistId,
     if (filmPlaylistEntryIds.isNotEmpty)
       'filmPlaylistEntryIds': filmPlaylistEntryIds,
@@ -243,6 +273,19 @@ class PlaybackHistory {
   factory PlaybackHistory.fromJson(
     Map<String, dynamic> json,
   ) => PlaybackHistory(
+    filmBoundaryReady: json['filmBoundaryReady'] == true,
+    filmBoundaryPrompted: json['filmBoundaryPrompted'] == true,
+    filmSuccessorSessionId: json['filmSuccessorSessionId'] as String?,
+    filmVersionContext: json['filmVersionContext'] == null
+        ? null
+        : FilmPlaybackContext.fromJson(
+            (json['filmVersionContext'] as Map).cast<String, dynamic>(),
+          ),
+    filmNextItem: json['filmNextItem'] == null
+        ? null
+        : MediaLibraryItem.fromJson(
+            (json['filmNextItem'] as Map).cast<String, dynamic>(),
+          ),
     filmPlaylistId: json['filmPlaylistId'] as String?,
     filmPlaylistEntryIds: (json['filmPlaylistEntryIds'] as List? ?? [])
         .cast<String>(),

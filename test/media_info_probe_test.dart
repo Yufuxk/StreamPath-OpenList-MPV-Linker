@@ -8,7 +8,14 @@ import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/domain/services/media_info_probe.dart';
 
 void main() {
-  final dll = p.absolute('build/mediainfo-26.05/MediaInfo.dll');
+  final dll =
+      [
+        p.absolute('build/windows/x64/mediainfo-26.05/MediaInfo.dll'),
+        p.absolute('build/mediainfo-26.05/MediaInfo.dll'),
+      ].firstWhere(
+        (path) => File(path).existsSync(),
+        orElse: () => 'MediaInfo.dll',
+      );
   final nativeAvailable = Platform.isWindows && File(dll).existsSync();
   final fixture = File('test/fixtures/film_probe.mp4');
   final missingRuntime = nativeAvailable
@@ -56,7 +63,7 @@ void main() {
     expect(result['state'], 'partial');
   }, skip: missingRuntime);
 
-  for (final status in [200, 302, 206]) {
+  for (final status in [200, 302, 206, 429]) {
     test('拒绝完整响应、重定向和错误 Content-Range $status', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
@@ -86,6 +93,146 @@ void main() {
       expect(requests, 1);
     }, skip: missingRuntime);
   }
+
+  for (final failure in ['validator', 'size', 'oversized', 'truncated']) {
+    test('Range 拒绝来源变化或异常响应体 $failure', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final free = Uint8List(256 * 1024);
+      ByteData.sublistView(free).setUint32(0, 1024 * 1024, Endian.big);
+      free.setAll(4, 'free'.codeUnits);
+      var requests = 0;
+      server.listen((request) async {
+        requests++;
+        final start = int.parse(
+          RegExp(
+            r'bytes=(\d+)-',
+          ).firstMatch(request.headers.value(HttpHeaders.rangeHeader)!)![1]!,
+        );
+        final size =
+            4 * 1024 * 1024 + (failure == 'size' && requests > 1 ? 1 : 0);
+        request.response.statusCode = 206;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-${start + free.length - 1}/$size',
+        );
+        request.response.headers.set(
+          HttpHeaders.etagHeader,
+          failure == 'validator' && requests > 1 ? '"changed"' : '"original"',
+        );
+        if (requests > 1) {
+          expect(
+            request.headers.value(HttpHeaders.ifRangeHeader),
+            '"original"',
+          );
+        }
+        request.response.add(
+          failure == 'truncated' ? free.sublist(0, free.length - 1) : free,
+        );
+        if (failure == 'oversized') request.response.add([0]);
+        await request.response.close();
+      });
+      await expectLater(
+        MediaInfoProbe(
+          libraryPath: dll,
+        ).probe('http://127.0.0.1:${server.port}/fixture'),
+        throwsA(
+          isA<FilmCatalogException>().having(
+            (e) => e.code,
+            'code',
+            failure == 'validator' || failure == 'size'
+                ? 'probeSourceChanged'
+                : failure == 'oversized'
+                ? 'probeRangeUnsupported'
+                : 'probeFailed',
+          ),
+        ),
+      );
+      expect(requests, failure == 'validator' || failure == 'size' ? 2 : 1);
+    }, skip: missingRuntime);
+  }
+
+  test('默认连续 Range 无固定等待且保持串行、请求和字节预算', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final times = <DateTime>[];
+    var active = 0, peak = 0;
+    final free = Uint8List(256 * 1024);
+    ByteData.sublistView(free).setUint32(0, 1024 * 1024, Endian.big);
+    free.setAll(4, 'free'.codeUnits);
+    server.listen((request) async {
+      active++;
+      if (active > peak) peak = active;
+      times.add(DateTime.now());
+      final start = int.parse(
+        RegExp(
+          r'bytes=(\d+)-',
+        ).firstMatch(request.headers.value(HttpHeaders.rangeHeader)!)![1]!,
+      );
+      request.response.statusCode = 206;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-${start + free.length - 1}/${4 * 1024 * 1024}',
+      );
+      request.response.add(free);
+      await request.response.close();
+      active--;
+    });
+    final result = await MediaInfoProbe(
+      libraryPath: dll,
+      maxRequests: 3,
+      maxBytes: 8 * 1024 * 1024,
+    ).probe('http://127.0.0.1:${server.port}/fixture');
+    expect(times, hasLength(3));
+    expect(
+      times.last.difference(times.first),
+      lessThan(const Duration(seconds: 1)),
+    );
+    expect(peak, 1);
+    expect(result['requests'], 3);
+    expect(result['readBytes'], 3 * free.length);
+    expect(result['state'], 'partial');
+  }, skip: missingRuntime);
+
+  test('整体超时中断等待响应的 Range', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final entered = Completer<void>();
+    server.listen((request) => entered.complete());
+    final watch = Stopwatch()..start();
+    await expectLater(
+      MediaInfoProbe(
+        libraryPath: dll,
+        timeout: const Duration(milliseconds: 150),
+      ).probe('http://127.0.0.1:${server.port}/fixture'),
+      throwsA(
+        isA<FilmCatalogException>().having(
+          (e) => e.code,
+          'code',
+          'probeTimeout',
+        ),
+      ),
+    );
+    expect(entered.isCompleted, isTrue);
+    expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  }, skip: missingRuntime);
+
+  test('取消中断正在等待响应的 Range', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final entered = Completer<void>();
+    server.listen((request) => entered.complete());
+    final probe = MediaInfoProbe(libraryPath: dll);
+    final pending = expectLater(
+      probe.probe('http://127.0.0.1:${server.port}/fixture'),
+      throwsA(
+        isA<FilmCatalogException>().having((e) => e.code, 'code', 'cancelled'),
+      ),
+    );
+    await entered.future;
+    await probe.cancel();
+    await pending;
+  }, skip: missingRuntime);
 
   test('跨请求间隔受限，取消会立即中断等待', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -143,5 +290,75 @@ void main() {
     expect((info['video'] as List).single, containsPair('width', 3840));
     expect((info['video'] as List).single, containsPair('hdr', 'HDR (PQ)'));
     expect(info['audio'], hasLength(1));
+  });
+
+  test('MediaInfo 缺少有效 OverallBitRate 时仅补充整体平均码率', () {
+    for (final bitrate in [null, '0', '-1', 'NaN', 'Infinity', 'invalid']) {
+      final info = technicalInfoFromMediaInfo({
+        'media': {
+          'track': [
+            {'@type': 'General', 'Duration': '100', 'OverallBitRate': bitrate},
+            {'@type': 'Video', 'BitRate': '8000000'},
+          ],
+        },
+      }, fileSizeBytes: 125000000);
+      expect(info['bitrate'], 10000000, reason: '$bitrate');
+      expect((info['video'] as List).single['bitrate'], 8000000);
+    }
+    final info = technicalInfoFromMediaInfo({
+      'media': {
+        'track': [
+          {'@type': 'General', 'Duration': '100', 'OverallBitRate': '9000000'},
+        ],
+      },
+    }, fileSizeBytes: 125000000);
+    expect(info['bitrate'], 9000000);
+  });
+
+  test('缺失、异常数据、分辨率、官方片长与光盘不生成整体码率', () {
+    for (final duration in [null, 0, -1, double.nan, double.infinity, 1e-320]) {
+      expect(
+        technicalOverallBitrate({
+          'fileSize': 125000000,
+          'duration': duration,
+          'runtime': 100,
+          'video': [
+            {'width': 3840, 'height': 2160},
+          ],
+        }),
+        isNull,
+        reason: '$duration',
+      );
+    }
+    for (final size in [null, 0, -1]) {
+      expect(
+        technicalOverallBitrate({'fileSize': size, 'duration': 100}),
+        isNull,
+      );
+    }
+    expect(
+      technicalOverallBitrate({
+        'fileSize': 125000000,
+        'duration': 100,
+      }, isDisc: true),
+      isNull,
+    );
+    expect(
+      technicalOverallBitrate({
+        'fileSize': 125000000,
+        'duration': 100,
+        'bitrate': 9000000,
+      }, isDisc: true),
+      9000000,
+    );
+    final info = technicalInfoFromMediaInfo({
+      'media': {
+        'track': [
+          {'@type': 'General', 'Duration': 'invalid'},
+          {'@type': 'Video', 'Width': '3840', 'Height': '2160'},
+        ],
+      },
+    }, fileSizeBytes: 125000000);
+    expect(info['bitrate'], isNull);
   });
 }

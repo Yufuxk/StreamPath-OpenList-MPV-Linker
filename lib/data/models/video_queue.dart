@@ -145,6 +145,7 @@ class ImplicitVideoPlan {
     required this.activated,
     this.pending,
     this.failed,
+    this.completed,
   });
   final List<VideoQueueItem> items;
   int index;
@@ -154,6 +155,7 @@ class ImplicitVideoPlan {
   final Future<void> Function(int, VideoQueueVersion) activated;
   final Future<void> Function(int)? pending;
   final void Function(String)? failed;
+  final Future<void> Function()? completed;
   final Map<int, VideoQueueVersion> selected = {};
   final Map<String, PreparedVideoItem> prepared = {};
 }

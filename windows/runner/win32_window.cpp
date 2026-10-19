@@ -315,6 +315,10 @@ Win32Window::MessageHandler(HWND hwnd,
       }
       return 0;
 
+    case WM_NCPAINT:
+      // 非客户区由自绘框架与 DWM 合成，避免默认框架参与重绘。
+      return 0;
+
     case WM_NCACTIVATE:
       // Keep the custom border disabled while DWM updates backdrop state.
       // A -1 region suppresses only the transitional non-client repaint.
@@ -382,6 +386,8 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
     }
     case WM_SIZE: {
+      // 最小化时保留内容尺寸，恢复后再同步客户区。
+      if (wparam == SIZE_MINIMIZED) return 0;
       RECT rect = GetClientArea();
       if (child_content_ != nullptr) {
         // Size and position the child window.

@@ -72,9 +72,13 @@ void main() {
     'subtree missing never changes siblings and cancellation preserves previous availability',
     () async {
       await stage(['Movies/A/1.mkv', 'Movies/B/2.mkv']);
+      final original = (await store.resources(
+        rootId: root.id,
+      )).firstWhere((r) => r.name == '1.mkv');
       await stage([], scope: 'Movies/A');
       final rows = await store.resources(rootId: root.id);
-      expect(rows.firstWhere((r) => r.name == '1.mkv').availability, 'missing');
+      expect((await store.resource(original.id))!.availability, 'missing');
+      expect(rows.map((r) => r.name), ['2.mkv']);
       expect(rows.firstWhere((r) => r.name == '2.mkv').availability, 'present');
       await expectLater(
         stage([], scope: 'Movies/B', cancel: true),

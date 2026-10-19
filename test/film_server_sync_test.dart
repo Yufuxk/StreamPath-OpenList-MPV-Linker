@@ -87,6 +87,7 @@ void main() {
         final item = <String, dynamic>{
           'Id': id,
           'Name': id,
+          'OfficialRating': 'TV-PG',
           'MediaSources': [
             {'Id': 'version-$id', 'Container': 'mkv'},
           ],
@@ -97,6 +98,7 @@ void main() {
           item,
           FilmMediaType.movie,
         );
+        expect((await store.work(work))!.certification, 'TV-PG');
         await store.saveServerResources(
           api.config,
           root,

@@ -111,6 +111,11 @@ class FilmWork {
   final String? posterPath;
   final String? backdropPath;
   final Map<String, dynamic> metadata;
+  String get certification {
+    final value = (metadata['certification'] as String?)?.trim();
+    return value == null || value.isEmpty ? 'NR' : value;
+  }
+
   final int fetchedAt;
   final int resourceCount;
   final int seasonCount;
@@ -153,6 +158,8 @@ class FilmResource {
       bindingVersion = row['binding_version'] as int,
       season = row['season_number'] as int?,
       episode = row['episode_number'] as int?,
+      versionKey = row['version_key'] as String?,
+      versionName = row['version_name'] as String?,
       mappingOrigin = row['episode_mapping_origin'] as String;
 
   final int id, rootId, bindingVersion;
@@ -161,6 +168,7 @@ class FilmResource {
   final MediaSourceKind sourceKind;
   final FilmMediaType type;
   final int? workId, season, episode;
+  final String? versionKey, versionName;
 
   bool get isDisc => mediaKind == 'iso' || mediaKind == 'bdmv';
   bool get canMarkWatched =>
