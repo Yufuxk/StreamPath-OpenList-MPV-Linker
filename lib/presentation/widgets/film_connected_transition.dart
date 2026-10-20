@@ -275,10 +275,10 @@ class FilmConnectedDetailRoute extends MaterialPageRoute<void> {
   final FilmPosterAnchor poster;
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 420);
+  Duration get transitionDuration => const Duration(milliseconds: 360);
 
   @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 420);
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 360);
 
   @override
   bool didPop(Object? result) {

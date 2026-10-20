@@ -1225,7 +1225,16 @@ class FilmCatalogStore extends ChangeNotifier {
         offset,
       ],
     );
-    final result = rows.map(FilmWork.fromRow).toList();
+    final result = <FilmWork>[];
+    final decoding = Stopwatch()..start();
+    for (final row in rows) {
+      result.add(FilmWork.fromRow(row));
+      // 多页完整资料分批解析，让帧回调有机会执行。
+      if (result.length < rows.length && decoding.elapsedMicroseconds >= 2000) {
+        await Future<void>.delayed(Duration.zero);
+        decoding.reset();
+      }
+    }
     if (daily != null) {
       result.sort((a, b) => daily.indexOf(a.id).compareTo(daily.indexOf(b.id)));
     }

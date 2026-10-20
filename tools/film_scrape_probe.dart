@@ -6,10 +6,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
-import 'dart:ui' show FramePhase;
+import 'dart:isolate';
+import 'dart:ui' show FramePhase, PointerDeviceKind;
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:hive/hive.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -23,12 +26,16 @@ import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/tmdb_credential_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
+import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
+import 'package:streampath/domain/services/film_catalog_scanner.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
+import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
+import 'package:streampath/domain/services/webdav_service.dart';
 import 'package:streampath/main.dart' show StreamPathApp;
 import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
-import 'package:streampath/presentation/pages/film_library_page.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
 
 import '../test/helpers/shell_test_app_state.dart';
@@ -54,6 +61,35 @@ class _App extends ShellTestAppState {
   Future<FilmCatalogStore> getFilmCatalogStore() async => catalog.store;
 }
 
+class _Catalog extends FilmCatalogController {
+  _Catalog({
+    required super.store,
+    required super.tmdb,
+    required super.images,
+    required super.sourceFor,
+  });
+
+  String phase = 'startup';
+  final refreshes = <Map<String, Object?>>[];
+
+  @override
+  Future<void> refresh({bool more = false, bool home = true}) async {
+    final start = developer.Timeline.now;
+    final currentPhase = phase;
+    try {
+      await super.refresh(more: more, home: home);
+    } finally {
+      refreshes.add({
+        'phase': currentPhase,
+        'startUs': start,
+        'durationUs': developer.Timeline.now - start,
+        'more': more,
+        'home': home,
+      });
+    }
+  }
+}
+
 final _rootKey = GlobalKey();
 Element _find(bool Function(Widget) matches) {
   Element? found;
@@ -75,6 +111,129 @@ Future<void> _settle(int ms) async {
   await WidgetsBinding.instance.endOfFrame;
 }
 
+var _pointer = 0;
+void _tapSidebar(String section) {
+  final icon = _find((w) => w is Icon && w.key == Key('sidebar-$section'));
+  final box = icon.findRenderObject()! as RenderBox;
+  final position = box.localToGlobal(box.size.center(Offset.zero));
+  final viewId = WidgetsBinding.instance.platformDispatcher.views.first.viewId;
+  final pointer = ++_pointer;
+  GestureBinding.instance.handlePointerEvent(
+    PointerDownEvent(
+      pointer: pointer,
+      viewId: viewId,
+      kind: PointerDeviceKind.mouse,
+      position: position,
+    ),
+  );
+  GestureBinding.instance.handlePointerEvent(
+    PointerUpEvent(
+      pointer: pointer,
+      viewId: viewId,
+      kind: PointerDeviceKind.mouse,
+      position: position,
+    ),
+  );
+}
+
+Future<Map<String, Object?>> _verifyTree(String directory, String label) async {
+  final fixture =
+      jsonDecode(await File(p.join(directory, 'fixture.json')).readAsString())
+          as Map;
+  final files = (fixture['files'] as List).cast<Map>();
+  final tree = <String, Map<String, bool>>{};
+  for (final file in files) {
+    final parts = (file['path'] as String).split('/');
+    for (var i = 0; i < parts.length; i++) {
+      final parent = parts.take(i).join('/');
+      final child = parts.take(i + 1).join('/');
+      (tree[parent] ??= {})[child] = i < parts.length - 1;
+    }
+  }
+  var requests = 0;
+  final dio = Dio()
+    ..interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          if (options.method != 'PROPFIND' ||
+              options.uri.host != 'fixture.invalid' ||
+              options.headers['Depth'] != '1') {
+            throw StateError('Unexpected synthetic scan request');
+          }
+          final parent = options.uri.pathSegments
+              .skip(1)
+              .where((part) => part.isNotEmpty)
+              .join('/');
+          requests++;
+          final children = tree[parent] ?? const <String, bool>{};
+          final xml = StringBuffer('<d:multistatus xmlns:d="DAV:">');
+          for (final child in children.entries) {
+            final href = Uri(
+              path: '/dav/${child.key}${child.value ? '/' : ''}',
+            );
+            xml.write(
+              '<d:response><d:href>$href</d:href><d:propstat><d:prop>'
+              '<d:displayname>${p.posix.basename(child.key)}</d:displayname>'
+              '<d:resourcetype>${child.value ? '<d:collection/>' : ''}</d:resourcetype>'
+              '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>',
+            );
+          }
+          xml.write('</d:multistatus>');
+          handler.resolve(
+            Response(
+              requestOptions: options,
+              statusCode: 207,
+              data: xml.toString(),
+            ),
+          );
+        },
+      ),
+    );
+  final store = await FilmCatalogStore.open(
+    p.join(directory, '$label-tree.db'),
+  );
+  final scanner = FilmCatalogScanner(store, remoteInterval: Duration.zero);
+  final source = WebDavMediaSourceAdapter(
+    WebDAVService(
+      client: WebDavClient(baseUrl: 'https://fixture.invalid/dav', dio: dio),
+      profileId: 'fixture-tree',
+    ),
+  );
+  try {
+    for (final type in FilmMediaType.values) {
+      final rootPath = type == FilmMediaType.tv
+          ? 'Library/Series'
+          : 'Library/Movies';
+      final id = await store.addRoot(
+        sourceId: 'fixture-tree',
+        kind: MediaSourceKind.webdav,
+        path: rootPath,
+        type: type,
+        name: type.name,
+      );
+      await scanner.scan((await store.root(id))!, source);
+    }
+    final actual = (await store.resources()).map((r) => r.path).toSet();
+    final expected = files.map((f) => f['path'] as String).toSet();
+    if (!setEquals(actual, expected)) {
+      throw StateError('Nested scan paths differ');
+    }
+    if ((await store.roots()).any((r) => r.status != 'completed')) {
+      throw StateError('Nested scan did not complete');
+    }
+    return {
+      'resources': actual.length,
+      'directoryRequests': requests,
+      'allPathsEqual': true,
+      'remoteInterval': 'zero for in-process fixture only',
+    };
+  } finally {
+    await scanner.shutdown();
+    await store.close();
+    dio.close(force: true);
+  }
+}
+
 Future<void> main(List<String> arguments) async {
   try {
     await _runProbe(arguments);
@@ -93,9 +252,22 @@ Future<void> _runProbe(List<String> arguments) async {
       !p.basename(root).startsWith('film-scrape-lab-')) {
     throw StateError('Run only an isolated film-scrape-lab-* bundle');
   }
-  final label = arguments.isEmpty ? 'baseline' : arguments.first;
   sqfliteFfiInit();
-  final store = await FilmCatalogStore.open(p.join(root, 'catalog.db'));
+  if (arguments.isNotEmpty && arguments.first == 'verify-tree') {
+    final result = await _verifyTree(
+      root,
+      'tree-${DateTime.now().microsecondsSinceEpoch}',
+    );
+    await File(
+      p.join(root, 'tree-verification.json'),
+    ).writeAsString(jsonEncode(result));
+    exit(0);
+  }
+  final label = arguments.isEmpty ? 'baseline' : arguments.first;
+  final pages = arguments.length > 1 ? int.parse(arguments[1]) : 1;
+  final file = p.join(root, '$label.db');
+  await File(p.join(root, 'seed.db')).copy(file);
+  final store = await FilmCatalogStore.open(file);
   final cachedWorks = {
     for (final work in await store.works(type: null, limit: 1000))
       work.tmdbId: work,
@@ -178,7 +350,7 @@ Future<void> _runProbe(List<String> arguments) async {
         ),
       ),
   );
-  final catalog = FilmCatalogController(
+  final catalog = _Catalog(
     store: store,
     tmdb: tmdb,
     images: images,
@@ -215,7 +387,6 @@ Future<void> _runProbe(List<String> arguments) async {
     mediaLibraryStore: library,
     catalog: catalog,
   );
-  app.startupReady.value = true;
   final material = AppearanceController(initialConfig: appearance);
   await material.restoreForStartup();
   final frames = <Map<String, Object?>>[];
@@ -223,9 +394,20 @@ Future<void> _runProbe(List<String> arguments) async {
   var phase = 'startup';
   var notifications = 0;
   var storeNotifications = 0;
+  var taskNotifications = 0;
+  var completedResources = 0;
+  var previousProgress = 0;
   var processed = 0;
   catalog.addListener(() => notifications++);
   store.addListener(() => storeNotifications++);
+  catalog.taskChanges.addListener(() {
+    taskNotifications++;
+    final current = catalog.scrapeProcessed;
+    completedResources += current < previousProgress
+        ? current
+        : current - previousProgress;
+    previousProgress = current;
+  });
   WidgetsBinding.instance.addTimingsCallback((timings) {
     for (final t in timings) {
       frames.add({
@@ -234,6 +416,7 @@ Future<void> _runProbe(List<String> arguments) async {
         'buildUs': t.buildDuration.inMicroseconds,
         'rasterUs': t.rasterDuration.inMicroseconds,
         'totalUs': t.totalSpan.inMicroseconds,
+        'vsyncOverheadUs': t.vsyncOverhead.inMicroseconds,
         'startUs': t.timestampInMicroseconds(FramePhase.vsyncStart),
       });
     }
@@ -248,100 +431,226 @@ Future<void> _runProbe(List<String> arguments) async {
       ),
     ),
   );
+  await WidgetsBinding.instance.endOfFrame;
+  app.startupReady.value = true;
   await _settle(2500);
-  var running = true;
-  final tvRoots = (await store.roots())
-      .where((r) => r.type == FilmMediaType.tv)
-      .toList();
-  final scrapeTask = () async {
-    while (running) {
-      for (final r in tvRoots) {
-        if (!running) break;
-        await catalog.scrape(r);
-        await catalog.waitForScraping();
-        processed += catalog.scrapeProcessed;
-        if (catalog.scrapePaused) {
-          throw StateError('Probe scraping paused: ${catalog.scrapeError}');
-        }
+  // 先挂载文件夹分支，再比较同一组完整滑动与中途反向切换。
+  _tapSidebar('folders');
+  await _settle(800);
+  _tapSidebar('films');
+  await _settle(1200);
+  for (var i = 1; i < pages; i++) {
+    await catalog.refresh(more: true);
+  }
+  await _settle(500);
+  final loadedWorks = catalog.works.length;
+  final service = await developer.Service.controlWebServer(
+    enable: true,
+    silenceOutput: true,
+  );
+  final isolate = developer.Service.getIsolateId(Isolate.current)!;
+  final client = HttpClient();
+  var cpuStart = 0;
+  var cpuEnd = 0;
+  Future<Map<String, dynamic>> rpc(String method) async {
+    final uri = service.serverUri!
+        .resolve(method)
+        .replace(
+          queryParameters: {
+            'isolateId': isolate,
+            if (method == 'getCpuSamples') ...{
+              'timeOriginMicros': '$cpuStart',
+              'timeExtentMicros': '${cpuEnd - cpuStart}',
+            },
+          },
+        );
+    final response = await (await client.getUrl(uri)).close();
+    final value = jsonDecode(await utf8.decoder.bind(response).join()) as Map;
+    if (value['error'] != null) {
+      if (method == 'getCpuSamples') {
+        return {'unavailable': value['error']};
       }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      throw StateError('Probe VM RPC failed: $method');
     }
-  }();
-  for (var group = 0; group < 3; group++) {
-    for (var i = 0; i < 20; i++) {
-      phase = 'scroll-$group-$i';
+    return Map<String, dynamic>.from(value['result'] as Map);
+  }
+
+  final samples = <String, Map<String, Object?>>{};
+  Future<void> switches(String name) async {
+    phase = catalog.phase = name;
+    final before = (notifications, storeNotifications, taskNotifications);
+    final initialProcessed = completedResources;
+    if (name == 'scraping') {
+      await rpc('clearCpuSamples');
+      cpuStart = developer.Timeline.now;
+    }
+    for (var i = 0; i < 40; i++) {
       if (catalog.scrapePaused) {
         throw StateError('Probe scraping paused: ${catalog.scrapeError}');
       }
-      stdout.writeln(
-        'PROBE_OPERATION $phase processed=${catalog.scrapeProcessed} paused=${catalog.scrapePaused}',
-      );
       final start = developer.Timeline.now;
-      final page = _find((w) => w is FilmLibraryPage);
-      final scrolls = <ScrollableState>[];
-      void visit(Element e) {
-        if (e is StatefulElement && e.state is ScrollableState) {
-          final s = e.state as ScrollableState;
-          if (s.position.axis == Axis.vertical &&
-              s.position.hasContentDimensions) {
-            scrolls.add(s);
-          }
-        }
-        e.visitChildElements(visit);
-      }
-
-      page.visitChildElements(visit);
-      final s = scrolls.firstWhere((s) => s.position.maxScrollExtent > 0);
-      await s.position.animateTo(
-        i.isEven ? s.position.maxScrollExtent : 0,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
+      _tapSidebar(i.isEven ? 'folders' : 'films');
+      await _settle(i < 20 ? 420 : 180);
+      final icon = _find(
+        (w) =>
+            w is Icon &&
+            w.key == Key('sidebar-${i.isEven ? 'folders' : 'films'}'),
       );
-      await _settle(80);
+      var selected = false;
+      icon.visitAncestorElements((element) {
+        final widget = element.widget;
+        if (widget is Semantics && widget.properties.selected != null) {
+          selected = widget.properties.selected!;
+          return false;
+        }
+        return true;
+      });
+      if (!selected) {
+        throw StateError(
+          'Segment pointer selection failed: phase=$name index=$i',
+        );
+      }
       operations.add({
-        'phase': phase,
+        'phase': name,
+        'kind': i < 20 ? 'complete' : 'reverse',
         'startUs': start,
         'endUs': developer.Timeline.now,
       });
-      phase = 'switch-$group-$i';
-      final switchStart = developer.Timeline.now;
-      (_find(
-                (w) => w is InkWell && w.key == const Key('sidebar-folders'),
-              ).widget
-              as InkWell)
-          .onTap!();
-      await _settle(150);
-      (_find((w) => w is InkWell && w.key == const Key('sidebar-films')).widget
-              as InkWell)
-          .onTap!();
-      await _settle(150);
+    }
+    if (name == 'scraping') cpuEnd = developer.Timeline.now;
+    samples[name] = {
+      'controllerNotifications': notifications - before.$1,
+      'storeNotifications': storeNotifications - before.$2,
+      'taskNotifications': taskNotifications - before.$3,
+      'processedDuringOperations': completedResources - initialProcessed,
+      'rss': ProcessInfo.currentRss,
+      'imageCache': {
+        'bytes': PaintingBinding.instance.imageCache.currentSizeBytes,
+        'count': PaintingBinding.instance.imageCache.currentSize,
+        'live': PaintingBinding.instance.imageCache.liveImageCount,
+        'pending': PaintingBinding.instance.imageCache.pendingImageCount,
+      },
+      'memory': await rpc('getMemoryUsage'),
+    };
+    stdout.writeln('PROBE_PHASE $name processed=${catalog.scrapeProcessed}');
+    phase = catalog.phase = '$name-scroll';
+    await _settle(400);
+    final scroll =
+        _find(
+              (w) =>
+                  w is CustomScrollView &&
+                  w.key == const Key('film-home-scroll'),
+            ).widget
+            as CustomScrollView;
+    final controller = scroll.controller!;
+    for (var i = 0; i < 10; i++) {
+      final start = developer.Timeline.now;
+      await controller.animateTo(
+        i.isEven ? controller.position.maxScrollExtent : 0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
       operations.add({
         'phase': phase,
-        'startUs': switchStart,
+        'kind': 'scroll',
+        'startUs': start,
         'endUs': developer.Timeline.now,
       });
     }
+    await _settle(400);
   }
-  running = false;
+
+  await switches('before');
+  final scrapeStart = developer.Timeline.now;
+  var scrapeEnd = 0;
+  final scrapeTask = () async {
+    for (final r in await store.roots()) {
+      await catalog.scrape(r);
+      await catalog.waitForScraping();
+      processed += catalog.scrapeProcessed;
+      if (catalog.scrapePaused) {
+        throw StateError('Probe scraping paused: ${catalog.scrapeError}');
+      }
+    }
+    scrapeEnd = developer.Timeline.now;
+  }();
+  await switches('scraping');
+  phase = catalog.phase = 'drain';
+  await scrapeTask;
+  await _settle(1200);
+  await switches('after');
+  // 原 works() 的同步映射独立计时，不把异步 SQL 总时长当 UI 阻塞。
+  final db = await databaseFactoryFfi.openDatabase(file);
+  final decodeCases = <Map<String, Object?>>[];
+  final queryCases = <Map<String, Object?>>[];
+  for (final limit in [60, 180]) {
+    final rows = await db.rawQuery('SELECT * FROM works ORDER BY id LIMIT ?', [
+      limit,
+    ]);
+    for (var i = 0; i < 5; i++) {
+      final watch = Stopwatch()..start();
+      final decoded = rows.map(FilmWork.fromRow).toList();
+      decodeCases.add({
+        'rows': decoded.length,
+        'syncUs': watch.elapsedMicroseconds,
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    for (var i = 0; i < 5; i++) {
+      var lastTick = developer.Timeline.now;
+      var maxGap = 0;
+      final timer = Timer.periodic(const Duration(milliseconds: 1), (_) {
+        final now = developer.Timeline.now;
+        final gap = now - lastTick;
+        if (gap > maxGap) maxGap = gap;
+        lastTick = now;
+      });
+      final watch = Stopwatch()..start();
+      final result = await store.works(type: null, limit: limit);
+      final elapsed = watch.elapsedMicroseconds;
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+      timer.cancel();
+      queryCases.add({
+        'rows': result.length,
+        'totalUs': elapsed,
+        'maxEventLoopGapUs': maxGap,
+      });
+    }
+  }
+  // CPU 导出体积较大，放在全部交互及查询测量结束后。
+  await File(
+    p.join(root, '$label-cpu.json'),
+  ).writeAsString(jsonEncode(await rpc('getCpuSamples')));
+  client.close();
   phase = 'idle';
   await _settle(1200);
   final view = WidgetsBinding.instance.platformDispatcher.views.first;
   runApp(const SizedBox.shrink());
   await _settle(300);
   await catalog.close();
-  await scrapeTask;
   await File(p.join(root, '$label.json')).writeAsString(
     jsonEncode({
       'pid': pid,
       'mode': 'profile',
       'viewport': [view.physicalSize.width, view.physicalSize.height],
       'dpr': view.devicePixelRatio,
+      'refreshRate': view.display.refreshRate,
+      'loadedWorks': loadedWorks,
       'backdrop': material.lastResult?.actualBackdrop.name,
       'simulatedApiRequests': requests,
       'actualNetworkRequests': 0,
       'processed': processed,
       'controllerNotifications': notifications,
       'storeNotifications': storeNotifications,
+      'taskNotifications': taskNotifications,
+      'scrapeStartUs': scrapeStart,
+      'scrapeEndUs': scrapeEnd,
+      'cpuStartUs': cpuStart,
+      'cpuEndUs': cpuEnd,
+      'samples': samples,
+      'refreshes': catalog.refreshes,
+      'decodeCases': decodeCases,
+      'queryCases': queryCases,
       'frames': frames,
       'operations': operations,
     }),

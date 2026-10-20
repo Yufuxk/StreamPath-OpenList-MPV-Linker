@@ -151,6 +151,9 @@ void main() {
       await catalog.store.markWatched(await catalog.store.resources(), true);
     });
     final opened = <MediaLibraryItem>[];
+    final initialWork = (await tester.runAsync(
+      () => catalog.store.work(workId),
+    ))!;
     Widget frame({
       Key? key,
       Locale locale = const Locale('zh', 'CN'),
@@ -178,12 +181,15 @@ void main() {
             key: key,
             catalog: catalog,
             workId: workId,
+            initialWork: initialWork,
             onOpenItem: (item) async => opened.add(item),
           ),
         ),
       ),
     );
     await tester.pumpWidget(frame());
+    final actions = find.byKey(const Key('film-skeleton-actions'));
+    final initialActionsWidth = tester.getSize(actions).width;
     await pumpUntil(
       tester,
       () => find
@@ -192,6 +198,11 @@ void main() {
           .isNotEmpty,
       reason: 'Version controls mount during the skeleton hold',
       frameDuration: const Duration(milliseconds: 1),
+    );
+    expect(
+      tester.getSize(actions).width,
+      initialActionsWidth,
+      reason: 'The initial skeleton reserves the full version selector width',
     );
     for (final key in const [
       'film-work-version-selector',

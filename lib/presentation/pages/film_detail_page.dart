@@ -1412,7 +1412,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                     ),
                                                     if (_versionSelection !=
                                                         null)
-                                                      _workVersionSelector(),
+                                                      _workVersionSelector()
+                                                    else if (_loading &&
+                                                        work.type ==
+                                                            FilmMediaType.tv)
+                                                      const SizedBox(
+                                                        width: 300,
+                                                        height: 44,
+                                                      ),
                                                   ],
                                                 ),
                                               ),

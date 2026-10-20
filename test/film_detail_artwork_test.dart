@@ -2932,7 +2932,7 @@ void main() {
       await settle(tester);
       final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
       expect(route, isA<MaterialPageRoute<void>>());
-      expect(route.transitionDuration, const Duration(milliseconds: 420));
+      expect(route.transitionDuration, const Duration(milliseconds: 360));
       expect(
         PaintingBinding.instance.imageCache.statusForKey(provider).keepAlive,
         isTrue,
@@ -3175,13 +3175,14 @@ void main() {
       );
       final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
       expect(route, isA<FilmConnectedDetailRoute>());
-      expect(route.transitionDuration.inMilliseconds, 420);
+      expect(route.transitionDuration.inMilliseconds, 360);
+      expect(route.reverseTransitionDuration.inMilliseconds, 360);
       expect(backdropImages(), findsNothing);
-      await tester.pump(const Duration(milliseconds: 210));
+      await tester.pump(const Duration(milliseconds: 180));
       final middle = tester.getRect(flight);
       expect(middle.left, lessThan(start.left));
       expect(middle.left, greaterThan(24));
-      await tester.pump(const Duration(milliseconds: 210));
+      await tester.pump(const Duration(milliseconds: 180));
       await tester.pump(const Duration(milliseconds: 1));
       expect(route.animation!.status, AnimationStatus.completed);
       await tester.pump();

@@ -301,4 +301,80 @@ void main() {
       );
     },
   );
+
+  test(
+    'multi-page work reads retain complete metadata, order and source scope',
+    () async {
+      await db.transaction((txn) async {
+        final batch = txn.batch();
+        for (var i = 0; i < 180; i++) {
+          final title = 'Paged ${i.toString().padLeft(3, '0')}';
+          final item = FilmWork(
+            id: 1000 + i,
+            type: FilmMediaType.tv,
+            tmdbId: 1000 + i,
+            title: title,
+            originalTitle: 'Original $i',
+            overview: '完整简介 $i',
+            language: 'zh-CN',
+            year: 2020,
+            metadata: {
+              'genres': ['Drama'],
+              'credits': {
+                'cast': [
+                  for (var person = 0; person < 180; person++)
+                    {
+                      'id': person,
+                      'name': 'Person $person',
+                      'character': '角色 $i-$person',
+                    },
+                ],
+              },
+            },
+          );
+          batch.insert('works', {'id': item.id, ...item.toRow()});
+          final path = 'TV/Paged/$title/S01E01.strm';
+          batch.insert('resources', {
+            'root_id': root.id,
+            'relative_path': path,
+            'path_key': path,
+            'parent_path': 'TV/Paged/$title',
+            'name': 'S01E01.strm',
+            'media_kind': 'strm',
+            'work_id': item.id,
+            'binding_origin': 'explicit',
+            'episode_mapping_origin': 'filename',
+            'season_number': 1,
+            'episode_number': 1,
+            'last_seen_generation': 1,
+            'created_at': i,
+          });
+        }
+        await batch.commit(noResult: true);
+      });
+      var changes = 0;
+      store.addListener(() => changes++);
+      final all = await store.works(type: null, query: 'Paged', limit: 180);
+      final middle = await store.works(
+        type: FilmMediaType.tv,
+        query: 'Paged',
+        offset: 60,
+      );
+      expect(all, hasLength(180));
+      expect(middle.map((w) => w.id), all.skip(60).take(60).map((w) => w.id));
+      for (var i = 0; i < all.length; i++) {
+        expect(all[i].id, 1000 + i);
+        expect(all[i].overview, '完整简介 $i');
+        final cast = (all[i].metadata['credits'] as Map)['cast'] as List;
+        expect(cast, hasLength(180));
+        expect((cast.last as Map)['character'], '角色 $i-179');
+        expect((all[i].resourceCount, all[i].seasonCount), (1, 1));
+      }
+      expect(
+        await store.works(type: null, sourceId: 'another', limit: 180),
+        isEmpty,
+      );
+      expect(changes, 0);
+    },
+  );
 }
