@@ -568,7 +568,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         _backdropChecked = true;
         if (work.tmdbId > 0 &&
             work.metadataOrigin == 'network' &&
-            (work.metadata['presentation_version'] != 3 ||
+            (work.metadata['presentation_version'] != 4 ||
                 work.metadata['certification_version'] != 1) &&
             await widget.catalog.tmdb.hasToken()) {
           await widget.catalog.store.refreshWork(
@@ -682,10 +682,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                   state: filmResourceState(app, resources[i]),
                   displayTitle: work.title,
                   artworkPath: work.backdropPath,
-                  version:
-                      work.type == FilmMediaType.movie && resources.length > 1
-                      ? i + 1
-                      : null,
+                  releaseDate: work.metadata['release_date'] as String?,
+                  officialRuntime: (work.metadata['runtime'] as num?)?.toInt(),
                   key: ValueKey(
                     work.type == FilmMediaType.tv &&
                             resources[i].episode != null &&
@@ -1576,7 +1574,8 @@ class FilmEpisodeCard extends StatelessWidget {
     this.probe,
     this.displayTitle,
     this.artworkPath,
-    this.version,
+    this.releaseDate,
+    this.officialRuntime,
     this.selected = false,
     this.onSelected,
     this.stableEpisodeIdentity = false,
@@ -1586,8 +1585,8 @@ class FilmEpisodeCard extends StatelessWidget {
   final String state;
   final Map? episode;
   final Map<String, dynamic>? probe;
-  final String? displayTitle, artworkPath;
-  final int? version;
+  final String? displayTitle, artworkPath, releaseDate;
+  final int? officialRuntime;
   final Future<void> Function(MediaLibraryItem) onOpenItem;
   final Future<void> Function() onChanged;
   final bool selected;
@@ -1813,18 +1812,21 @@ class FilmEpisodeCard extends StatelessWidget {
         ? (measured / 60).round()
         : episode?['runtime'] is num
         ? episode!['runtime'] as num
-        : null;
-    final airDate = episode?['air_date'] as String?;
+        : officialRuntime;
+    final rawDate = tv ? (episode?['air_date'] as String?) : releaseDate;
+    final airDate = (rawDate ?? '').trim();
     final runtimeText = runtime != null && runtime > 0
         ? context.l10n.format('{minutes} 分钟', {'minutes': runtime})
         : '';
     final timing = [
-      if (airDate != null && airDate.isNotEmpty) airDate,
+      if (airDate.isNotEmpty) airDate,
       if (runtimeText.isNotEmpty) runtimeText,
     ];
     final timingDescription = [
-      if (airDate != null && airDate.isNotEmpty)
-        context.l10n.format('播出日期：{date}', {'date': airDate}),
+      if (airDate.isNotEmpty)
+        context.l10n.format(tv ? '播出日期：{date}' : '上映日期：{date}', {
+          'date': airDate,
+        }),
       if (runtime != null && runtime > 0)
         context.l10n.format(
           measured != null && measured > 0
@@ -1862,9 +1864,7 @@ class FilmEpisodeCard extends StatelessWidget {
               : 'film-resource-${resource.id}',
         ),
         borderOnForeground: false,
-        color: tv
-            ? Colors.transparent
-            : theme.colorScheme.surface.withValues(alpha: .18),
+        color: Colors.transparent,
         elevation: expanded ? 12 : 0,
         shadowColor: theme.shadowColor,
         surfaceTintColor: Colors.transparent,
@@ -1879,7 +1879,6 @@ class FilmEpisodeCard extends StatelessWidget {
           ),
         ),
         child: FilmCardGlass(
-          enabled: tv,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1895,41 +1894,40 @@ class FilmEpisodeCard extends StatelessWidget {
                   },
                   child: FilmWatchOverlay(
                     hoverSurface: true,
-                    foreground: tv
-                        ? Stack(
-                            children: [
-                              const Center(child: FilmPosterHoverPlayIcon()),
-                              if (badges.isNotEmpty)
-                                PositionedDirectional(
-                                  top: 8,
-                                  start: 8,
-                                  end: 8,
-                                  child: Align(
-                                    alignment: AlignmentDirectional.topStart,
-                                    child: FilmPosterHoverAttachment(
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 7,
-                                          vertical: 3,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: theme.colorScheme.surface
-                                              .withValues(alpha: .86),
-                                          borderRadius: AppTheme.controlRadius,
-                                        ),
-                                        child: Text(
-                                          badges.join(' · '),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: theme.textTheme.bodySmall,
-                                        ),
-                                      ),
+                    foreground: Stack(
+                      children: [
+                        const Center(child: FilmPosterHoverPlayIcon()),
+                        if (badges.isNotEmpty)
+                          PositionedDirectional(
+                            top: 8,
+                            start: 8,
+                            end: 8,
+                            child: Align(
+                              alignment: AlignmentDirectional.topStart,
+                              child: FilmPosterHoverAttachment(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 7,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.surface.withValues(
+                                      alpha: .86,
                                     ),
+                                    borderRadius: AppTheme.controlRadius,
+                                  ),
+                                  child: Text(
+                                    badges.join(' · '),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: theme.textTheme.bodySmall,
                                   ),
                                 ),
-                            ],
-                          )
-                        : null,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                     store: catalog.store,
                     resource: resource,
                     spoilerSensitive: tv,
@@ -1979,8 +1977,7 @@ class FilmEpisodeCard extends StatelessWidget {
                                                   {'episode': resource.episode},
                                                 )
                                               : '${resource.episode}. $displayTitle')
-                                        : displayTitle ??
-                                              context.l10n.text('播放此文件'),
+                                        : displayTitle ?? resource.name,
                                     style: theme.textTheme.titleSmall,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
@@ -2013,18 +2010,6 @@ class FilmEpisodeCard extends StatelessWidget {
                               ],
                             ),
                           ),
-                          if (version != null)
-                            Text(
-                              context.l10n.format('版本 {number}', {
-                                'number': version,
-                              }),
-                            ),
-                          if (!tv && state != '可用') AppText(state),
-                          if (!tv && filmTechnicalTags(probe).isNotEmpty)
-                            Text(
-                              filmTechnicalTags(probe).join(' · '),
-                              style: theme.textTheme.bodySmall,
-                            ),
                           if (tv)
                             Flexible(
                               fit: FlexFit.loose,
@@ -2089,6 +2074,27 @@ class FilmEpisodeCard extends StatelessWidget {
                                   ),
                                 ),
                               ),
+                            )
+                          else
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Tooltip(
+                                message: resource.name,
+                                child: SizedBox(
+                                  height: compactLineHeight,
+                                  width: double.infinity,
+                                  child: Align(
+                                    alignment: AlignmentDirectional.centerStart,
+                                    child: Text(
+                                      resource.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall
+                                          ?.copyWith(height: 1.5),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           if (tv || timing.isNotEmpty)
                             Padding(
@@ -2114,7 +2120,7 @@ class FilmEpisodeCard extends StatelessWidget {
                                         children: [
                                           Expanded(
                                             child: Text(
-                                              airDate ?? '',
+                                              airDate,
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: theme.textTheme.bodySmall,
@@ -2136,13 +2142,6 @@ class FilmEpisodeCard extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                            ),
-                          if (!tv)
-                            TextButton.icon(
-                              onPressed: () =>
-                                  onOpenItem(resource.playbackItem),
-                              icon: const Icon(SPIcons.play),
-                              label: const AppText('播放此文件'),
                             ),
                         ],
                       ),

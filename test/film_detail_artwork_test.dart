@@ -185,6 +185,130 @@ void main() {
     child: MaterialApp(theme: AppTheme.dark(), home: home),
   );
 
+  testWidgets('电影资源卡片显示片名、真实文件名、上映日期与时长且点击播放', (tester) async {
+    await prepare(tester, count: 1);
+    final resource = (await tester.runAsync(
+      () => catalog.store.resources(),
+    ))!.single;
+    var plays = 0;
+    final cjkFont = File(r'C:\Windows\Fonts\msyh.ttc');
+    if (cjkFont.existsSync()) {
+      await tester.runAsync(() async {
+        final loader = FontLoader('MovieCardPreview')
+          ..addFont(
+            Future.value(ByteData.sublistView(await cjkFont.readAsBytes())),
+          );
+        await loader.load();
+      });
+    }
+    final previewTheme = AppTheme.dark();
+    final cardBoundary = GlobalKey();
+    await tester.pumpWidget(
+      frame(
+        Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: RepaintBoundary(
+              key: cardBoundary,
+              child: Theme(
+                data: previewTheme.copyWith(
+                  textTheme: previewTheme.textTheme.apply(
+                    fontFamily: cjkFont.existsSync()
+                        ? 'MovieCardPreview'
+                        : null,
+                  ),
+                ),
+                child: SizedBox(
+                  width: 320,
+                  child: FilmEpisodeCard(
+                    catalog: catalog,
+                    resource: resource,
+                    state: '可用',
+                    displayTitle: '流浪地球 2',
+                    releaseDate: '2023-01-22',
+                    probe: const {'duration': 10380},
+                    onOpenItem: (_) async => plays++,
+                    onChanged: () async {},
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('流浪地球 2'), findsOneWidget);
+    expect(find.text('0.mkv'), findsOneWidget);
+    expect(find.text('2023-01-22'), findsOneWidget);
+    expect(find.text('173 分钟'), findsOneWidget);
+    expect(find.text('播放此文件'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.runAsync(() async {
+      final boundary =
+          cardBoundary.currentContext!.findRenderObject()!
+              as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 2);
+      final png = await image.toByteData(format: ui.ImageByteFormat.png);
+      final output = Directory('build/movie-card-detail')
+        ..createSync(recursive: true);
+      await File(
+        p.join(output.path, 'movie-card.png'),
+      ).writeAsBytes(png!.buffer.asUint8List());
+      image.dispose();
+    });
+    await tester.tap(find.text('0.mkv'));
+    await tester.pump();
+    expect(plays, 1);
+  });
+
+  testWidgets('电影详情关联资源显示片名、真实文件名与上映日期', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('spoiler_protection', false);
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: '流浪地球 2',
+          originalTitle: original.originalTitle,
+          overview: '',
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          metadata: const {
+            'presentation_version': 4,
+            'release_date': '2023-01-22',
+          },
+        ),
+      );
+    });
+    MediaLibraryItem? opened;
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: original.id,
+          onOpenItem: (item) async => opened = item,
+        ),
+      ),
+    );
+    await settle(tester);
+    final file = find.text('0.mkv');
+    await tester.scrollUntilVisible(
+      file,
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('2023-01-22'), findsOneWidget);
+    await tester.tap(file);
+    await tester.pump();
+    expect(opened?.targetPath, '0.mkv');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('详情简介仅在溢出时渐隐并可展开收起，缺图演职员显示姓名缩写', (tester) async {
     await prepare(tester, count: 1);
     final original = works.single;
@@ -2536,7 +2660,7 @@ void main() {
 
   testWidgets('影片详情复用目录滚动条，滚轮在条边和正文只滚动一次', (tester) async {
     await prepare(tester);
-    tester.view.physicalSize = const Size(1280, 640);
+    tester.view.physicalSize = const Size(1280, 560);
     await tester.pumpWidget(
       frame(
         FilmDetailPage(

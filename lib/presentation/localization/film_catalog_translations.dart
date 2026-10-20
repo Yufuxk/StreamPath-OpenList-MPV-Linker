@@ -706,6 +706,7 @@ const filmCatalogTranslations = <String, List<String>>{
   ],
   '第 {season} 季': ['第 {season} 季', 'シーズン {season}', 'Season {season}'],
   '播出日期：{date}': ['播出日期：{date}', '放送日：{date}', 'Air date: {date}'],
+  '上映日期：{date}': ['上映日期：{date}', '公開日：{date}', 'Release date: {date}'],
   '播放此文件': ['播放此檔案', 'このファイルを再生', 'Play this file'],
   '纠正作品匹配': ['修正作品配對', '作品の対応を修正', 'Correct work match'],
   '调整季集': ['調整季集', 'シーズン・話を変更', 'Adjust episode'],

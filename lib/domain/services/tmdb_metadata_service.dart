@@ -254,7 +254,7 @@ class TmdbMetadataService {
           'backdrop_height': best?['height'],
           'backdrop_selection': 'highestResolution',
           'logo_path': logos.firstOrNull?['file_path'],
-          'presentation_version': 3,
+          'presentation_version': 4,
         }, language);
         if (work.tmdbId != id) {
           throw const FilmCatalogException('invalidMetadata');
@@ -405,6 +405,7 @@ class TmdbMetadataService {
             .whereType<String>()
             .toList(),
         'vote_count': data['vote_count'],
+        'release_date': date is String ? date : '',
         'runtime': type == FilmMediaType.movie ? data['runtime'] : null,
         if (detail) ...{
           ..._certification(type, data),

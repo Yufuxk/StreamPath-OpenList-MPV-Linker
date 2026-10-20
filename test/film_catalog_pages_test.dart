@@ -510,6 +510,9 @@ void main() {
             overview: 'Overview',
             backdropPath: '/backdrop.jpg',
             language: 'zh-CN',
+            metadata: root.type == FilmMediaType.movie
+                ? const {'release_date': '2020-05-01'}
+                : const {},
           ),
         );
         final resources = await store.resources(rootId: id);
@@ -787,10 +790,12 @@ void main() {
     await settle();
     await tester.tap(find.text('电影作品').first);
     await settle();
-    expect(find.text('Movie.2020.PROPER.1080p.mkv'), findsNothing);
+    final movieFile = find.text('Movie.2020.PROPER.1080p.mkv');
+    await tester.ensureVisible(movieFile);
+    expect(movieFile, findsOneWidget);
+    expect(find.text('2020-05-01'), findsOneWidget);
     expect(find.text('纠正作品匹配'), findsNothing);
-    await tester.ensureVisible(find.text('播放此文件').first);
-    await tester.tap(find.text('播放此文件').first);
+    await tester.tap(movieFile);
     await settle();
     for (var i = 0; i < 60 && player.calls == 0; i++) {
       await tester.runAsync(
