@@ -70,6 +70,7 @@ class FilmCatalogStore extends ChangeNotifier {
 
   bool spoilerProtection = false;
   bool showPosterContentCount = false;
+  bool featuredLogoAdaptiveSize = false;
   static const _watchSchema = '''CREATE TABLE film_watch_state (
     source_id TEXT NOT NULL, work_id INTEGER NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     season_number INTEGER NOT NULL, episode_number INTEGER NOT NULL,
@@ -457,6 +458,8 @@ class FilmCatalogStore extends ChangeNotifier {
         await store.preference('spoiler_protection') == true;
     store.showPosterContentCount =
         await store.preference('show_poster_content_count') == true;
+    store.featuredLogoAdaptiveSize =
+        await store.preference('featured_logo_adaptive_size') == true;
     return store;
   }
 

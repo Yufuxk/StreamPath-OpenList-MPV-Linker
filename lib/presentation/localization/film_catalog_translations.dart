@@ -897,6 +897,12 @@ const filmCatalogTranslations = <String, List<String>>{
     'ポスターの年の後にライブラリ内のシーズン数または映画のリソース数を表示（ISO、BDMV を含む）',
     'Show library season or movie resource counts after the poster year (including ISO and BDMV)',
   ],
+  '自适应Logo大小': ['自適應 Logo 大小', 'ロゴサイズを自動調整', 'Adaptive logo size'],
+  '在每日精选与合集橱窗中按徽标内容自动缩放；关闭时按原始比例显示': [
+    '在每日精選與合集櫥窗中按徽標內容自動縮放；關閉時按原始比例顯示',
+    '今日のおすすめとコレクションのショーケースでロゴ内容に合わせて自動調整します。オフの場合は元の比率で表示します',
+    'Scales the logo to its content in daily and collection showcases; when off, the original ratio is kept',
+  ],
   '{count}季': ['{count}季', '{count}シーズン', '{count} seasons'],
   '{count}项内容': ['{count}項內容', '{count}件のコンテンツ', '{count} items'],
   '展示剧透': ['展示劇透', 'ネタバレを表示', 'Show spoilers'],

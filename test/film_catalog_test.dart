@@ -350,6 +350,17 @@ void main() {
     expect(store.showPosterContentCount, isFalse);
   });
 
+  test('橱窗 Logo 自适应偏好默认关闭并可保存重载', () async {
+    expect(store.featuredLogoAdaptiveSize, isFalse);
+    await store.setPreference('featured_logo_adaptive_size', true);
+    expect(store.featuredLogoAdaptiveSize, isTrue);
+    await store.close();
+    store = await FilmCatalogStore.open(p.join(temp.path, 'catalog.db'));
+    expect(store.featuredLogoAdaptiveSize, isTrue);
+    await store.setPreference('featured_logo_adaptive_size', false);
+    expect(store.featuredLogoAdaptiveSize, isFalse);
+  });
+
   test('封面电影资源包含 video、STRM、ISO 和 BDMV，剧集按季去重并限定来源', () async {
     final movie = await addRoot();
     final generation = await store.beginScan(movie.id);

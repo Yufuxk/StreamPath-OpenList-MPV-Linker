@@ -121,6 +121,7 @@ class AudioPlayerService {
       if (runtime.entries.any(
             (e) => ['http', 'https'].contains(Uri.tryParse(e.url)?.scheme),
           ) &&
+          !runtime.livenessTracker.unknownRetryExhausted &&
           await isPlayerRunning(runtime.sessionId)) {
         return true;
       }

@@ -447,7 +447,10 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                     path: logo,
                     target: 'original',
                     transparent: true,
-                    logoGlyphSize: titleSize * 1.6,
+                    logoAutoCenter: true,
+                    logoGlyphSize: widget.catalog.store.featuredLogoAdaptiveSize
+                        ? titleSize * 1.6
+                        : null,
                     width: 420,
                     height: 220,
                     placeholder: Center(child: title),

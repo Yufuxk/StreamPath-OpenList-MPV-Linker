@@ -74,6 +74,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   bool _hasToken = false;
   bool _scanEnabled = true, _spoilers = false;
   bool _showPosterContentCount = false;
+  bool _featuredLogoAdaptiveSize = false;
   int _scanHours = 24;
   bool _saving = false;
   @override
@@ -95,6 +96,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
       _spoilers =
           await widget.catalog.store.preference('spoiler_protection') == true;
       _showPosterContentCount = widget.catalog.store.showPosterContentCount;
+      _featuredLogoAdaptiveSize = widget.catalog.store.featuredLogoAdaptiveSize;
       _scanHours =
           (await widget.catalog.store.preference('scan_interval_hours')
               as int?) ??
@@ -767,6 +769,23 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                 onChanged: (value) => _settingAction(
                                   () => c.store.setPreference(
                                     'show_poster_content_count',
+                                    value,
+                                  ),
+                                ),
+                              ),
+                              SPToggleTile(
+                                key: const Key(
+                                  'film-featured-logo-adaptive-size',
+                                ),
+                                contentPadding: EdgeInsets.zero,
+                                title: const AppText('自适应Logo大小'),
+                                subtitle: const AppText(
+                                  '在每日精选与合集橱窗中按徽标内容自动缩放；关闭时按原始比例显示',
+                                ),
+                                value: _featuredLogoAdaptiveSize,
+                                onChanged: (value) => _settingAction(
+                                  () => c.store.setPreference(
+                                    'featured_logo_adaptive_size',
                                     value,
                                   ),
                                 ),

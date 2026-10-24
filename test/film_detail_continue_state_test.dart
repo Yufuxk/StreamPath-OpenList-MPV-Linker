@@ -226,4 +226,151 @@ void main() {
       }
     });
   }
+
+  testWidgets('movie detail hides a completed STRM continue record', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final prepared = await tester.runAsync(() async {
+      final dir = await Directory.systemTemp.createTemp('movie_continue_');
+      final config = StreamPathConfigStore.forPath('${dir.path}/config.json');
+      await config.save(
+        StreamPathConfig(
+          localRoots: [
+            LocalRootConfig(
+              rootId: 'fixture',
+              displayName: 'Fixture',
+              path: dir.path,
+            ),
+          ],
+        ),
+      );
+      final progress = await PlaybackProgressService.open(
+        '${dir.path}/progress.db',
+      );
+      final app = ShellTestAppState(
+        configStore: config,
+        playbackHistoryStore: PlaybackHistoryStore.forPath(
+          '${dir.path}/history.json',
+        ),
+        progressService: progress,
+        mediaLibraryStore: MediaLibraryStore.forPath(
+          '${dir.path}/records.json',
+        ),
+      );
+      final catalog = await app.getFilmCatalog();
+      await app.initializeFilmPlayback();
+      final rootId = await catalog.store.addRoot(
+        sourceId: 'local:fixture',
+        kind: MediaSourceKind.local,
+        path: 'Movies',
+        type: FilmMediaType.movie,
+        name: 'Movies',
+      );
+      final root = (await catalog.store.root(rootId))!;
+      final generation = await catalog.store.beginScan(rootId);
+      await catalog.store.stage(root, generation, [
+        const FilmScanEntry(
+          path: 'Movies/Movie.strm',
+          parentPath: 'Movies',
+          name: 'Movie.strm',
+          mediaKind: 'strm',
+        ),
+      ]);
+      await catalog.store.commitScan(
+        rootId,
+        generation,
+        cancelled: () => false,
+      );
+      await catalog.store.bind(
+        await catalog.store.resources(),
+        const FilmWork(
+          type: FilmMediaType.movie,
+          tmdbId: 2,
+          title: 'Movie',
+          originalTitle: 'Movie',
+          overview: '',
+          language: 'en',
+          metadata: {'presentation_version': 3},
+        ),
+      );
+      final resource = (await catalog.store.resources()).single;
+      final records = app.filmMediaLibraryStore!;
+      await records.recordPlayback(
+        resource.playbackItem,
+        playbackSessionId: 'movie',
+        playlistIndex: 0,
+        playlistCount: 1,
+      );
+      await records.updateStrmProgress(
+        sourceId: 'local:fixture',
+        playbackSessionId: 'movie',
+        fileName: 'Movie.strm',
+        playlistIndex: 0,
+        positionMs: 5057806,
+        durationMs: 5064062,
+      );
+      return (dir, app, catalog, progress, records, resource);
+    });
+    final (dir, app, catalog, progress, records, resource) = prepared!;
+    try {
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            home: FilmDetailPage(
+              catalog: catalog,
+              workId: resource.workId!,
+              onContinueSelected: (_) {},
+              onOpenItem: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      expect(find.text('继续播放'), findsNothing);
+      expect(find.text('开始播放'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(FilmContinueCard),
+          matching: find.byType(LinearProgressIndicator),
+        ),
+        findsNothing,
+      );
+      await tester.runAsync(
+        () => records.updateStrmProgress(
+          sourceId: 'local:fixture',
+          playbackSessionId: 'movie',
+          fileName: 'Movie.strm',
+          playlistIndex: 0,
+          positionMs: 2532031,
+          durationMs: 5064062,
+        ),
+      );
+      await settle(tester);
+      expect(find.text('继续播放'), findsOneWidget);
+      final progressBar = find.descendant(
+        of: find.byType(FilmContinueCard),
+        matching: find.byType(LinearProgressIndicator),
+      );
+      expect(progressBar, findsOneWidget);
+      expect(
+        tester.widget<LinearProgressIndicator>(progressBar).value,
+        closeTo(.5, .01),
+      );
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await settle(tester);
+      await tester.runAsync(() async {
+        app.dispose();
+        await app.closeTestStores();
+        await progress.close();
+        await dir.delete(recursive: true);
+      });
+    }
+  });
 }

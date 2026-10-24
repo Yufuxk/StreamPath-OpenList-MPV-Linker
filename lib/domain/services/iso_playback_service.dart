@@ -392,7 +392,10 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       if (r.cachedPath != null) r.cachedPath!,
   };
   bool get hasNetworkPlayback => _runtimes.values.any(
-    (r) => ['http', 'https'].contains(Uri.tryParse(r.probeTarget)?.scheme),
+    (r) =>
+        ['http', 'https'].contains(Uri.tryParse(r.probeTarget)?.scheme) &&
+        r.playerTracker.status != PlayerProcessLiveness.exited &&
+        !r.playerTracker.unknownRetryExhausted,
   );
   final RemoteMenuPlaybackService remoteMenu;
   final IsoAccessProvider _remoteMenuAccess;

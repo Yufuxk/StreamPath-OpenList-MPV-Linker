@@ -46,6 +46,19 @@ void main() {
     },
   );
 
+  test('a missing glyph target still centers and fits the available slot', () {
+    final layout = FilmLogoLayout.analyze(
+      pixels(400, 100, [const Rect.fromLTWH(10, 20, 180, 40)]),
+      400,
+      100,
+    )!;
+    final destination = layout.destination(const Size(420, 220), null);
+    expect(destination.center.dx, 210);
+    expect(destination.bottom, 220);
+    expect(destination.width, closeTo(420, .001));
+    expect(destination.height, closeTo(420 * 40 / 180, .001));
+  });
+
   test(
     'vertical lettering uses its width and remains inside the available slot',
     () {

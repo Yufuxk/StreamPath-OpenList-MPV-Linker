@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
-/// 透明留白不参与布局，主文字带的厚度用于估算字形大小。
+/// 透明留白不参与布局；有字形目标时估算字形大小，无目标时按可用空间等比适配。
 class FilmLogoLayout {
   const FilmLogoLayout(this.bounds, this.glyphExtent);
 
@@ -56,17 +56,18 @@ class FilmLogoLayout {
     return FilmLogoLayout(bounds, extent);
   }
 
-  Rect destination(Size size, double glyphSize) {
-    var preferredScale = glyphSize / glyphExtent;
-    if (bounds.width > bounds.height * 1.25) {
+  Rect destination(Size size, double? glyphSize) {
+    final fitScale = math.min(
+      size.width / bounds.width,
+      size.height / bounds.height,
+    );
+    var preferredScale = glyphSize == null ? fitScale : glyphSize / glyphExtent;
+    if (glyphSize != null && bounds.width > bounds.height * 1.25) {
       // 装饰与多行文字可能放大字形估算，横排徽标保留可读宽度。
       final minimumWidth = math.min(glyphSize * 4.5, size.width * .75);
       preferredScale = math.max(preferredScale, minimumWidth / bounds.width);
     }
-    final scale = math.min(
-      preferredScale,
-      math.min(size.width / bounds.width, size.height / bounds.height),
-    );
+    final scale = math.min(preferredScale, fitScale);
     final width = bounds.width * scale, height = bounds.height * scale;
     return Rect.fromLTWH(
       (size.width - width) / 2,

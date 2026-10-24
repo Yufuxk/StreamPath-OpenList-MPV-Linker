@@ -778,6 +778,11 @@ void main() {
       await tester.pumpWidget(frame(showcase()));
       await settle(tester);
       final logo = find.byKey(const Key('featured-logo'));
+      final artwork = tester.widget<FilmArtwork>(logo);
+      expect(artwork.transparent, isTrue);
+      expect(artwork.target, 'original');
+      expect(artwork.logoAutoCenter, isTrue);
+      expect(artwork.logoGlyphSize, isNull);
       for (var i = 0; i < 100; i++) {
         if (find
             .descendant(
@@ -795,10 +800,41 @@ void main() {
         );
         await tester.pump();
       }
-      final artwork = tester.widget<FilmArtwork>(logo);
-      expect(artwork.transparent, isTrue);
-      expect(artwork.target, 'original');
-      expect(artwork.logoGlyphSize, isNotNull);
+      expect(
+        find.descendant(
+          of: logo,
+          matching: find.byWidgetPredicate(
+            (widget) => widget is CustomPaint && widget.painter != null,
+          ),
+        ),
+        findsOneWidget,
+      );
+      catalog.store.featuredLogoAdaptiveSize = true;
+      catalog.notifyListeners();
+      await settle(tester);
+      for (var i = 0; i < 100; i++) {
+        if (find
+            .descendant(
+              of: logo,
+              matching: find.byWidgetPredicate(
+                (widget) => widget is CustomPaint && widget.painter != null,
+              ),
+            )
+            .evaluate()
+            .isNotEmpty) {
+          break;
+        }
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(
+        tester
+            .widget<FilmArtwork>(find.byKey(const Key('featured-logo')))
+            .logoGlyphSize,
+        isNotNull,
+      );
       expect(
         find.descendant(
           of: logo,

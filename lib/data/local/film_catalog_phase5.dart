@@ -211,6 +211,9 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
     if (key == 'show_poster_content_count') {
       showPosterContentCount = value == true;
     }
+    if (key == 'featured_logo_adaptive_size') {
+      featuredLogoAdaptiveSize = value == true;
+    }
     _changed();
   }
 

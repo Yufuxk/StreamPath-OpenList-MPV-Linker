@@ -102,6 +102,8 @@ extension FilmCatalogPortability on FilmCatalogStore {
     spoilerProtection = await preference('spoiler_protection') == true;
     showPosterContentCount =
         await preference('show_poster_content_count') == true;
+    featuredLogoAdaptiveSize =
+        await preference('featured_logo_adaptive_size') == true;
     _changed();
   }
 
@@ -135,6 +137,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
                     'sections',
                     'spoiler_protection',
                     'show_poster_content_count',
+                    'featured_logo_adaptive_size',
                   ].contains(row['key']),
                 )
                 .toList();
@@ -419,6 +422,8 @@ extension FilmCatalogPortability on FilmCatalogStore {
     });
     showPosterContentCount =
         await preference('show_poster_content_count') == true;
+    featuredLogoAdaptiveSize =
+        await preference('featured_logo_adaptive_size') == true;
     _changed();
     return result;
   }

@@ -309,10 +309,12 @@ class FilmArtwork extends StatefulWidget {
     this.placeholder,
     this.transparent = false,
     this.logoGlyphSize,
+    this.logoAutoCenter = false,
     this.fallbackPath,
     this.showCachedImmediately = false,
     this.provider,
-  }) : assert(logoGlyphSize == null || transparent);
+  }) : assert(logoGlyphSize == null || transparent),
+       assert(!logoAutoCenter || transparent);
   final FilmCatalogImageCache cache;
   final String? path;
   final String target;
@@ -325,6 +327,9 @@ class FilmArtwork extends StatefulWidget {
 
   /// 按透明内容居中并估算字形尺度，计算完成前保留空白。
   final double? logoGlyphSize;
+
+  /// 无字形目标时仍按透明内容自动居中；与 [logoGlyphSize] 独立。
+  final bool logoAutoCenter;
   final String? fallbackPath;
 
   /// 作品与合集海报同步命中时跳过渐显，其他图片保留原策略。
@@ -391,7 +396,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
                           : Alignment.center,
                     );
                   }
-                  if (widget.logoGlyphSize != null &&
+                  if ((widget.logoGlyphSize != null || widget.logoAutoCenter) &&
                       widget.path != null &&
                       !state.hasError) {
                     return const SkeletonLoadBoundary(
@@ -450,12 +455,12 @@ class _FilmArtworkState extends State<FilmArtwork> {
     Alignment alignment = Alignment.center,
     FilterQuality filterQuality = FilterQuality.medium,
   }) {
-    if (widget.logoGlyphSize != null) {
+    if (widget.logoGlyphSize != null || widget.logoAutoCenter) {
       return _ContentAlignedLogo(
         key: ValueKey((widget.cache, widget.path, widget.target)),
         cache: widget.cache,
         provider: provider,
-        glyphSize: widget.logoGlyphSize!,
+        glyphSize: widget.logoGlyphSize,
         placeholder: _placeholder(retry: true),
       );
     }
@@ -609,7 +614,7 @@ class _ContentAlignedLogo extends StatefulWidget {
   });
   final FilmCatalogImageCache cache;
   final ImageProvider<Object> provider;
-  final double glyphSize;
+  final double? glyphSize;
   final Widget placeholder;
 
   @override
@@ -711,7 +716,7 @@ class _LogoPainter extends CustomPainter {
   _LogoPainter(this.image, this.layout, this.glyphSize);
   final ui.Image image;
   final FilmLogoLayout layout;
-  final double glyphSize;
+  final double? glyphSize;
 
   @override
   void paint(Canvas canvas, Size size) => canvas.drawImageRect(

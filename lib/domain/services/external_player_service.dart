@@ -496,6 +496,7 @@ class ExternalPlayerService {
               entry == null &&
                   runtime.launchContext?.isLocal != true &&
                   !runtime.profileId.startsWith('local:')) &&
+          !runtime.livenessTracker.unknownRetryExhausted &&
           await isPlayerRunning(runtime.sessionId)) {
         return true;
       }

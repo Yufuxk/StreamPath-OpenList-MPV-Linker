@@ -312,6 +312,25 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     return (progress?.positionMs, progress?.durationMs);
   }
 
+  /// 详情页与主页共用同一完成判定：仅末项且达到 99% 时视为已完成。
+  bool _completedContinue(
+    MediaLibraryRecord? record,
+    int? positionMs,
+    int? durationMs,
+  ) {
+    if (record == null || !record.item.kind.isVideoLane) return false;
+    final index = record.playlistIndex;
+    final count = record.playlistCount;
+    if (index != null && count != null && index != count - 1) return false;
+    if (positionMs == null ||
+        positionMs <= 0 ||
+        durationMs == null ||
+        durationMs <= 0) {
+      return false;
+    }
+    return positionMs / durationMs >= .99;
+  }
+
   Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
     final theme = Theme.of(context);
     final score = work.metadata['vote_average'] as num?;
@@ -528,6 +547,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       final (positionMs, durationMs) = record == null
           ? (null, null)
           : await _continueProgress(app, record, filmRecords.contains(record));
+      final continueRecord = _completedContinue(record, positionMs, durationMs)
+          ? null
+          : record;
       final seasons = <int, Map<String, dynamic>>{};
       final probes = <int, Map<String, dynamic>?>{};
       for (final resource in resources) {
@@ -548,9 +570,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           _resources = resources;
           _versions = versions;
           _versionSelection = selection;
-          _continueRecord = records.firstOrNull;
-          _continuePositionMs = positionMs;
-          _continueDurationMs = durationMs;
+          _continueRecord = continueRecord;
+          _continuePositionMs = continueRecord == null ? null : positionMs;
+          _continueDurationMs = continueRecord == null ? null : durationMs;
           _seasons = seasons;
           _probes = probes;
           final numbers = resources.map((r) => r.season).toSet().toList()
