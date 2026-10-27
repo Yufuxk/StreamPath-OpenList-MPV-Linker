@@ -39,6 +39,7 @@ class PlaybackHistory {
     this.queueItems = const [],
     this.filmPlaylistId,
     this.filmPlaylistEntryIds = const [],
+    this.playlistLoop = false,
     this.videoPlaylistMode = VideoPlaylistMode.legacy,
     this.filmVersionContext,
     this.filmNextItem,
@@ -113,6 +114,9 @@ class PlaybackHistory {
   final List<VideoQueueItem> queueItems;
   final String? filmPlaylistId;
   final List<String> filmPlaylistEntryIds;
+
+  /// 本次会话在列表末尾回到首项继续播放。
+  final bool playlistLoop;
   final VideoPlaylistMode videoPlaylistMode;
   final FilmPlaybackContext? filmVersionContext;
   final MediaLibraryItem? filmNextItem;
@@ -158,6 +162,7 @@ class PlaybackHistory {
     List<VideoQueueItem>? queueItems,
     String? filmPlaylistId,
     List<String>? filmPlaylistEntryIds,
+    bool? playlistLoop,
     VideoPlaylistMode? videoPlaylistMode,
     FilmPlaybackContext? filmVersionContext,
     MediaLibraryItem? filmNextItem,
@@ -213,6 +218,7 @@ class PlaybackHistory {
     queueItems: queueItems ?? this.queueItems,
     filmPlaylistId: filmPlaylistId ?? this.filmPlaylistId,
     filmPlaylistEntryIds: filmPlaylistEntryIds ?? this.filmPlaylistEntryIds,
+    playlistLoop: playlistLoop ?? this.playlistLoop,
     videoPlaylistMode: videoPlaylistMode ?? this.videoPlaylistMode,
     filmVersionContext: filmVersionContext ?? this.filmVersionContext,
     filmNextItem: clearFilmNextItem ? null : filmNextItem ?? this.filmNextItem,
@@ -234,6 +240,7 @@ class PlaybackHistory {
     if (filmPlaylistId != null) 'filmPlaylistId': filmPlaylistId,
     if (filmPlaylistEntryIds.isNotEmpty)
       'filmPlaylistEntryIds': filmPlaylistEntryIds,
+    if (playlistLoop) 'playlistLoop': true,
     'playbackScope': playbackScope.name,
     'videoPlaylistMode': videoPlaylistMode.name,
     if (videoQueueRootPath != null) 'videoQueueRootPath': videoQueueRootPath,
@@ -289,6 +296,7 @@ class PlaybackHistory {
     filmPlaylistId: json['filmPlaylistId'] as String?,
     filmPlaylistEntryIds: (json['filmPlaylistEntryIds'] as List? ?? [])
         .cast<String>(),
+    playlistLoop: json['playlistLoop'] == true,
     videoQueueRootPath: json['videoQueueRootPath'] as String?,
     pendingVideoIndex: json['pendingVideoIndex'] as int?,
     queueItems: (json['queueItems'] as List? ?? [])

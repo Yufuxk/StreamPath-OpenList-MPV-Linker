@@ -86,6 +86,8 @@ class StreamPathConfig {
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
     this.videoPlaylistSimpleNaming = true,
     this.videoPlaylistInsertDecimalEpisodes = false,
+    this.implicitPlaylistWindowSize =
+        PlayerConfig.defaultImplicitPlaylistWindowSize,
     this.autoSeasonTransitionEnabled = true,
     this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
@@ -148,6 +150,9 @@ class StreamPathConfig {
   final VideoPlaylistMode videoPlaylistMode;
   final bool videoPlaylistSimpleNaming;
   final bool videoPlaylistInsertDecimalEpisodes;
+
+  /// 隐式播放列表单次注入的集数上限，含当前集；范围 2～10。
+  final int implicitPlaylistWindowSize;
   final bool autoSeasonTransitionEnabled;
   final bool allowSeasonGap;
 
@@ -216,6 +221,7 @@ class StreamPathConfig {
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
+    implicitPlaylistWindowSize: implicitPlaylistWindowSize,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
     allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
@@ -265,6 +271,7 @@ class StreamPathConfig {
       videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
       videoPlaylistInsertDecimalEpisodes:
           player.videoPlaylistInsertDecimalEpisodes,
+      implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
       autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
       allowSeasonGap: player.allowSeasonGap,
       hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
@@ -425,6 +432,7 @@ class StreamPathConfig {
     videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
     videoPlaylistInsertDecimalEpisodes:
         player.videoPlaylistInsertDecimalEpisodes,
+    implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
     autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
     allowSeasonGap: player.allowSeasonGap,
     hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
@@ -474,6 +482,7 @@ class StreamPathConfig {
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
+    implicitPlaylistWindowSize: implicitPlaylistWindowSize,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
     allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
@@ -521,6 +530,7 @@ class StreamPathConfig {
     'videoPlaylistMode': videoPlaylistMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
+    'implicitPlaylistWindowSize': implicitPlaylistWindowSize,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
     'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
@@ -630,6 +640,9 @@ class StreamPathConfig {
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
       videoPlaylistInsertDecimalEpisodes:
           (json['videoPlaylistInsertDecimalEpisodes'] as bool?) ?? false,
+      implicitPlaylistWindowSize: implicitPlaylistWindowSizeFromJson(
+        json['implicitPlaylistWindowSize'],
+      ),
       autoSeasonTransitionEnabled:
           (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
       allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,
@@ -701,6 +714,7 @@ class StreamPathConfig {
         videoPlaylistMode: videoPlaylistMode,
         videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
         videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
+        implicitPlaylistWindowSize: implicitPlaylistWindowSize,
         autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
         allowSeasonGap: allowSeasonGap,
         hiddenExtensionsEnabled: hiddenExtensionsEnabled,

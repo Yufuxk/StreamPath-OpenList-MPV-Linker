@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/openlist_index_config.dart';
+import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/features/cache_control/models/cache_intelligence_config.dart';
 import 'package:streampath/features/cache_control/models/cache_policy_config.dart';
@@ -272,5 +273,58 @@ void main() {
       OpenListIndexConfig.minUpdateIntervalMinutes,
     );
     expect(draft.buildOpenListIndexConfig().userToken, 'user-token');
+  });
+  test('隐式集数上限默认 2，越界读取夹紧且贯通配置复制与草稿', () {
+    expect(StreamPathConfig.fromJson({}).implicitPlaylistWindowSize, 2);
+    expect(
+      StreamPathConfig.fromJson({
+        'implicitPlaylistWindowSize': 1,
+      }).implicitPlaylistWindowSize,
+      2,
+    );
+    expect(
+      StreamPathConfig.fromJson({
+        'implicitPlaylistWindowSize': '20',
+      }).implicitPlaylistWindowSize,
+      10,
+    );
+    const custom = StreamPathConfig(implicitPlaylistWindowSize: 5);
+    final restored = StreamPathConfig.fromJson(custom.toJson());
+    final player = restored.toPlayerConfig();
+    expect(player.implicitPlaylistWindowSize, 5);
+    expect(
+      PlayerConfig.fromJson(player.toJson()).implicitPlaylistWindowSize,
+      5,
+    );
+    final copied = restored
+        .copyWithGlobalSettings(
+          player: player,
+          appearance: restored.appearance,
+          mediaLibrary: restored.mediaLibrary,
+        )
+        .copyWithParts()
+        .withLocalRoots(const [])
+        .withMountedProfileIds(const []);
+    expect(copied.implicitPlaylistWindowSize, 5);
+    expect(
+      StreamPathConfig.fromParts(
+        player,
+        restored.toConnectionConfig(),
+      ).implicitPlaylistWindowSize,
+      5,
+    );
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    draft.loadFrom(
+      fullConfig: copied,
+      appearance: copied.appearance,
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(draft.implicitPlaylistWindowController.text, '5');
+    expect(draft.buildPlayerConfig().implicitPlaylistWindowSize, 5);
+    draft.implicitPlaylistWindowController.text = '3';
+    expect(draft.buildPlayerConfig().implicitPlaylistWindowSize, 3);
   });
 }

@@ -380,6 +380,7 @@ void main() {
       final history = PlaybackHistory.fromJson({}).copyWith(
         filmPlaylistId: id,
         filmPlaylistEntryIds: snapshot.entries.map((e) => e.id).toList(),
+        playlistLoop: true,
         queueItems: snapshot.queueItems,
         videoPlaylistMode: VideoPlaylistMode.implicit,
       );
@@ -392,7 +393,9 @@ void main() {
       expect(saved.filmPlaylistId, id);
       expect(saved.queueItems.map((e) => e.episode), [1, 2]);
       expect(saved.filmPlaylistEntryIds, snapshot.entries.map((e) => e.id));
+      expect(saved.playlistLoop, isTrue);
       expect(PlaybackHistory.fromJson({}).filmPlaylistId, isNull);
+      expect(PlaybackHistory.fromJson({}).playlistLoop, isFalse);
     },
   );
   test(

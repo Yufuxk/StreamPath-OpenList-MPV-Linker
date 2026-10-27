@@ -646,6 +646,7 @@ class AppState extends ChangeNotifier {
         }
 
         final plan = ImplicitVideoPlan(
+          loop: history.playlistLoop,
           completed: history.filmNextItem == null
               ? null
               : () async {

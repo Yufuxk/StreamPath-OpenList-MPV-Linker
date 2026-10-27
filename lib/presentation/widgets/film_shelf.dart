@@ -109,32 +109,54 @@ class _FilmShelfState extends State<FilmShelf>
           ),
           const SizedBox(height: 12),
           widget.horizontal
-              ? SizedBox(
-                  height: widget.height,
-                  child: ScrollConfiguration(
-                    behavior: const MaterialScrollBehavior().copyWith(
-                      dragDevices: {
-                        PointerDeviceKind.mouse,
-                        PointerDeviceKind.touch,
-                        PointerDeviceKind.trackpad,
-                      },
-                    ),
-                    child: DirectoryScrollView(
-                      scrollDirection: Axis.horizontal,
-                      controller: _scroll,
-                      hideScrollbar: true,
-                      builder: (scrollController) => ListView.separated(
-                        controller: scrollController,
-                        scrollDirection: Axis.horizontal,
-                        itemCount: widget.count,
-                        separatorBuilder: (_, _) => const SizedBox(width: 16),
-                        itemBuilder: (context, i) => SizedBox(
-                          width: widget.itemWidth,
-                          child: widget.builder(context, i),
+              ? LayoutBuilder(
+                  builder: (context, constraints) {
+                    // 与海报栏一致：扩出悬停放大与上浮的绘制空间，内容原位置保持。
+                    final hoverInset =
+                        AppTheme.posterHoverLift +
+                        (widget.itemWidth * (AppTheme.posterHoverScale - 1) / 2)
+                            .ceilToDouble() +
+                        2;
+                    return SizedBox(
+                      height: widget.height,
+                      child: OverflowBox(
+                        alignment: Alignment.center,
+                        minHeight: widget.height + hoverInset * 2,
+                        maxHeight: widget.height + hoverInset * 2,
+                        minWidth: constraints.maxWidth + hoverInset * 2,
+                        maxWidth: constraints.maxWidth + hoverInset * 2,
+                        child: ScrollConfiguration(
+                          behavior: const MaterialScrollBehavior().copyWith(
+                            dragDevices: {
+                              PointerDeviceKind.mouse,
+                              PointerDeviceKind.touch,
+                              PointerDeviceKind.trackpad,
+                            },
+                          ),
+                          child: DirectoryScrollView(
+                            scrollDirection: Axis.horizontal,
+                            controller: _scroll,
+                            hideScrollbar: true,
+                            builder: (scrollController) => ListView.separated(
+                              controller: scrollController,
+                              scrollDirection: Axis.horizontal,
+                              itemCount: widget.count,
+                              padding: EdgeInsets.symmetric(
+                                horizontal: hoverInset,
+                                vertical: hoverInset,
+                              ),
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 16),
+                              itemBuilder: (context, i) => SizedBox(
+                                width: widget.itemWidth,
+                                child: widget.builder(context, i),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
+                    );
+                  },
                 )
               : LayoutBuilder(
                   builder: (context, constraints) {

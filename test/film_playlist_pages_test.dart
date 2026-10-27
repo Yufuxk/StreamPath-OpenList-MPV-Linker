@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -36,6 +37,7 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
+import 'package:streampath/presentation/widgets/film_detail_buttons.dart';
 import 'package:streampath/presentation/widgets/film_playlist_dialog.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/presentation/widgets/sp_reorderable.dart';
@@ -166,6 +168,7 @@ Widget _frame(
 }) => ChangeNotifierProvider<AppState>.value(
   value: app,
   child: MaterialApp(
+    debugShowCheckedModeBanner: false,
     theme: AppTheme.dark(),
     locale: locale,
     supportedLocales: const [
@@ -345,7 +348,10 @@ void main() {
         await tester.pumpWidget(
           _frame(
             app,
-            FilmPlaylistPage(catalog: catalog, onPlay: (_, _) async {}),
+            FilmPlaylistPage(
+              catalog: catalog,
+              onPlay: (_, _, {bool loop = false}) async {},
+            ),
           ),
         );
         await _settle(tester);
@@ -473,7 +479,7 @@ void main() {
           FilmPlaylistPage(
             catalog: catalog,
             playlistId: id,
-            onPlay: (_, _) async {},
+            onPlay: (_, _, {bool loop = false}) async {},
           ),
         ),
       );
@@ -584,7 +590,10 @@ void main() {
         await tester.pumpWidget(
           _frame(
             app,
-            FilmPlaylistPage(catalog: catalog, onPlay: (_, _) async {}),
+            FilmPlaylistPage(
+              catalog: catalog,
+              onPlay: (_, _, {bool loop = false}) async {},
+            ),
           ),
         );
         await _settle(tester);
@@ -669,7 +678,7 @@ void main() {
               FilmPlaylistPage(
                 catalog: catalog,
                 playlistId: members ? mirror.playlist.id : null,
-                onPlay: (_, _) async {},
+                onPlay: (_, _, {bool loop = false}) async {},
               ),
             ),
           );
@@ -763,14 +772,22 @@ void main() {
                 FilmPlaylistPage(
                   catalog: catalog,
                   playlistId: members ? id : null,
-                  onPlay: (_, _) async {},
+                  onPlay: (_, _, {bool loop = false}) async {},
                 ),
               ),
             ),
           );
           await _settle(tester);
           await tester.pumpAndSettle();
-          final rect = tester.getRect(find.byType(FilmArtwork).first);
+          final artwork = members
+              ? find
+                    .descendant(
+                      of: find.byType(ReorderableListView),
+                      matching: find.byType(FilmArtwork),
+                    )
+                    .first
+              : find.byType(FilmArtwork).first;
+          final rect = tester.getRect(artwork);
           Future<List<int>> pixels() async => (await tester.runAsync(() async {
             final boundary = tester.renderObject<RenderRepaintBoundary>(
               find.byKey(const Key('playlist-cover-render')),
@@ -844,7 +861,7 @@ void main() {
           FilmPlaylistPage(
             catalog: catalog,
             playlistId: id,
-            onPlay: (_, index) async => played.add(index),
+            onPlay: (_, index, {bool loop = false}) async => played.add(index),
           ),
         ),
       );
@@ -924,17 +941,19 @@ void main() {
                 catalog: catalog,
                 playlistId: id,
                 sidebarInset: 48,
-                onPlay: (_, _) async {},
+                onPlay: (_, _, {bool loop = false}) async {},
               ),
               locale: locale,
               scale: 2,
             ),
           );
           await _settle(tester);
-          expect(find.byType(FilmArtwork), findsNWidgets(3));
-          for (final artwork in tester.widgetList<FilmArtwork>(
-            find.byType(FilmArtwork),
-          )) {
+          final rowArtwork = find.descendant(
+            of: find.byType(ReorderableListView),
+            matching: find.byType(FilmArtwork),
+          );
+          expect(rowArtwork, findsWidgets);
+          for (final artwork in tester.widgetList<FilmArtwork>(rowArtwork)) {
             expect(artwork.width, 96);
             expect(artwork.height, 54);
           }
@@ -948,10 +967,7 @@ void main() {
           expect(find.textContaining('S01E01'), findsOneWidget);
           expect(tester.takeException(), isNull);
           final context = tester.element(find.byType(FilmPlaylistPage));
-          await tester.tap(
-            find.byType(FilmArtwork).first,
-            buttons: kSecondaryMouseButton,
-          );
+          await tester.tap(rowArtwork.first, buttons: kSecondaryMouseButton);
           await _settle(tester);
           for (final label in [
             '刷新元数据',
@@ -1011,7 +1027,7 @@ void main() {
             FilmPlaylistPage(
               catalog: catalog,
               playlistId: id,
-              onPlay: (_, _) async {},
+              onPlay: (_, _, {bool loop = false}) async {},
             ),
           ),
         );
@@ -1085,13 +1101,14 @@ void main() {
         await _settle(tester);
         Future<void>? launch;
         await tester.runAsync(() async {
-          launch = key.currentState!.playFilmPlaylist(initial, 0);
+          launch = key.currentState!.playFilmPlaylist(initial, 0, loop: true);
         });
         for (var i = 0; i < 30 && player.plans.isEmpty; i++) {
           await _settle(tester);
         }
         expect(player.plans.length, 1);
         await tester.runAsync(() => launch!);
+        expect(player.plans.single!.loop, isTrue);
         expect(player.plans.single!.items.map((i) => i.versions.single.name), [
           'A.mkv',
           'B.mkv',
@@ -1120,6 +1137,7 @@ void main() {
           () => app.filmPlaybackHistoryStore.loadAll(),
         ))!;
         expect(histories.single.filmPlaylistId, id);
+        expect(histories.single.playlistLoop, isTrue);
         expect(histories.single.videoPlaylistMode, VideoPlaylistMode.implicit);
         await tester.runAsync(() => catalog.store.deletePlaylist(id));
         Future<void>? resumed;
@@ -1135,6 +1153,7 @@ void main() {
         expect(player.plans.length, 2);
         await tester.runAsync(() => resumed!);
         expect(player.plans.length, 2);
+        expect(player.plans.last!.loop, isTrue);
         expect(player.plans.last!.items.map((i) => i.versions.single.name), [
           'A.mkv',
           'B.mkv',
@@ -1147,6 +1166,232 @@ void main() {
           initial.entries.map((e) => e.id),
         );
         expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _settle(tester);
+        await tester.runAsync(() async {
+          app.dispose();
+          await catalog.close();
+          await progress.close();
+          await dir.delete(recursive: true);
+        });
+      }
+    },
+  );
+  testWidgets(
+    'playlist header shows list info and starts ordered, shuffled and looped playback',
+    (tester) async {
+      final (app, catalog, id, dir, _, progress) = (await tester.runAsync(
+        _fixture,
+      ))!;
+      try {
+        await tester.runAsync(() async {
+          final tv = (await catalog.store.resources()).firstWhere(
+            (r) => r.type == FilmMediaType.tv,
+          );
+          await catalog.store.saveSeason(tv.workId!, 1, 'en', {
+            'episodes': [
+              for (final number in [1, 2])
+                {'episode_number': number, 'still_path': '/header-large.png'},
+            ],
+          });
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(recorder);
+          canvas.drawRect(
+            const Rect.fromLTWH(0, 0, 1920, 1080),
+            Paint()
+              ..shader = ui.Gradient.linear(
+                Offset.zero,
+                const Offset(1920, 1080),
+                const [Color(0xFFE7A6C4), Color(0xFF6B5BD2)],
+              ),
+          );
+          final picture = recorder.endRecording();
+          final image = await picture.toImage(1920, 1080);
+          final bytes = (await image.toByteData(
+            format: ui.ImageByteFormat.png,
+          ))!.buffer.asUint8List();
+          image.dispose();
+          picture.dispose();
+          await catalog.images.directory.create(recursive: true);
+          await File(
+            '${catalog.images.directory.path}/${FilmCatalogImageCache.cacheKey('/header-large.png', 'w300')}.img',
+          ).writeAsBytes(bytes);
+        });
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        if (Platform.environment['SP_PLAYLIST_RENDER'] == '1') {
+          await tester.runAsync(() async {
+            for (final (family, path) in [
+              ('Segoe UI', r'C:\Windows\Fonts\Deng.ttf'),
+              ('Segoe Fluent Icons', r'C:\Windows\Fonts\SegoeIcons.ttf'),
+              ('Segoe MDL2 Assets', r'C:\Windows\Fonts\segmdl2.ttf'),
+            ]) {
+              final loader = FontLoader(family);
+              loader.addFont(
+                Future.value(
+                  ByteData.sublistView(await File(path).readAsBytes()),
+                ),
+              );
+              await loader.load();
+            }
+          });
+        }
+        final render = Platform.environment['SP_PLAYLIST_RENDER'] == '1';
+        final calls = <(List<String>, int, bool)>[];
+        final page = FilmPlaylistPage(
+          catalog: catalog,
+          playlistId: id,
+          sidebarInset: 64,
+          onPlay: (snapshot, index, {bool loop = false}) async => calls.add((
+            snapshot.entries.map((e) => e.id).toList(),
+            index,
+            loop,
+          )),
+        );
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: const Key('playlist-header-render'),
+            child: _frame(
+              app,
+              render
+                  ? Navigator(
+                      onGenerateInitialRoutes: (_, _) => [
+                        PageRouteBuilder<void>(
+                          opaque: false,
+                          pageBuilder: (_, _, _) => const SizedBox.expand(),
+                        ),
+                        PageRouteBuilder<void>(
+                          opaque: false,
+                          pageBuilder: (_, _, _) => page,
+                        ),
+                      ],
+                    )
+                  : page,
+            ),
+          ),
+        );
+        await _settle(tester);
+        if (Platform.environment['SP_PLAYLIST_RENDER'] == '1') {
+          await tester.runAsync(() async {
+            final boundary = tester.renderObject<RenderRepaintBoundary>(
+              find.byKey(const Key('playlist-header-render')),
+            );
+            final image = await boundary.toImage();
+            final png = await image.toByteData(format: ui.ImageByteFormat.png);
+            final output = File('build/playlist-header/playlist-header.png');
+            await output.parent.create(recursive: true);
+            await output.writeAsBytes(png!.buffer.asUint8List());
+            image.dispose();
+          });
+        }
+        final playButton = find.byType(FilmDetailPlayButton);
+        final buttonScale = find.descendant(
+          of: playButton,
+          matching: find.byType(AnimatedScale),
+        );
+        expect(tester.widget<AnimatedScale>(buttonScale).scale, 1);
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        await mouse.moveTo(tester.getCenter(playButton));
+        await tester.pump();
+        expect(
+          tester.widget<AnimatedScale>(buttonScale).scale,
+          moreOrLessEquals(1.025),
+        );
+        await mouse.moveTo(Offset.zero);
+        await tester.pump();
+        expect(tester.widget<AnimatedScale>(buttonScale).scale, 1);
+        await mouse.removePointer();
+        await _settle(tester);
+        final initial = (await tester.runAsync(
+          () => catalog.store.playlistSnapshot(id),
+        ))!;
+        expect(find.text('Watch'), findsOneWidget);
+        expect(find.textContaining('Source · 3 项 · 2 部作品'), findsOneWidget);
+        final coverRect = tester.getRect(
+          find.byKey(const Key('playlist-header-cover')),
+        );
+        final playRect = tester.getRect(
+          find.byKey(const Key('playlist-play-all')),
+        );
+        expect(coverRect.left, moreOrLessEquals(80, epsilon: 1));
+        expect(coverRect.bottom, moreOrLessEquals(playRect.bottom, epsilon: 2));
+        expect(
+          tester.getRect(find.text('Watch')).left,
+          greaterThan(coverRect.right),
+        );
+        expect(playRect.left, greaterThan(coverRect.right));
+        await tester.tap(find.byKey(const Key('playlist-play-all')));
+        await _settle(tester);
+        expect(calls, hasLength(1));
+        expect(calls.single.$1, initial.entries.map((e) => e.id));
+        expect(calls.single.$2, 0);
+        expect(calls.single.$3, isFalse);
+        await tester.tap(find.byKey(const Key('playlist-loop')));
+        await _settle(tester);
+        await tester.tap(find.byKey(const Key('playlist-play-all')));
+        await _settle(tester);
+        expect(calls.last.$3, isTrue);
+        await tester.tap(find.byKey(const Key('playlist-shuffle')));
+        await _settle(tester);
+        expect(calls, hasLength(3));
+        expect(calls.last.$1.toSet(), initial.entries.map((e) => e.id).toSet());
+        expect(calls.last.$2, inInclusiveRange(0, 2));
+        expect(calls.last.$3, isTrue);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _settle(tester);
+        await tester.runAsync(() async {
+          app.dispose();
+          await catalog.close();
+          await progress.close();
+          await dir.delete(recursive: true);
+        });
+      }
+    },
+  );
+  testWidgets(
+    'pushed playlist page keeps back button and title clear of the sidebar',
+    (tester) async {
+      final (app, catalog, id, dir, _, progress) = (await tester.runAsync(
+        _fixture,
+      ))!;
+      try {
+        await tester.pumpWidget(
+          _frame(
+            app,
+            Builder(
+              builder: (context) => TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => FilmPlaylistPage(
+                      catalog: catalog,
+                      playlistId: id,
+                      sidebarInset: 64,
+                      onPlay: (_, _, {bool loop = false}) async {},
+                    ),
+                  ),
+                ),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('open'));
+        await _settle(tester);
+        final back = find.byType(BackButton);
+        expect(back, findsOneWidget);
+        expect(tester.getRect(back).left, greaterThanOrEqualTo(64));
+        final title = find.text('播放列表');
+        expect(title, findsOneWidget);
+        expect(tester.getRect(title).left, greaterThanOrEqualTo(140));
+        await tester.tap(back);
+        await _settle(tester);
+        expect(find.text('open'), findsOneWidget);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await _settle(tester);

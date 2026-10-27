@@ -892,7 +892,9 @@ if QUEUE ~= '' then
     local f = assert(io.open(QUEUE, 'r'))
     local initial = f:read('*a')
     f:close()
-    mp.commandv('change-list', 'script-opts', 'set', 'streampath-queue=%' .. #initial .. '%' .. initial)
+    -- 追加而非 set，保留 autoload-disabled 等其它 script-opts。
+    -- append 不需要 %长度% 前缀，原始 JSON 会完整保存。
+    mp.commandv('change-list', 'script-opts', 'append', 'streampath-queue=' .. initial)
 end
 local function read_queue()
     local options = mp.get_property_native('options/script-opts') or {}

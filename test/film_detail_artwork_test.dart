@@ -396,6 +396,96 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('演职人员头像复用封面悬停放大，文字不动且命中区不随缩放扩大', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: original.title,
+          originalTitle: original.originalTitle,
+          overview: 'Synopsis.',
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          metadata: {
+            ...original.metadata,
+            'credits': {
+              'cast': [
+                {'id': 1, 'name': 'Andy Smith', 'character': 'Hero'},
+                {'id': 2, 'name': 'Jane Doe', 'character': 'Pilot'},
+              ],
+            },
+          },
+        ),
+      );
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: original.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    final title = find.text('演职人员');
+    await tester.ensureVisible(title);
+    await settle(tester);
+    final shelf = find.ancestor(of: title, matching: find.byType(FilmShelf));
+    final surfaces = find.descendant(
+      of: shelf,
+      matching: find.byType(FilmPosterHoverSurface),
+    );
+    expect(surfaces, findsNWidgets(2));
+    final avatar = find.descendant(
+      of: surfaces.first,
+      matching: find.byType(FilmArtwork),
+    );
+    expect(avatar, findsOneWidget);
+    expect(
+      find.ancestor(of: avatar, matching: find.byType(AnimatedScale)),
+      findsNothing,
+    );
+    // 悬停变换不得进入合成层，否则缩放在整数像素取整后表现为抖动。
+    final transform = find
+        .ancestor(
+          of: avatar,
+          matching: find.byWidgetPredicate(
+            (widget) => widget is Transform && !widget.transformHitTests,
+          ),
+        )
+        .first;
+    expect(
+      tester.renderObject<RenderTransform>(transform).needsCompositing,
+      isFalse,
+    );
+    final before = tester.getRect(avatar);
+    final name = find.text('Andy Smith');
+    final nameBefore = tester.getRect(name);
+    final pointer = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(pointer.hover(before.center));
+    await settle(tester);
+    final hovered = tester.getRect(avatar);
+    expect(
+      hovered.width,
+      closeTo(before.width * AppTheme.posterHoverScale, .5),
+    );
+    expect(hovered.top, lessThan(before.top - AppTheme.posterHoverLift + 1));
+    expect(tester.getRect(name), nameBefore);
+    // 命中区不随放大变化：移到原 68px 边界外即收回。
+    await tester.sendEventToBinding(
+      pointer.hover(before.center + Offset(before.width / 2 + .8, 0)),
+    );
+    await settle(tester);
+    expect(tester.getRect(avatar).width, closeTo(before.width, .5));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('详情骨架覆盖原布局，缓存命中也不会闪现，替换保留正文 State', (tester) async {
     await prepare(tester, count: 1);
     final original = works.single;

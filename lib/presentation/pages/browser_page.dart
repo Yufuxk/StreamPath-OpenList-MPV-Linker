@@ -1911,6 +1911,7 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     final plan = ImplicitVideoPlan(
+      loop: history.playlistLoop,
       completed: history.filmNextItem == null
           ? null
           : () async {
@@ -3266,8 +3267,9 @@ class BrowserPageState extends State<BrowserPage> {
 
   Future<void> playFilmPlaylist(
     FilmPlaylistSnapshot snapshot,
-    int index,
-  ) async {
+    int index, {
+    bool loop = false,
+  }) async {
     await _sessionsLoaded;
     if (!mounted || snapshot.playlist.sourceId != _sourceId) return;
     try {
@@ -3312,6 +3314,7 @@ class BrowserPageState extends State<BrowserPage> {
           VideoPlaybackScope.directory,
           playlistSnapshot: snapshot,
           playlistIndex: index,
+          playlistLoop: loop,
         ),
       );
     } on AppException catch (error) {
@@ -3387,6 +3390,7 @@ class BrowserPageState extends State<BrowserPage> {
           history.playbackScope,
           playlistHistory: history,
           playlistIndex: index,
+          playlistLoop: history.playlistLoop,
         ),
       );
     } on AppException catch (error) {
@@ -3405,6 +3409,7 @@ class BrowserPageState extends State<BrowserPage> {
     FilmPlaylistSnapshot? playlistSnapshot,
     PlaybackHistory? playlistHistory,
     int? playlistIndex,
+    bool playlistLoop = false,
     FilmPlaybackContext? filmVersionContext,
   }) async {
     final app = context.read<AppState>();
@@ -3644,6 +3649,7 @@ class BrowserPageState extends State<BrowserPage> {
           playlistSnapshot?.entries.map((e) => e.id).toList() ??
           playlistHistory?.filmPlaylistEntryIds ??
           const [],
+      playlistLoop: playlistLoop,
       videoPlaylistMode: VideoPlaylistMode.implicit,
       playbackScope: scope,
     );
@@ -3718,6 +3724,7 @@ class BrowserPageState extends State<BrowserPage> {
     }
 
     final plan = ImplicitVideoPlan(
+      loop: playlistLoop,
       completed: versionContext == null || filmNextItem == null
           ? null
           : () async {

@@ -1,6 +1,7 @@
 import '../widgets/transition_content.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_playlist.dart';
@@ -12,14 +13,15 @@ import '../theme/app_theme.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/cinematic_states.dart';
 import '../widgets/film_artwork.dart';
+import '../widgets/film_detail_buttons.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/film_playlist_dialog.dart';
 import '../widgets/film_watch_menu.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/glass_dialog.dart';
+import '../widgets/sp_controls.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_icons.dart';
-import '../widgets/sp_back_icon.dart';
 import '../widgets/sp_menu.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/sp_reorderable.dart';
@@ -35,7 +37,12 @@ class FilmPlaylistPage extends StatefulWidget {
   final FilmCatalogController catalog;
   final String? playlistId;
   final double sidebarInset;
-  final Future<void> Function(FilmPlaylistSnapshot, int) onPlay;
+  final Future<void> Function(
+    FilmPlaylistSnapshot snapshot,
+    int index, {
+    bool loop,
+  })
+  onPlay;
   @override
   State<FilmPlaylistPage> createState() => _FilmPlaylistPageState();
 }
@@ -47,6 +54,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
   FilmPlaylistSnapshot? _snapshot;
   String? _selected;
   bool _busy = false, _pending = false, _dragging = false;
+  bool _loop = false;
   bool _loaded = false;
   String? _error;
   Timer? _reload;
@@ -147,21 +155,35 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
 
   Future<void> _play(int index) async {
     if (_busy) return;
-    final id = _snapshot!.entries[index].id;
+    await _start(entryId: _snapshot!.entries[index].id);
+  }
+
+  Future<void> _playAll({bool shuffle = false}) async {
+    if (_busy) return;
+    await _start(shuffle: shuffle);
+  }
+
+  Future<void> _start({String? entryId, bool shuffle = false}) async {
     FilmPlaylistSnapshot? fresh;
     final ok = await _mutate(() async {
       fresh = await widget.catalog.store.playlistSnapshot(widget.playlistId!);
     });
     if (!ok || !mounted) return;
-    setState(() => _snapshot = fresh);
-    final target = fresh!.entries.indexWhere((e) => e.id == id);
-    if (target < 0 || !fresh!.entries[target].available) {
+    final current = fresh!;
+    final entries = List<FilmPlaylistEntry>.of(current.entries);
+    if (shuffle) entries.shuffle();
+    final index = entryId == null
+        ? entries.indexWhere((e) => e.available)
+        : entries.indexWhere((e) => e.id == entryId && e.available);
+    if (index < 0) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SPNotice(content: AppText('播放列表条目不可用，请检查来源或资源')));
       return;
     }
-    await _mutate(() => widget.onPlay(fresh!, target));
+    setState(() => _snapshot = current);
+    final snapshot = FilmPlaylistSnapshot(current.playlist, entries);
+    await _mutate(() => widget.onPlay(snapshot, index, loop: _loop));
     if (mounted) await _load();
   }
 
@@ -393,21 +415,21 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
   @override
   Widget build(BuildContext context) => StreamPathTransitionBuilder(
     listenable: widget.catalog,
-    builder: (context) => Stack(
-      children: [
-        Positioned.fill(
-          child: ExcludeSemantics(
-            child: IgnorePointer(
-              child: FilmLibraryBackground(
-                cache: widget.catalog.images,
-                file: widget.catalog.backgroundFile,
+    builder: (context) {
+      final canPop = Navigator.of(context).canPop();
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: ExcludeSemantics(
+              child: IgnorePointer(
+                child: FilmLibraryBackground(
+                  cache: widget.catalog.images,
+                  file: widget.catalog.backgroundFile,
+                ),
               ),
             ),
           ),
-        ),
-        Padding(
-          padding: EdgeInsets.only(left: widget.sidebarInset),
-          child: FilmSpoilerScope(
+          FilmSpoilerScope(
             child: !_loaded
                 ? const SizedBox.shrink()
                 : Scaffold(
@@ -415,189 +437,411 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                     appBar: AppBar(
                       toolbarHeight: 48,
                       automaticallyImplyLeading: false,
-                      backgroundColor: Colors.transparent,
+                      leadingWidth: canPop ? widget.sidebarInset + 56 : null,
+                      leading: canPop
+                          ? Padding(
+                              padding: EdgeInsets.only(
+                                left: widget.sidebarInset,
+                              ),
+                              child: const BackButton(),
+                            )
+                          : null,
+                      backgroundColor: widget.playlistId == null
+                          ? Colors.transparent
+                          : _headerScrimTop(context),
                       shape: const Border(),
-                      title: _snapshot == null
-                          ? const AppText('播放列表')
-                          : Text(_snapshot!.playlist.name),
+                      title: const AppText('播放列表'),
+                      actions: [
+                        if (_snapshot case final snapshot?)
+                          SPPopupMenuButton<String>(
+                            icon: const Icon(SPIcons.more),
+                            itemBuilder: (_) => _actions(snapshot.playlist),
+                            onSelected: (action) =>
+                                _manage(snapshot.playlist, action),
+                          ),
+                      ],
                     ),
                     body: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Wrap(
-                            spacing: 12,
-                            runSpacing: 12,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              TextButton.icon(
-                                onPressed: () => Navigator.of(context).pop(),
-                                icon: const SPBackIcon(),
-                                label: const AppText('返回'),
+                        if (widget.playlistId != null)
+                          DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: _headerScrim(context),
+                            ),
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                left: widget.sidebarInset,
                               ),
-                              if (_snapshot case final snapshot?) ...[
-                                Text(snapshot.playlist.sourceName),
-                                if (snapshot.playlist.readOnly)
-                                  const AppText('只读镜像'),
-                                if (snapshot.playlist.error != null)
-                                  AppText(
-                                    filmCatalogErrorText(
-                                      snapshot.playlist.error!,
-                                    ),
-                                  ),
-                                SPPopupMenuButton<String>(
-                                  icon: const Icon(SPIcons.more),
-                                  itemBuilder: (_) =>
-                                      _actions(snapshot.playlist),
-                                  onSelected: (action) =>
-                                      _manage(snapshot.playlist, action),
-                                ),
-                              ],
-                            ],
+                              child: _snapshot == null
+                                  ? const SizedBox(height: 8)
+                                  : _header(_snapshot!),
+                            ),
                           ),
-                        ),
                         if (_error != null)
                           Padding(
-                            padding: const EdgeInsets.all(16),
+                            padding: EdgeInsets.fromLTRB(
+                              16 + widget.sidebarInset,
+                              16,
+                              16,
+                              16,
+                            ),
                             child: AppText(filmCatalogErrorText(_error!)),
                           ),
                         Expanded(
-                          child: DirectoryScrollView(
-                            controller: _scroll,
-                            builder: (controller) {
-                              if (widget.playlistId == null) {
-                                if (_lists.isEmpty && _error == null) {
+                          child: Padding(
+                            padding: EdgeInsets.only(left: widget.sidebarInset),
+                            child: DirectoryScrollView(
+                              controller: _scroll,
+                              builder: (controller) {
+                                if (widget.playlistId == null) {
+                                  if (_lists.isEmpty && _error == null) {
+                                    return ListView(
+                                      controller: controller,
+                                      children: const [
+                                        ImmersiveEmptyState(
+                                          icon: SPIcons.list,
+                                          title: '暂无播放列表',
+                                          description: '右键作品或单集封面，创建你的第一个播放列表。',
+                                        ),
+                                      ],
+                                    );
+                                  }
+                                  return ListView.builder(
+                                    controller: controller,
+                                    padding: const EdgeInsets.fromLTRB(
+                                      16,
+                                      16,
+                                      16,
+                                      0,
+                                    ),
+                                    itemCount: _lists.length,
+                                    itemBuilder: (_, i) {
+                                      final list = _lists[i];
+                                      return GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onSecondaryTapDown: (details) =>
+                                            _coverMenu(
+                                              list,
+                                              details.globalPosition,
+                                            ),
+                                        child: ListTile(
+                                          key: ValueKey(list.id),
+                                          leading: SizedBox(
+                                            width: 96,
+                                            height: 54,
+                                            child: list.artwork == null
+                                                ? const Icon(SPIcons.list)
+                                                : ClipRRect(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                    child: FilmWatchOverlay(
+                                                      store:
+                                                          widget.catalog.store,
+                                                      workId:
+                                                          list.artworkWorkId,
+                                                      sourceId: list.sourceId,
+                                                      path: list.artworkPath,
+                                                      spoilerSensitive:
+                                                          list.artworkSensitive,
+                                                      canReveal: false,
+                                                      child: FilmArtwork(
+                                                        cache: widget
+                                                            .catalog
+                                                            .images,
+                                                        path: list.artwork,
+                                                        target:
+                                                            list.artworkTarget,
+                                                        width: 96,
+                                                        height: 54,
+                                                        aspectRatio: 16 / 9,
+                                                      ),
+                                                    ),
+                                                  ),
+                                          ),
+                                          title: Text(list.name),
+                                          subtitle: Text(
+                                            '${list.sourceName} · ${context.l10n.format('成员数量：{count}', {'count': list.count})}${list.readOnly ? ' · ${context.l10n.text('只读镜像')}' : ''}',
+                                          ),
+                                          onTap: () => _open(list.id),
+                                          trailing: SPPopupMenuButton<String>(
+                                            itemBuilder: (_) => _actions(list),
+                                            onSelected: (action) =>
+                                                _manage(list, action),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                }
+                                final snapshot = _snapshot;
+                                if (snapshot == null) {
+                                  return ListView(controller: controller);
+                                }
+                                if (snapshot.entries.isEmpty) {
                                   return ListView(
                                     controller: controller,
-                                    children: const [
+                                    children: [
                                       ImmersiveEmptyState(
                                         icon: SPIcons.list,
-                                        title: '暂无播放列表',
-                                        description: '右键作品或单集封面，创建你的第一个播放列表。',
+                                        title: '播放列表为空',
+                                        description: snapshot.playlist.readOnly
+                                            ? '只读镜像'
+                                            : '右键作品或单集封面，将内容加入此播放列表。',
                                       ),
                                     ],
                                   );
                                 }
-                                return ListView.builder(
-                                  controller: controller,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                  ),
-                                  itemCount: _lists.length,
-                                  itemBuilder: (_, i) {
-                                    final list = _lists[i];
-                                    return GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onSecondaryTapDown: (details) =>
-                                          _coverMenu(
-                                            list,
-                                            details.globalPosition,
-                                          ),
-                                      child: ListTile(
-                                        key: ValueKey(list.id),
-                                        leading: SizedBox(
-                                          width: 96,
-                                          height: 54,
-                                          child: list.artwork == null
-                                              ? const Icon(SPIcons.list)
-                                              : ClipRRect(
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
-                                                  child: FilmWatchOverlay(
-                                                    store: widget.catalog.store,
-                                                    workId: list.artworkWorkId,
-                                                    sourceId: list.sourceId,
-                                                    path: list.artworkPath,
-                                                    spoilerSensitive:
-                                                        list.artworkSensitive,
-                                                    canReveal: false,
-                                                    child: FilmArtwork(
-                                                      cache:
-                                                          widget.catalog.images,
-                                                      path: list.artwork,
-                                                      target:
-                                                          list.artworkTarget,
-                                                      width: 96,
-                                                      height: 54,
-                                                      aspectRatio: 16 / 9,
-                                                    ),
-                                                  ),
-                                                ),
-                                        ),
-                                        title: Text(list.name),
-                                        subtitle: Text(
-                                          '${list.sourceName} · ${context.l10n.format('成员数量：{count}', {'count': list.count})}${list.readOnly ? ' · ${context.l10n.text('只读镜像')}' : ''}',
-                                        ),
-                                        onTap: () => _open(list.id),
-                                        trailing: SPPopupMenuButton<String>(
-                                          itemBuilder: (_) => _actions(list),
-                                          onSelected: (action) =>
-                                              _manage(list, action),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                );
-                              }
-                              final snapshot = _snapshot;
-                              if (snapshot == null) {
-                                return ListView(controller: controller);
-                              }
-                              if (snapshot.entries.isEmpty) {
-                                return ListView(
-                                  controller: controller,
-                                  children: [
-                                    ImmersiveEmptyState(
-                                      icon: SPIcons.list,
-                                      title: '播放列表为空',
-                                      description: snapshot.playlist.readOnly
-                                          ? '只读镜像'
-                                          : '右键作品或单集封面，将内容加入此播放列表。',
+                                if (snapshot.playlist.readOnly) {
+                                  return ListView.builder(
+                                    controller: controller,
+                                    padding: const EdgeInsets.fromLTRB(
+                                      16,
+                                      12,
+                                      16,
+                                      0,
                                     ),
-                                  ],
-                                );
-                              }
-                              if (snapshot.playlist.readOnly) {
-                                return ListView.builder(
-                                  controller: controller,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
+                                    itemCount: snapshot.entries.length,
+                                    itemBuilder: (_, i) => _row(snapshot, i),
+                                  );
+                                }
+                                return ReorderableListView.builder(
+                                  scrollController: controller,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    12,
+                                    16,
+                                    0,
                                   ),
+                                  buildDefaultDragHandles: false,
+                                  proxyDecorator: spReorderProxy,
+                                  onReorderItem: _reorder,
+                                  onReorderStart: (_) => _dragging = true,
+                                  onReorderEnd: (_) {
+                                    _dragging = false;
+                                    if (_pending) {
+                                      _pending = false;
+                                      _changed();
+                                    }
+                                  },
                                   itemCount: snapshot.entries.length,
                                   itemBuilder: (_, i) => _row(snapshot, i),
                                 );
-                              }
-                              return ReorderableListView.builder(
-                                scrollController: controller,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                ),
-                                buildDefaultDragHandles: false,
-                                proxyDecorator: spReorderProxy,
-                                onReorderItem: _reorder,
-                                onReorderStart: (_) => _dragging = true,
-                                onReorderEnd: (_) {
-                                  _dragging = false;
-                                  if (_pending) {
-                                    _pending = false;
-                                    _changed();
-                                  }
-                                },
-                                itemCount: snapshot.entries.length,
-                                itemBuilder: (_, i) => _row(snapshot, i),
-                              );
-                            },
+                              },
+                            ),
                           ),
                         ),
                       ],
                     ),
                   ),
           ),
+        ],
+      );
+    },
+  );
+  Color _headerScrimTop(BuildContext context) =>
+      Theme.of(context).colorScheme.surface.withValues(alpha: .72);
+
+  /// 全宽页头底色在列表前淡出，避免卡片边界把背景和滚动区分开。
+  LinearGradient _headerScrim(BuildContext context) {
+    final tint = Theme.of(context).colorScheme.surface;
+    return LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        tint.withValues(alpha: .72),
+        tint.withValues(alpha: .46),
+        tint.withValues(alpha: .18),
+        tint.withValues(alpha: 0),
+      ],
+      stops: const [0, .38, .76, 1],
+    );
+  }
+
+  Widget _header(FilmPlaylistSnapshot snapshot) {
+    final theme = Theme.of(context);
+    final entries = snapshot.entries;
+    final available = entries.where((e) => e.available).length;
+    final works =
+        entries.map((e) => e.workId).whereType<int>().toSet().length +
+        entries.where((e) => e.workId == null).length;
+    final cover = entries
+        .where((e) => (e.artwork ?? '').isNotEmpty)
+        .firstOrNull;
+    final meta = [
+      snapshot.playlist.sourceName,
+      context.l10n.format('{count} 项', {'count': entries.length}),
+      context.l10n.format('{count} 部作品', {'count': works}),
+    ].join(' · ');
+    final playable = available > 0 && !_busy;
+    final info = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(
+                snapshot.playlist.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleLarge,
+              ),
+            ),
+            if (snapshot.playlist.readOnly) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primaryContainer,
+                  borderRadius: AppTheme.pillRadius,
+                ),
+                child: AppText(
+                  '只读镜像',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(meta, style: theme.textTheme.bodySmall),
+            if (available < entries.length)
+              Text(
+                context.l10n.format('{count} 项不可用', {
+                  'count': entries.length - available,
+                }),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+          ],
+        ),
+        if (snapshot.playlist.error case final error?) ...[
+          const SizedBox(height: 4),
+          AppText(
+            filmCatalogErrorText(error),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.error,
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: AppTheme.controlGap,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            FilmDetailPlayButton(
+              buttonKey: const Key('playlist-play-all'),
+              label: const AppText('全部播放'),
+              onPressed: playable ? () => _playAll() : null,
+            ),
+            SPButton(
+              controlKey: const Key('playlist-shuffle'),
+              minimumHeight: 44,
+              icon: Icon(
+                SPIcons.shuffle,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+              label: const AppText('随机播放'),
+              onPressed: playable ? () => _playAll(shuffle: true) : null,
+            ),
+            Semantics(
+              toggled: _loop,
+              child: SPButton(
+                controlKey: const Key('playlist-loop'),
+                kind: _loop ? SPButtonKind.tonal : SPButtonKind.secondary,
+                minimumHeight: 44,
+                icon: Icon(
+                  SPIcons.repeat,
+                  size: 16,
+                  color: _loop
+                      ? theme.colorScheme.onPrimaryContainer
+                      : theme.colorScheme.primary,
+                ),
+                label: const AppText('循环播放'),
+                onPressed: _busy ? null : () => setState(() => _loop = !_loop),
+              ),
+            ),
+          ],
         ),
       ],
-    ),
-  );
+    );
+    Widget artwork() {
+      final item = cover;
+      final path = item?.artwork;
+      return ClipRRect(
+        key: const Key('playlist-header-cover'),
+        borderRadius: BorderRadius.circular(12),
+        child: item == null || path == null || path.isEmpty
+            ? ColoredBox(
+                color: theme.colorScheme.surfaceContainerHigh,
+                child: const Icon(SPIcons.list, size: 32),
+              )
+            : FilmWatchOverlay(
+                store: widget.catalog.store,
+                resource: item.resource,
+                workId: item.workId,
+                sourceId: snapshot.playlist.sourceId,
+                path: item.queueItem.versions.first.path,
+                spoilerSensitive: item.display['episodeArtwork'] == true,
+                showStatus: false,
+                canReveal: false,
+                child: FilmArtwork(
+                  cache: widget.catalog.images,
+                  path: path,
+                  target: item.display['artworkTarget'] as String? ?? 'w342',
+                  aspectRatio: 16 / 9,
+                ),
+              ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final scale = MediaQuery.textScalerOf(
+            context,
+          ).scale(1).clamp(1.0, 1.6);
+          if (constraints.maxWidth < 820 * scale) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(width: 128, height: 128 * 9 / 16, child: artwork()),
+                const SizedBox(height: 12),
+                info,
+              ],
+            );
+          }
+          return IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _IntrinsicFree(
+                  child: AspectRatio(aspectRatio: 16 / 9, child: artwork()),
+                ),
+                const SizedBox(width: 16),
+                Expanded(child: info),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _row(FilmPlaylistSnapshot snapshot, int index) {
     final entry = snapshot.entries[index];
     final versions = entry.currentVersions ?? entry.versions;
@@ -778,4 +1022,27 @@ Future<String?> _playlistName(
   );
   controller.dispose();
   return result;
+}
+
+/// 封面不参与 IntrinsicHeight 测量，页头行高只由右侧信息列决定。
+class _IntrinsicFree extends SingleChildRenderObjectWidget {
+  const _IntrinsicFree({required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderIntrinsicFree();
+}
+
+class _RenderIntrinsicFree extends RenderProxyBox {
+  @override
+  double computeMinIntrinsicWidth(double height) => 0;
+
+  @override
+  double computeMaxIntrinsicWidth(double height) => 0;
+
+  @override
+  double computeMinIntrinsicHeight(double width) => 0;
+
+  @override
+  double computeMaxIntrinsicHeight(double width) => 0;
 }

@@ -247,6 +247,16 @@ abstract final class SPIcons {
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );
+  static const shuffle = IconData(
+    0xE8B1,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
+  static const repeat = IconData(
+    0xE8EE,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
   static const playerSettings = IconData(
     0xEF58,
     fontFamily: _font,

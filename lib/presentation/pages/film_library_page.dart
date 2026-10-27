@@ -531,11 +531,16 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                 contentBuilder: (_) => FilmPlaylistPage(
                                   catalog: c,
                                   sidebarInset: widget.sidebarInset,
-                                  onPlay: (snapshot, index) => context
-                                      .findAncestorStateOfType<
-                                        FilmLibraryShellState
-                                      >()!
-                                      .playPlaylist(snapshot, index),
+                                  onPlay: (snapshot, index, {loop = false}) =>
+                                      context
+                                          .findAncestorStateOfType<
+                                            FilmLibraryShellState
+                                          >()!
+                                          .playPlaylist(
+                                            snapshot,
+                                            index,
+                                            loop: loop,
+                                          ),
                                 ),
                               ),
                             ),

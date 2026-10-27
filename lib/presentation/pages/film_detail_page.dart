@@ -984,53 +984,61 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                         chrome?.value = previous;
                       }
                     },
-              child: _CreditAvatar(
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                // 骨架透明度层必须在悬停变换之外，避免变换进入合成层取整。
                 child: SkeletonRegion(
                   borderRadius: BorderRadius.circular(999),
-                  child: ClipOval(
-                    child: FilmArtwork(
-                      cache: c.images,
-                      path: StreamPathTransitionScope.of(context)
-                          ? null
-                          : profilePath,
-                      target: 'w185',
-                      width: 68,
-                      height: 68,
-                      borderRadius: 0,
-                      placeholder: profilePath == null || profilePath.isEmpty
-                          ? Container(
-                              width: 68,
-                              height: 68,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [
-                                    theme.colorScheme.primary.withValues(
-                                      alpha: .14,
+                  child: FilmPosterHover(
+                    borderRadius: BorderRadius.circular(999),
+                    child: FilmPosterHoverSurface(
+                      borderRadius: BorderRadius.circular(999),
+                      child: ClipOval(
+                        child: FilmArtwork(
+                          cache: c.images,
+                          path: StreamPathTransitionScope.of(context)
+                              ? null
+                              : profilePath,
+                          target: 'w185',
+                          width: 68,
+                          height: 68,
+                          borderRadius: 0,
+                          placeholder:
+                              profilePath == null || profilePath.isEmpty
+                              ? Container(
+                                  width: 68,
+                                  height: 68,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        theme.colorScheme.primary.withValues(
+                                          alpha: .14,
+                                        ),
+                                        theme.colorScheme.onSurface.withValues(
+                                          alpha: .04,
+                                        ),
+                                      ],
                                     ),
-                                    theme.colorScheme.onSurface.withValues(
-                                      alpha: .04,
+                                    border: Border.all(
+                                      color: theme.colorScheme.onSurface
+                                          .withValues(alpha: .1),
                                     ),
-                                  ],
-                                ),
-                                border: Border.all(
-                                  color: theme.colorScheme.onSurface.withValues(
-                                    alpha: .1,
                                   ),
-                                ),
-                              ),
-                              child: Text(
-                                initials,
-                                style: theme.textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w500,
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            )
-                          : null,
+                                  child: Text(
+                                    initials,
+                                    style: theme.textTheme.titleLarge?.copyWith(
+                                      fontWeight: FontWeight.w500,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                )
+                              : null,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -2659,28 +2667,4 @@ class _FilmPendingPageState extends State<FilmPendingPage>
       ),
     );
   }
-}
-
-class _CreditAvatar extends StatefulWidget {
-  const _CreditAvatar({required this.child});
-  final Widget child;
-  @override
-  State<_CreditAvatar> createState() => _CreditAvatarState();
-}
-
-class _CreditAvatarState extends State<_CreditAvatar> {
-  bool _hovered = false;
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(4),
-    child: MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedScale(
-        scale: _hovered ? 1.08 : 1,
-        duration: const Duration(milliseconds: 120),
-        child: widget.child,
-      ),
-    ),
-  );
 }

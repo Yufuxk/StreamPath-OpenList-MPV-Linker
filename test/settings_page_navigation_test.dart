@@ -377,6 +377,53 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('隐式集数上限默认 2，可保存为 3 并重新加载', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('implicit-playlist-window-size'));
+    await tester.ensureVisible(field);
+    expect(tester.widget<TextFormField>(field).controller!.text, '2');
+    await tester.enterText(field, '3');
+    await tester.pump();
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    for (
+      var i = 0;
+      i < 30 && configStore.current.implicitPlaylistWindowSize != 3;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+    }
+    expect(configStore.current.implicitPlaylistWindowSize, 3);
+    final saved = await tester.runAsync(configStore.load);
+    expect(saved!.implicitPlaylistWindowSize, 3);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('隐式集数上限超出 2～10 时阻止保存', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('implicit-playlist-window-size'));
+    await tester.ensureVisible(field);
+    await tester.enterText(field, '11');
+    await tester.pump();
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    await tester.pumpAndSettle();
+    expect(configStore.current.implicitPlaylistWindowSize, 2);
+    expect(find.text('请输入 2.0～10.0 集'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('小数番外开关四语言窄窗放大正常，传统模式禁用并保留选择', (tester) async {
     tester.view.physicalSize = const Size(640, 700);
     tester.view.devicePixelRatio = 1;

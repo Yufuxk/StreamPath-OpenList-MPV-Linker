@@ -130,6 +130,12 @@ const filmCatalogTranslations = <String, List<String>>{
   ],
   '保存文件夹屏蔽': ['儲存資料夾屏蔽', 'フォルダー除外を保存', 'Save folder exclusions'],
   "播放列表": ["播放清單", "プレイリスト", "Playlists"],
+  '全部播放': ['全部播放', '全再生', 'Play all'],
+  '随机播放': ['隨機播放', 'シャッフル再生', 'Shuffle play'],
+  '循环播放': ['循環播放', 'リストをリピート', 'Loop playlist'],
+  '{count} 项': ['{count} 項', '{count} 項目', '{count} items'],
+  '{count} 部作品': ['{count} 部作品', '{count} 作品', '{count} works'],
+  '{count} 项不可用': ['{count} 項無法使用', '{count} 項目が利用不可', '{count} unavailable'],
   "返回": ["返回", "戻る", "Back"],
   '以本列表创建播放列表': [
     '以本清單建立播放清單',
@@ -318,6 +324,17 @@ const filmCatalogTranslations = <String, List<String>>{
     '識別済みシリーズの暗黙のプレイリストのみ。シーズンが明確で話数の範囲内なら、放送日によらず本編の間に挿入します',
     'For identified series in implicit playlists. Inserts specials between regular episodes regardless of air date when the season is clear and the number is within its episode range',
   ],
+  '隐式播放列表集数上限': [
+    '隱式播放清單集數上限',
+    '暗黙のプレイリストの話数上限',
+    'Implicit playlist episode limit',
+  ],
+  '包含当前正在播放的集数；2～10，默认 2，仅作用于隐式播放列表': [
+    '包含目前正在播放的集數；2～10，預設 2，僅作用於隱式播放清單',
+    '再生中の話数を含みます。2～10、既定値は 2。暗黙のプレイリストにのみ作用します',
+    'Includes the current episode. 2 to 10, default 2. Applies to implicit playlists only',
+  ],
+  '集': ['集', '話', 'episodes'],
   "无法切换播放集数，请关闭播放器后重试": [
     "無法切換播放集數，請關閉播放器後重試",
     "エピソードを切り替えられません。プレーヤーを閉じて再試行してください",

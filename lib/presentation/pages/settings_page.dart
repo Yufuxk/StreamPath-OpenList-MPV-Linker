@@ -210,6 +210,8 @@ class SettingsPageState extends State<SettingsPage> {
       _draft.mediaLibraryRecentPlaybackController;
   TextEditingController get _mediaLibraryRecentDirectoriesController =>
       _draft.mediaLibraryRecentDirectoriesController;
+  TextEditingController get _implicitPlaylistWindowController =>
+      _draft.implicitPlaylistWindowController;
 
   bool get _subtitleInjectionEnabled => _draft.subtitleInjectionEnabled;
   set _subtitleInjectionEnabled(bool value) =>
@@ -558,6 +560,16 @@ class SettingsPageState extends State<SettingsPage> {
               ),
             ) !=
             null) {
+      return SettingsSection.playback;
+    }
+
+    if (invalidNumber(
+      _implicitPlaylistWindowController,
+      min: PlayerConfig.minImplicitPlaylistWindowSize.toDouble(),
+      max: PlayerConfig.maxImplicitPlaylistWindowSize.toDouble(),
+      unit: '集',
+      integer: true,
+    )) {
       return SettingsSection.playback;
     }
 
@@ -2284,6 +2296,30 @@ class SettingsPageState extends State<SettingsPage> {
                     setState(() => _draft.videoPlaylistMode = mode);
                   }
                 },
+              ),
+              const SizedBox(height: 12),
+              _SettingsLabeledField(
+                label: context.l10n.text('隐式播放列表集数上限'),
+                child: TextFormField(
+                  key: const Key('implicit-playlist-window-size'),
+                  controller: _implicitPlaylistWindowController,
+                  keyboardType: TextInputType.number,
+                  contextMenuBuilder: buildClipboardHistoryMenu,
+                  decoration: InputDecoration(
+                    helperText: context.l10n.text(
+                      '包含当前正在播放的集数；2～10，默认 2，仅作用于隐式播放列表',
+                    ),
+                    suffixText: context.l10n.text('集'),
+                    border: const OutlineInputBorder(),
+                  ),
+                  validator: (value) => _validateNumber(
+                    value,
+                    min: PlayerConfig.minImplicitPlaylistWindowSize.toDouble(),
+                    max: PlayerConfig.maxImplicitPlaylistWindowSize.toDouble(),
+                    unit: '集',
+                    integer: true,
+                  ),
+                ),
               ),
               const SizedBox(height: 12),
               SPToggleTile(

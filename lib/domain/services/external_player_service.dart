@@ -129,6 +129,7 @@ class _PlaybackLaunchContext {
         videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
         videoPlaylistInsertDecimalEpisodes:
             player.videoPlaylistInsertDecimalEpisodes,
+        implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
         autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
         allowSeasonGap: player.allowSeasonGap,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
@@ -283,6 +284,11 @@ class _PlayerSessionRuntime {
   int queueGeneration = 0;
   int queueSerial = 0;
   bool rollingQueue = false;
+
+  /// 隐式窗口包含当前项在内的最大集数。
+  int get implicitWindowSize =>
+      launchContext!.player.implicitPlaylistWindowSize;
+
   final Map<int, _ImplicitQueueEntry> queueEntries = {};
   int queueOffset = 0;
   bool queueBusy = false;
@@ -906,6 +912,10 @@ class ExternalPlayerService {
 
     if (implicit) {
       args.addAll(['--idle=yes', '--keep-open=no', '--force-window=yes']);
+    }
+    if (isMpv) {
+      // 播放列表由 StreamPath 管理；关闭 mpv 常见的 autoload.lua 自动补全。
+      args.add('--script-opts-append=autoload-disabled=yes');
     }
     if (isMpv) args.add('--fullscreen=yes');
     // MPV 使用 URL userinfo 完成源站 Basic 认证。四个实测版本均会在
@@ -3014,58 +3024,72 @@ class ExternalPlayerService {
     }
   }
 
+  /// 保持当前项之后最多 window-1 项已准备并已挂入。
   Future<void> _prepareFollowingVideo(
     _PlayerSessionRuntime runtime,
     int index,
   ) async {
     final plan = runtime.implicitPlan!;
     final generation = runtime.queueGeneration;
-    plan.prepared.removeWhere(
-      (path, _) =>
-          !plan.items[index].versions.any((v) => v.path == path) &&
-          !(index + 1 < plan.items.length &&
-              plan.items[index + 1].versions.any((v) => v.path == path)),
-    );
-    if (index + 1 >= plan.items.length || plan.items[index + 1].unavailable) {
-      return;
-    }
-    try {
-      final (version, ready) = await plan.items[index + 1].prepareVersion(
-        plan.prepare,
-        preferred: plan.selected[index],
-        isAvailable: plan.isAvailable,
-        cached: plan.prepared,
-      );
-      var prepared = ready;
-      final fonts = await _queuedFontDirectory(
-        runtime,
-        prepared,
-        await _scriptBase(),
-        '${runtime.artifactSessionId}_prepare${runtime.queueGeneration + 1}',
-      );
-      if (fonts != null) {
-        prepared = PreparedVideoItem(
-          entry: prepared.entry,
-          localFontDirectory: fonts,
-        );
+    // 旧版单项链路沿用只准备下一项。
+    final window = runtime.rollingQueue
+        ? runtime.implicitWindowSize
+        : PlayerConfig.defaultImplicitPlaylistWindowSize;
+    final limit = index + window;
+    final last = limit < plan.items.length ? limit : plan.items.length;
+    bool inWindow(String path) {
+      for (var next = index; next < last; next++) {
+        if (plan.items[next].versions.any((v) => v.path == path)) return true;
       }
-      if (_queueControlEnabled &&
-          identical(_sessions[runtime.sessionId], runtime) &&
-          plan.index == index &&
-          runtime.queueGeneration == generation) {
-        plan.prepared[version.path] = prepared;
-        if (runtime.rollingQueue) {
-          await _selectImplicitEntry(
-            runtime,
-            index + 1,
-            appendFromGeneration: generation,
+      return false;
+    }
+
+    plan.prepared.removeWhere((path, _) => !inWindow(path));
+    for (var next = index + 1; next < last; next++) {
+      if (plan.items[next].unavailable) return;
+      if (runtime.queueEntries.values.any((entry) => entry.index == next)) {
+        continue;
+      }
+      try {
+        final (version, ready) = await plan.items[next].prepareVersion(
+          plan.prepare,
+          preferred: plan.selected[index],
+          isAvailable: plan.isAvailable,
+          cached: plan.prepared,
+        );
+        var prepared = ready;
+        final fonts = await _queuedFontDirectory(
+          runtime,
+          prepared,
+          await _scriptBase(),
+          '${runtime.artifactSessionId}_prepare${generation + 1}_$next',
+        );
+        if (fonts != null) {
+          prepared = PreparedVideoItem(
+            entry: prepared.entry,
+            localFontDirectory: fonts,
           );
         }
+        if (!_queueControlEnabled ||
+            !identical(_sessions[runtime.sessionId], runtime) ||
+            plan.index != index ||
+            runtime.queueGeneration != generation) {
+          return;
+        }
+        plan.prepared[version.path] = prepared;
+        if (runtime.rollingQueue) {
+          final appended = await _selectImplicitEntry(
+            runtime,
+            next,
+            appendFromGeneration: generation,
+          );
+          if (!appended) return;
+        }
+      } on AppException {
+        return;
+      } on FileSystemException {
+        return;
       }
-    } on AppException {
-      return;
-    } on FileSystemException {
-      return;
     }
   }
 
@@ -3210,6 +3234,13 @@ class ExternalPlayerService {
                   )) {
                 await _selectImplicitEntry(runtime, next);
               }
+            } else if (plan.loop) {
+              final first = plan.items.indexWhere((item) => !item.unavailable);
+              if (first < 0) {
+                await _finishImplicitQueue(runtime);
+                return;
+              }
+              await _selectImplicitEntry(runtime, first);
             } else {
               await _finishImplicitQueue(runtime);
               return;
@@ -3291,8 +3322,10 @@ class ExternalPlayerService {
       await controller.command([
         'change-list',
         'script-opts',
-        'set',
-        'streampath-queue=%${utf8.encode(payload).length}%$payload',
+        // 追加而非 set，保留 autoload-disabled 等其它脚本选项。
+        // append 不需要 %长度% 前缀，原始 JSON 会完整保存。
+        'append',
+        'streampath-queue=$payload',
       ]);
     } on TimeoutException {
       // 队列可能包含认证地址，异常不携带完整参数。
@@ -3395,11 +3428,13 @@ class ExternalPlayerService {
       final pos = (await controller.getProperty('playlist-pos') as num).toInt();
       final current = runtime.queueEntries[runtime.queueGeneration]!;
       if (pos < 0 || (list[pos] as Map)['id'] != current.entryId) return;
+      final keepEnd = current.index + runtime.implicitWindowSize;
       final retired = runtime.queueEntries.values
           .where(
             (entry) =>
                 entry.generation != current.generation &&
-                (entry.index != current.index + 1 ||
+                (entry.index <= current.index ||
+                    entry.index >= keepEnd ||
                     !list.any((item) => (item as Map)['id'] == entry.entryId)),
           )
           .toList();
@@ -3516,7 +3551,8 @@ class ExternalPlayerService {
         index >= plan.items.length ||
         (append &&
             (runtime.queueGeneration != appendFromGeneration ||
-                plan.index + 1 != index ||
+                index <= plan.index ||
+                index >= plan.index + runtime.implicitWindowSize ||
                 runtime.pendingQueueIndex != null ||
                 runtime.queueEntries.values.any(
                   (entry) => entry.index == index,
@@ -3547,8 +3583,10 @@ class ExternalPlayerService {
         }
       }
       final current = runtime.queueEntries[runtime.queueGeneration];
+      // 本地会话直接预加载；缓存限制只用于远程会话的本地缓存文件。
       if (append &&
           plan.isCached != null &&
+          runtime.launchContext?.isLocal != true &&
           current != null &&
           !['http', 'https'].contains(Uri.tryParse(current.url)?.scheme) &&
           !await plan.isCached!(preferred ?? item.versions.first)) {

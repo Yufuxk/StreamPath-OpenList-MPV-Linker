@@ -290,7 +290,11 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   }
 
   Future<void> play(MediaLibraryItem item) => _play(item);
-  Future<void> playPlaylist(FilmPlaylistSnapshot snapshot, int index) async {
+  Future<void> playPlaylist(
+    FilmPlaylistSnapshot snapshot,
+    int index, {
+    bool loop = false,
+  }) async {
     final entry = snapshot.entries[index];
     var resource = entry.resource;
     if (resource == null) return;
@@ -311,7 +315,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
     await app.initializeFilmPlayback();
     await _withHost(
       resource.playbackItem,
-      (host) => host.playFilmPlaylist(snapshot, index),
+      (host) => host.playFilmPlaylist(snapshot, index, loop: loop),
     );
   }
 

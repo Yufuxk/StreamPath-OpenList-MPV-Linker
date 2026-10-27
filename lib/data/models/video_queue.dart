@@ -146,6 +146,7 @@ class ImplicitVideoPlan {
     this.pending,
     this.failed,
     this.completed,
+    this.loop = false,
   });
   final List<VideoQueueItem> items;
   int index;
@@ -156,6 +157,9 @@ class ImplicitVideoPlan {
   final Future<void> Function(int)? pending;
   final void Function(String)? failed;
   final Future<void> Function()? completed;
+
+  /// 列表末尾自然结束后回到首个可用条目。
+  final bool loop;
   final Map<int, VideoQueueVersion> selected = {};
   final Map<String, PreparedVideoItem> prepared = {};
 }

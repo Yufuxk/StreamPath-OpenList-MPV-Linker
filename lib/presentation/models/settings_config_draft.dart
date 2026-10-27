@@ -53,6 +53,7 @@ class SettingsConfigDraft {
   final mediaLibraryContinueController = TextEditingController();
   final mediaLibraryRecentPlaybackController = TextEditingController();
   final mediaLibraryRecentDirectoriesController = TextEditingController();
+  final implicitPlaylistWindowController = TextEditingController();
   final audioLyricsFontFamilyController = TextEditingController();
 
   bool subtitleInjectionEnabled = true;
@@ -161,6 +162,8 @@ class SettingsConfigDraft {
     videoPlaylistSimpleNaming = player.videoPlaylistSimpleNaming;
     videoPlaylistInsertDecimalEpisodes =
         player.videoPlaylistInsertDecimalEpisodes;
+    implicitPlaylistWindowController.text = player.implicitPlaylistWindowSize
+        .toString();
     autoSeasonTransitionEnabled = player.autoSeasonTransitionEnabled;
     allowSeasonGap = player.allowSeasonGap;
     hiddenExtensionsEnabled = player.hiddenExtensionsEnabled;
@@ -253,6 +256,9 @@ class SettingsConfigDraft {
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
+    implicitPlaylistWindowSize: int.parse(
+      implicitPlaylistWindowController.text.trim(),
+    ),
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
     allowSeasonGap: allowSeasonGap,
     hiddenExtensionsEnabled: hiddenExtensionsEnabled,
@@ -385,6 +391,7 @@ class SettingsConfigDraft {
       mediaLibraryContinueController,
       mediaLibraryRecentPlaybackController,
       mediaLibraryRecentDirectoriesController,
+      implicitPlaylistWindowController,
       audioLyricsFontFamilyController,
     ]) {
       controller.dispose();

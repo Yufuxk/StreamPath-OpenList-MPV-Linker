@@ -33,6 +33,11 @@ class PlayerConfig {
   static const maxAudioLyricsOutlineWidth = 8.0;
   static const defaultAudioLyricsTransparency = 0.0;
 
+  /// 隐式播放列表单次注入的集数上限（含当前集）。
+  static const defaultImplicitPlaylistWindowSize = 2;
+  static const minImplicitPlaylistWindowSize = 2;
+  static const maxImplicitPlaylistWindowSize = 10;
+
   const PlayerConfig({
     required this.name,
     required this.executable,
@@ -55,6 +60,7 @@ class PlayerConfig {
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
     this.videoPlaylistSimpleNaming = true,
     this.videoPlaylistInsertDecimalEpisodes = false,
+    this.implicitPlaylistWindowSize = defaultImplicitPlaylistWindowSize,
     this.autoSeasonTransitionEnabled = true,
     this.allowSeasonGap = false,
     this.hiddenExtensionsEnabled = true,
@@ -113,6 +119,9 @@ class PlayerConfig {
   final VideoPlaylistMode videoPlaylistMode;
   final bool videoPlaylistSimpleNaming;
   final bool videoPlaylistInsertDecimalEpisodes;
+
+  /// 隐式播放列表单次注入的集数上限，含当前集；范围 2～10。
+  final int implicitPlaylistWindowSize;
   final bool autoSeasonTransitionEnabled;
   final bool allowSeasonGap;
 
@@ -171,6 +180,7 @@ class PlayerConfig {
     'videoPlaylistMode': videoPlaylistMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
+    'implicitPlaylistWindowSize': implicitPlaylistWindowSize,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
     'allowSeasonGap': allowSeasonGap,
     'hiddenExtensionsEnabled': hiddenExtensionsEnabled,
@@ -225,6 +235,9 @@ class PlayerConfig {
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
       videoPlaylistInsertDecimalEpisodes:
           (json['videoPlaylistInsertDecimalEpisodes'] as bool?) ?? false,
+      implicitPlaylistWindowSize: implicitPlaylistWindowSizeFromJson(
+        json['implicitPlaylistWindowSize'],
+      ),
       autoSeasonTransitionEnabled:
           (json['autoSeasonTransitionEnabled'] as bool?) ?? true,
       allowSeasonGap: (json['allowSeasonGap'] as bool?) ?? false,
@@ -257,6 +270,19 @@ int playerStartupTimeoutSecondsFromJson(Object? value) {
       .clamp(
         AppConstants.minPlayerStartupTimeoutSeconds,
         AppConstants.maxPlayerStartupTimeoutSeconds,
+      )
+      .toInt();
+}
+
+/// 读取隐式播放列表注入上限，并限制在允许范围内。
+int implicitPlaylistWindowSizeFromJson(Object? value) {
+  final parsed = value is num
+      ? value.toInt()
+      : int.tryParse(value?.toString().trim() ?? '');
+  return (parsed ?? PlayerConfig.defaultImplicitPlaylistWindowSize)
+      .clamp(
+        PlayerConfig.minImplicitPlaylistWindowSize,
+        PlayerConfig.maxImplicitPlaylistWindowSize,
       )
       .toInt();
 }
