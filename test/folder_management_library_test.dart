@@ -32,6 +32,7 @@ import 'package:streampath/presentation/pages/folders_page.dart';
 import 'package:streampath/presentation/pages/media_library_page.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
+import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
@@ -896,12 +897,10 @@ void main() {
       final network = tester.getTopLeft(
         find.widgetWithText(FilledButton, '添加网络存储'),
       );
-      expect(
-        network.dy,
-        lessThan(tester.getTopLeft(find.text('添加服务器以浏览文件夹')).dy),
-      );
+      expect(network.dy, lessThan(tester.getTopLeft(find.text('尚未添加网络存储')).dy));
       await tester.tap(find.byKey(const Key('folders-server-tab')));
       await tester.pumpAndSettle();
+      expect(find.text('尚未添加媒体服务器'), findsOneWidget);
       final server = tester.getTopLeft(
         find.widgetWithText(FilledButton, '添加媒体服务器'),
       );
@@ -909,6 +908,20 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('本地文件夹为空时复用共享空状态面板', (tester) async {
+    final (app, _) = await _fixture(tester);
+    await tester.pumpWidget(
+      _frame(app, FoldersPage(onOpenResult: (_) async {})),
+    );
+    await _settle(tester);
+    await tester.runAsync(() => app.removeLocalRoot('fixture'));
+    await tester.tap(find.byKey(const Key('folders-local-tab')));
+    await tester.pumpAndSettle();
+    expect(find.text('尚未添加本地文件夹'), findsOneWidget);
+    expect(find.byType(ImmersiveEmptyState), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'library tab initializes directory data when the shared catalog is not loaded',

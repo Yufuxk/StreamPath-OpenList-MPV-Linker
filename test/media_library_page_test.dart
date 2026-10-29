@@ -18,6 +18,7 @@ import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/presentation/pages/media_library_page.dart';
 import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/presentation/widgets/section_switcher.dart';
 
 void main() {
   const sourceId = 'source-a';
@@ -1127,6 +1128,26 @@ void main() {
       ),
     );
     await waitForLibraryState(tester, find.textContaining('已播放 02:00'));
+  });
+
+  testWidgets('页签在动画结束后挂载正文，正文拖拽不切换页签', (tester) async {
+    await tester.pumpWidget(buildPage());
+    await settleLibraryPage(tester);
+    expect(find.byType(TabBarView), findsNothing);
+
+    await tester.tap(find.text('继续播放').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('没有可继续播放的视频'), findsNothing);
+    await tester.pumpAndSettle();
+    expect(find.text('没有可继续播放的视频'), findsOneWidget);
+
+    await tester.drag(
+      find.byType(StreamPathSectionSwitcher<int>),
+      const Offset(200, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.widget<TabBar>(find.byType(TabBar)).controller!.index, 1);
   });
 }
 

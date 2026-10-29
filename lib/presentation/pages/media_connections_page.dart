@@ -16,6 +16,7 @@ import '../controllers/film_catalog_controller.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/directory_scroll_view.dart';
+import '../widgets/cinematic_states.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_icons.dart';
@@ -115,6 +116,11 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
     final rows = app.mediaConnections
         .where((row) => row.kind.isMediaServer == widget.servers)
         .toList();
+    final config = app.configStore.current;
+    final hasWebDav = config.profiles.any(
+      (profile) => config.mountedProfileIds.contains(profile.profileId),
+    );
+    final empty = rows.isEmpty && (widget.servers || !hasWebDav);
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -127,7 +133,17 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
           ),
         ),
         const SizedBox(height: 12),
-        if (widget.beforeConnections != null) widget.beforeConnections!,
+        if (widget.beforeConnections != null && !empty)
+          widget.beforeConnections!,
+        if (empty)
+          ImmersiveEmptyState(
+            icon: widget.servers ? SPIcons.video : SPIcons.cloud,
+            title: widget.servers ? '尚未添加媒体服务器' : '尚未添加网络存储',
+            description: widget.servers
+                ? '添加 Jellyfin 或 Emby 服务器后即可浏览媒体库。'
+                : '添加 WebDAV、SMB、FTP 或 NFS 来源后即可在这里浏览。',
+            padding: EdgeInsets.zero,
+          ),
         for (final row in rows)
           ListTile(
             leading: Icon(widget.servers ? SPIcons.video : SPIcons.cloud),

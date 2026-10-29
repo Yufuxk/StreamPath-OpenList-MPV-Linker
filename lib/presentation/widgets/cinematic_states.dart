@@ -153,15 +153,17 @@ class ImmersiveEmptyState extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.description,
+    this.padding = AppTheme.pagePadding,
   });
   final IconData icon;
   final String title, description;
+  final EdgeInsetsGeometry padding;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: AppTheme.pagePadding,
+      padding: padding,
       child: GlassSurface(
         level: GlassSurfaceLevel.raised,
         color: theme.brightness == Brightness.dark

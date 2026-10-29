@@ -8,6 +8,7 @@ import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cinematic_states.dart';
 import '../widgets/mounted_playback_bars.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/file_tile.dart';
@@ -57,7 +58,12 @@ class _LocalStoragePageState extends State<LocalStoragePage>
     super.build(context);
     final roots = context.watch<AppState>().localRoots;
     final content = roots.isEmpty
-        ? const Center(child: AppText('添加本地文件夹以开始浏览'))
+        ? const ImmersiveEmptyState(
+            icon: SPIcons.folder,
+            title: '尚未添加本地文件夹',
+            description: '添加磁盘目录后即可在媒体中心浏览。',
+            padding: EdgeInsets.zero,
+          )
         : ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),

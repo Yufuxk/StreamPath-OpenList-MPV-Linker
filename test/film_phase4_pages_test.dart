@@ -36,6 +36,7 @@ import 'package:streampath/presentation/pages/media_library_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/window_appearance_status.dart';
+import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/widgets/film_artwork_picker.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
@@ -1433,6 +1434,34 @@ void main() {
     await tester.tap(find.text('返回新媒体中心'));
     await settle(tester);
     expect(tester.widget<TabBar>(find.byType(TabBar)).tabs, hasLength(3));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('新媒体中心继续播放与最近播放空状态复用共享面板', (tester) async {
+    await prepare(tester);
+    await tester.pumpWidget(
+      frame(
+        FilmMediaCenterPage(
+          onOpenItem: (_) {},
+          onContinueSelected: (_) {},
+          onContinueMenu: (_, _) {},
+          onOpenLegacyItem: (_) {},
+        ),
+      ),
+    );
+    await settle(tester);
+
+    await tester.tap(find.text('继续播放'));
+    await settle(tester);
+    expect(find.text('还没有可继续播放的内容'), findsOneWidget);
+    expect(find.byType(ImmersiveEmptyState), findsOneWidget);
+    await render(tester, 'center-empty-continue');
+
+    await tester.tap(find.text('最近播放'));
+    await settle(tester);
+    expect(find.text('还没有最近播放'), findsOneWidget);
+    expect(find.byType(ImmersiveEmptyState), findsOneWidget);
+    await render(tester, 'center-empty-recent');
     expect(tester.takeException(), isNull);
   });
 }

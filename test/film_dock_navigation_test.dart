@@ -390,7 +390,7 @@ void main() {
       dockCenter,
     );
     expect(find.byKey(const ValueKey('local-root-dock')), findsNothing);
-    expect(find.text('添加服务器以浏览文件夹'), findsOneWidget);
+    expect(find.text('尚未添加网络存储'), findsOneWidget);
     expect(
       tester.getTopLeft(find.byKey(const Key('folders-network-tab'))).dx,
       greaterThanOrEqualTo(88),
@@ -446,7 +446,7 @@ void main() {
     await tester.tap(find.byKey(const Key('folders-local-tab')));
     await settle();
     expect(find.byKey(const ValueKey('local-root-dock')), findsOneWidget);
-    expect(find.text('添加服务器以浏览文件夹'), findsNothing);
+    expect(find.text('尚未添加网络存储'), findsNothing);
     await tester.tap(find.byKey(const Key('folders-search')));
     await settle();
     expect(

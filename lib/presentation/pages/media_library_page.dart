@@ -30,7 +30,9 @@ import '../widgets/glass_surface.dart';
 import '../widgets/film_favorites_wall.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_continue_card.dart';
+import '../widgets/cinematic_states.dart';
 import '../widgets/film_library_background.dart';
+import '../widgets/section_switcher.dart';
 import '../controllers/film_catalog_controller.dart';
 
 enum _FavoriteLane { media, video, audio, iso }
@@ -117,7 +119,8 @@ class MediaLibraryPage extends StatefulWidget {
   State<MediaLibraryPage> createState() => _MediaLibraryPageState();
 }
 
-class _MediaLibraryPageState extends State<MediaLibraryPage> {
+class _MediaLibraryPageState extends State<MediaLibraryPage>
+    with SingleTickerProviderStateMixin {
   void _selectItem(MediaLibraryItem item) {
     final callback = widget.onItemSelected;
     if (callback != null) {
@@ -129,6 +132,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
 
   Set<String> get _sourceIds => widget.sourceIds ?? {widget.sourceId};
   Set<(int, String, String)> _disabledRoots = {};
+  late final TabController _tabs;
+  int _selectedTab = 0;
 
   void _onCatalogChanged() {
     final disabled =
@@ -191,6 +196,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(
+      length: widget.filmCenter ? 3 : 4,
+      vsync: this,
+      animationDuration: const Duration(milliseconds: 220),
+    )..addListener(_selectTab);
     if (widget.initialContinue case final initial?) {
       _videoHistory = initial.videos;
       _isoHistory = initial.discs;
@@ -216,6 +226,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       _onIsoProgressChanged,
     );
     _loadAll(showLoading: widget.initialContinue == null);
+  }
+
+  void _selectTab() {
+    if (_selectedTab != _tabs.index) setState(() => _selectedTab = _tabs.index);
   }
 
   @override
@@ -254,6 +268,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     widget.localIsoProgressService?.removeLibraryProgressListener(
       _onIsoProgressChanged,
     );
+    _tabs.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -936,76 +951,71 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       builder: (context, constraints) {
         final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
         final controlHeight = AppTheme.controlHeightFor(context);
-        return DefaultTabController(
-          length: widget.filmCenter ? 3 : 4,
-          child: Scaffold(
-            appBar: AppBar(
-              toolbarHeight: 48,
-              automaticallyImplyLeading: widget.headerAction == null,
-              title: const AppText('媒体中心'),
-            ),
-            body: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppTheme.pageInset,
-                    12,
-                    AppTheme.pageInset,
-                    0,
-                  ),
-                  child: SPControlBar(
-                    child: LayoutBuilder(
-                      builder: (context, controls) => Wrap(
-                        spacing: AppTheme.controlGap,
-                        runSpacing: AppTheme.controlGap,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          SizedBox(
-                            width: ((widget.filmCenter ? 330 : 430) * scale)
-                                .clamp(0, controls.maxWidth),
-                            height: controlHeight,
-                            child: TabBar(
-                              dividerColor: Colors.transparent,
-                              isScrollable: true,
-                              tabAlignment: TabAlignment.start,
-                              labelPadding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                              ),
-                              tabs: [
-                                _compactNavigationTab(SPIcons.favorite, '收藏'),
-                                _compactNavigationTab(SPIcons.play, '继续播放'),
-                                _compactNavigationTab(SPIcons.history, '最近播放'),
-                                if (!widget.filmCenter)
-                                  _compactNavigationTab(
-                                    SPIcons.folderOpen,
-                                    '目录',
-                                  ),
-                              ],
+        return Scaffold(
+          appBar: AppBar(
+            toolbarHeight: 48,
+            automaticallyImplyLeading: widget.headerAction == null,
+            title: const AppText('媒体中心'),
+          ),
+          body: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppTheme.pageInset,
+                  12,
+                  AppTheme.pageInset,
+                  0,
+                ),
+                child: SPControlBar(
+                  child: LayoutBuilder(
+                    builder: (context, controls) => Wrap(
+                      spacing: AppTheme.controlGap,
+                      runSpacing: AppTheme.controlGap,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: ((widget.filmCenter ? 330 : 430) * scale)
+                              .clamp(0, controls.maxWidth),
+                          height: controlHeight,
+                          child: TabBar(
+                            controller: _tabs,
+                            dividerColor: Colors.transparent,
+                            isScrollable: true,
+                            tabAlignment: TabAlignment.start,
+                            labelPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
                             ),
+                            tabs: [
+                              _compactNavigationTab(SPIcons.favorite, '收藏'),
+                              _compactNavigationTab(SPIcons.play, '继续播放'),
+                              _compactNavigationTab(SPIcons.history, '最近播放'),
+                              if (!widget.filmCenter)
+                                _compactNavigationTab(SPIcons.folderOpen, '目录'),
+                            ],
                           ),
+                        ),
+                        SizedBox(
+                          width: (280 * scale).clamp(0, controls.maxWidth),
+                          height: controlHeight,
+                          child: _buildSearchField(),
+                        ),
+                        if (widget.sourceFilter != null)
                           SizedBox(
-                            width: (280 * scale).clamp(0, controls.maxWidth),
                             height: controlHeight,
-                            child: _buildSearchField(),
+                            child: widget.sourceFilter!,
                           ),
-                          if (widget.sourceFilter != null)
-                            SizedBox(
-                              height: controlHeight,
-                              child: widget.sourceFilter!,
-                            ),
-                          if (widget.headerAction != null)
-                            SizedBox(
-                              height: controlHeight,
-                              child: widget.headerAction!,
-                            ),
-                        ],
-                      ),
+                        if (widget.headerAction != null)
+                          SizedBox(
+                            height: controlHeight,
+                            child: widget.headerAction!,
+                          ),
+                      ],
                     ),
                   ),
                 ),
-                Expanded(child: _buildContent()),
-              ],
-            ),
+              ),
+              Expanded(child: _buildContent()),
+            ],
           ),
         );
       },
@@ -1048,27 +1058,35 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       );
     }
     if (widget.filmCenter) {
-      return TabBarView(
-        children: [
-          FilmFavoritesWall(
+      return StreamPathSectionSwitcher<int>(
+        selected: _selectedTab,
+        order: const [0, 1, 2],
+        shellBuilder: (_, _) => const SizedBox.expand(),
+        contentBuilder: (_, index) => switch (index) {
+          0 => FilmFavoritesWall(
             loadCatalog: () async => widget.filmCatalog!,
             onOpenItem: (item) async => _selectItem(item),
             sourceIds: _sourceIds,
             query: _searchController.text.trim(),
           ),
-          _buildFilmContinue(center: true),
-          _buildFilmRecent(),
-        ],
+          1 => _buildFilmContinue(center: true),
+          2 => _buildFilmRecent(),
+          _ => throw StateError('Unknown media center tab: $index'),
+        },
       );
     }
     if (_searchController.text.trim().isNotEmpty) return _buildSearchResults();
-    return TabBarView(
-      children: [
-        _buildFavorites(),
-        _buildContinue(),
-        _buildRecentPlayback(),
-        _buildDirectories(),
-      ],
+    return StreamPathSectionSwitcher<int>(
+      selected: _selectedTab,
+      order: const [0, 1, 2, 3],
+      shellBuilder: (_, _) => const SizedBox.expand(),
+      contentBuilder: (_, index) => switch (index) {
+        0 => _buildFavorites(),
+        1 => _buildContinue(),
+        2 => _buildRecentPlayback(),
+        3 => _buildDirectories(),
+        _ => throw StateError('Unknown media center tab: $index'),
+      },
     );
   }
 
@@ -1191,6 +1209,13 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     }
 
     if (widget.filmContinueAll || center) {
+      if (center && records.isEmpty) {
+        return _buildFilmCenterEmptyState(
+          icon: SPIcons.play,
+          title: '还没有可继续播放的内容',
+          description: '开始播放影片或光盘后，这里会显示可以继续播放的内容。',
+        );
+      }
       final grid = DirectoryScrollView(
         builder: (scrollController) => GridView.builder(
           controller: scrollController,
@@ -1306,6 +1331,13 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
     final records =
         [..._videoHistory, ..._isoHistory].where(_matchesFilmQuery).toList()
           ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    if (records.isEmpty) {
+      return _buildFilmCenterEmptyState(
+        icon: SPIcons.history,
+        title: '还没有最近播放',
+        description: '播放过的影片和光盘会记录在这里。',
+      );
+    }
     return DirectoryScrollView(
       builder: (scrollController) => GridView.builder(
         controller: scrollController,
@@ -1328,6 +1360,19 @@ class _MediaLibraryPageState extends State<MediaLibraryPage> {
       ),
     );
   }
+
+  Widget _buildFilmCenterEmptyState({
+    required IconData icon,
+    required String title,
+    required String description,
+  }) => DirectoryScrollView(
+    builder: (scrollController) => ListView(
+      controller: scrollController,
+      children: [
+        ImmersiveEmptyState(icon: icon, title: title, description: description),
+      ],
+    ),
+  );
 
   Widget _buildContinue() {
     final source = switch (_continueLane) {

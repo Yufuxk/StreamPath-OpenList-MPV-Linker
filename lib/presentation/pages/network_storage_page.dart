@@ -9,6 +9,7 @@ import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cinematic_states.dart';
 import '../widgets/mounted_playback_bars.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
@@ -78,7 +79,14 @@ class _NetworkStoragePageState extends State<NetworkStoragePage>
           profile,
     ];
     final content = profiles.isEmpty
-        ? const Center(child: AppText('添加服务器以浏览文件夹'))
+        ? widget.embedded
+              ? const SizedBox.shrink()
+              : const ImmersiveEmptyState(
+                  icon: SPIcons.cloud,
+                  title: '尚未添加网络存储',
+                  description: '添加 WebDAV、SMB、FTP 或 NFS 来源后即可在这里浏览。',
+                  padding: EdgeInsets.zero,
+                )
         : ListView.separated(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
