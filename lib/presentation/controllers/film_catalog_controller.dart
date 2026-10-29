@@ -183,7 +183,19 @@ class FilmCatalogController extends ChangeNotifier {
   List<FilmCategory> categories = [];
   File? backgroundFile;
   final Map<int, String> _customCovers = {};
-  bool newest = false;
+  FilmCatalogSortMode sortMode = FilmCatalogSortMode.title;
+  FilmCatalogSortDirection sortDirection = FilmCatalogSortDirection.ascending;
+  void setSort(FilmCatalogSortMode mode) {
+    sortMode = mode;
+    sortDirection = mode.defaultDirection;
+  }
+
+  void toggleSortDirection() {
+    sortDirection = sortDirection == FilmCatalogSortDirection.ascending
+        ? FilmCatalogSortDirection.descending
+        : FilmCatalogSortDirection.ascending;
+  }
+
   bool hasMore = false;
   bool loading = false;
   bool busy = false;
@@ -193,7 +205,15 @@ class FilmCatalogController extends ChangeNotifier {
   Listenable get taskChanges => _taskChanges;
   int pendingCount = 0;
   int _queryGeneration = 0;
-  (FilmMediaType?, String, int?, bool, String?)? _loadedFilter;
+  (
+    FilmMediaType?,
+    String,
+    int?,
+    FilmCatalogSortMode,
+    FilmCatalogSortDirection,
+    String?,
+  )?
+  _loadedFilter;
   String? error;
   FilmScanProgress? progress;
   int scrapedCount = 0;
@@ -270,7 +290,14 @@ class FilmCatalogController extends ChangeNotifier {
     if (_closed || (more && loading)) return;
     if (!more) _refreshTimer?.cancel();
     final generation = ++_queryGeneration;
-    final requestedFilter = (type, query, rootId, newest, sectionId);
+    final requestedFilter = (
+      type,
+      query,
+      rootId,
+      sortMode,
+      sortDirection,
+      sectionId,
+    );
     if (!more && _loadedFilter != requestedFilter) {
       works = [];
       hasMore = false;
@@ -290,7 +317,7 @@ class FilmCatalogController extends ChangeNotifier {
       if (rootId != null && !rootList.any((r) => r.id == rootId && r.enabled)) {
         rootId = null;
       }
-      final filter = (type, query, rootId, newest, sectionId);
+      final filter = (type, query, rootId, sortMode, sortDirection, sectionId);
       final pages = (works.length + 59) ~/ 60;
       final limit = !more && _loadedFilter == filter && pages > 1
           ? pages * 60
@@ -300,7 +327,8 @@ class FilmCatalogController extends ChangeNotifier {
         type: type,
         query: query,
         rootId: rootId,
-        newest: newest,
+        sortMode: sortMode,
+        sortDirection: sortDirection,
         offset: offset,
         limit: limit,
         sectionId: sectionId,
@@ -321,7 +349,8 @@ class FilmCatalogController extends ChangeNotifier {
       );
       final recent = await store.works(
         type: null,
-        newest: true,
+        sortMode: FilmCatalogSortMode.added,
+        sortDirection: FilmCatalogSortDirection.descending,
         limit: 30,
         sourceId: sourceId,
       );

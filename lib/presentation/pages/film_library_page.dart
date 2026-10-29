@@ -202,7 +202,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       previous.query = '';
       previous.rootId = null;
       previous.sectionId = null;
-      previous.newest = false;
+      previous.setSort(FilmCatalogSortMode.title);
     }
     setState(() {
       _sourceId = source;
@@ -294,7 +294,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       150 * scale,
       260 * scale,
       190 * scale,
-      165 * scale,
+      210 * scale,
       actionWidth('播放列表', 52),
       actionWidth(
         '待整理',
@@ -476,39 +476,82 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       SizedBox(
                         key: const ValueKey('film-sort-filter'),
                         width: widths[3],
-                        child: SPDropdownButtonFormField<bool>(
-                          menuIcon: SPIcons.sort,
-                          dropdownColor: AppTheme.dropdownMenuColor(
-                            Theme.of(context),
-                          ),
-                          borderRadius: AppTheme.dropdownBorderRadius,
-                          isExpanded: true,
-                          expands: true,
-                          initialValue: c.newest,
-                          style: Theme.of(context).textTheme.bodySmall,
-                          decoration: _filterDecoration('排序'),
-                          items: const [
-                            DropdownMenuItem(
-                              value: false,
-                              child: AppText(
-                                '按标题',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child:
+                                  SPDropdownButtonFormField<
+                                    FilmCatalogSortMode
+                                  >(
+                                    menuIcon: SPIcons.sort,
+                                    dropdownColor: AppTheme.dropdownMenuColor(
+                                      Theme.of(context),
+                                    ),
+                                    borderRadius: AppTheme.dropdownBorderRadius,
+                                    isExpanded: true,
+                                    expands: true,
+                                    initialValue: c.sortMode,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                    decoration: _filterDecoration('排序'),
+                                    items: [
+                                      for (final mode
+                                          in FilmCatalogSortMode.values)
+                                        DropdownMenuItem(
+                                          value: mode,
+                                          child: AppText(
+                                            switch (mode) {
+                                              FilmCatalogSortMode.title =>
+                                                '按标题',
+                                              FilmCatalogSortMode.added =>
+                                                '按收录时间',
+                                              FilmCatalogSortMode.year => '按年份',
+                                              FilmCatalogSortMode.rating =>
+                                                '按评分',
+                                            },
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                    ],
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      c.setSort(value);
+                                      c.refresh(home: false);
+                                    },
+                                  ),
                             ),
-                            DropdownMenuItem(
-                              value: true,
-                              child: AppText(
-                                '按收录时间',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                            const SizedBox(width: 8),
+                            IconButton(
+                              key: const ValueKey('film-sort-direction'),
+                              tooltip: context.l10n.text(
+                                c.sortDirection ==
+                                        FilmCatalogSortDirection.ascending
+                                    ? '升序'
+                                    : '降序',
                               ),
+                              iconSize: 16,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 40,
+                                height: 40,
+                              ),
+                              style: const ButtonStyle(
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              icon: Icon(
+                                c.sortDirection ==
+                                        FilmCatalogSortDirection.ascending
+                                    ? SPIcons.up
+                                    : SPIcons.down,
+                              ),
+                              onPressed: () {
+                                c.toggleSortDirection();
+                                c.refresh(home: false);
+                              },
                             ),
                           ],
-                          onChanged: (value) {
-                            c.newest = value!;
-                            c.refresh(home: false);
-                          },
                         ),
                       ),
                       SizedBox(
@@ -954,7 +997,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     String title,
     List<FilmWork> works, {
     FilmMediaType? type,
-    bool newest = false,
+    FilmCatalogSortMode sortMode = FilmCatalogSortMode.title,
     String? sectionId,
   }) => FilmShelf(
     title: title,
@@ -966,7 +1009,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       }
       setState(() => _browse = true);
       c.type = type;
-      c.newest = newest;
+      c.setSort(sortMode);
       c.sectionId = sectionId;
       c.rootId = null;
       c.query = '';
@@ -1037,7 +1080,12 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
               ),
         'collections' => _collectionShelf(c),
         'sources' => _sourceShelf(c),
-        'recent' => _workShelf(c, '最近添加', c.recentWorks, newest: true),
+        'recent' => _workShelf(
+          c,
+          '最近添加',
+          c.recentWorks,
+          sortMode: FilmCatalogSortMode.added,
+        ),
         'movies' => _workShelf(c, '电影', c.movies, type: FilmMediaType.movie),
         'series' => _workShelf(c, '剧集', c.series, type: FilmMediaType.tv),
         'genres' ||
@@ -1055,7 +1103,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
   void _browseCategory(FilmCatalogController c, FilmCategory category) {
     setState(() => _browse = true);
     c.type = null;
-    c.newest = false;
+    c.setSort(FilmCatalogSortMode.title);
     c.sectionId = category.section.id;
     c.rootId = null;
     c.query = '';

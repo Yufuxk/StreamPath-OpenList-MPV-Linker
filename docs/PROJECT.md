@@ -1025,7 +1025,7 @@ STRM 使用 `MediaLibraryRecord.strmPositionMs`／`strmDurationMs` 显示快照�
 
 影视目录数据库版本 6 的 film_watch_state 独立保存普通视频／STRM 观看状态，身份为来源＋作品＋季集号（电影使用 -1／-1）；升级前复制数据库备份。同源版本共享状态，99%／自然 EOF 标记已看后重新观看仍保留已看；人工未看可以重置。FilmWatchOverlay 在作品、季、单集、收藏与续播封面统一显示；播放进度为叠加于完整封面底边的 4px 主题强调色细条，端头 2px 圆角、底轨透明，无末端圆点，未播放区域保留封面图像；聚合按已入库的不同集数计算，跨来源合并取同集最高完成度，来源筛选仍读取独立状态。作品只汇总正季，只有 S00 时汇总 S00。ISO／BDMV 的 film_disc_watch_state 按资源 ID＋作品 ID 保存整片手动标记，来源由资源身份隔离；没有节目级自动完成推断，每张剧集光盘作为独立汇总单位，未知季光盘参加作品汇总，电影版本汇总取最高完成度。更换关联作品读取对应作品标记。人工普通视频操作清理两个媒体中心的同集版本正式／临时进度与 watch_later，推进相应继续播放目标；manual_at 跨重启拒绝旧样本，光盘操作只写标记。作品封面与详情主封面菜单覆盖当前作品所有季，季封面使用定位 PopupMenu，多个来源显式选择一个来源。AppState.getFilmCatalogStore 独立于界面、刮削和媒体探测初始化，两套历史和续播存储继续隔离。
 
-影视库主页拥有独立 ScrollController、唯一 Scrollbar，关闭自动滚动条，复用 DirectoryWheelScrollRegion 的 pointerSignalResolver 兜底；列表优先处理滚轮，外层只接管未处理的事件。FilmSectionSettings 在保存期间显示本次栏目值，保存成功后发布偏好并异步刷新，保存失败回退并使用已有错误提示。MPV 视频与本地／WebDAV 光盘启动参数最后指定 fullscreen=yes；普通视频与本地光盘的 file-loaded 状态脚本设置 fullscreen，保持换表后的全屏状态。
+影视库主页拥有独立 ScrollController、唯一 Scrollbar，关闭自动滚动条，复用 DirectoryWheelScrollRegion 的 pointerSignalResolver 兜底；列表优先处理滚轮，外层只接管未处理的事件。海报墙按标题、收录时间、年份或 TMDB 评分排序，并可独立切换升序或降序；年份和评分缺失的作品固定尾排，切换字段时采用该字段默认方向（标题升序，其余降序），分页筛选签名包含排序模式与方向。FilmSectionSettings 在保存期间显示本次栏目值，保存成功后发布偏好并异步刷新，保存失败回退并使用已有错误提示。MPV 视频与本地／WebDAV 光盘启动参数最后指定 fullscreen=yes；普通视频与本地光盘的 file-loaded 状态脚本设置 fullscreen，保持换表后的全屏状态。
 
 媒体中心与浏览页控件只使用 `ColorScheme`、`GlassTokens`、`GlassSurface` 和
 `showGlassDialog`，经典、Acrylic、Mica 三种外观共用同一业务结构；不得增加独立材质判断，

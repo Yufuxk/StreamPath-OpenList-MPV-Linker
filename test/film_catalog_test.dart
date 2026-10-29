@@ -2602,6 +2602,136 @@ void main() {
     );
   });
 
+  test('影视库按标题、收录时间、年份和评分排序并支持升降序', () async {
+    final root = await addRoot();
+    final generation = await store.beginScan(root.id);
+    for (final (path, name) in [
+      ('Movies/Alpha.mkv', 'Alpha.mkv'),
+      ('Movies/Bravo.mkv', 'Bravo.mkv'),
+      ('Movies/Charlie.mkv', 'Charlie.mkv'),
+      ('Movies/Delta.mkv', 'Delta.mkv'),
+    ]) {
+      await store.stage(root, generation, [
+        FilmScanEntry(
+          path: path,
+          parentPath: 'Movies',
+          name: name,
+          mediaKind: 'video',
+        ),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+    await store.commitScan(root.id, generation, cancelled: () => false);
+
+    final resources = await store.resources(rootId: root.id);
+    final works = [
+      const FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 1,
+        title: 'Alpha',
+        originalTitle: 'Alpha',
+        overview: '',
+        language: 'zh-CN',
+        year: 1999,
+        metadata: {'vote_average': 8.4},
+      ),
+      const FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 2,
+        title: 'Bravo',
+        originalTitle: 'Bravo',
+        overview: '',
+        language: 'zh-CN',
+        year: 2005,
+        metadata: {'vote_average': 6.8},
+      ),
+      const FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 3,
+        title: 'Charlie',
+        originalTitle: 'Charlie',
+        overview: '',
+        language: 'zh-CN',
+      ),
+      const FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 4,
+        title: 'Delta',
+        originalTitle: 'Delta',
+        overview: '',
+        language: 'zh-CN',
+        year: 2020,
+        metadata: {'vote_average': 9.2},
+      ),
+    ];
+    for (var i = 0; i < works.length; i++) {
+      await store.bind([resources[i]], works[i]);
+    }
+
+    Future<List<String>> sorted(
+      FilmCatalogSortMode mode,
+      FilmCatalogSortDirection direction,
+    ) async => [
+      for (final work in await store.works(
+        type: FilmMediaType.movie,
+        sortMode: mode,
+        sortDirection: direction,
+      ))
+        work.title,
+    ];
+
+    const up = FilmCatalogSortDirection.ascending;
+    const down = FilmCatalogSortDirection.descending;
+    expect(await sorted(FilmCatalogSortMode.title, up), [
+      'Alpha',
+      'Bravo',
+      'Charlie',
+      'Delta',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.title, down), [
+      'Delta',
+      'Charlie',
+      'Bravo',
+      'Alpha',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.added, up), [
+      'Alpha',
+      'Bravo',
+      'Charlie',
+      'Delta',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.added, down), [
+      'Delta',
+      'Charlie',
+      'Bravo',
+      'Alpha',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.year, up), [
+      'Alpha',
+      'Bravo',
+      'Delta',
+      'Charlie',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.year, down), [
+      'Delta',
+      'Bravo',
+      'Alpha',
+      'Charlie',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.rating, up), [
+      'Bravo',
+      'Alpha',
+      'Delta',
+      'Charlie',
+    ]);
+    expect(await sorted(FilmCatalogSortMode.rating, down), [
+      'Delta',
+      'Alpha',
+      'Bravo',
+      'Charlie',
+    ]);
+  });
+
   test('影视新增文案覆盖四语言并保留模板参数', () {
     for (final entry in filmCatalogTranslations.entries) {
       expect(entry.value, hasLength(3));

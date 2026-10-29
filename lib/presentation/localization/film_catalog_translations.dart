@@ -600,6 +600,8 @@ const filmCatalogTranslations = <String, List<String>>{
   '待整理（{count}）': ['待整理（{count}）', '要整理（{count}）', 'Needs attention ({count})'],
   '按标题': ['按標題', 'タイトル順', 'By title'],
   '按收录时间': ['按收錄時間', '追加日時順', 'By date added'],
+  '按年份': ['按年份', '公開年順', 'By year'],
+  '按评分': ['按評分', '評価順', 'By rating'],
   '{count} 个资源': ['{count} 個資源', '{count} ファイル', '{count} resources'],
   '包含缺失位置': ['包含缺失位置', '見つからないファイルあり', 'Contains missing locations'],
   '正在整理元数据…': ['正在整理中繼資料…', 'メタデータを整理中…', 'Organizing metadata…'],

@@ -1165,7 +1165,8 @@ class FilmCatalogStore extends ChangeNotifier {
     String query = '',
     String? sourceId,
     int? rootId,
-    bool newest = false,
+    FilmCatalogSortMode sortMode = FilmCatalogSortMode.title,
+    FilmCatalogSortDirection sortDirection = FilmCatalogSortDirection.ascending,
     int offset = 0,
     int limit = 60,
     bool favoritesOnly = false,
@@ -1175,6 +1176,20 @@ class FilmCatalogStore extends ChangeNotifier {
     String? sectionId,
   }) async {
     final daily = sectionId == 'daily' ? await dailySelection() : null;
+    final direction = sortDirection == FilmCatalogSortDirection.ascending
+        ? 'ASC'
+        : 'DESC';
+    final rating =
+        "COALESCE(CAST(json_extract(w.metadata_json, '\$.vote_average') AS REAL), 0)";
+    final orderBy = switch (sortMode) {
+      FilmCatalogSortMode.title =>
+        'w.title COLLATE NOCASE $direction, w.id ASC',
+      FilmCatalogSortMode.added => 'MAX(r.created_at) $direction, w.id ASC',
+      FilmCatalogSortMode.year =>
+        '(w.year IS NULL) ASC, w.year $direction, w.id ASC',
+      FilmCatalogSortMode.rating =>
+        '($rating <= 0) ASC, $rating $direction, w.id ASC',
+    };
     final rows = await _db.rawQuery(
       '''SELECT w.*, COUNT(r.id) AS resource_count,
       COUNT(DISTINCT r.season_number) AS season_count
@@ -1203,7 +1218,7 @@ class FilmCatalogStore extends ChangeNotifier {
           : sourceIds.isEmpty
           ? 'AND 0'
           : 'AND c.source_id IN (${List.filled(sourceIds.length, '?').join(',')})'}
-      GROUP BY w.id ORDER BY ${newest ? 'MAX(r.created_at) DESC' : 'w.title COLLATE NOCASE'}, w.id
+      GROUP BY w.id ORDER BY $orderBy
       LIMIT ? OFFSET ?''',
       [
         type?.name,

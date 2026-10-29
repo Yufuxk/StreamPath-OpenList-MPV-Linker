@@ -993,6 +993,31 @@ void main() {
       ),
     );
     await settle();
+    final sortField = find.descendant(
+      of: find.byKey(const ValueKey('film-sort-filter')),
+      matching: find.byType(SPDropdownButtonFormField<FilmCatalogSortMode>),
+    );
+    expect(
+      tester
+          .widget<SPDropdownButtonFormField<FilmCatalogSortMode>>(sortField)
+          .initialValue,
+      FilmCatalogSortMode.title,
+    );
+    await tester.tap(find.byKey(const ValueKey('film-sort-direction')));
+    await settle();
+    expect(c.sortDirection, FilmCatalogSortDirection.descending);
+    await tester.tap(sortField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('按评分').last);
+    await settle();
+    expect(c.sortMode, FilmCatalogSortMode.rating);
+    expect(c.sortDirection, FilmCatalogSortDirection.descending);
+    await tester.tap(sortField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('按标题').last);
+    await settle();
+    expect(c.sortMode, FilmCatalogSortMode.title);
+    expect(c.sortDirection, FilmCatalogSortDirection.ascending);
     expect(c.works, hasLength(60));
     final homeScroll = tester
         .widget<CustomScrollView>(find.byKey(const Key('film-home-scroll')))

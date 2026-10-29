@@ -6,6 +6,20 @@ import 'video_playback_scope.dart';
 
 enum FilmMediaType { movie, tv }
 
+/// 影视库海报墙的排序字段。
+enum FilmCatalogSortMode { title, added, year, rating }
+
+/// 影视库海报墙的排序方向。
+enum FilmCatalogSortDirection { ascending, descending }
+
+extension FilmCatalogSortModeDefaults on FilmCatalogSortMode {
+  /// 未显式指定方向时采用的默认顺序。
+  FilmCatalogSortDirection get defaultDirection =>
+      this == FilmCatalogSortMode.title
+      ? FilmCatalogSortDirection.ascending
+      : FilmCatalogSortDirection.descending;
+}
+
 class FilmLibraryStatistics {
   const FilmLibraryStatistics({
     this.episodes = 0,

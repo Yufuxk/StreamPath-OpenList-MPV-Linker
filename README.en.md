@@ -1,46 +1,47 @@
-<h1 align="center">StreamPath</h1><p align="center">Browse network storage, local media, and media servers on Windows, and play with MPV.</p>
+<h1 align="center">StreamPath</h1>
+
+<p align="center">Browse network storage, local media, and media servers on Windows, and play with MPV.</p>
 <p align="center">Windows 10/11 x64 · WebDAV / SMB / FTP / NFS · Jellyfin / Emby · Media Library</p>
-<p align="center"><a href="#quick-start">Quick Start</a> · <a href="#media-library-basics">Media Library Basics</a> · <a href="docs/PROJECT.md">Technical & Compatibility Notes</a></p><p align="center"><img src="docs/images/readme/library-home.png" alt="StreamPath Media Library Home" width="100%"></p>
-<p align="center"><sub>Media Library Home</sub></p><table>
- <tr>
- <td width="50%"><img src="docs/images/readme/series-detail.png" alt="Title Detail Page" width="100%"></td>
- <td width="50%"><img src="docs/images/readme/episode-list.png" alt="Episode List" width="100%"></td>
- </tr>
- <tr>
- <td align="center"><sub>Title details, cast & crew, and related resources</sub></td>
- <td align="center"><sub>Episode browsing, synopsis, and watch progress</sub></td>
- </tr>
-</table><p align="center"><img src="docs/images/readme/movie-showcase.png" alt="Movie Showcase Page" width="100%"></p>
+<p align="center"><a href="#quick-start">Quick Start</a> · <a href="#media-library-basics">Media Library Basics</a> · <a href="docs/PROJECT.md">Technical & Compatibility Notes</a></p>
+
+<p align="center"><img src="docs/images/readme/library-home.png" alt="StreamPath Media Library Home" width="100%"></p>
+<p align="center"><sub>Media Library Home</sub></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/series-detail.png" alt="Title Detail Page" width="100%"></td>
+    <td width="50%"><img src="docs/images/readme/episode-list.png" alt="Episode List" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Title details, cast & crew, and related resources</sub></td>
+    <td align="center"><sub>Episode browsing, synopsis, and watch progress</sub></td>
+  </tr>
+</table>
+
+<p align="center"><img src="docs/images/readme/movie-showcase.png" alt="Movie Showcase Page" width="100%"></p>
 <p align="center"><sub>Movie Showcase Page</sub></p>
 
 ## What StreamPath Can Do
 
-| Feature                  | Description                                                                                                                  |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| 🎬 Media Library         | Browse movies, series, collections, daily picks, title details, and episodes; supports TMDB and local NFO metadata.          |
-| 🌐 Multi-Source Browsing | Browse WebDAV, SMB, FTP/FTPS, NFS, and local folders, or connect to Jellyfin and Emby.                                       |
-| ▶️ Video & Music         | Play video, audio, and STRM with MPV; supports resume, auto next episode, external subtitles & fonts, lyrics, and cover art. |
-| 💿 Blu-ray               | Local ISO/BDMV with optional menu or main title; WebDAV supports title-based playback; HDMV menus are a test feature.        |
-| 🕘 Favorites & History   | View favorites, resume, and recently played by source; import/export data and personal status by category.                   |
+| Feature | Description |
+| -------- | ---------------------------------------------------------------- |
+| 🎬 Media Library | Browse movies, series, collections, daily picks, title details, and episodes; supports TMDB and local NFO metadata. |
+| 🌐 Multi-Source Browsing | Browse WebDAV, SMB, FTP/FTPS, NFS, and local folders, or connect to Jellyfin and Emby. |
+| ▶️ Video & Music | Play video, audio, and STRM with MPV; supports resume, auto next episode, external subtitles & fonts, lyrics, and cover art. |
+| 💿 Blu-ray | Local ISO/BDMV with optional menu or main title; WebDAV supports title-based playback; HDMV menus are a test feature. |
+| 🕘 Favorites & History | View favorites, resume, and recently played by source; import/export data and personal status by category. |
 
 Supports Simplified Chinese, Traditional Chinese, Japanese, and English. OpenList/AList can be connected via WebDAV; search, restore, and other features depend on server capabilities.
 
 ## Quick Start
 
-1. Get the Windows x64 installer (`.setup.exe`) from the project's [Releases](https://../releases) page and follow the wizard; or extract the portable package (`.portable.zip`) and run `streampath.exe`.
-
+1. Get the Windows x64 installer (`.setup.exe`) from the project's [Releases](../../releases) page and follow the wizard; or extract the portable package (`.portable.zip`) and run `streampath.exe`.
 2. In "Settings → Playback", select the player executable; MPV is recommended.
-
 3. Add a media source:
-   
    - **WebDAV:** In "Folders → Network Storage", click Add, select WebDAV as the source type, and fill in the name, server address, and account; you may optionally fill in a default directory, and leave blank if empty passwords are allowed.
-   
    - **Local Folder:** Add a directory in "Folders → Local Folders".
-   
    - **SMB, FTP/FTPS, NFS:** In the same "Add Network Storage" dialog, select the corresponding protocol and fill in the protocol address and account; optionally set the SMB domain, NFS version, and UID/GID.
-   
    - **Jellyfin, Emby:** Add a server and account in "Folders → Media Servers", then select the server from the top of the Media Library to browse titles and play available versions.
-
 4. Open "Folders", navigate to the media directory, and click a video, audio, or STRM file to play.
 
 Player format support is determined by the configured player. When playing STRM files on OpenList, it is recommended to enable "Enable Signing" in the corresponding storage settings.
@@ -56,15 +57,14 @@ Updates preserve the current copy's data; the installer and portable versions us
 ## Media Library Basics
 
 1. Add media sources first. "Main Library" aggregates enabled directories; you can also select Jellyfin or Emby from the top dropdown.
-
-2. Open "Folders → Media Library" and add movie or series directories.  
+2. Open "Folders → Media Library" and add movie or series directories.
    Via "Edit Media Directory", you can modify the name, source, type, and scan settings; local/WebDAV directories can also set metadata reading, write-back, and read-only.
-
 3. Click "Manual Scan"; once complete, you can browse titles.
-
 4. If you need TMDB metadata, save and verify the **Read Access Token** in the Media Library settings; scanning and playback work without it.
 
 The top of "Folders → Media Library" shows collection statistics for enabled directories: "TV Episodes" is the number of individual episode entries, "TV Series" is the number of complete series, "Movies" includes regular movies, ISO, and BDMV, and "Other" is unrecognized entries. Multiple versions of the same movie or episode are counted separately, while complete series are deduplicated by title; disabled directories and missing resources are not counted, and statistics update automatically after scanning or directory toggle changes.
+
+The Media Library poster wall can be sorted by title, date added, year, or TMDB rating, and you can switch between ascending and descending order to the right of the sort field; titles with missing year or rating are placed at the end.
 
 The Media Library identifies media by filename and directory, without reading file contents or probing duration, tracks, or other information. Filenames with season/episode numbers are more likely to be categorized correctly.
 
@@ -82,11 +82,11 @@ Click "Playlists" in the Media Library toolbar to enter the management page; aft
 
 Right-click a list or episode cover to refresh metadata, mark watch status, or add to another list. Copying a list preserves members and order; copying an episode copies only the current entry; adding to an existing list skips duplicates. Episodes are sorted by air date or season/episode number, and manual order remains valid.
 
-Custom playlists require MPV and support in-library videos, STRM, and server direct-play videos. New playback uses the current list order; "Shuffle Play" establishes a shuffled order for the current session; with "Loop Play" enabled, the end of the last item returns to the first available entry to continue. Resume restores the order at the start of playback. Jellyfin/Emby lists are read-only; copy them to a custom list to edit. See [Custom Playlist Guide](https://docs/%E5%BD%B1%E8%A7%86%E5%BA%93%E8%87%AA%E5%AE%9A%E4%B9%89%E6%92%AD%E6%94%BE%E5%88%97%E8%A1%A8.md) for details.
+Custom playlists require MPV and support in-library videos, STRM, and server direct-play videos. New playback uses the current list order; "Shuffle Play" establishes a shuffled order for the current session; with "Loop Play" enabled, the end of the last item returns to the first available entry to continue. Resume restores the order at the start of playback. Jellyfin/Emby lists are read-only; copy them to a custom list to edit. See [Custom Playlist Guide](docs/影视库自定义播放列表.md) for details.
 
 Right-click a title, season, resource, playlist, or continue-watching cover and select "Cache Video…" to download after confirming the version, attachments, size, and save directory. Complete cached playback prioritizes local files; ISO downloads the full image, and BDMV downloads the entire disc directory. The source must provide safe resumable size and version information; if space is insufficient, the entire batch will not start.
 
-The default directory is `stream_path_data/video_cache/`, which can be changed in "Settings → Cache → Video Offline Cache" or temporarily selected in the confirmation dialog. The circular download button expands progress, speed, and pause/resume controls; it automatically pauses during online playback and preserves breakpoints when the software is closed. The management entry in settings can delete downloads; regular cache cleanup and library export preserve video files. See [Video Offline Cache Guide](https://docs/%E8%A7%86%E9%A2%91%E7%A6%BB%E7%BA%BF%E7%BC%93%E5%AD%98.md) for details.
+The default directory is `stream_path_data/video_cache/`, which can be changed in "Settings → Cache → Video Offline Cache" or temporarily selected in the confirmation dialog. The circular download button expands progress, speed, and pause/resume controls; it automatically pauses during online playback and preserves breakpoints when the software is closed. The management entry in settings can delete downloads; regular cache cleanup and library export preserve video files. See [Video Offline Cache Guide](docs/视频离线缓存.md) for details.
 
 The detail page provides "Start Playing" or "Resume Playing"; series default to starting from S01E01. The Continue Watching and Recently Played menus can refresh status or mark as watched; right-click a blank area in the Media Library and select "Refresh Playback Status" to refresh playback sessions uniformly. Resume automatically advances when there is a next episode. Duration prioritizes probe results, otherwise uses official metadata.
 
@@ -94,7 +94,7 @@ On the series detail page, the default version for the entire series can be sele
 
 After switching versions, click play again for it to take effect; resume uses that version's own progress. With auto next season enabled, when the next season requires another source, MPV exits first, and the main program then prompts "Continue Playing" or "Play Later"; playback restarts only if you choose to continue.
 
-Blu-ray ISO/BDMV supports external `.ass`, `.ssa`, and `.srt` subtitles: first enable "Auto-inject matching external subtitles, external fonts, and LRC" in "Settings → Playback → Playback Behavior", then click "Blu-ray External Subtitles" in the folder right-click menu, the ISO title selection window, or the playback bottom bar to select "Auto Suggest", "Do Not Use External Subtitles", or a specific file for each MPLS. See [ISO & BDMV External Subtitle Naming and Usage](https://docs/ISO%E4%B8%8EBDMV%E5%A4%96%E6%8C%82%E5%AD%97%E5%B9%95%E5%91%BD%E5%90%8D%E4%B8%8E%E4%BD%BF%E7%94%A8.md) for naming, directory location, and matching rules.
+Blu-ray ISO/BDMV supports external `.ass`, `.ssa`, and `.srt` subtitles: first enable "Auto-inject matching external subtitles, external fonts, and LRC" in "Settings → Playback → Playback Behavior", then click "Blu-ray External Subtitles" in the folder right-click menu, the ISO title selection window, or the playback bottom bar to select "Auto Suggest", "Do Not Use External Subtitles", or a specific file for each MPLS. See [ISO & BDMV External Subtitle Naming and Usage](docs/ISO与BDMV外挂字幕命名与使用.md) for naming, directory location, and matching rules.
 
 In "Settings → Playback → Playback Behavior", you can enable "Insert Specials by Decimal Episode Number" (default off). The implicit playlist of recognized series will insert episodes like 11.5 between the corresponding main episodes based on the decimal episode number in the special's metadata title; when the season attribution is unclear or the episode number is outside the season range, the air-date order is retained. Changes take effect after saving and restarting playback; custom lists retain their original order.
 
@@ -111,21 +111,15 @@ In "Settings → Interface → Interface Style", select an accent color and save
 ## Supported Scope & Data
 
 - **System:** Windows 10/11 x64.
-
 - **Player:** MPV is the primary support target; video and audio can also use other external players via player argument templates.
-
 - **Blu-ray:** Supports unencrypted Blu-ray. WebDAV playback requires server support for random Range reading and resource version verification; DVD, AACS/BD+ encrypted discs, and BD-J are not supported. HDMV menus are an optional test feature.
-
 - **Portable Data:** Configuration, cache, and playback records are saved by default in the `stream_path_data/` directory alongside the program.
-
 - **Installed Data:** Configuration, cache, and playback records are saved in `%LOCALAPPDATA%\StreamPath\stream_path_data\`, separate from the install directory.
-
 - **Media Servers:** Supports direct play and progress/watch status sync; does not provide transcoding, live TV, or remote control. Offline records sync after reconnection.
-
 - **Network Protocols:** Playback sources must support random reading; unsupported sources will show a clear message and will not download the entire file. See above for Blu-ray support scope.
 
 ## Warning
 
 This project only manages and plays media provided by users and does not provide content sources; demo films are for showcasing media metadata only.
 
-For more architecture, protocol, and compatibility details, see [Technical & Compatibility Notes](https://docs/PROJECT.md).
+For more architecture, protocol, and compatibility details, see [Technical & Compatibility Notes](docs/PROJECT.md).
