@@ -24,6 +24,7 @@ class _Fixture {
   final ShellTestAppState app;
   final HttpServer server;
   bool rejectLogin = false;
+  bool rejectDav = false;
   int verifications = 0;
   String? heldPath;
   Completer<void>? requestStarted, releaseRequest;
@@ -60,6 +61,22 @@ class _Fixture {
     final fixture = _Fixture(directory, progress, app, server);
     server.listen((request) async {
       await request.drain<void>();
+      if (request.method == 'PROPFIND') {
+        if (fixture.rejectDav) {
+          request.response.statusCode = HttpStatus.unauthorized;
+        } else {
+          request.response
+            ..statusCode = HttpStatus.multiStatus
+            ..headers.contentType = ContentType(
+              'application',
+              'xml',
+              charset: 'utf-8',
+            )
+            ..write('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>');
+        }
+        await request.response.close();
+        return;
+      }
       request.response.headers.contentType = ContentType.json;
       if (request.uri.path == fixture.heldPath) {
         fixture.requestStarted!.complete();
@@ -252,6 +269,86 @@ void main() {
             await tester.pumpAndSettle();
             expect(fixture.verifications, verified + 1);
             expect(find.text('连接成功'), findsOneWidget);
+          }
+          expect(tester.takeException(), isNull);
+        } finally {
+          await tester.pumpWidget(const SizedBox());
+          await tester.runAsync(fixture.close);
+          HttpOverrides.global = previousOverrides;
+        }
+      },
+      skip: !Platform.isWindows,
+    );
+  }
+
+  for (final reject in [false, true]) {
+    testWidgets(
+      'network source editor ${reject ? 'keeps the dialog visible after a failed WebDAV login' : 'saves, mounts and activates the WebDAV profile'}',
+      (tester) async {
+        final previousOverrides = HttpOverrides.current;
+        HttpOverrides.global = null;
+        final fixture = (await tester.runAsync(_Fixture.open))!;
+        await tester.runAsync(() => fixture.app.getMediaConnections());
+        fixture.rejectDav = reject;
+        try {
+          await tester.pumpWidget(
+            ChangeNotifierProvider<AppState>.value(
+              value: fixture.app,
+              child: MaterialApp(
+                locale: const Locale('zh', 'CN'),
+                supportedLocales: const [Locale('zh', 'CN')],
+                localizationsDelegates: const [
+                  AppLocalizations.delegate,
+                  GlobalMaterialLocalizations.delegate,
+                  GlobalWidgetsLocalizations.delegate,
+                  GlobalCupertinoLocalizations.delegate,
+                ],
+                home: const Scaffold(body: MediaConnectionsPage()),
+              ),
+            ),
+          );
+          await tester.pump();
+          await tester.tap(find.text('添加网络存储'));
+          await tester.pumpAndSettle();
+          expect(find.text('添加来源'), findsOneWidget);
+          expect(find.text('WEBDAV'), findsOneWidget);
+          final fields = find.byType(TextField);
+          await tester.enterText(fields.at(0), 'WebDAV 测试');
+          await tester.enterText(
+            fields.at(1),
+            'http://127.0.0.1:${fixture.server.port}/dav',
+          );
+          await tester.enterText(fields.at(2), 'Test');
+          await tester.enterText(fields.at(3), 'test-password');
+          await tester.runAsync(() async {
+            await tester.tap(find.text('验证并保存'));
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          });
+          await tester.pump();
+          await pumpUntil(
+            tester,
+            () => find.text('正在验证…').evaluate().isEmpty,
+            reason:
+                'WebDAV verification must finish before checking its result',
+          );
+          await tester.pumpAndSettle();
+          final config = fixture.app.configStore.current;
+          if (reject) {
+            expect(find.text('添加来源'), findsOneWidget);
+            expect(find.textContaining('重新连接失败'), findsOneWidget);
+            expect(config.profiles, isEmpty);
+            expect(config.mountedProfileIds, isEmpty);
+          } else {
+            expect(find.text('添加来源'), findsNothing);
+            expect(config.profiles, hasLength(1));
+            expect(config.profileId, config.profiles.single.profileId);
+            expect(config.mountedProfileIds, [
+              config.profiles.single.profileId,
+            ]);
+            expect(
+              fixture.app.isProfileConnected(config.profiles.single.profileId),
+              isTrue,
+            );
           }
           expect(tester.takeException(), isNull);
         } finally {

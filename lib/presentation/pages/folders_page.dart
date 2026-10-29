@@ -107,46 +107,6 @@ class _FoldersPageState extends State<FoldersPage>
       ) ==
       true;
 
-  Future<void> _addNetwork() async {
-    final config = context.read<AppState>().configStore.current;
-    final candidates = config.profiles
-        .where(
-          (profile) => !config.mountedProfileIds.contains(profile.profileId),
-        )
-        .toList();
-    final id = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => SPDialog(
-        title: const AppText('添加已保存的服务器'),
-        content: SizedBox(
-          width: 420,
-          child: candidates.isEmpty
-              ? const AppText('没有可添加的服务器档案')
-              : ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: candidates.length,
-                  itemBuilder: (_, index) => ListTile(
-                    title: AppText(candidates[index].name),
-                    subtitle: AppText(candidates[index].serverUrl),
-                    onTap: () => Navigator.of(
-                      dialogContext,
-                    ).pop(candidates[index].profileId),
-                  ),
-                ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const AppText('取消'),
-          ),
-        ],
-      ),
-    );
-    if (id != null && mounted) {
-      await _run(id, () => context.read<AppState>().mountProfile(id));
-    }
-  }
-
   Future<void> _editLocal([LocalRootConfig? root]) async {
     final draft = await showLocalRootDialog(context, initial: root);
     if (!mounted || draft == null) return;
@@ -233,9 +193,10 @@ class _FoldersPageState extends State<FoldersPage>
                     child: MediaConnectionsPage(
                       embedded: true,
                       management: true,
-                      onAddWebDav: _addNetwork,
                       beforeConnections: NetworkStoragePage(
                         embedded: true,
+                        onEdit: (profile) =>
+                            showSourceEditor(context, webDavProfile: profile),
                         onRemove: (profile) async {
                           if (await _confirm(
                             '移除服务器挂载？',

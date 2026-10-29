@@ -514,7 +514,6 @@ void main() {
   testWidgets('保存设置草稿保留侧栏即时切换的简略和悬浮偏好', (tester) async {
     await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('profile-name-field')), '简略侧栏');
     await tester.runAsync(() async {
       await appState.setSidebarCompact(true);
       await appState.setSidebarMode(SidebarDisplayMode.autoHide);
@@ -527,20 +526,18 @@ void main() {
       saveButton.onPressed!();
       for (var attempt = 0; attempt < 200; attempt++) {
         await tester.pump();
-        if (configStore.current.activeProfile?.name == '简略侧栏' &&
-            tester
-                    .widget<FilledButton>(
-                      find.byKey(const Key('save-settings-button')),
-                    )
-                    .onPressed !=
-                null) {
+        if (tester
+                .widget<FilledButton>(
+                  find.byKey(const Key('save-settings-button')),
+                )
+                .onPressed !=
+            null) {
           break;
         }
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
     });
     await tester.pumpAndSettle();
-    expect(configStore.current.activeProfile?.name, '简略侧栏');
     expect(configStore.current.appearance.sidebarCompact, isTrue);
     expect(
       configStore.current.appearance.sidebarMode,
@@ -623,19 +620,6 @@ void main() {
 
     await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
     await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<TextField>(
-            find.descendant(
-              of: find.byKey(const Key('server-url-field')),
-              matching: find.byType(TextField),
-            ),
-          )
-          .decoration
-          ?.labelText,
-      isNull,
-    );
-    expect(find.text('服务器地址'), findsOneWidget);
     await tester.tap(find.byKey(const Key('settings-section-appearance')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('interface-font-selector')));
@@ -823,7 +807,7 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const Key('settings-section-general')), findsOneWidget);
-    expect(find.byKey(const Key('server-url-field')), findsOneWidget);
+    expect(find.byKey(const Key('openlist-recovery-base-url')), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('settings-section-cache')));
     await tester.pumpAndSettle();
@@ -837,7 +821,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('cache-enabled-switch')), findsOneWidget);
-    expect(find.byKey(const Key('server-url-field')), findsNothing);
+    expect(find.byKey(const Key('openlist-recovery-base-url')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -850,8 +834,8 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(
-      find.byKey(const Key('profile-name-field')),
-      '未保存的名称',
+      find.byKey(const Key('openlist-recovery-base-url')),
+      'https://draft.example/dav',
     );
     await tester.tap(find.byKey(const Key('settings-section-cache')));
     await tester.pumpAndSettle();
@@ -864,10 +848,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       tester
-          .widget<TextFormField>(find.byKey(const Key('profile-name-field')))
+          .widget<TextFormField>(
+            find.byKey(const Key('openlist-recovery-base-url')),
+          )
           .controller!
           .text,
-      '未保存的名称',
+      'https://draft.example/dav',
     );
 
     await tester.tap(find.byKey(const Key('save-settings-button')));
@@ -1008,238 +994,6 @@ void main() {
     final saved = await tester.runAsync(configStore.load);
     expect(saved!.mediaLibrary.sharingMode, MediaLibrarySharingMode.allShared);
     expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('保存另一个服务器档案后认证成功并切换活动档案', (tester) async {
-    tester.view.physicalSize = const Size(1200, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    late HttpServer server;
-    await tester.runAsync(() async {
-      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      server.listen((request) async {
-        request.response
-          ..statusCode = HttpStatus.multiStatus
-          ..headers.set(HttpHeaders.connectionHeader, 'close')
-          ..headers.contentType = ContentType(
-            'application',
-            'xml',
-            charset: 'utf-8',
-          )
-          ..write('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>');
-        await request.response.close();
-      });
-    });
-    addTearDown(() => server.close(force: true));
-    const first = ServerProfile(
-      profileId: 'profile-a',
-      name: '主服务器',
-      serverUrl: 'https://a.example/dav',
-      username: 'alice',
-    );
-    final second = ServerProfile(
-      profileId: 'profile-b',
-      name: '备用服务器',
-      serverUrl: 'http://${server.address.address}:${server.port}/dav',
-      username: 'bob',
-    );
-    await tester.runAsync(
-      () => configStore.save(
-        StreamPathConfig.defaults()
-            .upsertProfile(first)
-            .upsertProfile(second, activate: false),
-      ),
-    );
-
-    await tester.pumpWidget(buildSettings());
-    await tester.pumpAndSettle();
-    tester
-        .widget<SPDropdownButtonFormField<String>>(
-          find.byKey(const Key('settings-profile-selector')),
-        )
-        .onChanged!('profile-b');
-    await tester.pump();
-    await tester.enterText(
-      find.byKey(const Key('profile-name-field')),
-      '备用服务器已保存',
-    );
-    final saveButton = tester.widget<FilledButton>(
-      find.byKey(const Key('save-settings-button')),
-    );
-    await tester.runAsync(() async {
-      saveButton.onPressed!();
-      const expectedFiles = [
-        'stream_path_config.json',
-        'cache_policy.json',
-        'cache_intelligence.json',
-        'cache_expiration.json',
-      ];
-      for (var i = 0; i < 200; i++) {
-        final savedProfile = configStore.current.profiles
-            .where((profile) => profile.profileId == 'profile-b')
-            .first;
-        final saveFinished =
-            savedProfile.name == '备用服务器已保存' &&
-            expectedFiles.every(
-              (name) => File(
-                '${tempDir.path}${Platform.pathSeparator}$name',
-              ).existsSync(),
-            ) &&
-            tempDir.listSync().whereType<File>().every(
-              (file) => !file.path.endsWith('.tmp'),
-            );
-        if (saveFinished) {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-          break;
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-    });
-    await tester.pump(const Duration(milliseconds: 500));
-
-    expect(configStore.current.profileId, 'profile-b');
-    expect(appState.mediaSourceId, 'profile-b');
-    expect(find.text('全部配置已保存'), findsOneWidget);
-    tester.testTextInput.hide();
-    FocusManager.instance.primaryFocus?.unfocus();
-    await tester.pump();
-    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-    await tester.pump();
-    await tester.pumpWidget(buildSettings());
-    for (var i = 0; i < 20; i++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-      await tester.pump(const Duration(milliseconds: 100));
-      if (find
-          .byKey(const Key('settings-profile-selector'))
-          .evaluate()
-          .isNotEmpty) {
-        break;
-      }
-    }
-
-    final selector = tester.widget<SPDropdownButtonFormField<String>>(
-      find.byKey(const Key('settings-profile-selector')),
-    );
-    expect(selector.initialValue, 'profile-b');
-    expect(
-      tester
-          .widget<TextFormField>(find.byKey(const Key('profile-name-field')))
-          .controller!
-          .text,
-      '备用服务器已保存',
-    );
-    expect(configStore.current.profileId, 'profile-b');
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-    await tester.pump();
-  });
-
-  testWidgets('切换服务器档案认证失败时恢复原活动档案且不保存候选修改', (tester) async {
-    tester.view.physicalSize = const Size(1200, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    late HttpServer server;
-    await tester.runAsync(() async {
-      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      server.listen((request) async {
-        request.response.headers.set(HttpHeaders.connectionHeader, 'close');
-        if (request.uri.path == '/dav/a') {
-          request.response
-            ..statusCode = HttpStatus.multiStatus
-            ..headers.contentType = ContentType(
-              'application',
-              'xml',
-              charset: 'utf-8',
-            )
-            ..write('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>');
-        } else {
-          request.response.statusCode = HttpStatus.unauthorized;
-        }
-        await request.response.close();
-      });
-    });
-    addTearDown(() => server.close(force: true));
-    final first = ServerProfile(
-      profileId: 'profile-a',
-      name: '默认档案',
-      serverUrl: 'http://${server.address.address}:${server.port}/dav/a',
-      username: 'alice',
-    );
-    final second = ServerProfile(
-      profileId: 'profile-b',
-      name: '其他档案',
-      serverUrl: 'http://${server.address.address}:${server.port}/dav/b',
-      username: 'bob',
-    );
-    await tester.runAsync(() async {
-      await configStore.save(
-        StreamPathConfig.defaults()
-            .upsertProfile(first)
-            .upsertProfile(second, activate: false),
-      );
-      await appState.connect(
-        baseUrl: first.serverUrl,
-        username: first.username,
-        password: first.password,
-        profileId: first.profileId,
-      );
-    });
-    final previousService = appState.webDavService;
-
-    await tester.pumpWidget(buildSettings());
-    await tester.pumpAndSettle();
-    tester
-        .widget<SPDropdownButtonFormField<String>>(
-          find.byKey(const Key('settings-profile-selector')),
-        )
-        .onChanged!('profile-b');
-    await tester.pump();
-    await tester.enterText(
-      find.byKey(const Key('profile-name-field')),
-      '认证失败时不能保存',
-    );
-    tester
-        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
-        .onPressed!();
-    for (var i = 0; i < 50; i++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-      await tester.pump(const Duration(milliseconds: 100));
-      if (find.textContaining('重新连接失败').evaluate().isNotEmpty) break;
-    }
-
-    expect(configStore.current.profileId, 'profile-a');
-    expect(
-      configStore.current.profiles
-          .where((profile) => profile.profileId == 'profile-b')
-          .single
-          .name,
-      '其他档案',
-    );
-    expect(appState.mediaSourceId, 'profile-a');
-    expect(identical(appState.webDavService, previousService), isTrue);
-    expect(appState.username, 'alice');
-    expect(
-      tester
-          .widget<SPDropdownButtonFormField<String>>(
-            find.byKey(const Key('settings-profile-selector')),
-          )
-          .initialValue,
-      'profile-a',
-    );
-    expect(
-      tester
-          .widget<TextFormField>(find.byKey(const Key('profile-name-field')))
-          .controller!
-          .text,
-      '默认档案',
-    );
-    expect(find.textContaining('重新连接失败'), findsOneWidget);
   });
 
   testWidgets('磨砂设置分组使用无阴影的稳定内容层', (tester) async {
@@ -1946,7 +1700,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
     final serverField = tester.widget<TextFormField>(
-      find.byKey(const Key('server-url-field')),
+      find.byKey(const Key('openlist-recovery-base-url')),
     );
     expect(serverField.controller?.text, isEmpty);
     expect(tester.takeException(), isNull);

@@ -241,14 +241,11 @@ class SettingsPageState extends State<SettingsPage> {
       _draft.openListIndexAutoUpdateEnabled = value;
   bool get _requiresOpenListAdminConfig =>
       _openListRecoveryEnabled || _openListIndexAutoUpdateEnabled;
-  List<ServerProfile> get _profiles => _draft.profiles;
   set _profiles(List<ServerProfile> value) => _draft.profiles = value;
   String? get _selectedProfileId => _draft.selectedProfileId;
   set _selectedProfileId(String? value) => _draft.selectedProfileId = value;
   CredentialStorageMode get _credentialStorageMode =>
       _draft.credentialStorageMode;
-  set _credentialStorageMode(CredentialStorageMode value) =>
-      _draft.credentialStorageMode = value;
   bool get _cacheEnabled => _draft.cacheEnabled;
   set _cacheEnabled(bool value) => _draft.cacheEnabled = value;
   CachePolicyMode get _cacheMode => _draft.cacheMode;
@@ -340,12 +337,6 @@ class SettingsPageState extends State<SettingsPage> {
       final expirationConfig =
           await appState.cacheExpirationConfigStore?.load() ??
           CacheExpirationConfig.defaults();
-      final rememberedProfile = fullConfig.profiles
-          .where(
-            (profile) =>
-                profile.profileId == SettingsPageMemory.selectedProfileId,
-          )
-          .firstOrNull;
       if (!mounted) return false;
       setState(() {
         _draft.loadFrom(
@@ -355,9 +346,6 @@ class SettingsPageState extends State<SettingsPage> {
           intelligenceConfig: intelligenceConfig,
           expirationConfig: expirationConfig,
         );
-        if (rememberedProfile != null) {
-          _loadProfileFields(rememberedProfile);
-        }
         _loaded = true;
       });
       if (_selectedSection == SettingsSection.server) {
@@ -528,8 +516,7 @@ class SettingsPageState extends State<SettingsPage> {
         ) !=
         null;
 
-    if (_profileNameController.text.trim().isEmpty ||
-        (_requiresOpenListAdminConfig &&
+    if ((_requiresOpenListAdminConfig &&
             (OpenListRecoveryService.normalizeBaseUri(
                       _openListBaseUrlController.text,
                     ) ==
@@ -1024,20 +1011,6 @@ class SettingsPageState extends State<SettingsPage> {
     });
   }
 
-  void _selectProfileForEditing(String? profileId) {
-    if (profileId == null) return;
-    final profile = _profiles
-        .where((item) => item.profileId == profileId)
-        .firstOrNull;
-    if (profile == null) return;
-    _stopOpenListIndexProgressPolling(clear: true);
-    setState(() {
-      _openListIndexUpdateUnavailable = false;
-      _loadProfileFields(profile);
-    });
-    unawaited(_refreshOpenListIndexProgress());
-  }
-
   void _loadProfileFields(ServerProfile profile) {
     _selectedProfileId = profile.profileId;
     _profileNameController.text = profile.name;
@@ -1096,64 +1069,6 @@ class SettingsPageState extends State<SettingsPage> {
     _openListIndexIntervalController.text = OpenListIndexConfig
         .defaultUpdateIntervalMinutes
         .toString();
-  }
-
-  void _newProfileForEditing() {
-    _stopOpenListIndexProgressPolling(clear: true);
-    setState(() {
-      _openListIndexUpdateUnavailable = false;
-      _clearProfileFields(name: '新服务器');
-    });
-  }
-
-  Future<void> _confirmDeleteSelectedProfile() async {
-    final profileId = _selectedProfileId;
-    if (profileId == null) return;
-    final appState = context.read<AppState>();
-    if (appState.isProfileConnected(profileId)) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SPNotice(content: AppText('已连接档案不能删除，请先移除挂载或断开连接')));
-      return;
-    }
-    final confirmed = await showGlassDialog<bool>(
-      context: context,
-      builder: (dialogContext) => SPDialog(
-        title: const AppText('删除服务器档案？'),
-        content: const AppText('只删除该档案及其凭据，不删除缓存、收藏和播放进度。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const AppText('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const AppText('确认删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    try {
-      await appState.configStore.save(
-        appState.configStore.current.removeProfile(profileId),
-      );
-      if (SettingsPageMemory.selectedProfileId == profileId) {
-        SettingsPageMemory.selectProfile(null);
-      }
-      appState.refreshOpenListIndexSchedule();
-      if (!mounted) return;
-      await _refreshConfigFields();
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SPNotice(content: AppText('服务器档案已删除')));
-    } on AppException catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SPNotice(content: AppText(error.message)));
-    }
   }
 
   Future<void> _updateOpenListIndexNow() async {
@@ -1604,174 +1519,6 @@ class SettingsPageState extends State<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SettingsColumns(
-          firstFraction: 0.5,
-          children: [
-            SettingsGroupCard(
-              icon: SPIcons.network,
-              title: '服务器档案',
-              description: '每个档案使用稳定 profileId 隔离缓存、媒体资产与播放进度。',
-              child: Column(
-                children: [
-                  if (_profiles.isNotEmpty)
-                    _SettingsLabeledField(
-                      label: context.l10n.text('编辑档案'),
-                      child: SPDropdownButtonFormField<String>(
-                        key: const Key('settings-profile-selector'),
-                        initialValue: _selectedProfileId,
-                        dropdownColor: _dropdownMenuColor,
-                        borderRadius: AppTheme.dropdownBorderRadius,
-                        decoration: InputDecoration(
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [
-                          for (final profile in _profiles)
-                            DropdownMenuItem(
-                              value: profile.profileId,
-                              child: AppText(profile.name),
-                            ),
-                        ],
-                        onChanged: _selectProfileForEditing,
-                      ),
-                    ),
-                  if (_profiles.isNotEmpty) const SizedBox(height: 12),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('档案名称'),
-                    child: TextFormField(
-                      key: const Key('profile-name-field'),
-                      controller: _profileNameController,
-                      decoration: InputDecoration(
-                        prefixIcon: Icon(SPIcons.label),
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (value) =>
-                          value == null || value.trim().isEmpty
-                          ? context.l10n.text('请输入档案名称')
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SegmentedButton<CredentialStorageMode>(
-                    key: const Key('credential-storage-mode'),
-                    segments: const [
-                      ButtonSegment(
-                        value: CredentialStorageMode.windowsCredential,
-                        label: AppText('Windows 凭据'),
-                        icon: Icon(SPIcons.shield),
-                      ),
-                      ButtonSegment(
-                        value: CredentialStorageMode.portablePlaintext,
-                        label: AppText('便携明文'),
-                        icon: Icon(SPIcons.document),
-                      ),
-                    ],
-                    selected: {_credentialStorageMode},
-                    onSelectionChanged: (values) =>
-                        setState(() => _credentialStorageMode = values.single),
-                  ),
-                  const SizedBox(height: 6),
-                  AppText(
-                    _credentialStorageMode ==
-                            CredentialStorageMode.windowsCredential
-                        ? '密码与 Token 保存在当前 Windows 用户的凭据管理器中，配置 JSON 不含敏感值。'
-                        : '密码与 Token 以明文写入便携配置；复制数据目录即可迁移，但需自行保护文件。',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton.icon(
-                        onPressed: _newProfileForEditing,
-                        icon: const Icon(SPIcons.add),
-                        label: const AppText('新建档案'),
-                      ),
-                      const SizedBox(width: 8),
-                      TextButton.icon(
-                        onPressed: _selectedProfileId == null
-                            ? null
-                            : _confirmDeleteSelectedProfile,
-                        icon: const Icon(SPIcons.delete),
-                        label: const AppText('删除档案'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            SettingsGroupCard(
-              icon: SPIcons.cloud,
-              title: 'WebDAV 服务器',
-              description: '用于登录、浏览目录和访问媒体文件。',
-              child: Column(
-                children: [
-                  _SettingsLabeledField(
-                    label: context.l10n.text('服务器地址'),
-                    child: TextFormField(
-                      key: const Key('server-url-field'),
-                      controller: _serverUrlController,
-                      keyboardType: TextInputType.url,
-                      contextMenuBuilder: buildClipboardHistoryMenu,
-                      decoration: InputDecoration(
-                        hintText: context.l10n.text('https://example.com/dav'),
-                        prefixIcon: Icon(SPIcons.link),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('默认目录'),
-                    child: TextFormField(
-                      key: const Key('profile-default-directory-field'),
-                      controller: _defaultDirectoryController,
-                      contextMenuBuilder: buildClipboardHistoryMenu,
-                      decoration: InputDecoration(
-                        hintText: context.l10n.text('媒体/电影'),
-                        helperText: context.l10n.text(
-                          '相对于 WebDAV 根目录；留空则进入根目录。',
-                        ),
-                        prefixIcon: Icon(SPIcons.folderOpen),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('用户名'),
-                    child: TextFormField(
-                      key: const Key('server-username-field'),
-                      controller: _serverUsernameController,
-                      contextMenuBuilder: buildClipboardHistoryMenu,
-                      decoration: InputDecoration(
-                        prefixIcon: Icon(SPIcons.person),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('密码'),
-                    child: TextFormField(
-                      key: const Key('server-password-field'),
-                      controller: _serverPasswordController,
-                      obscureText: true,
-                      contextMenuBuilder: buildClipboardHistoryMenu,
-                      decoration: InputDecoration(
-                        helperText: context.l10n.text(
-                          '连接信息完整时，下次启动会自动连接；服务器允许时密码可以留空。',
-                        ),
-                        prefixIcon: Icon(SPIcons.lock),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
         SettingsColumns(
           firstFraction: 0.5,
           children: [

@@ -20,6 +20,7 @@ import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/media_connection.dart';
+import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/film_scan_scheduler.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
@@ -37,6 +38,7 @@ import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/presentation/widgets/section_switcher.dart';
 
 import 'helpers/shell_test_app_state.dart';
+import 'helpers/pump_until.dart';
 
 class _CountingCredentials extends TmdbCredentialStore {
   int reads = 0;
@@ -778,7 +780,7 @@ void main() {
   );
 
   testWidgets(
-    'network management has one add button with both existing flows',
+    'network management opens the unified source dialog with WebDAV selected',
     (tester) async {
       final (app, _) = await _fixture(tester);
       await tester.pumpWidget(
@@ -789,23 +791,99 @@ void main() {
       expect(find.widgetWithText(FilledButton, '添加 WebDAV 挂载'), findsNothing);
       await tester.tap(find.text('添加网络存储'));
       await tester.pumpAndSettle();
-      expect(find.text('SMB / FTP / NFS'), findsOneWidget);
-      await tester.tap(find.text('添加 WebDAV 挂载'));
-      await tester.pumpAndSettle();
-      expect(find.text('添加已保存的服务器'), findsOneWidget);
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('添加网络存储'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('SMB / FTP / NFS'));
-      await tester.pumpAndSettle();
       expect(find.text('添加来源'), findsOneWidget);
-      expect(find.text('SMB'), findsOneWidget);
+      expect(find.text('WEBDAV'), findsOneWidget);
+      expect(find.text('来源名称'), findsOneWidget);
+      expect(find.text('默认目录'), findsOneWidget);
+      expect(find.text('域（可选）'), findsNothing);
+      expect(find.text('只读来源'), findsNothing);
+      await tester.tap(find.text('WEBDAV'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('SMB').last);
+      await tester.pumpAndSettle();
+      expect(find.text('域（可选）'), findsOneWidget);
+      expect(find.text('默认目录'), findsNothing);
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('WebDAV rows expose an edit entry that keeps the profile id', (
+    tester,
+  ) async {
+    final previousOverrides = HttpOverrides.current;
+    HttpOverrides.global = null;
+    addTearDown(() => HttpOverrides.global = previousOverrides);
+    final (app, _) = await _fixture(tester);
+    final server = (await tester.runAsync(() async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        await request.drain<void>();
+        request.response
+          ..statusCode = HttpStatus.multiStatus
+          ..headers.contentType = ContentType(
+            'application',
+            'xml',
+            charset: 'utf-8',
+          )
+          ..write('<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>');
+        await request.response.close();
+      });
+      return server;
+    }))!;
+    addTearDown(() => server.close(force: true));
+    final profile = ServerProfile(
+      profileId: 'webdav-edit-profile',
+      name: '可编辑服务器',
+      serverUrl: 'http://${server.address.address}:${server.port}/dav',
+      username: 'user',
+      password: 'secret',
+    );
+    await tester.runAsync(
+      () => app.configStore.save(
+        StreamPathConfig.defaults()
+            .upsertProfile(profile)
+            .withMountedProfileIds([profile.profileId]),
+      ),
+    );
+    await tester.pumpWidget(
+      _frame(app, FoldersPage(onOpenResult: (_) async {})),
+    );
+    await _settle(tester);
+    expect(find.text('可编辑服务器'), findsOneWidget);
+    await tester.tap(find.byTooltip('编辑'));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑来源'), findsOneWidget);
+    final fields = tester
+        .widgetList<TextField>(find.byType(TextField))
+        .toList(growable: false);
+    expect(fields[0].controller!.text, '可编辑服务器');
+    expect(fields[1].controller!.text, profile.serverUrl);
+    expect(fields[2].controller!.text, 'user');
+    expect(fields[3].controller!.text, 'secret');
+    await tester.enterText(find.byType(TextField).at(0), '改名后的服务器');
+    await tester.runAsync(() async {
+      await tester.tap(find.text('验证并保存'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    await pumpUntil(
+      tester,
+      () => find.text('正在验证…').evaluate().isEmpty,
+      reason: 'WebDAV profile edit must finish before checking its result',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('编辑来源'), findsNothing);
+    final saved = app.configStore.current.profiles.single;
+    expect(saved.profileId, profile.profileId);
+    expect(saved.name, '改名后的服务器');
+    expect(app.configStore.current.mountedProfileIds, [profile.profileId]);
+    expect(find.text('改名后的服务器'), findsOneWidget);
+    // 让测试时钟走完真实 HTTP 连接的 keep-alive 计时。
+    await tester.pump(const Duration(seconds: 4));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'folder network and media server add buttons align above the lists',

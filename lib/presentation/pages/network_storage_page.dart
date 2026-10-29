@@ -15,9 +15,15 @@ import '../widgets/sp_notice.dart';
 import 'browser_page.dart';
 
 class NetworkStoragePage extends StatefulWidget {
-  const NetworkStoragePage({super.key, this.embedded = false, this.onRemove});
+  const NetworkStoragePage({
+    super.key,
+    this.embedded = false,
+    this.onRemove,
+    this.onEdit,
+  });
   final bool embedded;
   final ValueChanged<ServerProfile>? onRemove;
+  final ValueChanged<ServerProfile>? onEdit;
 
   @override
   State<NetworkStoragePage> createState() => _NetworkStoragePageState();
@@ -95,14 +101,28 @@ class _NetworkStoragePageState extends State<NetworkStoragePage>
                       : '连接失败，点击重试',
                 ),
                 onTap: busy ? null : () => _open(profile.profileId),
-                trailing: widget.onRemove == null
+                trailing: widget.onEdit == null && widget.onRemove == null
                     ? null
-                    : IconButton(
-                        tooltip: context.l10n.text('移除挂载'),
-                        icon: const Icon(SPIcons.delete),
-                        onPressed: busy
-                            ? null
-                            : () => widget.onRemove!(profile),
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.onEdit != null)
+                            IconButton(
+                              tooltip: context.l10n.text('编辑'),
+                              icon: const Icon(SPIcons.edit),
+                              onPressed: busy
+                                  ? null
+                                  : () => widget.onEdit!(profile),
+                            ),
+                          if (widget.onRemove != null)
+                            IconButton(
+                              tooltip: context.l10n.text('移除挂载'),
+                              icon: const Icon(SPIcons.delete),
+                              onPressed: busy
+                                  ? null
+                                  : () => widget.onRemove!(profile),
+                            ),
+                        ],
                       ),
               );
             },

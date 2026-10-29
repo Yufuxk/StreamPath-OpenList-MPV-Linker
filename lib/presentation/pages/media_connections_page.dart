@@ -3,9 +3,11 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../core/errors/app_exception.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/media_connection.dart';
 import '../../data/models/media_source.dart';
+import '../../data/models/server_profile.dart';
 import '../../domain/services/media_server_api.dart';
 import '../../domain/services/native_storage_source.dart';
 import '../localization/app_localizations.dart';
@@ -20,17 +22,32 @@ import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
 import 'browser_page.dart';
 
+/// 打开统一的来源弹窗；WebDAV 档案复用同一界面并保留 profileId。
+Future<void> showSourceEditor(
+  BuildContext context, {
+  bool servers = false,
+  MediaConnection? config,
+  ServerProfile? webDavProfile,
+}) async {
+  await showGlassDialog<bool>(
+    context: context,
+    builder: (_) => _ConnectionEditor(
+      servers: servers,
+      config: config,
+      webDavProfile: webDavProfile,
+    ),
+  );
+}
+
 class MediaConnectionsPage extends StatefulWidget {
   const MediaConnectionsPage({
     super.key,
     this.servers = false,
     this.embedded = false,
     this.management = false,
-    this.onAddWebDav,
     this.beforeConnections,
   });
   final bool servers, embedded, management;
-  final VoidCallback? onAddWebDav;
   final Widget? beforeConnections;
   @override
   State<MediaConnectionsPage> createState() => _MediaConnectionsPageState();
@@ -73,41 +90,7 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
   }
 
   Future<void> _edit([MediaConnection? config]) async {
-    await showGlassDialog<bool>(
-      context: context,
-      builder: (_) =>
-          _ConnectionEditor(servers: widget.servers, config: config),
-    );
-  }
-
-  Future<void> _add(BuildContext buttonContext) async {
-    if (widget.onAddWebDav == null) {
-      await _edit();
-      return;
-    }
-    final box = buttonContext.findRenderObject()! as RenderBox;
-    final overlay =
-        Navigator.of(context).overlay!.context.findRenderObject()! as RenderBox;
-    final selected = await showSPMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromPoints(
-          box.localToGlobal(Offset.zero, ancestor: overlay),
-          box.localToGlobal(
-            box.size.bottomRight(Offset.zero),
-            ancestor: overlay,
-          ),
-        ),
-        Offset.zero & overlay.size,
-      ),
-      items: const [
-        PopupMenuItem(value: 'webdav', child: AppText('添加 WebDAV 挂载')),
-        PopupMenuItem(value: 'native', child: Text('SMB / FTP / NFS')),
-      ],
-    );
-    if (!mounted) return;
-    if (selected == 'webdav') widget.onAddWebDav!();
-    if (selected == 'native') await _edit();
+    await showSourceEditor(context, servers: widget.servers, config: config);
   }
 
   Future<void> _open(MediaConnection config) => _run(config.id, () async {
@@ -137,12 +120,10 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
       children: [
         Align(
           alignment: Alignment.centerLeft,
-          child: Builder(
-            builder: (buttonContext) => FilledButton.icon(
-              onPressed: () => _add(buttonContext),
-              icon: const Icon(SPIcons.add),
-              label: AppText(widget.servers ? '添加媒体服务器' : '添加网络存储'),
-            ),
+          child: FilledButton.icon(
+            onPressed: () => _edit(),
+            icon: const Icon(SPIcons.add),
+            label: AppText(widget.servers ? '添加媒体服务器' : '添加网络存储'),
           ),
         ),
         const SizedBox(height: 12),
@@ -234,9 +215,14 @@ class _MediaConnectionsPageState extends State<MediaConnectionsPage> {
 }
 
 class _ConnectionEditor extends StatefulWidget {
-  const _ConnectionEditor({required this.servers, this.config});
+  const _ConnectionEditor({
+    required this.servers,
+    this.config,
+    this.webDavProfile,
+  });
   final bool servers;
   final MediaConnection? config;
+  final ServerProfile? webDavProfile;
   @override
   State<_ConnectionEditor> createState() => _ConnectionEditorState();
 }
@@ -246,6 +232,7 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
       _url = TextEditingController(),
       _user = TextEditingController(),
       _password = TextEditingController(),
+      _directory = TextEditingController(),
       _domain = TextEditingController(),
       _uid = TextEditingController(),
       _gid = TextEditingController();
@@ -257,16 +244,20 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
       _saving = false;
   int _nfsVersion = 3;
   String? _error;
+  String? _errorMessage;
   @override
   void initState() {
     super.initState();
     final c = widget.config;
+    final webDav = widget.webDavProfile;
     _kind =
         c?.kind ??
-        (widget.servers ? MediaSourceKind.jellyfin : MediaSourceKind.smb);
-    _name.text = c?.name ?? '';
-    _url.text = c?.url ?? '';
-    _user.text = c?.username ?? '';
+        (widget.servers ? MediaSourceKind.jellyfin : MediaSourceKind.webdav);
+    _name.text = c?.name ?? webDav?.name ?? '';
+    _url.text = c?.url ?? webDav?.serverUrl ?? '';
+    _user.text = c?.username ?? webDav?.username ?? '';
+    _password.text = webDav?.password ?? '';
+    _directory.text = webDav?.defaultDirectory ?? '';
     _domain.text = c?.domain ?? '';
     _uid.text = '${c?.uid ?? 65534}';
     _gid.text = '${c?.gid ?? 65534}';
@@ -279,7 +270,16 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
 
   @override
   void dispose() {
-    for (final c in [_name, _url, _user, _password, _domain, _uid, _gid]) {
+    for (final c in [
+      _name,
+      _url,
+      _user,
+      _password,
+      _directory,
+      _domain,
+      _uid,
+      _gid,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -289,51 +289,15 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
     setState(() {
       _saving = true;
       _error = null;
+      _errorMessage = null;
     });
     final app = context.read<AppState>();
     try {
-      final c = MediaConnection(
-        id: widget.config?.id ?? MediaConnection.newId(_kind),
-        kind: _kind,
-        name: _name.text.trim(),
-        url: _url.text.trim(),
-        username: _user.text.trim(),
-        domain: _domain.text.trim(),
-        uid: int.parse(_uid.text),
-        gid: int.parse(_gid.text),
-        nfsVersion: _nfsVersion,
-        passive: _passive,
-        enabled: widget.config?.enabled ?? true,
-        readOnly: _readOnly,
-        writeBack: _kind != MediaSourceKind.ftp && !_readOnly && _writeBack,
-        localMetadata: _local,
-      );
-      c.validate();
-      final saved = widget.config == null
-          ? <String, dynamic>{}
-          : await (await app.getMediaConnections()).secrets(c.id);
-      final password = _password.text.isEmpty
-          ? saved['password'] as String? ?? ''
-          : _password.text;
-      Map<String, dynamic> secrets;
-      if (_kind.isMediaServer) {
-        final api = mediaServerApi(c);
-        try {
-          secrets = await api.authenticate(password);
-        } finally {
-          api.close();
-        }
+      if (_kind == MediaSourceKind.webdav) {
+        await _saveWebDav(app);
       } else {
-        final source = await NativeStorageSource.open(c, password);
-        try {
-          await source.fetchDirectory('', forceRefresh: true);
-        } finally {
-          await source.close();
-        }
-        secrets = {'password': password};
+        await _saveConnection(app);
       }
-      await app.saveMediaConnection(c, secrets: secrets);
-      if (c.enabled) await app.mountMediaConnection(c.id);
       if (mounted) Navigator.of(context).pop(true);
     } on FormatException {
       _error = 'connectionConfigFailed';
@@ -341,9 +305,93 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
       _error = error.code;
     } on FileSystemException {
       _error = 'connectionConfigFailed';
+    } on AppException catch (error) {
+      _errorMessage = error.message;
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  /// WebDAV 复用服务器档案机制：验证成功后同时提交档案、挂载与活动连接。
+  Future<void> _saveWebDav(AppState app) async {
+    final name = _name.text.trim();
+    final url = _url.text.trim();
+    final username = _user.text.trim();
+    if (name.isEmpty || url.isEmpty || username.isEmpty) {
+      throw const FormatException('Invalid WebDAV profile');
+    }
+    final existing = widget.webDavProfile;
+    final profile = existing == null
+        ? ServerProfile(
+            profileId: ServerProfile.newId(),
+            name: name,
+            serverUrl: url,
+            username: username,
+            password: _password.text,
+            defaultDirectory: _directory.text.trim(),
+          )
+        : existing.copyWith(
+            name: name,
+            serverUrl: url,
+            username: username,
+            password: _password.text,
+            defaultDirectory: _directory.text.trim(),
+          );
+    final config = app.configStore.current;
+    await app.connectAndActivateProfile(
+      profile: profile,
+      config: config
+          .upsertProfile(profile)
+          .withMountedProfileIds(
+            {...config.mountedProfileIds, profile.profileId}.toList(),
+          ),
+    );
+    app.refreshOpenListIndexSchedule();
+  }
+
+  Future<void> _saveConnection(AppState app) async {
+    final c = MediaConnection(
+      id: widget.config?.id ?? MediaConnection.newId(_kind),
+      kind: _kind,
+      name: _name.text.trim(),
+      url: _url.text.trim(),
+      username: _user.text.trim(),
+      domain: _domain.text.trim(),
+      uid: int.parse(_uid.text),
+      gid: int.parse(_gid.text),
+      nfsVersion: _nfsVersion,
+      passive: _passive,
+      enabled: widget.config?.enabled ?? true,
+      readOnly: _readOnly,
+      writeBack: _kind != MediaSourceKind.ftp && !_readOnly && _writeBack,
+      localMetadata: _local,
+    );
+    c.validate();
+    final saved = widget.config == null
+        ? <String, dynamic>{}
+        : await (await app.getMediaConnections()).secrets(c.id);
+    final password = _password.text.isEmpty
+        ? saved['password'] as String? ?? ''
+        : _password.text;
+    Map<String, dynamic> secrets;
+    if (_kind.isMediaServer) {
+      final api = mediaServerApi(c);
+      try {
+        secrets = await api.authenticate(password);
+      } finally {
+        api.close();
+      }
+    } else {
+      final source = await NativeStorageSource.open(c, password);
+      try {
+        await source.fetchDirectory('', forceRefresh: true);
+      } finally {
+        await source.close();
+      }
+      secrets = {'password': password};
+    }
+    await app.saveMediaConnection(c, secrets: secrets);
+    if (c.enabled) await app.mountMediaConnection(c.id);
   }
 
   Widget _field(
@@ -360,7 +408,9 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
   );
   @override
   Widget build(BuildContext context) => SPDialog(
-    title: AppText(widget.config == null ? '添加来源' : '编辑来源'),
+    title: AppText(
+      widget.config == null && widget.webDavProfile == null ? '添加来源' : '编辑来源',
+    ),
     content: SizedBox(
       width: 520,
       child: DirectoryScrollView(
@@ -376,14 +426,19 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                 borderRadius: AppTheme.dropdownBorderRadius,
                 items: [
                   for (final kind in MediaSourceKind.values.where(
-                    (k) => widget.servers ? k.isMediaServer : k.isNativeStorage,
+                    (k) => widget.servers
+                        ? k.isMediaServer
+                        : k.isNativeStorage || k == MediaSourceKind.webdav,
                   ))
                     DropdownMenuItem(
                       value: kind,
                       child: Text(kind.name.toUpperCase()),
                     ),
                 ],
-                onChanged: _saving || widget.config != null
+                onChanged:
+                    _saving ||
+                        widget.config != null ||
+                        widget.webDavProfile != null
                     ? null
                     : (value) => setState(() => _kind = value!),
               ),
@@ -394,6 +449,7 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                 _field(_user, '用户名'),
                 _field(_password, '密码', obscure: true),
               ],
+              if (_kind == MediaSourceKind.webdav) _field(_directory, '默认目录'),
               if (_kind == MediaSourceKind.smb) _field(_domain, '域（可选）'),
               if (_kind == MediaSourceKind.nfs) ...[
                 _field(_uid, 'UID'),
@@ -415,7 +471,7 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                   value: _passive,
                   onChanged: (v) => setState(() => _passive = v),
                 ),
-              if (!_kind.isMediaServer) ...[
+              if (_kind.isNativeStorage) ...[
                 SwitchListTile(
                   title: const AppText('只读来源'),
                   value: _readOnly,
@@ -439,9 +495,9 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                   onChanged: (v) => setState(() => _local = v),
                 ),
               ],
-              if (_error != null)
+              if (_error != null || _errorMessage != null)
                 AppText(
-                  filmCatalogErrorText(_error!),
+                  _errorMessage ?? filmCatalogErrorText(_error!),
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
             ],
