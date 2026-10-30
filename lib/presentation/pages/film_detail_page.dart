@@ -734,101 +734,117 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   );
 
   Widget _seasonSelector(FilmWork work, List<int?> numbers) => LayoutBuilder(
-    builder: (context, constraints) => Wrap(
-      spacing: 16,
-      runSpacing: 12,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        SkeletonRegion(
-          child: AppText(
-            '剧集列表',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
+    builder: (context, constraints) {
+      final versionFamilies = _activeSeason == null
+          ? const <FilmVersionFamily>[]
+          : _versions.families
+                .where((f) => f.resources.any((r) => r.season == _activeSeason))
+                .toList();
+      return Wrap(
+        spacing: 16,
+        runSpacing: 12,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          SkeletonRegion(
+            child: AppText(
+              '剧集列表',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-        ),
-        if (numbers.isNotEmpty)
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: constraints.maxWidth),
-            child: SkeletonRegion(
-              key: const Key('film-season-selector'),
-              borderRadius: AppTheme.pillRadius,
-              child: DirectoryScrollView(
-                scrollDirection: Axis.horizontal,
-                hideScrollbar: true,
-                builder: (controller) => SingleChildScrollView(
-                  controller: controller,
+          if (numbers.isNotEmpty)
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+              child: SkeletonRegion(
+                key: const Key('film-season-selector'),
+                borderRadius: AppTheme.pillRadius,
+                child: DirectoryScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: FilmSegmentedControl<int?>(
-                    compact: true,
-                    selected: _activeSeason,
-                    onSelectionChanged: (number) =>
-                        setState(() => _activeSeason = number),
-                    onSecondaryTapDown: (number, position) {
-                      if (number == null) return;
-                      showFilmWatchMenu(
-                        context,
-                        catalog: widget.catalog,
-                        playlistScope: FilmPlaylistScope.work(
-                          work.id,
-                          season: number,
-                        ),
-                        title:
-                            '${work.title} S${number.toString().padLeft(2, '0')}',
-                        position: position,
-                        resources: _resources
-                            .where((r) => r.season == number)
-                            .toList(),
-                      );
-                    },
-                    segments: [
-                      for (final number in numbers)
-                        ButtonSegment<int?>(
-                          value: number,
-                          label: Text(
-                            '${number == null
-                                ? context.l10n.text('集号待确认')
-                                : number == 0
-                                ? context.l10n.text('特别篇')
-                                : context.l10n.format('第 {season} 季', {'season': number})} (${_visibleResources.where((r) => r.season == number).length})',
+                  hideScrollbar: true,
+                  builder: (controller) => SingleChildScrollView(
+                    controller: controller,
+                    scrollDirection: Axis.horizontal,
+                    child: FilmSegmentedControl<int?>(
+                      compact: true,
+                      selected: _activeSeason,
+                      onSelectionChanged: (number) =>
+                          setState(() => _activeSeason = number),
+                      onSecondaryTapDown: (number, position) {
+                        if (number == null) return;
+                        showFilmWatchMenu(
+                          context,
+                          catalog: widget.catalog,
+                          playlistScope: FilmPlaylistScope.work(
+                            work.id,
+                            season: number,
                           ),
-                        ),
-                    ],
+                          title:
+                              '${work.title} S${number.toString().padLeft(2, '0')}',
+                          position: position,
+                          resources: _resources
+                              .where((r) => r.season == number)
+                              .toList(),
+                        );
+                      },
+                      segments: [
+                        for (final number in numbers)
+                          ButtonSegment<int?>(
+                            value: number,
+                            label: Text(
+                              '${number == null
+                                  ? context.l10n.text('集号待确认')
+                                  : number == 0
+                                  ? context.l10n.text('特别篇')
+                                  : context.l10n.format('第 {season} 季', {'season': number})} (${_visibleResources.where((r) => r.season == number).length})',
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        if (_versionSelection != null && _activeSeason != null)
-          SkeletonRegion(
-            borderRadius: AppTheme.pillRadius,
-            child: _seasonVersionSelector(constraints.maxWidth),
-          ),
-        if (_versions.unresolved.isNotEmpty)
-          SkeletonRegion(
-            child: TextButton(
-              onPressed: () => showFilmVersionMapping(
-                context,
-                widget.catalog,
-                _resources
-                    .where(
-                      (r) => !r.isDisc && r.season != null && r.episode != null,
-                    )
-                    .toList(),
+          if (_versionSelection != null &&
+              (versionFamilies.length > 1 ||
+                  !versionFamilies.any(
+                    (f) =>
+                        f.key == _versionSelection!.forSeason(_activeSeason!),
+                  )))
+            SkeletonRegion(
+              borderRadius: AppTheme.pillRadius,
+              child: _seasonVersionSelector(
+                constraints.maxWidth,
+                versionFamilies,
               ),
-              child: const AppText('确认版本归属'),
             ),
-          ),
-      ],
-    ),
+          if (_versions.unresolved.isNotEmpty)
+            SkeletonRegion(
+              child: TextButton(
+                onPressed: () => showFilmVersionMapping(
+                  context,
+                  widget.catalog,
+                  _resources
+                      .where(
+                        (r) =>
+                            !r.isDisc && r.season != null && r.episode != null,
+                      )
+                      .toList(),
+                ),
+                child: const AppText('确认版本归属'),
+              ),
+            ),
+        ],
+      );
+    },
   );
 
-  Widget _seasonVersionSelector(double maxWidth) {
+  Widget _seasonVersionSelector(
+    double maxWidth,
+    List<FilmVersionFamily> families,
+  ) {
     final key = _versionSelection!.forSeason(_activeSeason!);
-    final families = _versions.families
-        .where((f) => f.resources.any((r) => r.season == _activeSeason))
-        .toList();
     return ConstrainedBox(
       constraints: BoxConstraints(maxWidth: maxWidth),
       child: DirectoryScrollView(
@@ -1441,15 +1457,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                       ),
                                                     ),
                                                     if (_versionSelection !=
-                                                        null)
-                                                      _workVersionSelector()
-                                                    else if (_loading &&
-                                                        work.type ==
-                                                            FilmMediaType.tv)
-                                                      const SizedBox(
-                                                        width: 300,
-                                                        height: 44,
-                                                      ),
+                                                            null &&
+                                                        _versions
+                                                                .families
+                                                                .length >
+                                                            1)
+                                                      _workVersionSelector(),
                                                   ],
                                                 ),
                                               ),

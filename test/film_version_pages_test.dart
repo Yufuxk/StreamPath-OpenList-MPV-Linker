@@ -188,44 +188,29 @@ void main() {
       ),
     );
     await tester.pumpWidget(frame());
-    final actions = find.byKey(const Key('film-skeleton-actions'));
-    final initialActionsWidth = tester.getSize(actions).width;
-    await pumpUntil(
-      tester,
-      () => find
-          .byKey(const Key('film-season-version-selector'))
-          .evaluate()
-          .isNotEmpty,
-      reason: 'Version controls mount during the skeleton hold',
-      frameDuration: const Duration(milliseconds: 1),
+    await tester.pump();
+    expect(
+      find.byKey(const Key('film-season-version-selector')),
+      findsNothing,
+      reason:
+          'Skeleton must not reserve a version selector before data arrives',
     );
     expect(
-      tester.getSize(actions).width,
-      initialActionsWidth,
-      reason: 'The initial skeleton reserves the full version selector width',
+      find.byKey(const Key('film-work-version-selector')),
+      findsNothing,
+      reason: 'Skeleton must not reserve a work version selector before data',
     );
-    for (final key in const [
-      'film-work-version-selector',
-      'film-season-version-selector',
-    ]) {
-      final control = find.byKey(Key(key));
-      expect(
-        find.ancestor(of: control, matching: find.byType(SkeletonRegion)),
-        findsWidgets,
-        reason: 'Version controls share the detail skeleton boundary',
-      );
-      final hidden = tester
-          .widgetList<Opacity>(
-            find.ancestor(of: control, matching: find.byType(Opacity)),
-          )
-          .any((w) => w.opacity == 0);
-      expect(
-        hidden,
-        isTrue,
-        reason: 'Version controls stay hidden during the minimum skeleton hold',
-      );
-    }
     await settleVersions(tester);
+    expect(
+      find.byKey(const Key('film-season-version-selector')),
+      findsOneWidget,
+      reason: 'Multi-version works show the season version selector',
+    );
+    expect(
+      find.byKey(const Key('film-work-version-selector')),
+      findsOneWidget,
+      reason: 'Multi-version works show the work version selector',
+    );
     final pageState = tester.state(find.byType(FilmDetailPage));
     final list = tester.widget<ListView>(
       find.byKey(const Key('film-detail-scroll')),
