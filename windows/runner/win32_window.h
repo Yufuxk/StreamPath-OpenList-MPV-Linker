@@ -95,6 +95,19 @@ class Win32Window {
   bool activation_pending_ = false;
   bool first_frame_ready_ = false;
 
+  // 自绘框架的拖动／缩放状态，避免进入系统 move/size 循环。
+  bool drag_active_ = false;
+  bool drag_moved_ = false;
+  int drag_hit_ = 0;
+  POINT drag_origin_{};
+  RECT drag_bounds_{};
+  POINT last_click_point_{};
+  DWORD last_click_time_ = 0;
+
+  void BeginDrag(HWND window, int hit_code, POINT screen_point);
+  void UpdateDrag(HWND window, POINT screen_point);
+  void EndDrag(HWND window);
+
   // window handle for top level window.
   HWND window_handle_ = nullptr;
 

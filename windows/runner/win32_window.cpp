@@ -6,6 +6,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "resource.h"
 
@@ -297,6 +298,121 @@ LRESULT CALLBACK Win32Window::WndProc(HWND const window,
   return DefWindowProc(window, message, wparam, lparam);
 }
 
+namespace {
+
+bool IsResizeHitCode(int hit_code) {
+  switch (hit_code) {
+    case HTLEFT:
+    case HTRIGHT:
+    case HTTOP:
+    case HTBOTTOM:
+    case HTTOPLEFT:
+    case HTTOPRIGHT:
+    case HTBOTTOMLEFT:
+    case HTBOTTOMRIGHT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
+void Win32Window::BeginDrag(HWND window, int hit_code, POINT screen_point) {
+  const DWORD now = GetTickCount();
+  if (hit_code == HTCAPTION && last_click_time_ != 0 &&
+      now - last_click_time_ <= GetDoubleClickTime()) {
+    const int dx = screen_point.x - last_click_point_.x;
+    const int dy = screen_point.y - last_click_point_.y;
+    if (std::abs(dx) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+        std::abs(dy) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
+      last_click_time_ = 0;
+      SendMessage(window, WM_SYSCOMMAND,
+                  IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE, 0);
+      return;
+    }
+  }
+  last_click_time_ = hit_code == HTCAPTION ? now : 0;
+  last_click_point_ = screen_point;
+
+  // 拖动最大化窗口时先还原，指针保持在标题栏位置。
+  if (hit_code == HTCAPTION && IsZoomed(window)) {
+    SendMessage(window, WM_SYSCOMMAND, SC_RESTORE, 0);
+    const UINT dpi = FlutterDesktopGetDpiForHWND(window);
+    GetWindowRect(window, &drag_bounds_);
+    drag_origin_.x =
+        drag_bounds_.left + (drag_bounds_.right - drag_bounds_.left) / 2;
+    drag_origin_.y = drag_bounds_.top + MulDiv(16, dpi, 96);
+  } else {
+    GetWindowRect(window, &drag_bounds_);
+    drag_origin_ = screen_point;
+  }
+  drag_hit_ = hit_code;
+  drag_moved_ = false;
+  drag_active_ = true;
+  SetCapture(window);
+}
+
+void Win32Window::UpdateDrag(HWND window, POINT screen_point) {
+  if (!drag_active_) return;
+  const int dx = screen_point.x - drag_origin_.x;
+  const int dy = screen_point.y - drag_origin_.y;
+  if (dx != 0 || dy != 0) drag_moved_ = true;
+  if (drag_hit_ == HTCAPTION) {
+    SetWindowPos(window, nullptr, drag_bounds_.left + dx, drag_bounds_.top + dy,
+                 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    return;
+  }
+  RECT bounds = drag_bounds_;
+  if (drag_hit_ == HTLEFT || drag_hit_ == HTTOPLEFT ||
+      drag_hit_ == HTBOTTOMLEFT) {
+    bounds.left += dx;
+  }
+  if (drag_hit_ == HTRIGHT || drag_hit_ == HTTOPRIGHT ||
+      drag_hit_ == HTBOTTOMRIGHT) {
+    bounds.right += dx;
+  }
+  if (drag_hit_ == HTTOP || drag_hit_ == HTTOPLEFT ||
+      drag_hit_ == HTTOPRIGHT) {
+    bounds.top += dy;
+  }
+  if (drag_hit_ == HTBOTTOM || drag_hit_ == HTBOTTOMLEFT ||
+      drag_hit_ == HTBOTTOMRIGHT) {
+    bounds.bottom += dy;
+  }
+  const UINT dpi = FlutterDesktopGetDpiForHWND(window);
+  const int min_width = GetSystemMetricsForDpi(SM_CXMINTRACK, dpi);
+  const int min_height = GetSystemMetricsForDpi(SM_CYMINTRACK, dpi);
+  if (bounds.right - bounds.left < min_width) {
+    if (drag_hit_ == HTLEFT || drag_hit_ == HTTOPLEFT ||
+        drag_hit_ == HTBOTTOMLEFT) {
+      bounds.left = bounds.right - min_width;
+    } else {
+      bounds.right = bounds.left + min_width;
+    }
+  }
+  if (bounds.bottom - bounds.top < min_height) {
+    if (drag_hit_ == HTTOP || drag_hit_ == HTTOPLEFT ||
+        drag_hit_ == HTTOPRIGHT) {
+      bounds.top = bounds.bottom - min_height;
+    } else {
+      bounds.bottom = bounds.top + min_height;
+    }
+  }
+  SetWindowPos(window, nullptr, bounds.left, bounds.top,
+               bounds.right - bounds.left, bounds.bottom - bounds.top,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void Win32Window::EndDrag(HWND window) {
+  if (!drag_active_) return;
+  drag_active_ = false;
+  drag_hit_ = 0;
+  if (drag_moved_) last_click_time_ = 0;
+  drag_moved_ = false;
+  if (GetCapture() == window) ReleaseCapture();
+}
+
 LRESULT
 Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
@@ -319,15 +435,65 @@ Win32Window::MessageHandler(HWND hwnd,
       // 非客户区由自绘框架与 DWM 合成，避免默认框架参与重绘。
       return 0;
 
-    case WM_NCACTIVATE:
-      // Keep the custom border disabled while DWM updates backdrop state.
-      // A -1 region suppresses only the transitional non-client repaint.
+    case WM_NCACTIVATE: {
+      // 暂停窗口绘制，让默认过程更新 DWM 激活状态但不把默认框架画到窗口上。
+      SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
       DisableDwmBorder(hwnd);
-      return DefWindowProc(hwnd, message, wparam, static_cast<LPARAM>(-1));
+      const LRESULT nc_activate_result =
+          DefWindowProc(hwnd, message, wparam, static_cast<LPARAM>(-1));
+      SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
+      RedrawWindow(hwnd, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+      return nc_activate_result;
+    }
 
     case WM_NCHITTEST:
       // Preserve native resize, drag and double-click maximize semantics.
       return HitTestCustomFrame(hwnd, lparam, IsFullscreen());
+
+    case WM_NCLBUTTONDOWN: {
+      // 自接管拖动／缩放，避免系统 move/size 循环绘制默认非客户区框架。
+      const int hit_code = static_cast<int>(wparam);
+      if (hit_code == HTCAPTION || IsResizeHitCode(hit_code)) {
+        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        BeginDrag(hwnd, hit_code, point);
+        return 0;
+      }
+      break;
+    }
+
+    case WM_MOUSEMOVE:
+      if (drag_active_) {
+        POINT point{};
+        GetCursorPos(&point);
+        UpdateDrag(hwnd, point);
+        return 0;
+      }
+      break;
+
+    case WM_LBUTTONUP:
+      if (drag_active_) {
+        EndDrag(hwnd);
+        return 0;
+      }
+      break;
+
+    case WM_CAPTURECHANGED:
+      if (drag_active_) {
+        drag_active_ = false;
+        drag_hit_ = 0;
+        drag_moved_ = false;
+      }
+      break;
+
+    case WM_NCLBUTTONDBLCLK:
+      // 双击标题栏切换最大化／还原，阻止系统再次进入 move 循环。
+      if (wparam == HTCAPTION) {
+        SendMessage(hwnd, WM_SYSCOMMAND,
+                    IsZoomed(hwnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+        return 0;
+      }
+      break;
 
     case WM_SYSCOMMAND:
       if (!IsFullscreen() && (wparam & 0xFFF0) == SC_KEYMENU &&
@@ -478,3 +644,6 @@ void Win32Window::UpdateTheme(HWND const window) {
                           &enable_dark_mode, sizeof(enable_dark_mode));
   }
 }
+
+
+
