@@ -3789,7 +3789,7 @@ void main() {
     final state = tester.state(logo);
     final image = tester
         .widget<RawImage>(
-          find.descendant(of: logo, matching: find.byType(RawImage)),
+          find.descendant(of: logo, matching: find.byType(RawImage)).first,
         )
         .image!;
     expect(tester.widget<FilmArtwork>(logo).path, logoPath);
@@ -3807,13 +3807,200 @@ void main() {
     expect(
       tester
           .widget<RawImage>(
-            find.descendant(of: logo, matching: find.byType(RawImage)),
+            find.descendant(of: logo, matching: find.byType(RawImage)).first,
           )
           .image!
           .isCloneOf(image),
       isTrue,
     );
     await settle(tester);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('详情徽标按墨色叠加描边，并保留左上角背景暗区', (tester) async {
+    await prepare(tester, count: 1);
+    final work = works.first;
+    final font = File(r'C:\Windows\Fonts\msyh.ttc');
+    if (font.existsSync()) {
+      await tester.runAsync(() async {
+        final loader = FontLoader('DetailLogoPreview')
+          ..addFont(
+            Future.value(ByteData.sublistView(await font.readAsBytes())),
+          );
+        await loader.load();
+      });
+    }
+    Future<void> writeLogo(String path, Color ink) async {
+      final paragraph =
+          (ui.ParagraphBuilder(
+                  ui.ParagraphStyle(
+                    fontFamily: 'DetailLogoPreview',
+                    fontSize: 110,
+                    textAlign: TextAlign.left,
+                  ),
+                )
+                ..pushStyle(
+                  ui.TextStyle(
+                    color: ink,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 3,
+                  ),
+                )
+                ..addText('Charlotte'))
+              .build()
+            ..layout(const ui.ParagraphConstraints(width: 900));
+      final recorder = ui.PictureRecorder();
+      Canvas(recorder).drawParagraph(paragraph, const Offset(15, 25));
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(930, 200);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      picture.dispose();
+      await File(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(path, 'original')}.img',
+        ),
+      ).writeAsBytes(bytes!.buffer.asUint8List());
+    }
+
+    const blackLogo = '/detail-black-logo.png';
+    const whiteLogo = '/detail-white-logo.png';
+    await tester.runAsync(() async {
+      await catalog.images.directory.create(recursive: true);
+      await writeLogo(blackLogo, Colors.black);
+      await writeLogo(whiteLogo, Colors.white);
+    });
+
+    Future<void> capture(
+      String path,
+      ThemeData theme,
+      String name, {
+      String? backdrop,
+    }) async {
+      await tester.runAsync(
+        () => catalog.store.refreshWork(
+          FilmWork(
+            id: work.id,
+            type: work.type,
+            tmdbId: work.tmdbId,
+            title: work.title,
+            originalTitle: work.originalTitle,
+            overview: work.overview,
+            language: work.language,
+            posterPath: work.posterPath,
+            backdropPath: backdrop ?? work.backdropPath,
+            metadata: {...work.metadata, 'logo_path': path},
+          ),
+        ),
+      );
+      final boundary = GlobalKey();
+      final preview = font.existsSync()
+          ? theme.copyWith(
+              textTheme: theme.textTheme.apply(fontFamily: 'DetailLogoPreview'),
+            )
+          : theme;
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            theme: preview,
+            home: RepaintBoundary(
+              key: boundary,
+              child: FilmDetailPage(
+                catalog: catalog,
+                workId: work.id,
+                onOpenItem: (_) async {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+      final logo = find.byWidgetPredicate(
+        (w) => w is FilmArtwork && w.transparent,
+      );
+      final artwork = tester.widget<FilmArtwork>(logo);
+      expect(artwork.logoInkOutline, isTrue);
+      expect(artwork.logoPadding, 3);
+      expect(artwork.borderRadius, 0);
+      final rim = find.descendant(
+        of: logo,
+        matching: find.byType(ImageFiltered),
+      );
+      for (var i = 0; i < 100 && rim.evaluate().isEmpty; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      expect(rim, findsOneWidget);
+      await tester.runAsync(() async {
+        final image =
+            await (boundary.currentContext!.findRenderObject()
+                    as RenderRepaintBoundary)
+                .toImage();
+        final png = await image.toByteData(format: ui.ImageByteFormat.png);
+        final directory = Directory('build/detail-shadow-logo')
+          ..createSync(recursive: true);
+        await File(
+          p.join(directory.path, '$name.png'),
+        ).writeAsBytes(png!.buffer.asUint8List());
+        image.dispose();
+      });
+    }
+
+    await capture(blackLogo, AppTheme.dark(), 'detail-dark-black-logo');
+    await capture(whiteLogo, AppTheme.light(), 'detail-light-white-logo');
+
+    const brightBackdrop = '/detail-bright-backdrop.png';
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      const bounds = Rect.fromLTWH(0, 0, 1920, 1080);
+      canvas.drawRect(
+        bounds,
+        Paint()
+          ..shader = ui.Gradient.linear(
+            const Offset(0, 0),
+            const Offset(0, 1080),
+            const [Color(0xFF4A3540), Color(0xFF120C10)],
+          ),
+      );
+      canvas.drawRect(
+        bounds,
+        Paint()
+          ..shader = ui.Gradient.radial(const Offset(1740, 60), 1150, const [
+            Color(0xFFFFFFFF),
+            Color(0x00FFF3F7),
+          ]),
+      );
+      canvas.drawRect(
+        bounds,
+        Paint()
+          ..shader = ui.Gradient.radial(const Offset(300, 820), 760, const [
+            Color(0x55101A28),
+            Color(0x00101A28),
+          ]),
+      );
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(1920, 1080);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      picture.dispose();
+      await File(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(brightBackdrop, 'original')}.img',
+        ),
+      ).writeAsBytes(bytes!.buffer.asUint8List());
+    });
+    await capture(
+      blackLogo,
+      AppTheme.dark(),
+      'detail-dark-bright-corner',
+      backdrop: brightBackdrop,
+    );
     expect(tester.takeException(), isNull);
   });
 

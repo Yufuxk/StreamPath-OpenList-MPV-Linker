@@ -310,11 +310,15 @@ class FilmArtwork extends StatefulWidget {
     this.transparent = false,
     this.logoGlyphSize,
     this.logoAutoCenter = false,
+    this.logoInkOutline = false,
+    this.logoPadding = 0,
     this.fallbackPath,
     this.showCachedImmediately = false,
     this.provider,
   }) : assert(logoGlyphSize == null || transparent),
-       assert(!logoAutoCenter || transparent);
+       assert(!logoAutoCenter || transparent),
+       assert(!logoInkOutline || transparent),
+       assert(logoPadding >= 0);
   final FilmCatalogImageCache cache;
   final String? path;
   final String target;
@@ -330,6 +334,12 @@ class FilmArtwork extends StatefulWidget {
 
   /// 无字形目标时仍按透明内容自动居中；与 [logoGlyphSize] 独立。
   final bool logoAutoCenter;
+
+  /// 对深色主题下近乎纯黑且没有自带亮边的徽标补对比描边；默认关闭。
+  final bool logoInkOutline;
+
+  /// 透明徽标在裁剪框内留出的空白，避免贴边字形和描边被裁掉。
+  final double logoPadding;
   final String? fallbackPath;
 
   /// 作品与合集海报同步命中时跳过渐显，其他图片保留原策略。
@@ -367,6 +377,50 @@ class _FilmArtworkState extends State<FilmArtwork> {
   @override
   Widget build(BuildContext context) {
     final known = widget.cache.knownFile(widget.path, widget.target);
+    final content = widget.provider != null
+        ? _renderImage(widget.provider!, fit: BoxFit.cover)
+        : FutureBuilder<File>(
+            key: ValueKey((widget.cache, widget.path, widget.target)),
+            future: _image,
+            initialData: known,
+            builder: (context, state) {
+              final fallback = state.hasError ? null : _readyFallback();
+              final file = state.data;
+              if (file != null || fallback != null) {
+                final provider = file != null
+                    ? filmArtworkProvider(file, target: widget.target)
+                    : fallback!;
+                return _renderImage(
+                  provider,
+                  fallback: fallback,
+                  fit: widget.transparent ? BoxFit.contain : BoxFit.cover,
+                  alignment: widget.transparent
+                      ? Alignment.centerLeft
+                      : Alignment.center,
+                );
+              }
+              if ((widget.logoGlyphSize != null || widget.logoAutoCenter) &&
+                  widget.path != null &&
+                  !state.hasError) {
+                return const SkeletonLoadBoundary(
+                  ready: false,
+                  child: SizedBox.expand(),
+                );
+              }
+              if (!widget.transparent &&
+                  widget.path != null &&
+                  !state.hasError) {
+                return const SkeletonLoadBoundary(
+                  ready: false,
+                  child: CinematicSkeleton(showLines: false),
+                );
+              }
+              return SkeletonLoadBoundary(
+                ready: widget.path == null || state.hasError,
+                child: _placeholder(retry: state.hasError),
+              );
+            },
+          );
     final artwork = ClipRRect(
       borderRadius: BorderRadius.circular(widget.borderRadius),
       clipBehavior: widget.borderRadius == 0 ? Clip.hardEdge : Clip.antiAlias,
@@ -374,50 +428,12 @@ class _FilmArtworkState extends State<FilmArtwork> {
         color: widget.transparent
             ? Colors.transparent
             : Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: widget.provider != null
-            ? _renderImage(widget.provider!, fit: BoxFit.cover)
-            : FutureBuilder<File>(
-                key: ValueKey((widget.cache, widget.path, widget.target)),
-                future: _image,
-                initialData: known,
-                builder: (context, state) {
-                  final fallback = state.hasError ? null : _readyFallback();
-                  final file = state.data;
-                  if (file != null || fallback != null) {
-                    final provider = file != null
-                        ? filmArtworkProvider(file, target: widget.target)
-                        : fallback!;
-                    return _renderImage(
-                      provider,
-                      fallback: fallback,
-                      fit: widget.transparent ? BoxFit.contain : BoxFit.cover,
-                      alignment: widget.transparent
-                          ? Alignment.centerLeft
-                          : Alignment.center,
-                    );
-                  }
-                  if ((widget.logoGlyphSize != null || widget.logoAutoCenter) &&
-                      widget.path != null &&
-                      !state.hasError) {
-                    return const SkeletonLoadBoundary(
-                      ready: false,
-                      child: SizedBox.expand(),
-                    );
-                  }
-                  if (!widget.transparent &&
-                      widget.path != null &&
-                      !state.hasError) {
-                    return const SkeletonLoadBoundary(
-                      ready: false,
-                      child: CinematicSkeleton(showLines: false),
-                    );
-                  }
-                  return SkeletonLoadBoundary(
-                    ready: widget.path == null || state.hasError,
-                    child: _placeholder(retry: state.hasError),
-                  );
-                },
-              ),
+        child: widget.logoPadding > 0
+            ? Padding(
+                padding: EdgeInsets.all(widget.logoPadding),
+                child: content,
+              )
+            : content,
       ),
     );
     return SizedBox(
@@ -490,7 +506,14 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (widget.transparent) {
           return SkeletonLoadBoundary(
             ready: frame != null,
-            child: _logoOutline(context, image),
+            child: widget.logoInkOutline
+                ? _InkAwareLogoOutline(
+                    key: ValueKey((widget.cache, widget.path, widget.target)),
+                    cache: widget.cache,
+                    provider: provider,
+                    image: image,
+                  )
+                : _logoOutline(context, image),
           );
         }
         if (widget.showCachedImmediately && fallback != null) return image;
@@ -524,25 +547,126 @@ class _FilmArtworkState extends State<FilmArtwork> {
   );
 }
 
-Widget _logoOutline(BuildContext context, Widget image) {
-  if (Theme.of(context).brightness == Brightness.dark) return image;
+Widget _logoOutline(
+  BuildContext context,
+  Widget image, {
+  Color? color,
+  double radius = 1.25,
+}) {
+  final outline =
+      color ??
+      (Theme.of(context).brightness == Brightness.dark
+          ? null
+          : Colors.black.withValues(alpha: .84));
+  if (outline == null) return image;
   // 轮廓复用同一解码帧，保留原色与透明区域。
   return Stack(
     fit: StackFit.passthrough,
     children: [
       ImageFiltered(
-        imageFilter: ui.ImageFilter.dilate(radiusX: 1.25, radiusY: 1.25),
+        imageFilter: ui.ImageFilter.dilate(radiusX: radius, radiusY: radius),
         child: ColorFiltered(
-          colorFilter: ColorFilter.mode(
-            Colors.black.withValues(alpha: .84),
-            BlendMode.srcIn,
-          ),
+          colorFilter: ColorFilter.mode(outline, BlendMode.srcIn),
           child: image,
         ),
       ),
       image,
     ],
   );
+}
+
+/// 详情页按徽标墨色选择对比描边：暗墨配白描边，亮墨配黑描边。
+class _InkAwareLogoOutline extends StatefulWidget {
+  const _InkAwareLogoOutline({
+    super.key,
+    required this.cache,
+    required this.provider,
+    required this.image,
+  });
+  final FilmCatalogImageCache cache;
+  final ImageProvider<Object> provider;
+  final Widget image;
+
+  @override
+  State<_InkAwareLogoOutline> createState() => _InkAwareLogoOutlineState();
+}
+
+class _InkAwareLogoOutlineState extends State<_InkAwareLogoOutline> {
+  ImageStream? _stream;
+  ImageStreamListener? _listener;
+  bool _started = false, _needsRim = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    final stream = _stream = widget.provider.resolve(
+      createLocalImageConfiguration(context),
+    );
+    late ImageStreamListener listener;
+    listener = ImageStreamListener((info, _) {
+      _stopStream();
+      final analysis = _analyzeLogo(widget.cache, widget.provider, info.image);
+      info.dispose();
+      if (analysis.ready) {
+        _apply(analysis.layout);
+      } else {
+        unawaited(_prepare(analysis));
+      }
+    }, onError: (Object _, StackTrace? _) => _stopStream());
+    _listener = listener;
+    stream.addListener(listener);
+  }
+
+  void _apply(FilmLogoLayout? layout) {
+    if (!mounted) return;
+    setState(
+      () => _needsRim =
+          layout != null && layout.nearBlack && !layout.hasBrightEdge,
+    );
+  }
+
+  Future<void> _prepare(_LogoAnalysis analysis) async {
+    try {
+      _apply(await analysis.result);
+    } catch (error, stack) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'film artwork',
+          context: ErrorDescription('while measuring a detail logo ink'),
+        ),
+      );
+    }
+  }
+
+  void _stopStream() {
+    if (_listener != null) _stream?.removeListener(_listener!);
+    _stream = null;
+    _listener = null;
+  }
+
+  @override
+  void dispose() {
+    _stopStream();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 只给深色背景上近乎纯黑、且没有自带亮边的徽标补白色描边。
+    if (!_needsRim || Theme.of(context).brightness != Brightness.dark) {
+      return _logoOutline(context, widget.image);
+    }
+    return _logoOutline(
+      context,
+      widget.image,
+      color: Colors.white.withValues(alpha: .9),
+      radius: 2,
+    );
+  }
 }
 
 final _logoAnalyses =

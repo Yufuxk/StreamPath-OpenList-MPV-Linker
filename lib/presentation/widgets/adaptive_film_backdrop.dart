@@ -540,30 +540,61 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
     final library = widget.style == FilmBackdropStyle.library;
     final dark = theme.brightness == Brightness.dark;
     final narrow = viewport.width < 800;
+    // 深色宽窗使用多段平滑衰减：左侧信息区保持深度，右侧高光与阴影之间不出现转折线。
+    final reading = library
+        ? [
+            base.withValues(alpha: dark ? .90 : .96),
+            base.withValues(alpha: dark ? .58 : .78),
+            base.withValues(alpha: dark ? .36 : .66),
+          ]
+        : dark && !narrow
+        ? [
+            for (final alpha in const [
+              .84,
+              .80,
+              .76,
+              .72,
+              .66,
+              .54,
+              .38,
+              .20,
+              .06,
+            ])
+              base.withValues(alpha: alpha),
+          ]
+        : [
+            base.withValues(alpha: .96),
+            base.withValues(alpha: narrow ? .86 : .78),
+            base.withValues(alpha: narrow ? .78 : .56),
+            base.withValues(alpha: narrow ? .74 : .38),
+          ];
+    final readingStops = library
+        ? const <double>[0, .48, 1]
+        : dark && !narrow
+        ? const <double>[0, .20, .38, .52, .62, .72, .82, .92, 1]
+        : const <double>[0, .4, .72, 1];
     return [
       DecoratedBox(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: library
-                ? [
-                    base.withValues(alpha: dark ? .90 : .96),
-                    base.withValues(alpha: dark ? .58 : .78),
-                    base.withValues(alpha: dark ? .36 : .66),
-                  ]
-                : [
-                    base.withValues(alpha: dark && !narrow ? .84 : .96),
-                    base.withValues(alpha: narrow ? .86 : .78),
-                    base.withValues(alpha: narrow ? .78 : (dark ? .66 : .56)),
-                    base.withValues(alpha: narrow ? .74 : (dark ? .08 : .38)),
-                  ],
-            stops: library
-                ? const [0, .48, 1]
-                : dark && !narrow
-                ? const [0, .30, .72, 1]
-                : const [0, .4, .72, 1],
-          ),
+          gradient: LinearGradient(colors: reading, stops: readingStops),
         ),
       ),
+      // 详情页左上角独立径向暗区：为 Clearlogo 与标题保留局部深度。
+      if (!library)
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(-.7, -.85),
+              radius: 1.35,
+              colors: [
+                base.withValues(alpha: dark ? .46 : .32),
+                base.withValues(alpha: dark ? .18 : .12),
+                Colors.transparent,
+              ],
+              stops: const [0, .45, 1],
+            ),
+          ),
+        ),
       DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -576,12 +607,12 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
                     base,
                   ]
                 : [
-                    base.withValues(alpha: dark ? .24 : .65),
-                    base.withValues(alpha: .10),
+                    base.withValues(alpha: dark ? .60 : .65),
+                    base.withValues(alpha: dark ? .06 : .10),
                     base.withValues(alpha: .72),
                     base,
                   ],
-            stops: library ? const [0, .64, 1] : const [0, .35, .72, 1],
+            stops: library ? const [0, .64, 1] : const [0, .38, .72, 1],
           ),
         ),
       ),

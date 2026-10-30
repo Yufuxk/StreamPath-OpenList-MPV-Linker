@@ -783,6 +783,7 @@ void main() {
       expect(artwork.target, 'original');
       expect(artwork.logoAutoCenter, isTrue);
       expect(artwork.logoGlyphSize, isNull);
+      expect(artwork.logoInkOutline, isFalse);
       for (var i = 0; i < 100; i++) {
         if (find
             .descendant(

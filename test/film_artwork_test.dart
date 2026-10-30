@@ -404,6 +404,56 @@ void main() {
       });
     }
   }
+
+  testWidgets(
+    'detail style adds a top-left radial shade without touching other styles',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final (_, cache, _) = await fixture(tester);
+      Finder detailCorner() => find.byWidgetPredicate((widget) {
+        if (widget is! DecoratedBox) return false;
+        final decoration = widget.decoration;
+        if (decoration is! BoxDecoration) return false;
+        final gradient = decoration.gradient;
+        return gradient is RadialGradient &&
+            gradient.center == const Alignment(-.7, -.85);
+      });
+      Future<void> pump(FilmBackdropStyle style) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AdaptiveFilmBackdrop(
+              cache: cache,
+              path: '/frame.png',
+              style: style,
+            ),
+          ),
+        );
+        await settle(tester);
+      }
+
+      await pump(FilmBackdropStyle.detail);
+      expect(detailCorner(), findsOneWidget);
+      final radial =
+          ((tester.widget<DecoratedBox>(detailCorner())).decoration
+                      as BoxDecoration)
+                  .gradient!
+              as RadialGradient;
+      expect(radial.radius, 1.35);
+      expect(radial.stops, [0, .45, 1]);
+      expect(radial.colors.last, Colors.transparent);
+      for (final style in [
+        FilmBackdropStyle.library,
+        FilmBackdropStyle.showcase,
+      ]) {
+        await pump(style);
+        expect(detailCorner(), findsNothing, reason: '$style');
+      }
+      expect(tester.takeException(), isNull);
+    },
+  );
 }
 
 class _NoToken extends TmdbCredentialStore {

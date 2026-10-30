@@ -13,17 +13,69 @@ import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_logo_layout.dart';
 
 void main() {
-  Uint8List pixels(int width, int height, List<Rect> ink) {
+  Uint8List pixels(
+    int width,
+    int height,
+    List<Rect> ink, {
+    Color color = Colors.black,
+  }) {
+    final argb = color.toARGB32();
     final data = Uint8List(width * height * 4);
     for (final rect in ink) {
       for (var y = rect.top.toInt(); y < rect.bottom; y++) {
         for (var x = rect.left.toInt(); x < rect.right; x++) {
-          data[(y * width + x) * 4 + 3] = 255;
+          final offset = (y * width + x) * 4;
+          data[offset] = (argb >> 16) & 0xFF;
+          data[offset + 1] = (argb >> 8) & 0xFF;
+          data[offset + 2] = argb & 0xFF;
+          data[offset + 3] = (argb >> 24) & 0xFF;
         }
       }
     }
     return data;
   }
+
+  Uint8List nestedPixels(Color outer, Color inner) {
+    final data = pixels(140, 60, [
+      const Rect.fromLTWH(10, 10, 100, 40),
+    ], color: outer);
+    final layer = pixels(140, 60, [
+      const Rect.fromLTWH(12, 12, 96, 36),
+    ], color: inner);
+    for (var index = 3; index < layer.length; index += 4) {
+      if (layer[index] == 0) continue;
+      data[index - 3] = layer[index - 3];
+      data[index - 2] = layer[index - 2];
+      data[index - 1] = layer[index - 1];
+      data[index] = layer[index];
+    }
+    return data;
+  }
+
+  test('only plain near-black clearlogos need a contrast outline', () {
+    const ink = Rect.fromLTWH(10, 10, 100, 40);
+    FilmLogoLayout analyze(Color color) =>
+        FilmLogoLayout.analyze(pixels(140, 60, [ink], color: color), 140, 60)!;
+    final black = analyze(Colors.black);
+    expect(black.nearBlack, isTrue);
+    expect(black.hasBrightEdge, isFalse);
+    final navy = analyze(const Color(0xFF0A141E));
+    expect(navy.nearBlack, isTrue);
+    expect(navy.hasBrightEdge, isFalse);
+    expect(analyze(Colors.red).nearBlack, isFalse);
+    expect(analyze(const Color(0xFF808080)).nearBlack, isFalse);
+    expect(analyze(Colors.white).nearBlack, isFalse);
+  });
+
+  test('near-black clearlogos with a built-in bright edge are left alone', () {
+    final layout = FilmLogoLayout.analyze(
+      nestedPixels(Colors.white, Colors.black),
+      140,
+      60,
+    )!;
+    expect(layout.nearBlack, isTrue);
+    expect(layout.hasBrightEdge, isTrue);
+  });
 
   test(
     'asymmetric padding and source resolution do not change glyph size or center',
@@ -136,21 +188,16 @@ void main() {
       temp = await Directory.systemTemp.createTemp('film_logo_layout_');
       tmdb = TmdbMetadataService(credentials: _NoToken());
       cache = FilmCatalogImageCache(temp, tmdb);
-      for (final (path, width, height, ink) in [
-        ('/left.png', 400, 100, [const Rect.fromLTWH(10, 20, 180, 40)]),
-        ('/right.png', 800, 300, [const Rect.fromLTWH(400, 160, 360, 80)]),
-        (
-          '/vertical.png',
-          240,
-          220,
-          [for (var i = 0; i < 4; i++) Rect.fromLTWH(70, 10 + i * 44, 32, 32)],
-        ),
-        ('/empty.png', 100, 100, <Rect>[]),
-      ]) {
+      Future<void> write(
+        String path,
+        int width,
+        int height,
+        List<(Rect, Color)> layers,
+      ) async {
         final recorder = ui.PictureRecorder();
         final canvas = Canvas(recorder);
-        for (final rect in ink) {
-          canvas.drawRect(rect, Paint()..color = Colors.red);
+        for (final (rect, color) in layers) {
+          canvas.drawRect(rect, Paint()..color = color);
         }
         final picture = recorder.endRecording();
         final image = await picture.toImage(width, height);
@@ -162,6 +209,58 @@ void main() {
         picture.dispose();
         await cache.cached(path, 'original');
       }
+
+      for (final (path, width, height, ink, color)
+          in <(String, int, int, List<Rect>, Color)>[
+            (
+              '/left.png',
+              400,
+              100,
+              [const Rect.fromLTWH(10, 20, 180, 40)],
+              Colors.red,
+            ),
+            (
+              '/right.png',
+              800,
+              300,
+              [const Rect.fromLTWH(400, 160, 360, 80)],
+              Colors.red,
+            ),
+            (
+              '/vertical.png',
+              240,
+              220,
+              [
+                for (var i = 0; i < 4; i++)
+                  Rect.fromLTWH(70, 10 + i * 44, 32, 32),
+              ],
+              Colors.red,
+            ),
+            ('/empty.png', 100, 100, const <Rect>[], Colors.red),
+            (
+              '/ink-black.png',
+              96,
+              32,
+              [const Rect.fromLTWH(20, 8, 56, 16)],
+              Colors.black,
+            ),
+            (
+              '/ink-white.png',
+              96,
+              32,
+              [const Rect.fromLTWH(20, 8, 56, 16)],
+              Colors.white,
+            ),
+          ]) {
+        await write(path, width, height, [
+          for (final rect in ink) (rect, color),
+        ]);
+      }
+      // 黑色本体自带白色细描边的徽标。
+      await write('/ink-outlined.png', 96, 32, [
+        (const Rect.fromLTWH(20, 8, 56, 16), Colors.white),
+        (const Rect.fromLTWH(22, 10, 52, 12), Colors.black),
+      ]);
     });
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -177,6 +276,7 @@ void main() {
     String path, {
     bool normalized = true,
     bool light = false,
+    bool inkOutline = false,
     double width = 420,
     double height = 220,
     FilmCatalogImageCache? imageCache,
@@ -191,6 +291,7 @@ void main() {
           target: 'original',
           transparent: true,
           logoGlyphSize: normalized ? 40 : null,
+          logoInkOutline: inkOutline,
           width: width,
           height: height,
           borderRadius: 0,
@@ -404,6 +505,169 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('detail outlines only near-black clearlogos', (tester) async {
+    await prepare(tester);
+    Widget page(
+      String path, {
+      required bool light,
+      required Color background,
+    }) => MaterialApp(
+      theme: ThemeData(brightness: light ? Brightness.light : Brightness.dark),
+      themeAnimationDuration: Duration.zero,
+      home: Center(
+        child: RepaintBoundary(
+          key: boundaryKey,
+          child: ColoredBox(
+            color: background,
+            child: FilmArtwork(
+              cache: cache,
+              path: path,
+              target: 'original',
+              transparent: true,
+              logoInkOutline: true,
+              width: 192,
+              height: 64,
+              borderRadius: 0,
+            ),
+          ),
+        ),
+      ),
+    );
+    Future<bool> waitForOutline() async {
+      for (var i = 0; i < 100; i++) {
+        if (find.byType(ImageFiltered).evaluate().isNotEmpty) return true;
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump();
+      }
+      return false;
+    }
+
+    Future<ByteData> capture() async => (await tester.runAsync(() async {
+      final boundary =
+          boundaryKey.currentContext!.findRenderObject()
+              as RenderRepaintBoundary;
+      final image = await boundary.toImage();
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
+      return data!;
+    }))!;
+    int red(ByteData data, int x, int y) => data.getUint8((y * 192 + x) * 4);
+
+    await tester.pumpWidget(
+      page('/ink-black.png', light: false, background: Colors.black),
+    );
+    expect(await waitForOutline(), isTrue);
+    final dark = await capture();
+    await saveBoundaryPng(tester, boundaryKey, 'component-dark-ink-outline');
+    expect(red(dark, 96, 32), lessThan(24), reason: 'ink stays black');
+    expect(
+      [
+        for (var x = 34; x < 42; x++) red(dark, x, 32),
+      ].reduce((a, b) => a > b ? a : b),
+      greaterThan(160),
+      reason: 'near-black ink on a dark backdrop needs a white rim',
+    );
+
+    await tester.pumpWidget(
+      page('/left.png', light: false, background: Colors.black),
+    );
+    expect(
+      await waitForOutline(),
+      isFalse,
+      reason: 'colored clearlogos keep their original look',
+    );
+    await saveBoundaryPng(tester, boundaryKey, 'component-red-ink-no-outline');
+
+    await tester.pumpWidget(
+      page('/ink-white.png', light: false, background: Colors.black),
+    );
+    expect(
+      await waitForOutline(),
+      isFalse,
+      reason: 'light ink on a dark backdrop needs no rim',
+    );
+
+    await tester.pumpWidget(
+      page('/ink-outlined.png', light: false, background: Colors.black),
+    );
+    expect(
+      await waitForOutline(),
+      isFalse,
+      reason: 'near-black logos with a built-in bright edge need no extra rim',
+    );
+    await saveBoundaryPng(tester, boundaryKey, 'component-outlined-ink-no-rim');
+
+    await tester.pumpWidget(
+      page('/ink-white.png', light: true, background: Colors.white),
+    );
+    expect(await waitForOutline(), isTrue);
+    final light = await capture();
+    await saveBoundaryPng(tester, boundaryKey, 'component-light-ink-outline');
+    expect(red(light, 96, 32), greaterThan(230), reason: 'ink stays white');
+    expect(
+      [
+        for (var x = 34; x < 42; x++) red(light, x, 32),
+      ].reduce((a, b) => a < b ? a : b),
+      lessThan(140),
+      reason: 'light ink keeps the original dark rim on light themes',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('outline remains off for logos outside the detail page', (
+    tester,
+  ) async {
+    await prepare(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(brightness: Brightness.dark),
+        home: Center(
+          child: RepaintBoundary(
+            key: boundaryKey,
+            child: ColoredBox(
+              color: Colors.black,
+              child: FilmArtwork(
+                cache: cache,
+                path: '/ink-black.png',
+                target: 'original',
+                transparent: true,
+                width: 192,
+                height: 64,
+                borderRadius: 0,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await settle(tester, normalized: false);
+    await saveBoundaryPng(tester, boundaryKey, 'component-no-outline');
+    expect(find.byType(ImageFiltered), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+/// 保存组件截图，供本次优化的明暗与墨色对照核对。
+Future<void> saveBoundaryPng(
+  WidgetTester tester,
+  GlobalKey key,
+  String name,
+) async {
+  await tester.runAsync(() async {
+    final boundary =
+        key.currentContext!.findRenderObject() as RenderRepaintBoundary;
+    final image = await boundary.toImage();
+    final png = await image.toByteData(format: ui.ImageByteFormat.png);
+    final directory = Directory('build/detail-shadow-logo')
+      ..createSync(recursive: true);
+    await File(
+      '${directory.path}/$name.png',
+    ).writeAsBytes(png!.buffer.asUint8List());
+    image.dispose();
+  });
 }
 
 class _NoToken extends TmdbCredentialStore {

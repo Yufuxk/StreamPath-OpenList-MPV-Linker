@@ -1319,8 +1319,11 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                             as String?,
                                                   target: 'original',
                                                   transparent: true,
-                                                  width: 420,
-                                                  height: 90,
+                                                  logoInkOutline: true,
+                                                  logoPadding: 3,
+                                                  borderRadius: 0,
+                                                  width: 500,
+                                                  height: 108,
                                                   placeholder: Align(
                                                     alignment:
                                                         Alignment.centerLeft,
