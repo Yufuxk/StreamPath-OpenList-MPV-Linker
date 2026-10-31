@@ -23,7 +23,6 @@ import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
-import 'package:streampath/presentation/widgets/skeleton_scope.dart';
 import 'package:streampath/presentation/widgets/film_segmented_control.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'helpers/shell_test_app_state.dart';
