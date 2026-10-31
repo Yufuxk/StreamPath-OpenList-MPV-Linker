@@ -35,48 +35,6 @@ void main() {
     return data;
   }
 
-  Uint8List nestedPixels(Color outer, Color inner) {
-    final data = pixels(140, 60, [
-      const Rect.fromLTWH(10, 10, 100, 40),
-    ], color: outer);
-    final layer = pixels(140, 60, [
-      const Rect.fromLTWH(12, 12, 96, 36),
-    ], color: inner);
-    for (var index = 3; index < layer.length; index += 4) {
-      if (layer[index] == 0) continue;
-      data[index - 3] = layer[index - 3];
-      data[index - 2] = layer[index - 2];
-      data[index - 1] = layer[index - 1];
-      data[index] = layer[index];
-    }
-    return data;
-  }
-
-  test('only plain near-black clearlogos need a contrast outline', () {
-    const ink = Rect.fromLTWH(10, 10, 100, 40);
-    FilmLogoLayout analyze(Color color) =>
-        FilmLogoLayout.analyze(pixels(140, 60, [ink], color: color), 140, 60)!;
-    final black = analyze(Colors.black);
-    expect(black.nearBlack, isTrue);
-    expect(black.hasBrightEdge, isFalse);
-    final navy = analyze(const Color(0xFF0A141E));
-    expect(navy.nearBlack, isTrue);
-    expect(navy.hasBrightEdge, isFalse);
-    expect(analyze(Colors.red).nearBlack, isFalse);
-    expect(analyze(const Color(0xFF808080)).nearBlack, isFalse);
-    expect(analyze(Colors.white).nearBlack, isFalse);
-  });
-
-  test('near-black clearlogos with a built-in bright edge are left alone', () {
-    final layout = FilmLogoLayout.analyze(
-      nestedPixels(Colors.white, Colors.black),
-      140,
-      60,
-    )!;
-    expect(layout.nearBlack, isTrue);
-    expect(layout.hasBrightEdge, isTrue);
-  });
-
   test(
     'asymmetric padding and source resolution do not change glyph size or center',
     () {
@@ -261,6 +219,16 @@ void main() {
         (const Rect.fromLTWH(20, 8, 56, 16), Colors.white),
         (const Rect.fromLTWH(22, 10, 52, 12), Colors.black),
       ]);
+      // 白色填充、外围深色描边，整体已清晰可见的徽标。
+      await write('/ink-white-ring.png', 96, 32, [
+        (const Rect.fromLTWH(20, 8, 56, 16), Colors.black),
+        (const Rect.fromLTWH(24, 12, 48, 8), Colors.white),
+      ]);
+      // 以黑色为主、带少量粉色的混合徽标。
+      await write('/ink-mixed.png', 96, 32, [
+        (const Rect.fromLTWH(20, 8, 40, 16), Colors.black),
+        (const Rect.fromLTWH(60, 8, 12, 16), const Color(0xFFFF4F89)),
+      ]);
     });
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
@@ -276,7 +244,7 @@ void main() {
     String path, {
     bool normalized = true,
     bool light = false,
-    bool inkTint = false,
+    bool inkLift = false,
     double width = 420,
     double height = 220,
     FilmCatalogImageCache? imageCache,
@@ -291,7 +259,7 @@ void main() {
           target: 'original',
           transparent: true,
           logoGlyphSize: normalized ? 40 : null,
-          logoInkTint: inkTint,
+          logoInkLift: inkLift,
           width: width,
           height: height,
           borderRadius: 0,
@@ -506,7 +474,7 @@ void main() {
     },
   );
 
-  testWidgets('detail renders only near-black clearlogos in white', (
+  testWidgets('detail lifts dark ink while keeping colored strokes', (
     tester,
   ) async {
     await prepare(tester);
@@ -527,7 +495,7 @@ void main() {
               path: path,
               target: 'original',
               transparent: true,
-              logoInkTint: true,
+              logoInkLift: true,
               width: 192,
               height: 64,
               borderRadius: 0,
@@ -536,9 +504,9 @@ void main() {
         ),
       ),
     );
-    bool filtered() => find.byType(ColorFiltered).evaluate().isNotEmpty;
+    Finder lifted() => find.byKey(const Key('film-logo-lift'));
     Future<bool> waitFor(bool Function() ready) async {
-      for (var i = 0; i < 100; i++) {
+      for (var i = 0; i < 120; i++) {
         if (ready()) return true;
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 10)),
@@ -557,64 +525,119 @@ void main() {
       image.dispose();
       return data!;
     }))!;
-    int red(ByteData data, int x, int y) => data.getUint8((y * 192 + x) * 4);
+    int channel(ByteData data, int x, int y, int c) =>
+        data.getUint8((y * 192 + x) * 4 + c);
 
     await tester.pumpWidget(
       page('/ink-black.png', light: false, background: Colors.black),
     );
-    expect(await waitFor(filtered), isTrue);
+    expect(await waitFor(() => lifted().evaluate().isNotEmpty), isTrue);
     final dark = await capture();
-    await saveBoundaryPng(tester, boundaryKey, 'component-dark-ink-white');
+    await saveBoundaryPng(tester, boundaryKey, 'component-dark-ink-lift');
     expect(
-      red(dark, 96, 32),
+      channel(dark, 96, 32, 0),
       greaterThan(230),
-      reason: 'near-black ink is rendered white on dark themes',
+      reason: 'dark ink is lifted to white on dark themes',
     );
     expect(find.byType(ImageFiltered), findsNothing);
 
     await tester.pumpWidget(
-      page('/left.png', light: false, background: Colors.black),
+      page('/ink-mixed.png', light: false, background: Colors.black),
+    );
+    expect(await waitFor(() => lifted().evaluate().isNotEmpty), isTrue);
+    final mixed = await capture();
+    await saveBoundaryPng(tester, boundaryKey, 'component-mixed-ink-lift');
+    expect(
+      channel(mixed, 80, 32, 0),
+      greaterThan(230),
+      reason: 'the dark body is lifted to white',
     );
     expect(
-      await waitFor(filtered),
-      isFalse,
-      reason: 'colored clearlogos keep their original look',
+      channel(mixed, 132, 32, 0),
+      greaterThan(230),
+      reason: 'the colored edge keeps its red channel',
     );
-    await saveBoundaryPng(tester, boundaryKey, 'component-red-ink-no-outline');
+    expect(
+      channel(mixed, 132, 32, 1),
+      lessThan(140),
+      reason: 'the colored edge is not flattened to white',
+    );
 
     await tester.pumpWidget(
-      page('/ink-white.png', light: false, background: Colors.black),
+      page('/left.png', light: false, background: Colors.black),
+    );
+    expect(await waitFor(() => lifted().evaluate().isNotEmpty), isFalse);
+    final red = await capture();
+    expect(lifted(), findsNothing);
+    expect(
+      channel(red, 50, 27, 0),
+      greaterThan(150),
+      reason: 'red ink keeps its color',
     );
     expect(
-      await waitFor(filtered),
-      isFalse,
-      reason: 'light ink on a dark backdrop needs no tint',
+      channel(red, 50, 27, 1),
+      lessThan(120),
+      reason: 'red ink is not lifted to white',
     );
 
     await tester.pumpWidget(
       page('/ink-outlined.png', light: false, background: Colors.black),
     );
-    expect(
-      await waitFor(filtered),
-      isFalse,
-      reason: 'near-black logos with a built-in bright edge keep their colors',
-    );
+    expect(await waitFor(() => lifted().evaluate().isNotEmpty), isFalse);
+    final outlined = await capture();
+    expect(lifted(), findsNothing);
     await saveBoundaryPng(
       tester,
       boundaryKey,
-      'component-outlined-ink-no-tint',
+      'component-outlined-ink-no-lift',
+    );
+    expect(
+      channel(outlined, 96, 32, 0),
+      lessThan(24),
+      reason: 'a logo with its own bright edge keeps its dark fill',
+    );
+
+    await tester.pumpWidget(
+      page('/ink-white-ring.png', light: false, background: Colors.black),
+    );
+    expect(await waitFor(() => lifted().evaluate().isNotEmpty), isFalse);
+    final ring = await capture();
+    expect(lifted(), findsNothing);
+    await saveBoundaryPng(tester, boundaryKey, 'component-bright-ring-no-lift');
+    expect(
+      channel(ring, 44, 32, 0),
+      lessThan(80),
+      reason: 'a visible bright logo keeps its dark outline',
+    );
+    expect(
+      channel(ring, 96, 32, 0),
+      greaterThan(230),
+      reason: 'a visible bright logo keeps its white fill',
     );
 
     await tester.pumpWidget(
       page('/ink-white.png', light: true, background: Colors.white),
     );
-    expect(await waitFor(filtered), isTrue);
+    expect(
+      await waitFor(
+        () => tester
+            .widgetList<RawImage>(
+              find.descendant(
+                of: find.byType(FilmArtwork),
+                matching: find.byType(RawImage),
+              ),
+            )
+            .any((image) => image.image != null),
+      ),
+      isTrue,
+    );
+    expect(lifted(), findsNothing);
     final light = await capture();
     await saveBoundaryPng(tester, boundaryKey, 'component-light-ink-outline');
-    expect(red(light, 96, 32), greaterThan(230), reason: 'ink stays white');
+    expect(channel(light, 96, 32, 0), greaterThan(230));
     expect(
       [
-        for (var x = 34; x < 42; x++) red(light, x, 32),
+        for (var x = 34; x < 42; x++) channel(light, x, 32, 0),
       ].reduce((a, b) => a < b ? a : b),
       lessThan(140),
       reason: 'light ink keeps the original dark rim on light themes',
@@ -622,7 +645,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('near-black tint stays off for logos outside the detail page', (
+  testWidgets('ink lift stays off for logos outside the detail page', (
     tester,
   ) async {
     await prepare(tester);
@@ -649,7 +672,8 @@ void main() {
       ),
     );
     await settle(tester, normalized: false);
-    await saveBoundaryPng(tester, boundaryKey, 'component-no-tint');
+    await saveBoundaryPng(tester, boundaryKey, 'component-no-lift');
+    expect(find.byKey(const Key('film-logo-lift')), findsNothing);
     expect(find.byType(ColorFiltered), findsNothing);
     expect(find.byType(ImageFiltered), findsNothing);
     expect(tester.takeException(), isNull);

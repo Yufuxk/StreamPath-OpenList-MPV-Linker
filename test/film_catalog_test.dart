@@ -1831,6 +1831,49 @@ void main() {
     expect(imageApi.requests, hasLength(2));
   });
 
+  test('Logo 候选按原产地与语言优先级排序，选择回调决定最终路径', () async {
+    final adapter = _ApiAdapter((options) async {
+      if (!options.path.endsWith('/images')) {
+        return {..._details(FilmMediaType.movie, 1), 'original_language': 'ja'};
+      }
+      return {
+        'id': 1,
+        'backdrops': <Object>[],
+        'logos': [
+          {
+            'file_path': '/zh.png',
+            'width': 347,
+            'height': 63,
+            'iso_639_1': 'zh',
+            'vote_average': 9,
+          },
+          {
+            'file_path': '/ja.png',
+            'width': 1524,
+            'height': 372,
+            'iso_639_1': 'ja',
+            'vote_average': 1,
+          },
+        ],
+      };
+    });
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    addTearDown(tmdb.close);
+    final ranked = await tmdb.details(FilmMediaType.movie, 1, 'zh-CN');
+    expect(ranked.metadata['logo_path'], '/ja.png');
+    expect(ranked.metadata['presentation_version'], 5);
+    final chosen = await tmdb.details(
+      FilmMediaType.movie,
+      1,
+      'zh-CN',
+      chooseLogo: (candidates) async => candidates.last.path,
+    );
+    expect(chosen.metadata['logo_path'], '/zh.png');
+  });
+
   test('英文译名、别名、剧场版与标点差异自动关联并复用标题核验', () async {
     final root = await addRoot();
     final data = {

@@ -783,7 +783,7 @@ void main() {
       expect(artwork.target, 'original');
       expect(artwork.logoAutoCenter, isTrue);
       expect(artwork.logoGlyphSize, isNull);
-      expect(artwork.logoInkTint, isFalse);
+      expect(artwork.logoInkLift, isFalse);
       for (var i = 0; i < 100; i++) {
         if (find
             .descendant(
@@ -1928,7 +1928,12 @@ class _BackgroundTmdb extends TmdbMetadataService {
   }
 
   @override
-  Future<FilmWork> details(FilmMediaType type, int id, String language) {
+  Future<FilmWork> details(
+    FilmMediaType type,
+    int id,
+    String language, {
+    LogoChooser? chooseLogo,
+  }) {
     requests.add(id);
     return pending.future;
   }

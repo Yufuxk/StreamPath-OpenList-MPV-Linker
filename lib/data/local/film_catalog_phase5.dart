@@ -217,6 +217,13 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
     _changed();
   }
 
+  /// 用户为该作品手工选择的 Logo；换源或重新刮削后继续使用。
+  Future<String?> logoOverride(int workId) async =>
+      await preference('logo_override:$workId') as String?;
+
+  Future<void> setLogoOverride(int workId, String? path) =>
+      setPreference('logo_override:$workId', path);
+
   Future<List<int>> dailySelection({DateTime? now}) => _db.transaction((
     txn,
   ) async {

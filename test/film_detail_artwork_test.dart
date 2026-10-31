@@ -3921,24 +3921,35 @@ void main() {
         (w) => w is FilmArtwork && w.transparent,
       );
       final artwork = tester.widget<FilmArtwork>(logo);
-      expect(artwork.logoInkTint, isTrue);
+      expect(artwork.logoInkLift, isTrue);
       expect(artwork.logoPadding, 3);
       expect(artwork.borderRadius, 0);
-      final tint = find.descendant(
+      final lift = find.descendant(
         of: logo,
-        matching: find.byType(ColorFiltered),
+        matching: find.byKey(const Key('film-logo-lift')),
       );
-      for (var i = 0; i < 100 && tint.evaluate().isEmpty; i++) {
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      if (theme.brightness == Brightness.dark) {
+        for (var i = 0; i < 200 && lift.evaluate().isEmpty; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump();
+        }
+        expect(lift, findsOneWidget);
+      } else {
+        expect(lift, findsNothing);
+        final outline = find.descendant(
+          of: logo,
+          matching: find.byType(ImageFiltered),
         );
-        await tester.pump();
+        for (var i = 0; i < 100 && outline.evaluate().isEmpty; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump();
+        }
+        expect(outline, findsOneWidget);
       }
-      expect(tint, findsOneWidget);
-      expect(
-        find.descendant(of: logo, matching: find.byType(ImageFiltered)),
-        theme.brightness == Brightness.dark ? findsNothing : findsOneWidget,
-      );
       await tester.runAsync(() async {
         final image =
             await (boundary.currentContext!.findRenderObject()
@@ -4046,6 +4057,113 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.runAsync(() => catalog.images.clear());
     expect(catalog.images.knownFile(works[1].backdropPath, 'original'), isNull);
+  });
+
+  testWidgets('右键徽标可在全部候选中固定自定义 Logo', (tester) async {
+    await prepare(tester, count: 1);
+    final work = works.single;
+    const first = '/pick-first.png';
+    const second = '/pick-second.png';
+    Future<void> writePickLogo(String path, String target, Color color) async {
+      final recorder = ui.PictureRecorder();
+      Canvas(
+        recorder,
+      ).drawRect(const Rect.fromLTWH(0, 0, 600, 160), Paint()..color = color);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(600, 160);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      picture.dispose();
+      await File(
+        p.join(
+          catalog.images.directory.path,
+          '${FilmCatalogImageCache.cacheKey(path, target)}.img',
+        ),
+      ).writeAsBytes(bytes!.buffer.asUint8List());
+    }
+
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('spoiler_protection', false);
+      await catalog.images.directory.create(recursive: true);
+      for (final (path, color) in [
+        (first, Colors.teal),
+        (second, Colors.orange),
+      ]) {
+        for (final target in ['original', 'w300']) {
+          await writePickLogo(path, target, color);
+        }
+      }
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: work.id,
+          type: work.type,
+          tmdbId: work.tmdbId,
+          title: work.title,
+          originalTitle: work.originalTitle,
+          overview: work.overview,
+          language: work.language,
+          posterPath: work.posterPath,
+          backdropPath: work.backdropPath,
+          metadata: {
+            ...work.metadata,
+            'presentation_version': 5,
+            'logo_path': first,
+            'logo_candidates': [
+              {'path': first, 'width': 600, 'height': 160, 'language': 'zh'},
+              {'path': second, 'width': 1200, 'height': 260, 'language': 'ja'},
+            ],
+          },
+        ),
+      );
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: work.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    final logo = find.byWidgetPredicate(
+      (w) => w is FilmArtwork && w.transparent,
+    );
+    expect(tester.widget<FilmArtwork>(logo).path, first);
+    Future<void> pumpAsync() async {
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 60));
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+      }
+    }
+
+    await tester.tapAt(tester.getCenter(logo), buttons: kSecondaryMouseButton);
+    await pumpAsync();
+    expect(find.text('更换 Logo'), findsOneWidget);
+    await tester.tap(find.text('更换 Logo'));
+    await pumpAsync();
+    expect(find.text('选择 Logo'), findsOneWidget);
+    await tester.tap(find.text('ja · 1200 x 260'));
+    await pumpAsync();
+    expect(tester.widget<FilmArtwork>(logo).path, second);
+    expect(
+      await tester.runAsync(() => catalog.store.logoOverride(work.id)),
+      second,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: work.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    expect(tester.widget<FilmArtwork>(logo).path, second);
   });
 }
 

@@ -6,6 +6,7 @@ import '../../core/errors/app_exception.dart';
 import '../../core/utils/video_filename_parser.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import 'film_logo_selector.dart';
 import 'tmdb_metadata_service.dart';
 import 'film_file_metadata.dart';
 
@@ -20,11 +21,18 @@ class FilmMatchHint {
 
 /// 核验 ID、标题与相近名称，歧义保留人工确认。
 class FilmCatalogMatcher {
-  FilmCatalogMatcher(this.store, this.tmdb, {this.filesFor, this.artworkBytes});
+  FilmCatalogMatcher(
+    this.store,
+    this.tmdb, {
+    this.filesFor,
+    this.artworkBytes,
+    this.logoBytes,
+  });
   final FilmCatalogStore store;
   final TmdbMetadataService tmdb;
   final Future<FilmFileMetadata?> Function(FilmCatalogRoot)? filesFor;
   final Future<Uint8List> Function(String)? artworkBytes;
+  final Future<Uint8List> Function(String)? logoBytes;
   static final _explicitId = RegExp(
     r'\{tmdb-(\d+)\}|\[tmdb-(\d+)\]|\[tmdbid-(\d+)\]',
     caseSensitive: false,
@@ -149,6 +157,18 @@ class FilmCatalogMatcher {
     return FilmMatchHint(title.trim(), year, ids, episode);
   }
 
+  Future<FilmWork> _details(FilmMediaType type, int id, String language) {
+    final read = logoBytes;
+    return tmdb.details(
+      type,
+      id,
+      language,
+      chooseLogo: read == null
+          ? null
+          : (candidates) => selectBestLogo(candidates, read: read),
+    );
+  }
+
   Future<FilmWork> lookup(
     FilmMediaType type,
     int id, {
@@ -164,7 +184,7 @@ class FilmCatalogMatcher {
             !await tmdb.hasToken())) {
       return cached!;
     }
-    return tmdb.details(type, id, language);
+    return _details(type, id, language);
   }
 
   Future<FilmScanMetadataSession> scanSession(
@@ -488,7 +508,7 @@ class FilmScanMetadataSession {
                 cached!.metadataOrigin != 'network' ||
                 cached.metadata.containsKey('belongs_to_collection'))
         ? cached!
-        : await matcher.tmdb.details(root.type, id, language);
+        : await matcher._details(root.type, id, language);
   }
 
   Future<FilmWork?> _search(FilmMatchHint hint) async {

@@ -1416,7 +1416,12 @@ class _Metadata extends TmdbMetadataService {
   final works = <(FilmMediaType, int)>[];
   final seasons = <(int, int)>[];
   @override
-  Future<FilmWork> details(FilmMediaType type, int id, String language) async {
+  Future<FilmWork> details(
+    FilmMediaType type,
+    int id,
+    String language, {
+    LogoChooser? chooseLogo,
+  }) async {
     works.add((type, id));
     return FilmWork(
       type: type,

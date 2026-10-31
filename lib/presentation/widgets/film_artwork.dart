@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -310,14 +311,14 @@ class FilmArtwork extends StatefulWidget {
     this.transparent = false,
     this.logoGlyphSize,
     this.logoAutoCenter = false,
-    this.logoInkTint = false,
+    this.logoInkLift = false,
     this.logoPadding = 0,
     this.fallbackPath,
     this.showCachedImmediately = false,
     this.provider,
   }) : assert(logoGlyphSize == null || transparent),
        assert(!logoAutoCenter || transparent),
-       assert(!logoInkTint || transparent),
+       assert(!logoInkLift || transparent),
        assert(logoPadding >= 0);
   final FilmCatalogImageCache cache;
   final String? path;
@@ -335,8 +336,8 @@ class FilmArtwork extends StatefulWidget {
   /// 无字形目标时仍按透明内容自动居中；与 [logoGlyphSize] 独立。
   final bool logoAutoCenter;
 
-  /// 深色主题下把近乎纯黑且没有自带亮边的徽标整体渲染为白色；默认关闭。
-  final bool logoInkTint;
+  /// 深色主题下把徽标暗部按亮度抬向白色（保留色相与 Alpha）；默认关闭。
+  final bool logoInkLift;
 
   /// 透明徽标在裁剪框内留出的空白，避免贴边字形和描边被裁掉。
   final double logoPadding;
@@ -506,12 +507,15 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (widget.transparent) {
           return SkeletonLoadBoundary(
             ready: frame != null,
-            child: widget.logoInkTint
-                ? _InkAdaptiveLogo(
+            child: widget.logoInkLift
+                ? _InkLiftLogo(
                     key: ValueKey((widget.cache, widget.path, widget.target)),
-                    cache: widget.cache,
                     provider: provider,
                     image: image,
+                    fit: fit,
+                    alignment: alignment,
+                    filterQuality: filterQuality,
+                    targetWidth: widget.width,
                   )
                 : _logoOutline(context, image),
           );
@@ -568,26 +572,34 @@ Widget _logoOutline(BuildContext context, Widget image) {
   );
 }
 
-/// 深色主题下把近乎纯黑、且没有自带亮边的徽标整体渲染为白色。
-class _InkAdaptiveLogo extends StatefulWidget {
-  const _InkAdaptiveLogo({
+/// 深色主题下把徽标暗部按亮度抬向白色，保留色相与 Alpha。
+class _InkLiftLogo extends StatefulWidget {
+  const _InkLiftLogo({
     super.key,
-    required this.cache,
     required this.provider,
     required this.image,
+    required this.fit,
+    required this.alignment,
+    required this.filterQuality,
+    this.targetWidth,
   });
-  final FilmCatalogImageCache cache;
   final ImageProvider<Object> provider;
   final Widget image;
+  final BoxFit fit;
+  final Alignment alignment;
+  final FilterQuality filterQuality;
+  final double? targetWidth;
 
   @override
-  State<_InkAdaptiveLogo> createState() => _InkAdaptiveLogoState();
+  State<_InkLiftLogo> createState() => _InkLiftLogoState();
 }
 
-class _InkAdaptiveLogoState extends State<_InkAdaptiveLogo> {
+class _InkLiftLogoState extends State<_InkLiftLogo> {
   ImageStream? _stream;
   ImageStreamListener? _listener;
-  bool _started = false, _lightInk = false;
+  bool _started = false;
+  int _generation = 0;
+  ui.Image? _lifted;
 
   @override
   void didChangeDependencies() {
@@ -600,38 +612,57 @@ class _InkAdaptiveLogoState extends State<_InkAdaptiveLogo> {
     late ImageStreamListener listener;
     listener = ImageStreamListener((info, _) {
       _stopStream();
-      final analysis = _analyzeLogo(widget.cache, widget.provider, info.image);
+      final image = info.image.clone();
       info.dispose();
-      if (analysis.ready) {
-        _apply(analysis.layout);
-      } else {
-        unawaited(_prepare(analysis));
-      }
+      unawaited(_prepare(image));
     }, onError: (Object _, StackTrace? _) => _stopStream());
     _listener = listener;
     stream.addListener(listener);
   }
 
-  void _apply(FilmLogoLayout? layout) {
-    if (!mounted) return;
-    setState(
-      () => _lightInk =
-          layout != null && layout.nearBlack && !layout.hasBrightEdge,
-    );
-  }
-
-  Future<void> _prepare(_LogoAnalysis analysis) async {
+  Future<void> _prepare(ui.Image image) async {
+    final generation = ++_generation;
     try {
-      _apply(await analysis.result);
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (!mounted || generation != _generation || data == null) return;
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      final target = ((widget.targetWidth ?? 512) * dpr).round().clamp(
+        64,
+        2048,
+      );
+      final result = await compute(_liftLogoInk, (
+        TransferableTypedData.fromList([data.buffer.asUint8List()]),
+        image.width,
+        image.height,
+        target,
+      ));
+      if (!mounted || generation != _generation) return;
+      final bytes = result.$1;
+      if (bytes == null) return;
+      final lifted = await _decodeRgba(
+        bytes.materialize().asUint8List(),
+        result.$2,
+        result.$3,
+      );
+      if (!mounted || generation != _generation) {
+        lifted.dispose();
+        return;
+      }
+      setState(() {
+        _lifted?.dispose();
+        _lifted = lifted;
+      });
     } catch (error, stack) {
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: error,
           stack: stack,
           library: 'film artwork',
-          context: ErrorDescription('while measuring a detail logo ink'),
+          context: ErrorDescription('while lifting a detail logo ink'),
         ),
       );
+    } finally {
+      image.dispose();
     }
   }
 
@@ -643,21 +674,100 @@ class _InkAdaptiveLogoState extends State<_InkAdaptiveLogo> {
 
   @override
   void dispose() {
+    _generation++;
     _stopStream();
+    _lifted?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // 深色主题下的纯黑徽标改用白色填充，保留所有笔画与内部小字。
-    if (!_lightInk || Theme.of(context).brightness != Brightness.dark) {
+    if (Theme.of(context).brightness != Brightness.dark) {
       return _logoOutline(context, widget.image);
     }
-    return ColorFiltered(
-      colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
-      child: widget.image,
+    final lifted = _lifted;
+    if (lifted == null) return widget.image;
+    return RawImage(
+      key: const Key('film-logo-lift'),
+      image: lifted,
+      fit: widget.fit,
+      alignment: widget.alignment,
+      filterQuality: widget.filterQuality,
     );
   }
+}
+
+/// 只对整体偏暗的徽标做暗部提亮：alpha 加权平均最大通道低于该亮度（0～1）才处理。
+const _logoLiftToneLimit = .28;
+
+/// 只对整体偏暗的徽标做暗部提亮：亮部与彩色保持原样。
+/// 已经以亮色为主的徽标（含自带深色描边或阴影）保持原图，不追加白边。
+(TransferableTypedData?, int, int) _liftLogoInk(
+  (TransferableTypedData, int, int, int) input,
+) {
+  final rgba = input.$1.materialize().asUint8List();
+  final width = input.$2, height = input.$3;
+  final targetWidth = math.min(width, math.max(64, input.$4));
+  final targetHeight = math.max(1, (height * targetWidth / width).round());
+  final out = Uint8List(targetWidth * targetHeight * 4);
+  var weightSum = 0.0, toneSum = 0.0;
+  for (var ty = 0; ty < targetHeight; ty++) {
+    final y0 = ty * height ~/ targetHeight;
+    final y1 = math.max(y0 + 1, (ty + 1) * height ~/ targetHeight);
+    for (var tx = 0; tx < targetWidth; tx++) {
+      final x0 = tx * width ~/ targetWidth;
+      final x1 = math.max(x0 + 1, (tx + 1) * width ~/ targetWidth);
+      var weight = 0.0, red = 0.0, green = 0.0, blue = 0.0;
+      var count = 0;
+      for (var y = y0; y < y1; y++) {
+        final row = y * width;
+        for (var x = x0; x < x1; x++) {
+          final offset = (row + x) * 4;
+          final alpha = rgba[offset + 3];
+          count++;
+          if (alpha == 0) continue;
+          weight += alpha;
+          red += rgba[offset] * alpha;
+          green += rgba[offset + 1] * alpha;
+          blue += rgba[offset + 2] * alpha;
+        }
+      }
+      final offset = (ty * targetWidth + tx) * 4;
+      if (weight == 0) continue;
+      final r = red / weight, g = green / weight, b = blue / weight;
+      final value = math.max(r, math.max(g, b)) / 255;
+      weightSum += weight;
+      toneSum += weight * value;
+      final blend = ((value - .08) / .40).clamp(0.0, 1.0).toDouble();
+      final tone = blend * blend * (3 - 2 * blend);
+      out[offset] = (r * tone + 255 * (1 - tone)).round().clamp(0, 255).toInt();
+      out[offset + 1] = (g * tone + 255 * (1 - tone))
+          .round()
+          .clamp(0, 255)
+          .toInt();
+      out[offset + 2] = (b * tone + 255 * (1 - tone))
+          .round()
+          .clamp(0, 255)
+          .toInt();
+      out[offset + 3] = (weight / count).round().clamp(0, 255).toInt();
+    }
+  }
+  if (weightSum == 0 || toneSum / weightSum >= _logoLiftToneLimit) {
+    return (null, 0, 0);
+  }
+  return (TransferableTypedData.fromList([out]), targetWidth, targetHeight);
+}
+
+Future<ui.Image> _decodeRgba(Uint8List bytes, int width, int height) {
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    bytes,
+    width,
+    height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
+  return completer.future;
 }
 
 final _logoAnalyses =

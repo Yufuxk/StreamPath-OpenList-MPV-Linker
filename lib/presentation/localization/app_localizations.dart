@@ -329,6 +329,9 @@ class AppLocalizations {
   static const Map<AppLanguage, Map<String, String>>
   _supplementalTranslations = <AppLanguage, Map<String, String>>{
     AppLanguage.traditionalChinese: <String, String>{
+      '更换 Logo': '更換 Logo',
+      '选择 Logo': '選擇 Logo',
+      '取消': '取消',
       '网络存储共享': '網路儲存空間共用',
       '已挂载 {count} 个 WebDAV 服务器': '已掛載 {count} 個 WebDAV 伺服器',
       '添加已保存的服务器': '新增已儲存的伺服器',
@@ -623,6 +626,9 @@ class AppLocalizations {
       '管理员登录失败：': '管理員登入失敗：',
     },
     AppLanguage.japanese: <String, String>{
+      '更换 Logo': 'Logo を変更',
+      '选择 Logo': 'Logo を選択',
+      '取消': 'キャンセル',
       '网络存储共享': 'ネットワークストレージを共有',
       '已挂载 {count} 个 WebDAV 服务器': '{count} 台の WebDAV サーバーをマウント中',
       '添加已保存的服务器': '保存済みサーバーを追加',
@@ -932,6 +938,9 @@ class AppLocalizations {
       '管理员登录失败：': '管理者のログインに失敗しました：',
     },
     AppLanguage.english: <String, String>{
+      '更换 Logo': 'Change logo',
+      '选择 Logo': 'Choose logo',
+      '取消': 'Cancel',
       '网络存储共享': 'Share network storage',
       '已挂载 {count} 个 WebDAV 服务器': '{count} WebDAV servers mounted',
       '添加已保存的服务器': 'Add a saved server',

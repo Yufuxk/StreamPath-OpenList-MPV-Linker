@@ -5,7 +5,11 @@ import 'package:dio/dio.dart';
 
 import '../../data/local/tmdb_credential_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import 'film_logo_selector.dart';
 import 'tmdb_http_client.dart';
+
+/// 从候选 Logo 中挑出最终下载的版本。
+typedef LogoChooser = Future<String?> Function(List<LogoChoice> candidates);
 
 /// 固定 TMDB API 域名、串行请求与连接故障时的备用入口。
 class TmdbMetadataService {
@@ -191,7 +195,12 @@ class TmdbMetadataService {
     }).toList();
   }
 
-  Future<FilmWork> details(FilmMediaType type, int id, String language) async {
+  Future<FilmWork> details(
+    FilmMediaType type,
+    int id,
+    String language, {
+    Future<String?> Function(List<LogoChoice> candidates)? chooseLogo,
+  }) async {
     if (id <= 0) throw const FilmCatalogException('invalidMetadata');
     final key = '${type.name}:$id:$language';
     try {
@@ -216,21 +225,40 @@ class TmdbMetadataService {
                   (logo['file_path'] as String).toLowerCase().endsWith('.png'),
             )
             .toList();
-        int logoRank(Map logo) => logo['iso_639_1'] == language.split('-').first
-            ? 0
-            : logo['iso_639_1'] == data['original_language']
-            ? 1
-            : logo['iso_639_1'] == null
-            ? 2
-            : 3;
+        final originalLanguage = data['original_language'] as String?;
+        // 语言偏好：原产地 > 中文 > 英文 > 其他；同一层内按票数与分辨率排序。
+        int languagePriority(Map logo) {
+          final code = (logo['iso_639_1'] as String?)?.toLowerCase();
+          if (code == null || code.isEmpty) return 3;
+          if (code == originalLanguage) return 0;
+          if (code.startsWith('zh')) return 1;
+          if (code == 'en') return 2;
+          return 3;
+        }
+
         logos.sort((a, b) {
-          final languageOrder = logoRank(a).compareTo(logoRank(b));
-          return languageOrder != 0
-              ? languageOrder
-              : ((b['vote_average'] as num?) ?? 0).compareTo(
-                  (a['vote_average'] as num?) ?? 0,
+          final priority = languagePriority(a).compareTo(languagePriority(b));
+          if (priority != 0) return priority;
+          final votes = ((b['vote_average'] as num?) ?? 0).compareTo(
+            (a['vote_average'] as num?) ?? 0,
+          );
+          return votes != 0
+              ? votes
+              : ((b['width'] as num?) ?? 0).compareTo(
+                  (a['width'] as num?) ?? 0,
                 );
         });
+        final choices = [
+          for (final logo in logos)
+            LogoChoice(
+              logo['file_path'] as String,
+              (logo['width'] as int?) ?? 0,
+              languagePriority(logo),
+            ),
+        ];
+        final chosen = chooseLogo == null || choices.length < 2
+            ? null
+            : await chooseLogo(choices);
         for (final image in backdrops) {
           if (image is! Map ||
               image['width'] is! int ||
@@ -253,8 +281,20 @@ class TmdbMetadataService {
           'backdrop_width': best?['width'],
           'backdrop_height': best?['height'],
           'backdrop_selection': 'highestResolution',
-          'logo_path': logos.firstOrNull?['file_path'],
-          'presentation_version': 4,
+          'logo_path':
+              chosen != null && choices.any((choice) => choice.path == chosen)
+              ? chosen
+              : choices.firstOrNull?.path,
+          'logo_candidates': [
+            for (final logo in logos)
+              {
+                'path': logo['file_path'],
+                'width': logo['width'],
+                'height': logo['height'],
+                'language': logo['iso_639_1'],
+              },
+          ],
+          'presentation_version': 5,
         }, language);
         if (work.tmdbId != id) {
           throw const FilmCatalogException('invalidMetadata');
@@ -412,6 +452,7 @@ class TmdbMetadataService {
           'certification_version': 1,
           'belongs_to_collection': data['belongs_to_collection'],
           'logo_path': data['logo_path'],
+          'logo_candidates': data['logo_candidates'],
           'credits': data['credits'],
           'presentation_version': data['presentation_version'],
           'backdrop_width': data['backdrop_width'],

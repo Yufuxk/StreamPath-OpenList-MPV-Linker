@@ -23,6 +23,7 @@ import 'package:provider/provider.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_version.dart';
 import '../../domain/services/film_version_resolver.dart';
+import '../../domain/services/film_catalog_image_cache.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_notice.dart';
 import '../../data/local/media_library_store.dart';
@@ -120,6 +121,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   final _genresTextKey = GlobalKey();
   final _overviewTextKey = GlobalKey();
   FilmWork? _work;
+  String? _logoOverride;
   List<FilmResource> _resources = [];
   FilmVersionIndex _versions = FilmVersionIndex([]);
   FilmVersionSelection? _versionSelection;
@@ -208,6 +210,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   void initState() {
     super.initState();
     _work = widget.initialWork;
+    unawaited(_loadLogoOverride());
     widget.catalog.store.addListener(_load);
     final app = context.read<AppState>();
     _playbackStores = [
@@ -590,7 +593,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         _backdropChecked = true;
         if (work.tmdbId > 0 &&
             work.metadataOrigin == 'network' &&
-            (work.metadata['presentation_version'] != 4 ||
+            (work.metadata['presentation_version'] != 5 ||
                 work.metadata['certification_version'] != 1) &&
             await widget.catalog.tmdb.hasToken()) {
           await widget.catalog.store.refreshWork(
@@ -623,6 +626,64 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     refreshing: _refreshing,
     onRefresh: _refresh,
   );
+
+  List<Map> get _logoCandidates =>
+      (_work?.metadata['logo_candidates'] as List? ?? [])
+          .whereType<Map>()
+          .where((candidate) => candidate['path'] is String)
+          .toList(growable: false);
+
+  Future<void> _loadLogoOverride() async {
+    final path = await widget.catalog.store.logoOverride(widget.workId);
+    if (!mounted || path == _logoOverride) return;
+    setState(() => _logoOverride = path);
+  }
+
+  Future<void> _logoMenu(Offset position) async {
+    if (_logoCandidates.length < 2) return;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final local = overlay.globalToLocal(position);
+    final action = await showSPMenu<String>(
+      context: context,
+      color: AppTheme.dropdownMenuColor(Theme.of(context)),
+      shape: RoundedRectangleBorder(
+        borderRadius: AppTheme.dropdownBorderRadius,
+      ),
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(local.dx, local.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'logo',
+          child: SPMenuItemContent(
+            icon: SPIcons.image,
+            child: AppText('更换 Logo'),
+          ),
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+    await _pickLogo();
+  }
+
+  Future<void> _pickLogo() async {
+    final work = _work;
+    if (work == null || _logoCandidates.length < 2) return;
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (context) => _LogoPickerDialog(
+        cache: widget.catalog.images,
+        candidates: _logoCandidates,
+        current: _logoOverride ?? work.metadata['logo_path'] as String?,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await widget.catalog.store.setLogoOverride(work.id, chosen);
+    if (!mounted) return;
+    setState(() => _logoOverride = chosen);
+  }
 
   Map? _episode(FilmResource resource) =>
       (_seasons[resource.season]?['episodes'] as List?)
@@ -1311,31 +1372,41 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                 key: const Key(
                                                   'film-skeleton-logo',
                                                 ),
-                                                child: FilmArtwork(
-                                                  cache: c.images,
-                                                  path: moving && poster != null
-                                                      ? null
-                                                      : work.metadata['logo_path']
-                                                            as String?,
-                                                  target: 'original',
-                                                  transparent: true,
-                                                  logoInkTint: true,
-                                                  logoPadding: 3,
-                                                  borderRadius: 0,
-                                                  width: 500,
-                                                  height: 108,
-                                                  placeholder: Align(
-                                                    alignment:
-                                                        Alignment.centerLeft,
-                                                    child: Text(
-                                                      key: _titleTextKey,
-                                                      work.title,
-                                                      style: theme
-                                                          .textTheme
-                                                          .headlineMedium
-                                                          ?.copyWith(
-                                                            color: foreground,
-                                                          ),
+                                                child: GestureDetector(
+                                                  behavior:
+                                                      HitTestBehavior.opaque,
+                                                  onSecondaryTapDown:
+                                                      (details) => _logoMenu(
+                                                        details.globalPosition,
+                                                      ),
+                                                  child: FilmArtwork(
+                                                    cache: c.images,
+                                                    path:
+                                                        moving && poster != null
+                                                        ? null
+                                                        : _logoOverride ??
+                                                              work.metadata['logo_path']
+                                                                  as String?,
+                                                    target: 'original',
+                                                    transparent: true,
+                                                    logoInkLift: true,
+                                                    logoPadding: 3,
+                                                    borderRadius: 0,
+                                                    width: 500,
+                                                    height: 108,
+                                                    placeholder: Align(
+                                                      alignment:
+                                                          Alignment.centerLeft,
+                                                      child: Text(
+                                                        key: _titleTextKey,
+                                                        work.title,
+                                                        style: theme
+                                                            .textTheme
+                                                            .headlineMedium
+                                                            ?.copyWith(
+                                                              color: foreground,
+                                                            ),
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
@@ -2680,6 +2751,128 @@ class _FilmPendingPageState extends State<FilmPendingPage>
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LogoPickerDialog extends StatelessWidget {
+  const _LogoPickerDialog({
+    required this.cache,
+    required this.candidates,
+    required this.current,
+  });
+  final FilmCatalogImageCache cache;
+  final List<Map> candidates;
+  final String? current;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760, maxHeight: 560),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 8, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      context.l10n.text('选择 Logo'),
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: GridView.extent(
+                maxCrossAxisExtent: 240,
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 1.45,
+                children: [
+                  for (final candidate in candidates) _tile(context, candidate),
+                ],
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(context.l10n.text('取消')),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tile(BuildContext context, Map candidate) {
+    final theme = Theme.of(context);
+    final path = candidate['path'] as String;
+    final selected = path == current;
+    final language = candidate['language'] as String?;
+    final width = candidate['width'], height = candidate['height'];
+    final detail = [
+      if (language != null && language.isNotEmpty) language,
+      if (width is int && height is int) '$width x $height',
+    ].join(' · ');
+    return InkWell(
+      onTap: () => Navigator.pop(context, path),
+      borderRadius: BorderRadius.circular(10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? theme.colorScheme.primary : theme.dividerColor,
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            children: [
+              Expanded(
+                child: Center(
+                  child: FilmArtwork(
+                    cache: cache,
+                    path: path,
+                    target: 'w300',
+                    transparent: true,
+                    borderRadius: 6,
+                    height: 64,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  detail,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: Colors.black54,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
