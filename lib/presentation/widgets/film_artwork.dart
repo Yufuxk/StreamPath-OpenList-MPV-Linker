@@ -310,14 +310,14 @@ class FilmArtwork extends StatefulWidget {
     this.transparent = false,
     this.logoGlyphSize,
     this.logoAutoCenter = false,
-    this.logoInkOutline = false,
+    this.logoInkTint = false,
     this.logoPadding = 0,
     this.fallbackPath,
     this.showCachedImmediately = false,
     this.provider,
   }) : assert(logoGlyphSize == null || transparent),
        assert(!logoAutoCenter || transparent),
-       assert(!logoInkOutline || transparent),
+       assert(!logoInkTint || transparent),
        assert(logoPadding >= 0);
   final FilmCatalogImageCache cache;
   final String? path;
@@ -335,8 +335,8 @@ class FilmArtwork extends StatefulWidget {
   /// 无字形目标时仍按透明内容自动居中；与 [logoGlyphSize] 独立。
   final bool logoAutoCenter;
 
-  /// 对深色主题下近乎纯黑且没有自带亮边的徽标补对比描边；默认关闭。
-  final bool logoInkOutline;
+  /// 深色主题下把近乎纯黑且没有自带亮边的徽标整体渲染为白色；默认关闭。
+  final bool logoInkTint;
 
   /// 透明徽标在裁剪框内留出的空白，避免贴边字形和描边被裁掉。
   final double logoPadding;
@@ -506,8 +506,8 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (widget.transparent) {
           return SkeletonLoadBoundary(
             ready: frame != null,
-            child: widget.logoInkOutline
-                ? _InkAwareLogoOutline(
+            child: widget.logoInkTint
+                ? _InkAdaptiveLogo(
                     key: ValueKey((widget.cache, widget.path, widget.target)),
                     cache: widget.cache,
                     provider: provider,
@@ -547,26 +547,19 @@ class _FilmArtworkState extends State<FilmArtwork> {
   );
 }
 
-Widget _logoOutline(
-  BuildContext context,
-  Widget image, {
-  Color? color,
-  double radius = 1.25,
-}) {
-  final outline =
-      color ??
-      (Theme.of(context).brightness == Brightness.dark
-          ? null
-          : Colors.black.withValues(alpha: .84));
-  if (outline == null) return image;
+Widget _logoOutline(BuildContext context, Widget image) {
+  if (Theme.of(context).brightness == Brightness.dark) return image;
   // 轮廓复用同一解码帧，保留原色与透明区域。
   return Stack(
     fit: StackFit.passthrough,
     children: [
       ImageFiltered(
-        imageFilter: ui.ImageFilter.dilate(radiusX: radius, radiusY: radius),
+        imageFilter: ui.ImageFilter.dilate(radiusX: 1.25, radiusY: 1.25),
         child: ColorFiltered(
-          colorFilter: ColorFilter.mode(outline, BlendMode.srcIn),
+          colorFilter: ColorFilter.mode(
+            Colors.black.withValues(alpha: .84),
+            BlendMode.srcIn,
+          ),
           child: image,
         ),
       ),
@@ -575,9 +568,9 @@ Widget _logoOutline(
   );
 }
 
-/// 详情页按徽标墨色选择对比描边：暗墨配白描边，亮墨配黑描边。
-class _InkAwareLogoOutline extends StatefulWidget {
-  const _InkAwareLogoOutline({
+/// 深色主题下把近乎纯黑、且没有自带亮边的徽标整体渲染为白色。
+class _InkAdaptiveLogo extends StatefulWidget {
+  const _InkAdaptiveLogo({
     super.key,
     required this.cache,
     required this.provider,
@@ -588,13 +581,13 @@ class _InkAwareLogoOutline extends StatefulWidget {
   final Widget image;
 
   @override
-  State<_InkAwareLogoOutline> createState() => _InkAwareLogoOutlineState();
+  State<_InkAdaptiveLogo> createState() => _InkAdaptiveLogoState();
 }
 
-class _InkAwareLogoOutlineState extends State<_InkAwareLogoOutline> {
+class _InkAdaptiveLogoState extends State<_InkAdaptiveLogo> {
   ImageStream? _stream;
   ImageStreamListener? _listener;
-  bool _started = false, _needsRim = false;
+  bool _started = false, _lightInk = false;
 
   @override
   void didChangeDependencies() {
@@ -622,7 +615,7 @@ class _InkAwareLogoOutlineState extends State<_InkAwareLogoOutline> {
   void _apply(FilmLogoLayout? layout) {
     if (!mounted) return;
     setState(
-      () => _needsRim =
+      () => _lightInk =
           layout != null && layout.nearBlack && !layout.hasBrightEdge,
     );
   }
@@ -656,15 +649,13 @@ class _InkAwareLogoOutlineState extends State<_InkAwareLogoOutline> {
 
   @override
   Widget build(BuildContext context) {
-    // 只给深色背景上近乎纯黑、且没有自带亮边的徽标补白色描边。
-    if (!_needsRim || Theme.of(context).brightness != Brightness.dark) {
+    // 深色主题下的纯黑徽标改用白色填充，保留所有笔画与内部小字。
+    if (!_lightInk || Theme.of(context).brightness != Brightness.dark) {
       return _logoOutline(context, widget.image);
     }
-    return _logoOutline(
-      context,
-      widget.image,
-      color: Colors.white.withValues(alpha: .9),
-      radius: 2,
+    return ColorFiltered(
+      colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+      child: widget.image,
     );
   }
 }

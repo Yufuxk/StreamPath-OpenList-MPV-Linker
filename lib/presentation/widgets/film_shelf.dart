@@ -518,8 +518,14 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                             : work.resourceCount,
                       },
                     ),
-                ].join('·');
+                ].join(' · ');
                 final defaults = DefaultTextStyle.of(context).style;
+                final theme = Theme.of(context);
+                // 副标题降为更轻的 12px／400 辅助色，拉开与主标题的层级。
+                final titleStyle = defaults
+                    .merge(theme.textTheme.titleSmall)
+                    .copyWith(fontWeight: FontWeight.w500);
+                final captionStyle = defaults.merge(theme.textTheme.bodySmall);
                 double textHeight(String text, TextStyle style) {
                   final painter = TextPainter(
                     text: TextSpan(text: text, style: style),
@@ -534,11 +540,8 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
 
                 final textSpace =
                     8 +
-                    textHeight(
-                      widget.work.title,
-                      defaults.merge(Theme.of(context).textTheme.titleSmall),
-                    ) +
-                    (subtitle.isEmpty ? 0 : textHeight(subtitle, defaults));
+                    textHeight(widget.work.title, titleStyle) +
+                    (subtitle.isEmpty ? 0 : textHeight(subtitle, captionStyle));
                 final posterWidth = math.min(
                   constraints.maxWidth,
                   math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
@@ -564,13 +567,14 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                           widget.work.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.titleSmall,
+                          style: titleStyle,
                         ),
                         if (subtitle.isNotEmpty)
                           Text(
                             subtitle,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
+                            style: captionStyle,
                           ),
                       ],
                     ),

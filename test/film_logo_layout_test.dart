@@ -276,7 +276,7 @@ void main() {
     String path, {
     bool normalized = true,
     bool light = false,
-    bool inkOutline = false,
+    bool inkTint = false,
     double width = 420,
     double height = 220,
     FilmCatalogImageCache? imageCache,
@@ -291,7 +291,7 @@ void main() {
           target: 'original',
           transparent: true,
           logoGlyphSize: normalized ? 40 : null,
-          logoInkOutline: inkOutline,
+          logoInkTint: inkTint,
           width: width,
           height: height,
           borderRadius: 0,
@@ -506,7 +506,9 @@ void main() {
     },
   );
 
-  testWidgets('detail outlines only near-black clearlogos', (tester) async {
+  testWidgets('detail renders only near-black clearlogos in white', (
+    tester,
+  ) async {
     await prepare(tester);
     Widget page(
       String path, {
@@ -525,7 +527,7 @@ void main() {
               path: path,
               target: 'original',
               transparent: true,
-              logoInkOutline: true,
+              logoInkTint: true,
               width: 192,
               height: 64,
               borderRadius: 0,
@@ -534,9 +536,10 @@ void main() {
         ),
       ),
     );
-    Future<bool> waitForOutline() async {
+    bool filtered() => find.byType(ColorFiltered).evaluate().isNotEmpty;
+    Future<bool> waitFor(bool Function() ready) async {
       for (var i = 0; i < 100; i++) {
-        if (find.byType(ImageFiltered).evaluate().isNotEmpty) return true;
+        if (ready()) return true;
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 10)),
         );
@@ -559,23 +562,21 @@ void main() {
     await tester.pumpWidget(
       page('/ink-black.png', light: false, background: Colors.black),
     );
-    expect(await waitForOutline(), isTrue);
+    expect(await waitFor(filtered), isTrue);
     final dark = await capture();
-    await saveBoundaryPng(tester, boundaryKey, 'component-dark-ink-outline');
-    expect(red(dark, 96, 32), lessThan(24), reason: 'ink stays black');
+    await saveBoundaryPng(tester, boundaryKey, 'component-dark-ink-white');
     expect(
-      [
-        for (var x = 34; x < 42; x++) red(dark, x, 32),
-      ].reduce((a, b) => a > b ? a : b),
-      greaterThan(160),
-      reason: 'near-black ink on a dark backdrop needs a white rim',
+      red(dark, 96, 32),
+      greaterThan(230),
+      reason: 'near-black ink is rendered white on dark themes',
     );
+    expect(find.byType(ImageFiltered), findsNothing);
 
     await tester.pumpWidget(
       page('/left.png', light: false, background: Colors.black),
     );
     expect(
-      await waitForOutline(),
+      await waitFor(filtered),
       isFalse,
       reason: 'colored clearlogos keep their original look',
     );
@@ -585,25 +586,29 @@ void main() {
       page('/ink-white.png', light: false, background: Colors.black),
     );
     expect(
-      await waitForOutline(),
+      await waitFor(filtered),
       isFalse,
-      reason: 'light ink on a dark backdrop needs no rim',
+      reason: 'light ink on a dark backdrop needs no tint',
     );
 
     await tester.pumpWidget(
       page('/ink-outlined.png', light: false, background: Colors.black),
     );
     expect(
-      await waitForOutline(),
+      await waitFor(filtered),
       isFalse,
-      reason: 'near-black logos with a built-in bright edge need no extra rim',
+      reason: 'near-black logos with a built-in bright edge keep their colors',
     );
-    await saveBoundaryPng(tester, boundaryKey, 'component-outlined-ink-no-rim');
+    await saveBoundaryPng(
+      tester,
+      boundaryKey,
+      'component-outlined-ink-no-tint',
+    );
 
     await tester.pumpWidget(
       page('/ink-white.png', light: true, background: Colors.white),
     );
-    expect(await waitForOutline(), isTrue);
+    expect(await waitFor(filtered), isTrue);
     final light = await capture();
     await saveBoundaryPng(tester, boundaryKey, 'component-light-ink-outline');
     expect(red(light, 96, 32), greaterThan(230), reason: 'ink stays white');
@@ -617,7 +622,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('outline remains off for logos outside the detail page', (
+  testWidgets('near-black tint stays off for logos outside the detail page', (
     tester,
   ) async {
     await prepare(tester);
@@ -644,7 +649,8 @@ void main() {
       ),
     );
     await settle(tester, normalized: false);
-    await saveBoundaryPng(tester, boundaryKey, 'component-no-outline');
+    await saveBoundaryPng(tester, boundaryKey, 'component-no-tint');
+    expect(find.byType(ColorFiltered), findsNothing);
     expect(find.byType(ImageFiltered), findsNothing);
     expect(tester.takeException(), isNull);
   });

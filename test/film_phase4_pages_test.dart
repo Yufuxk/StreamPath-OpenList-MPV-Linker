@@ -408,9 +408,18 @@ void main() {
             () => c.store.setPreference('show_poster_content_count', true),
           );
           await tester.pump();
-          final caption = find.text('2023·$suffix');
+          final caption = find.text('2023 · $suffix');
           expect(caption, findsOneWidget);
           expect(tester.widget<Text>(caption).maxLines, 1);
+          expect(tester.widget<Text>(caption).style?.fontSize, 12);
+          expect(
+            tester.widget<Text>(caption).style?.fontWeight,
+            FontWeight.w400,
+          );
+          expect(
+            tester.widget<Text>(find.text('Poster title')).style?.fontWeight,
+            FontWeight.w500,
+          );
           if (scale == 1) {
             expect(
               tester.renderObject<RenderParagraph>(caption).didExceedMaxLines,
@@ -431,6 +440,48 @@ void main() {
         }
       }
     }
+  });
+
+  testWidgets('过长的作品标题保持单行省略显示', (tester) async {
+    await prepare(tester);
+    const title = '这是一个非常非常长的电影标题用来验证卡片截断行为';
+    await tester.pumpWidget(
+      frame(
+        Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 160,
+              height: 320,
+              child: FilmWorkCard(
+                store: c.store,
+                work: FilmWork(
+                  type: FilmMediaType.movie,
+                  title: title,
+                  originalTitle: title,
+                  overview: '',
+                  language: 'zh-CN',
+                ),
+                cache: c.images,
+                onTap: () {},
+                onMenu: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await settle(tester);
+    final titleFinder = find.text(title);
+    expect(titleFinder, findsOneWidget);
+    final titleText = tester.widget<Text>(titleFinder);
+    expect(titleText.maxLines, 1);
+    expect(titleText.overflow, TextOverflow.ellipsis);
+    expect(
+      tester.renderObject<RenderParagraph>(titleFinder).didExceedMaxLines,
+      isTrue,
+    );
+    await render(tester, 'title-truncation');
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

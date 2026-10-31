@@ -3921,20 +3921,24 @@ void main() {
         (w) => w is FilmArtwork && w.transparent,
       );
       final artwork = tester.widget<FilmArtwork>(logo);
-      expect(artwork.logoInkOutline, isTrue);
+      expect(artwork.logoInkTint, isTrue);
       expect(artwork.logoPadding, 3);
       expect(artwork.borderRadius, 0);
-      final rim = find.descendant(
+      final tint = find.descendant(
         of: logo,
-        matching: find.byType(ImageFiltered),
+        matching: find.byType(ColorFiltered),
       );
-      for (var i = 0; i < 100 && rim.evaluate().isEmpty; i++) {
+      for (var i = 0; i < 100 && tint.evaluate().isEmpty; i++) {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 10)),
         );
         await tester.pump();
       }
-      expect(rim, findsOneWidget);
+      expect(tint, findsOneWidget);
+      expect(
+        find.descendant(of: logo, matching: find.byType(ImageFiltered)),
+        theme.brightness == Brightness.dark ? findsNothing : findsOneWidget,
+      );
       await tester.runAsync(() async {
         final image =
             await (boundary.currentContext!.findRenderObject()

@@ -1319,7 +1319,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                             as String?,
                                                   target: 'original',
                                                   transparent: true,
-                                                  logoInkOutline: true,
+                                                  logoInkTint: true,
                                                   logoPadding: 3,
                                                   borderRadius: 0,
                                                   width: 500,
