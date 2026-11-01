@@ -48,6 +48,7 @@ import '../../data/models/playback_progress.dart';
 import '../../data/models/subtitle_item.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../domain/services/external_player_service.dart';
 import '../../domain/services/external_audio_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
@@ -356,6 +357,7 @@ class _IsoStreamingDialog extends StatefulWidget {
     this.startupTrace,
     this.precheckedMenuExecutable,
     this.cancelPreparation,
+    this.mediaInfo,
   });
 
   final IsoPlaybackService service;
@@ -369,6 +371,7 @@ class _IsoStreamingDialog extends StatefulWidget {
   final bool remoteMenu;
   final bool cached;
   final String? menuUnavailableReason;
+  final PlaybackMediaInfo? mediaInfo;
 
   @override
   State<_IsoStreamingDialog> createState() => _IsoStreamingDialogState();
@@ -418,6 +421,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               startupClock: widget.startupClock,
               startupTrace: widget.startupTrace,
               precheckedMenuExecutable: widget.precheckedMenuExecutable,
+              mediaInfo: widget.mediaInfo,
               onProgress: (progress) {
                 if (mounted) setState(() => _progress = progress);
               },
@@ -430,6 +434,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               subtitlePreparation: preparation,
               startupClock: widget.startupClock,
               startupTrace: widget.startupTrace,
+              mediaInfo: widget.mediaInfo,
               onProgress: (progress) {
                 if (mounted) setState(() => _progress = progress);
               },
@@ -2276,6 +2281,11 @@ class BrowserPageState extends State<BrowserPage> {
       final discRelativePath = _localSource!.discRelativePath(devicePath);
       final subtitles = await _isoSubtitlesForPath(_source, discRelativePath);
       if (!mounted) return;
+      final mediaInfo = await context.read<AppState>().playbackMediaInfo(
+        _sourceId,
+        discRelativePath,
+      );
+      if (!mounted) return;
       final result = await _localDiscPlaybackService.launch(
         rootId: root.rootId,
         relativePath: discRelativePath,
@@ -2287,6 +2297,7 @@ class BrowserPageState extends State<BrowserPage> {
         expectedFingerprint: selection.resumesSavedTitle
             ? resumeSnapshot?.fingerprint
             : null,
+        mediaInfo: mediaInfo,
       );
       final normalized = normalizeLibraryPath(discRelativePath);
       final segments = normalized.isEmpty
@@ -2478,6 +2489,13 @@ class BrowserPageState extends State<BrowserPage> {
       );
     }
     final cachedDisc = await webDavService.cachedDiscPath(file);
+    if (!mounted) return;
+    // 分类注入：光盘资源与普通视频共用同一份影视库元数据；未收录或
+    // 关闭「全部注入」以外的查询失败都按无元数据处理。
+    final mediaInfo = await context.read<AppState>().playbackMediaInfo(
+      _sourceId,
+      path,
+    );
     Stopwatch? startupClock;
     var remoteMenu = false;
     RemoteMenuAvailability? availability;
@@ -2607,6 +2625,7 @@ class BrowserPageState extends State<BrowserPage> {
         remoteMenu: remoteMenu,
         cached: cachedDisc != null,
         menuUnavailableReason: titleOnly ? null : menuReason,
+        mediaInfo: mediaInfo,
       ),
     );
     if (result?.launched != true) preparationCancelled = true;

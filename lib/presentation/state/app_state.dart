@@ -32,6 +32,7 @@ import '../../data/local/playback_progress_db.dart';
 import '../../data/local/media_library_store.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../data/models/media_source.dart';
 import '../../domain/services/film_catalog_image_cache.dart';
 import '../../domain/services/tmdb_metadata_service.dart';
@@ -468,6 +469,7 @@ class AppState extends ChangeNotifier {
     };
     _playerService.videoResetBefore = (source, path) async =>
         (await getFilmCatalogStore()).manualWatchResetAt(source, path);
+    _playerService.mediaInfoResolver = playbackMediaInfo;
     _audioPlayerService =
         audioPlayerService ??
         (audioProgressService == null
@@ -519,6 +521,24 @@ class AppState extends ChangeNotifier {
         await importFilmWatchProgress(store);
         return store;
       }();
+
+  /// 分类注入所需的影片元数据；仅在关闭「全部注入」时查询影视库。
+  ///
+  /// 元数据只决定附加参数是否注入，查询失败按无元数据处理，不阻断播放。
+  Future<PlaybackMediaInfo?> playbackMediaInfo(
+    String sourceId,
+    String path,
+  ) async {
+    if (_configStore.current.argInjectionAllEnabled) return null;
+    try {
+      final store = await getFilmCatalogStore();
+      return await store.playbackMediaInfoAt(sourceId, path);
+    } on Exception catch (error) {
+      debugPrint('Playback media info lookup failed: $error');
+      return null;
+    }
+  }
+
   void Function(String)? onImplicitVideoError;
   Future<void> restoreImplicitVideoControls() async {
     if (_disposed) return;

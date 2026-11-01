@@ -768,6 +768,20 @@ const Map<String, String> englishTranslations = <String, String>{
   "配置已保存，但媒体中心容量应用失败":
       "Configuration saved, but media center capacity application failed",
   "启动参数（每行一个）": "Startup parameters (one per line)",
+  "全部注入": "Always inject",
+  "每次播放都注入启动参数；关闭后改为按分类注入":
+      "Inject startup parameters on every playback; turn off to inject by category",
+  "动漫注入": "Anime only",
+  "影片元数据包含动画类型时注入":
+      "Inject when the media metadata includes an animation genre",
+  "电影注入": "Movies only",
+  "影片元数据为电影时注入": "Inject when the media metadata marks a movie",
+  "剧集注入": "Series only",
+  "影片元数据为剧集时注入": "Inject when the media metadata marks a series",
+  "关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。":
+      'With "Always inject" off, extra parameters are injected only when the media metadata matches an enabled category.',
+  "含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。":
+      "Lines containing {url}, {subfile} or {start} are always injected; playback without library metadata receives no extra parameters.",
   "启用 2FA 时请使用 Token": "Please use Token when enabling 2FA",
   "启用本地智能层": "Enable local intelligence layer",
   "启用播放失败自动恢复": "Enable automatic recovery on playback failure",
@@ -1700,6 +1714,20 @@ const Map<String, String> japaneseTranslations = <String, String>{
   "配置维护": "構成のメンテナンス",
   "配置已保存，但媒体中心容量应用失败": "構成は保存されましたが、メディア センター容量の適用に失敗しました",
   "启动参数（每行一个）": "起動パラメータ (1 行に 1 つ)",
+  "全部注入": "すべて注入",
+  "每次播放都注入启动参数；关闭后改为按分类注入":
+      "毎回起動パラメーターを注入します。オフにすると分類別に注入します",
+  "动漫注入": "アニメのみ",
+  "影片元数据包含动画类型时注入":
+      "メタデータにアニメーションのジャンルが含まれる場合に注入します",
+  "电影注入": "映画のみ",
+  "影片元数据为电影时注入": "メタデータが映画の場合に注入します",
+  "剧集注入": "シリーズのみ",
+  "影片元数据为剧集时注入": "メタデータがシリーズの場合に注入します",
+  "关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。":
+      "「すべて注入」をオフにすると、メタデータが有効な分類に一致した場合のみ追加パラメーターを注入します。",
+  "含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。":
+      "{url}、{subfile}、{start} を含む行は常に注入されます。ライブラリのメタデータがない再生には追加パラメーターを注入しません。",
   "启用 2FA 时请使用 Token": "2FA を有効にする場合はトークンを使用してください",
   "启用本地智能层": "ローカル インテリジェンス レイヤーを有効にする",
   "启用播放失败自动恢复": "再生失敗時の自動回復を有効にする",
@@ -2552,6 +2580,19 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "配置维护": "配置維護",
   "配置已保存，但媒体中心容量应用失败": "配置已儲存，但媒體中心容量應用失敗",
   "启动参数（每行一个）": "啟動參數（每行一個）",
+  "全部注入": "全部注入",
+  "每次播放都注入启动参数；关闭后改为按分类注入":
+      "每次播放都注入啟動參數；關閉後改為按分類注入",
+  "动漫注入": "動漫注入",
+  "影片元数据包含动画类型时注入": "影片中繼資料包含動畫類型時注入",
+  "电影注入": "電影注入",
+  "影片元数据为电影时注入": "影片中繼資料為電影時注入",
+  "剧集注入": "劇集注入",
+  "影片元数据为剧集时注入": "影片中繼資料為劇集時注入",
+  "关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。":
+      "關閉「全部注入」後，僅在影片中繼資料命中已開啟的分類時注入附加參數。",
+  "含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。":
+      "含 {url}、{subfile}、{start} 的行始終注入；沒有影視庫中繼資料的播放不注入附加參數。",
   "启用 2FA 时请使用 Token": "啟用 2FA 時請使用 Token",
   "启用本地智能层": "啟用本機智慧型圖層",
   "启用播放失败自动恢复": "啟用播放失敗自動恢復",

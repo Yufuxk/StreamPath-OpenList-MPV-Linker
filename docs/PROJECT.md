@@ -387,6 +387,8 @@ STRM 规则：
 写入百分号编码的 userinfo；空密码保留 `username:` 中的冒号，以兼容 MPV 0.34。
 四个实测版本均能完成源站 Basic，并在跨来源重定向后移除凭据。第三方 URL 不注入。
 
+`PlayerConfig.argInjectionAllEnabled`／`AnimeEnabled`／`MovieEnabled`／`SeriesEnabled` 决定固定的附加参数行是否注入，缺省为开启＋三项关闭，即每次播放都注入。其余取值由 `PlaybackMediaInfo` 判定：`AppState.playbackMediaInfo` 在关闭「全部注入」时按来源与逻辑路径查询 `FilmCatalogStore.playbackMediaInfoAt`，读取资源关联作品的 `media_type` 与 `metadata_json.genres`；类型名称命中动画名称集合即动漫，`movie`／`tv` 决定电影与剧集；无元数据、查询失败或关闭「全部注入」时返回 null。查询失败只按无元数据处理并输出英文诊断，不阻断播放。`ExternalPlayerService` 在启动快照中携带四个开关，仅当关闭「全部注入」时通过注入的解析器查询，并以点击条目（`playlistStart` 对应项）的 `catalogPath` 为键；查询与准备阶段并行，构建参数前才等待结果。WebDAV／本地 ISO、BDMV 与光盘菜单由 `BrowserPage` 用同一入口解析后随启动参数下传，音乐会话不参与。分类不命中时 `argsFor` 只保留含 `{url}`／`{subfile}`／`{start}` 的行，避免丢失媒体地址、外挂字幕与单集续播；判定按进程固定，切集、换季与跨作品列表沿用起播结果。使用方式与示例见[外部播放器启动参数分类注入](外部播放器启动参数分类注入.md)。
+
 ### 5.2 单集、多集、字幕、外挂字体和音轨
 
 `videoPlaylistMode` 支持 `implicit`／`legacy`，配置缺失默认 `implicit`；没有模式字段的既存播放会话按 `legacy` 恢复。隐式模式由 ExternalPlayerService 持有完整 VideoQueueItem 队列，MPV 维持当前项及其后至多 `implicitPlaylistWindowSize - 1` 项的滚动窗口（默认 2，可设 2～10），使用 `idle=yes`、提前 `loadlist append-play` 和加载成功后的 `playlist-remove` 保持同一进程、窗口及 sessionId；进度与附属资源按稳定条目 ID 和队列代次归属，实际打开前检查来源启用状态，隐式切集保持用户窗口状态。已关联剧集通过 sourceId＋workId 查询现存版本与季缓存，按每集 air_date、季号、集号排序，无日期统一尾排；重复版本占同一逻辑位置。S00 的季归属与自动切季／允许缺季限制统一计算。未整理目录和电影保留目录自然顺序与特典递归规则。起播固定队列，重播按真实路径重建；影视库内关闭隐式会话后，点选最后播放项以外的集数建立独立 sessionId 和队列，保留原会话续播；点选最后播放项或显式续播复用原会话，显式续播以最新会话的待播位置为起点，存活播放器内选集使用原 IPC；版本自动选择，优先沿用上一集的影视根及目录分支；资源准备失败或 MPV 打开失败时依次尝试其他可用版本，每次切集尝试的版本有限，全部失败保留 pendingVideoIndex；播放器退出按同源待播项保存续播记录，不依据未加载项或上一集的片尾采样判定整个队列完成，成功 file-loaded 才清除 pendingVideoIndex。版本快照可保存可空 rootId，旧快照以路径目录识别同源。VideoEntryPreparer 捕获来源与设置、真实父目录、STRM、字幕、字体及 WebDAV 外挂音轨，当前项及其后的窗口项按需准备，控制回调不依赖 BrowserPage 存活。应用退出停止自动推进，恢复控制时历史 EOF 只收敛待播目标。

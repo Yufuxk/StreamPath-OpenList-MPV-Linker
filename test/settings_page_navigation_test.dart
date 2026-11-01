@@ -346,6 +346,64 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('分类注入开关默认关闭，全部注入开启时不可操作', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final all = find.byKey(const Key('arg-injection-all'));
+    await tester.ensureVisible(all);
+    expect(tester.widget<SwitchListTile>(all).value, isTrue);
+    for (final key in [
+      'arg-injection-anime',
+      'arg-injection-movie',
+      'arg-injection-series',
+    ]) {
+      final toggle = find.byKey(Key(key));
+      await tester.ensureVisible(toggle);
+      final tile = tester.widget<SwitchListTile>(toggle);
+      expect(tile.value, isFalse, reason: key);
+      expect(tile.onChanged, isNull, reason: '$key 应在全部注入开启时变灰');
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('关闭全部注入后可保存动漫注入开关', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final all = find.byKey(const Key('arg-injection-all'));
+    await tester.ensureVisible(all);
+    await tester.tap(all);
+    await tester.pumpAndSettle();
+    final anime = find.byKey(const Key('arg-injection-anime'));
+    await tester.ensureVisible(anime);
+    expect(tester.widget<SwitchListTile>(anime).onChanged, isNotNull);
+    await tester.tap(anime);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(anime).value, isTrue);
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    for (
+      var i = 0;
+      i < 30 && !configStore.current.argInjectionAnimeEnabled;
+      i++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+    }
+    expect(configStore.current.argInjectionAllEnabled, isFalse);
+    expect(configStore.current.argInjectionAnimeEnabled, isTrue);
+    final saved = await tester.runAsync(configStore.load);
+    expect(saved!.argInjectionAllEnabled, isFalse);
+    expect(saved.argInjectionAnimeEnabled, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('小数番外开关默认关闭，可保存开启并重新加载', (tester) async {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();

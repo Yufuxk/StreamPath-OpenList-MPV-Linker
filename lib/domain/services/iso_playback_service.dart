@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
 import '../../data/local/stream_path_config_store.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/web_dav_file.dart';
@@ -452,6 +453,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     Future<IsoSubtitleContext?>? subtitlePreparation,
     Stopwatch? startupClock,
     DiscStartupTrace? startupTrace,
+    PlaybackMediaInfo? mediaInfo,
   }) async {
     if (_disposed) throw AppException.process('ISO 远程播放测试模块已关闭');
     if (isBusy) {
@@ -736,6 +738,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ipcPipeName: ipcPipeName,
         cacheSecs: startCachePlan?.cacheSecs,
         mpvMaxBytes: startCachePlan?.mpvMaxBytes,
+        mediaInfo: mediaInfo,
       );
       if (config.subtitleInjectionEnabled && subtitles != null) {
         final subtitleArgs = await subtitles.prepareArgs(
@@ -917,6 +920,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     Stopwatch? startupClock,
     DiscStartupTrace? startupTrace,
     String? precheckedMenuExecutable,
+    PlaybackMediaInfo? mediaInfo,
   }) async {
     if (_disposed || isBusy) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
@@ -1021,6 +1025,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         sessionKey: key,
         ipcPipeName:
             '${r'\\.\pipe\streampath_menu_'}${_buildPipeToken(directory.path)}',
+        mediaInfo: mediaInfo,
       );
       if (config.subtitleInjectionEnabled && subtitles != null) {
         args.insertAll(
@@ -1429,8 +1434,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     String? ipcPipeName,
     int? cacheSecs,
     int? mpvMaxBytes,
+    PlaybackMediaInfo? mediaInfo,
   }) {
-    final args = filterIsoPlayerArguments(config.args);
+    final args = filterIsoPlayerArguments(config.argsFor(mediaInfo));
     final safeTitle = title.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ').trim();
     args.addAll([
       '--resume-playback=no',

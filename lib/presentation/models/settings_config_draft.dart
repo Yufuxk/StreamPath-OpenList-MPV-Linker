@@ -58,6 +58,10 @@ class SettingsConfigDraft {
 
   bool subtitleInjectionEnabled = true;
   bool subtitleAutoSelectEnabled = true;
+  bool argInjectionAllEnabled = true;
+  bool argInjectionAnimeEnabled = false;
+  bool argInjectionMovieEnabled = false;
+  bool argInjectionSeriesEnabled = false;
   bool audioDynamicLyricsEnabled = true;
   double audioLyricsOutlineWidth = PlayerConfig.defaultAudioLyricsOutlineWidth;
   double audioLyricsTransparency = PlayerConfig.defaultAudioLyricsTransparency;
@@ -118,6 +122,10 @@ class SettingsConfigDraft {
     nameController.text = player.name;
     executableController.text = player.executable;
     argsController.text = player.args.join('\n');
+    argInjectionAllEnabled = player.argInjectionAllEnabled;
+    argInjectionAnimeEnabled = player.argInjectionAnimeEnabled;
+    argInjectionMovieEnabled = player.argInjectionMovieEnabled;
+    argInjectionSeriesEnabled = player.argInjectionSeriesEnabled;
     hiddenExtensionsController.text = formatHiddenExtensions(
       player.hiddenExtensions,
     );
@@ -236,6 +244,10 @@ class SettingsConfigDraft {
         .map((value) => value.trim())
         .where((value) => value.isNotEmpty)
         .toList(),
+    argInjectionAllEnabled: argInjectionAllEnabled,
+    argInjectionAnimeEnabled: argInjectionAnimeEnabled,
+    argInjectionMovieEnabled: argInjectionMovieEnabled,
+    argInjectionSeriesEnabled: argInjectionSeriesEnabled,
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled:
         subtitleInjectionEnabled && subtitleAutoSelectEnabled,

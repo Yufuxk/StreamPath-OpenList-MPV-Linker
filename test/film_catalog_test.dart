@@ -431,6 +431,92 @@ void main() {
     expect((await store.works(type: FilmMediaType.tv)).single.seasonCount, 2);
   });
 
+  test('分类注入按资源路径读取作品类型与动画类型', () async {
+    final root = await addRoot(source: 'anime', path: 'Anime');
+    await inventory(root, [
+      'Anime/a.mkv',
+      'Anime/unbound.mkv',
+      'Anime/disc.iso',
+    ]);
+    final resources = await store.resources(rootId: root.id);
+    FilmResource at(String path) =>
+        resources.firstWhere((resource) => resource.path == path);
+    await store.bind([
+      at('Anime/a.mkv'),
+      at('Anime/disc.iso'),
+    ], FilmWork(
+      type: FilmMediaType.movie,
+      tmdbId: 9001,
+      title: 'Anime Movie',
+      originalTitle: 'Anime Movie',
+      overview: '',
+      language: 'zh-CN',
+      metadata: const {
+        'genres': ['动画', '奇幻'],
+      },
+    ));
+
+    final tvRoot = await addRoot(
+      source: 'anime',
+      path: 'AnimeTv',
+      type: FilmMediaType.tv,
+    );
+    await inventory(tvRoot, ['AnimeTv/b.mkv']);
+    await store.bind([(await store.resources(rootId: tvRoot.id)).single], FilmWork(
+      type: FilmMediaType.tv,
+      tmdbId: 9002,
+      title: 'Live Drama',
+      originalTitle: 'Live Drama',
+      overview: '',
+      language: 'zh-CN',
+      metadata: const {
+        'genres': [
+          {'name': 'Drama'},
+        ],
+      },
+    ));
+
+    final anime = await store.playbackMediaInfoAt('anime', 'Anime/a.mkv');
+    expect(anime?.isAnime, isTrue);
+    expect(anime?.isSeries, isFalse);
+    final disc = await store.playbackMediaInfoAt('anime', 'Anime/disc.iso');
+    expect(disc?.isAnime, isTrue, reason: 'ISO 与普通视频共用元数据');
+    final drama = await store.playbackMediaInfoAt('anime', 'AnimeTv/b.mkv');
+    expect(drama?.isAnime, isFalse);
+    expect(drama?.isSeries, isTrue);
+    expect(
+      await store.playbackMediaInfoAt('anime', 'Anime/unbound.mkv'),
+      isNull,
+    );
+    expect(
+      await store.playbackMediaInfoAt('anime', 'Anime/missing.mkv'),
+      isNull,
+    );
+
+    final localRoot = await addRoot(
+      source: 'local:7',
+      path: '',
+      kind: MediaSourceKind.local,
+    );
+    await inventory(localRoot, ['Disc/M.iso']);
+    await store.bind([(await store.resources(rootId: localRoot.id)).single], FilmWork(
+      type: FilmMediaType.movie,
+      tmdbId: 9003,
+      title: 'Local Disc',
+      originalTitle: 'Local Disc',
+      overview: '',
+      language: 'zh-CN',
+      metadata: const {
+        'genres': ['Animation'],
+      },
+    ));
+    expect(
+      (await store.playbackMediaInfoAt('local:7', 'disc/M.ISO'))?.isAnime,
+      isTrue,
+      reason: '本地来源路径键忽略大小写',
+    );
+  });
+
   test('通用缓存清理保留永久影视库并只删除可重建图片', () async {
     final data = Directory(p.join(temp.path, 'stream_path_data'));
     final library = Directory(p.join(data.path, 'library'));

@@ -4,6 +4,7 @@ library;
 import '../../core/constants.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
+import 'playback_media_info.dart';
 import 'special_playlist_mode.dart';
 import 'video_playlist_mode.dart';
 
@@ -12,6 +13,8 @@ import 'video_playlist_mode.dart';
 /// - `{url}`     视频流地址（必填，模板缺失时自动追加到末尾）；
 /// - `{subfile}` 匹配到的字幕地址（无字幕时该参数项被移除）；
 /// - `{start}`   续播秒数（无进度时该参数项被移除）。
+///
+/// 四个 `argInjection*` 开关决定固定的附加参数行是否注入，见 [argsFor]。
 ///
 /// 示例 JSON：
 /// ```json
@@ -42,6 +45,10 @@ class PlayerConfig {
     required this.name,
     required this.executable,
     this.args = const [],
+    this.argInjectionAllEnabled = true,
+    this.argInjectionAnimeEnabled = false,
+    this.argInjectionMovieEnabled = false,
+    this.argInjectionSeriesEnabled = false,
     bool subtitleInjectionEnabled = true,
     bool subtitleAutoSelectEnabled = true,
     this.audioDynamicLyricsEnabled = true,
@@ -82,6 +89,18 @@ class PlayerConfig {
 
   /// 启动参数模板列表（每项一行，可含占位符）。
   final List<String> args;
+
+  /// 每次播放都注入固定的附加参数行，不判断影片类型与元数据。
+  final bool argInjectionAllEnabled;
+
+  /// 影片元数据包含动画类型时注入固定的附加参数行。
+  final bool argInjectionAnimeEnabled;
+
+  /// 影片元数据为电影时注入固定的附加参数行。
+  final bool argInjectionMovieEnabled;
+
+  /// 影片元数据为剧集时注入固定的附加参数行。
+  final bool argInjectionSeriesEnabled;
 
   /// 是否自动匹配并注入同级目录外挂字幕与音频 LRC。
   final bool subtitleInjectionEnabled;
@@ -149,6 +168,30 @@ class PlayerConfig {
   /// 模板中是否包含续播占位符。
   bool get hasStartPlaceholder => args.any((a) => a.contains('{start}'));
 
+  /// 本次启动实际注入的参数模板。
+  ///
+  /// 分类未命中时只保留含 `{url}`／`{subfile}`／`{start}` 的行：它们承载
+  /// 播放地址、外挂字幕与单集续播，移除会让播放器播放失败。
+  List<String> argsFor(PlaybackMediaInfo? info) {
+    if (argInjectionAllEnabled || _matchesCategory(info)) return args;
+    return [
+      for (final template in args)
+        if (_hasPlaybackPlaceholder(template)) template,
+    ];
+  }
+
+  bool _matchesCategory(PlaybackMediaInfo? info) {
+    if (info == null) return false;
+    return (!info.isSeries && argInjectionMovieEnabled) ||
+        (info.isSeries && argInjectionSeriesEnabled) ||
+        (info.isAnime && argInjectionAnimeEnabled);
+  }
+
+  static bool _hasPlaybackPlaceholder(String template) =>
+      template.contains('{url}') ||
+      template.contains('{subfile}') ||
+      template.contains('{start}');
+
   /// 内置默认配置：mpv（走系统 PATH，无需绝对路径）。
   static PlayerConfig defaultMpv() => const PlayerConfig(
     name: 'mpv',
@@ -163,6 +206,10 @@ class PlayerConfig {
     'name': name,
     'executable': executable,
     'args': args,
+    'argInjectionAllEnabled': argInjectionAllEnabled,
+    'argInjectionAnimeEnabled': argInjectionAnimeEnabled,
+    'argInjectionMovieEnabled': argInjectionMovieEnabled,
+    'argInjectionSeriesEnabled': argInjectionSeriesEnabled,
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'audioDynamicLyricsEnabled': audioDynamicLyricsEnabled,
@@ -201,6 +248,13 @@ class PlayerConfig {
       name: (json['name'] as String?) ?? '播放器',
       executable: (json['executable'] as String?) ?? '',
       args: (json['args'] as List?)?.whereType<String>().toList() ?? const [],
+      argInjectionAllEnabled: (json['argInjectionAllEnabled'] as bool?) ?? true,
+      argInjectionAnimeEnabled:
+          (json['argInjectionAnimeEnabled'] as bool?) ?? false,
+      argInjectionMovieEnabled:
+          (json['argInjectionMovieEnabled'] as bool?) ?? false,
+      argInjectionSeriesEnabled:
+          (json['argInjectionSeriesEnabled'] as bool?) ?? false,
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       audioDynamicLyricsEnabled:

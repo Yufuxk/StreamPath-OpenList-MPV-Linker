@@ -23,6 +23,10 @@ import 'video_playlist_mode.dart';
 ///   "playerName": "mpv",
 ///   "playerExecutable": "mpv",
 ///   "playerArgs": ["--sub-file={subfile}", "{url}", "--start={start}"],
+///   "argInjectionAllEnabled": true,
+///   "argInjectionAnimeEnabled": false,
+///   "argInjectionMovieEnabled": false,
+///   "argInjectionSeriesEnabled": false,
 ///   "subtitleInjectionEnabled": true,
 ///   "subtitleAutoSelectEnabled": true,
 ///   "resumeEnabled": true,
@@ -68,6 +72,10 @@ class StreamPathConfig {
       '{url}',
       '--start={start}',
     ],
+    this.argInjectionAllEnabled = true,
+    this.argInjectionAnimeEnabled = false,
+    this.argInjectionMovieEnabled = false,
+    this.argInjectionSeriesEnabled = false,
     bool subtitleInjectionEnabled = true,
     bool subtitleAutoSelectEnabled = true,
     this.audioDynamicLyricsEnabled = true,
@@ -120,6 +128,12 @@ class StreamPathConfig {
   final String playerName;
   final String playerExecutable;
   final List<String> playerArgs;
+
+  /// 启动参数分类注入开关；缺省值与 [PlayerConfig] 一致。
+  final bool argInjectionAllEnabled;
+  final bool argInjectionAnimeEnabled;
+  final bool argInjectionMovieEnabled;
+  final bool argInjectionSeriesEnabled;
 
   /// 自动匹配并注入同级目录外挂字幕。
   final bool subtitleInjectionEnabled;
@@ -204,6 +218,10 @@ class StreamPathConfig {
     name: playerName,
     executable: playerExecutable,
     args: playerArgs,
+    argInjectionAllEnabled: argInjectionAllEnabled,
+    argInjectionAnimeEnabled: argInjectionAnimeEnabled,
+    argInjectionMovieEnabled: argInjectionMovieEnabled,
+    argInjectionSeriesEnabled: argInjectionSeriesEnabled,
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
     audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
@@ -253,6 +271,10 @@ class StreamPathConfig {
       playerName: player.name,
       playerExecutable: player.executable,
       playerArgs: player.args,
+      argInjectionAllEnabled: player.argInjectionAllEnabled,
+      argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
+      argInjectionMovieEnabled: player.argInjectionMovieEnabled,
+      argInjectionSeriesEnabled: player.argInjectionSeriesEnabled,
       subtitleInjectionEnabled: player.subtitleInjectionEnabled,
       subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
       audioDynamicLyricsEnabled: player.audioDynamicLyricsEnabled,
@@ -414,6 +436,10 @@ class StreamPathConfig {
     playerName: player.name,
     playerExecutable: player.executable,
     playerArgs: player.args,
+    argInjectionAllEnabled: player.argInjectionAllEnabled,
+    argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
+    argInjectionMovieEnabled: player.argInjectionMovieEnabled,
+    argInjectionSeriesEnabled: player.argInjectionSeriesEnabled,
     subtitleInjectionEnabled: player.subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
     audioDynamicLyricsEnabled: player.audioDynamicLyricsEnabled,
@@ -465,6 +491,10 @@ class StreamPathConfig {
     playerName: playerName,
     playerExecutable: playerExecutable,
     playerArgs: playerArgs,
+    argInjectionAllEnabled: argInjectionAllEnabled,
+    argInjectionAnimeEnabled: argInjectionAnimeEnabled,
+    argInjectionMovieEnabled: argInjectionMovieEnabled,
+    argInjectionSeriesEnabled: argInjectionSeriesEnabled,
     subtitleInjectionEnabled: subtitleInjectionEnabled,
     subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
     audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,
@@ -513,6 +543,10 @@ class StreamPathConfig {
     'playerName': playerName,
     'playerExecutable': playerExecutable,
     'playerArgs': playerArgs,
+    'argInjectionAllEnabled': argInjectionAllEnabled,
+    'argInjectionAnimeEnabled': argInjectionAnimeEnabled,
+    'argInjectionMovieEnabled': argInjectionMovieEnabled,
+    'argInjectionSeriesEnabled': argInjectionSeriesEnabled,
     'subtitleInjectionEnabled': subtitleInjectionEnabled,
     'subtitleAutoSelectEnabled': subtitleAutoSelectEnabled,
     'audioDynamicLyricsEnabled': audioDynamicLyricsEnabled,
@@ -606,6 +640,13 @@ class StreamPathConfig {
       playerArgs:
           (json['playerArgs'] as List?)?.whereType<String>().toList() ??
           const [],
+      argInjectionAllEnabled: (json['argInjectionAllEnabled'] as bool?) ?? true,
+      argInjectionAnimeEnabled:
+          (json['argInjectionAnimeEnabled'] as bool?) ?? false,
+      argInjectionMovieEnabled:
+          (json['argInjectionMovieEnabled'] as bool?) ?? false,
+      argInjectionSeriesEnabled:
+          (json['argInjectionSeriesEnabled'] as bool?) ?? false,
       subtitleInjectionEnabled: injectionEnabled,
       subtitleAutoSelectEnabled: autoSelectEnabled,
       audioDynamicLyricsEnabled:
@@ -697,6 +738,10 @@ class StreamPathConfig {
         playerName: playerName,
         playerExecutable: playerExecutable,
         playerArgs: playerArgs,
+        argInjectionAllEnabled: argInjectionAllEnabled,
+        argInjectionAnimeEnabled: argInjectionAnimeEnabled,
+        argInjectionMovieEnabled: argInjectionMovieEnabled,
+        argInjectionSeriesEnabled: argInjectionSeriesEnabled,
         subtitleInjectionEnabled: subtitleInjectionEnabled,
         subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
         audioDynamicLyricsEnabled: audioDynamicLyricsEnabled,

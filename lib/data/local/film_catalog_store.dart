@@ -17,6 +17,7 @@ import '../models/media_connection.dart';
 import '../models/film_image_reference.dart';
 import '../models/film_playlist.dart';
 import '../models/film_version.dart';
+import '../models/playback_media_info.dart';
 import '../../domain/services/film_version_resolver.dart';
 import '../../domain/services/film_video_timeline.dart';
 
@@ -1519,6 +1520,27 @@ class FilmCatalogStore extends ChangeNotifier {
       [sourceId, sourceId.startsWith('local:') ? path.toLowerCase() : path],
     );
     return rows.isEmpty ? null : FilmResource.fromRow(rows.first);
+  }
+
+  /// 读取分类注入所需的影片元数据；资源未关联作品时返回 null。
+  Future<PlaybackMediaInfo?> playbackMediaInfoAt(
+    String sourceId,
+    String path,
+  ) async {
+    final rows = await _db.rawQuery(
+      '''SELECT w.media_type, w.metadata_json FROM resources r
+      JOIN catalog_roots c ON c.id = r.root_id
+      JOIN works w ON w.id = r.work_id
+      WHERE c.source_id = ? AND r.path_key = ? LIMIT 1''',
+      [sourceId, sourceId.startsWith('local:') ? path.toLowerCase() : path],
+    );
+    if (rows.isEmpty) return null;
+    final metadata =
+        jsonDecode(rows.first['metadata_json'] as String) as Map<String, dynamic>;
+    return playbackMediaInfoOf(
+      rows.first['media_type'] as String?,
+      metadata['genres'] as List? ?? const [],
+    );
   }
 
   /// 按真实路径读取缓存标题，不发起 TMDB 或媒体请求。

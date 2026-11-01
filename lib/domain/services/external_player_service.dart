@@ -17,6 +17,7 @@ import '../../data/models/media_entry.dart';
 import '../../data/models/playback_media_entry.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/openlist_recovery_config.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import '../../features/cache_control/cache_policy_service.dart';
 import '../../features/cache_control/models/cache_policy_result.dart';
@@ -45,6 +46,10 @@ typedef MpvCacheIpcUpdater =
       bool? cacheEnabled,
       bool? seekableCacheEnabled,
     });
+
+/// 解析分类注入所需的影片元数据；无法确定时返回 null。
+typedef PlaybackMediaInfoResolver =
+    Future<PlaybackMediaInfo?> Function(String sourceId, String path);
 
 /// 播放器启动结果（供 UI 诊断展示实际参数）。
 class PlayerLaunchResult {
@@ -116,6 +121,10 @@ class _PlaybackLaunchContext {
         name: player.name,
         executable: player.executable,
         args: List<String>.unmodifiable(player.args),
+        argInjectionAllEnabled: player.argInjectionAllEnabled,
+        argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
+        argInjectionMovieEnabled: player.argInjectionMovieEnabled,
+        argInjectionSeriesEnabled: player.argInjectionSeriesEnabled,
         subtitleInjectionEnabled: player.subtitleInjectionEnabled,
         subtitleAutoSelectEnabled: player.subtitleAutoSelectEnabled,
         resumeEnabled: player.resumeEnabled,
@@ -382,6 +391,7 @@ class ExternalPlayerService {
     this.onPlaybackRecovery,
     this.onVideoProgress,
     this.videoResetBefore,
+    this.mediaInfoResolver,
     void Function(String message)? cacheLogger,
     this._cacheIpcUpdater,
     PlaybackLinkRecoveryProvider? linkRecoveryProvider,
@@ -413,6 +423,7 @@ class ExternalPlayerService {
     onPlaybackRecovery: onPlaybackRecovery,
     onVideoProgress: onVideoProgress,
     videoResetBefore: videoResetBefore,
+    mediaInfoResolver: mediaInfoResolver,
     cacheLogger: _cacheLogger,
     cacheIpcUpdater: _cacheIpcUpdater,
     linkRecoveryProvider: _linkRecoveryProvider,
@@ -436,6 +447,9 @@ class ExternalPlayerService {
   final void Function(PlaybackRecoveryEvent event)? onPlaybackRecovery;
   Future<void> Function(VideoProgressUpdate)? onVideoProgress;
   Future<DateTime?> Function(String sourceId, String path)? videoResetBefore;
+
+  /// 分类注入的影片元数据解析器；null 时按无元数据处理。
+  PlaybackMediaInfoResolver? mediaInfoResolver;
   Future<void> Function()? beforeNetworkLoad;
 
   final PlaybackLinkRecoveryProvider _linkRecoveryProvider;
@@ -767,6 +781,13 @@ class ExternalPlayerService {
       playlistStart = 0;
     }
     final config = launchContext.player;
+    // 分类注入：仅在关闭「全部注入」时查询影片元数据。查询与后续准备
+    // 并行，构建参数前才等待结果，不额外增加起播等待。
+    final mediaInfo = _resolveMediaInfo(
+      entries[playlistStart],
+      launchContext.profileId,
+      config,
+    )..ignore();
     final launchNumber = ++_launchSequence;
     // 本次注入的缓存策略结果（供播放中动态监控的初值/码率基准）。
     CachePolicySessionState? cacheSession;
@@ -893,14 +914,15 @@ class ExternalPlayerService {
         : null;
     if (nextPlaylistPath != null) artifactPaths.add(nextPlaylistPath);
     await ensureOwned();
+    final userArgs = config.argsFor(await mediaInfo);
     final args = listMode
         ? _buildListArgs(
-            config: config,
+            userArgs: userArgs,
             playlistPath: playlistPath!,
             playlistStart: playlistStart,
           )
         : _buildArgs(
-            config,
+            userArgs,
             authUrl(entries.first.url),
             (!isMpv &&
                     subtitleInjectionEnabled &&
@@ -1296,7 +1318,7 @@ class ExternalPlayerService {
             sessionId: resolvedSessionId,
             url: entries[playlistStart].url,
             authHeader: authHeader,
-            userArgs: config.args,
+            userArgs: userArgs,
             runtimeTs:
                 isTsContainerUrl(entries[playlistStart].url) &&
                 startSec != null &&
@@ -1541,7 +1563,7 @@ class ExternalPlayerService {
         _monitorDurationForCache(
           runtime,
           entries[playlistStart].url,
-          userArgs: config.args,
+          userArgs: userArgs,
         ),
       );
     }
@@ -2195,12 +2217,30 @@ class ExternalPlayerService {
 
   // ── 单集参数（模板渲染） ────────────────────────────────────
 
+  /// 分类注入：解析本次播放条目的影片元数据。
+  ///
+  /// 关闭「全部注入」时才查询；条目没有来源逻辑路径或未接入解析器时
+  /// 按无元数据处理。查询结果同时用于影视库与本地来源。
+  Future<PlaybackMediaInfo?> _resolveMediaInfo(
+    MediaEntry entry,
+    String sourceId,
+    PlayerConfig config,
+  ) {
+    final resolver = mediaInfoResolver;
+    final path = entry.catalogPath;
+    if (config.argInjectionAllEnabled || resolver == null || path == null) {
+      return Future<PlaybackMediaInfo?>.value(null);
+    }
+    return resolver(sourceId, path);
+  }
+
   /// 展开参数模板；返回最终参数列表。
   ///
-  /// 含占位符但值为空的参数整条移除（如无字幕时的 `--sub-file={subfile}`）；
-  /// 模板若未包含 `{url}`，则把视频地址追加到末尾兜底。
+  /// [userArgs] 为分类过滤后的模板行；含占位符但值为空的参数整条移除
+  /// （如无字幕时的 `--sub-file={subfile}`）；模板若未包含 `{url}`，
+  /// 则把视频地址追加到末尾兜底。
   List<String> _buildArgs(
-    PlayerConfig config,
+    List<String> userArgs,
     String videoUrl,
     String? subUrl,
     int? startSec,
@@ -2212,13 +2252,13 @@ class ExternalPlayerService {
     };
 
     final args = <String>[];
-    for (final template in config.args) {
+    for (final template in userArgs) {
       final resolved = _resolveTemplate(template, values);
       if (resolved != null) args.add(resolved);
     }
 
     // 兜底：模板里没有任何 {url} 占位符时，保证视频地址一定传入。
-    final hasUrlPlaceholder = config.args.any((a) => a.contains('{url}'));
+    final hasUrlPlaceholder = userArgs.any((a) => a.contains('{url}'));
     if (!hasUrlPlaceholder) args.add(videoUrl);
 
     return args;
@@ -2268,23 +2308,24 @@ class ExternalPlayerService {
     required PlayerConfig config,
     required String playlistPath,
     int playlistStart = 0,
+    List<String>? userArgs,
   }) {
     return _buildListArgs(
-      config: config,
+      userArgs: userArgs ?? config.args,
       playlistPath: playlistPath,
       playlistStart: playlistStart,
     );
   }
 
   List<String> _buildListArgs({
-    required PlayerConfig config,
+    required List<String> userArgs,
     required String playlistPath,
     required int playlistStart,
   }) {
     final args = <String>[];
 
     // 无占位符的静态模板项 → 全局参数。
-    for (final t in config.args) {
+    for (final t in userArgs) {
       if (!t.contains('{')) args.add(t);
     }
 

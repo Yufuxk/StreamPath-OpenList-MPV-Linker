@@ -13,6 +13,7 @@ import '../../data/local/playback_progress_db.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/media_source.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import 'iso_playback_service.dart';
 import 'mpv_scripts.dart';
@@ -163,6 +164,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     int? resumeEdition,
     String? expectedFingerprint,
     IsoSubtitleContext? subtitles,
+    PlaybackMediaInfo? mediaInfo,
   }) async {
     if (_disposed) {
       throw AppException.process('本地蓝光播放服务已关闭');
@@ -233,6 +235,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       resumeSeconds: resume != null && resume.positionMs > 0
           ? resume.positionMs ~/ 1000
           : null,
+      mediaInfo: mediaInfo,
     );
     if (config.subtitleInjectionEnabled && subtitles != null) {
       final directory = Directory(
@@ -758,8 +761,9 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     String? progressScriptPath,
     int? resumeSeconds,
     int? resumeEdition,
+    PlaybackMediaInfo? mediaInfo,
   }) => <String>[
-    ...filterUserArgs(config.args),
+    ...filterUserArgs(config.argsFor(mediaInfo)),
     '--fullscreen=yes',
     '--idle=no',
     '--keep-open=no',

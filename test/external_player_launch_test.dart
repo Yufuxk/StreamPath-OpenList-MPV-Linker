@@ -8,6 +8,7 @@ import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
 import 'package:streampath/data/models/external_audio_track.dart';
+import 'package:streampath/data/models/playback_media_info.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/subtitle_item.dart';
@@ -87,12 +88,21 @@ void main() {
 
   Future<(ExternalPlayerService, Directory)> makeService({
     String executable = 'mpv',
+    List<String> args = const [
+      '--sub-file={subfile}',
+      '{url}',
+      '--start={start}',
+    ],
     bool subtitleInjectionEnabled = true,
     bool externalAudioInjectionEnabled = true,
     bool webDavFontCacheEnabled = false,
     bool subtitleAutoSelectEnabled = true,
     bool resumeEnabled = true,
     bool autoSeasonTransitionEnabled = false,
+    bool argInjectionAllEnabled = true,
+    bool argInjectionAnimeEnabled = false,
+    bool argInjectionMovieEnabled = false,
+    bool argInjectionSeriesEnabled = false,
     PlayerProcessController? processController,
     bool useDefaultWatchLaterDirectory = false,
     WebDavFontCache? fontCache,
@@ -110,13 +120,17 @@ void main() {
         PlayerConfig(
           name: 'mpv',
           executable: resolvedExecutable,
-          args: const ['--sub-file={subfile}', '{url}', '--start={start}'],
+          args: args,
           subtitleInjectionEnabled: subtitleInjectionEnabled,
           externalAudioInjectionEnabled: externalAudioInjectionEnabled,
           webDavFontCacheEnabled: webDavFontCacheEnabled,
           subtitleAutoSelectEnabled: subtitleAutoSelectEnabled,
           resumeEnabled: resumeEnabled,
           autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
+          argInjectionAllEnabled: argInjectionAllEnabled,
+          argInjectionAnimeEnabled: argInjectionAnimeEnabled,
+          argInjectionMovieEnabled: argInjectionMovieEnabled,
+          argInjectionSeriesEnabled: argInjectionSeriesEnabled,
         ),
         const ConnectionConfig(baseUrl: 'http://h/dav'),
       ),
@@ -1744,6 +1758,117 @@ void main() {
       expect(content, contains('sid=1'), reason: '其他记录应保留');
       expect(content, contains('start=120'), reason: 'start 行应更新');
       expect(content.contains('start=30'), isFalse);
+    });
+  });
+
+  group('启动参数分类注入', () {
+    const shaderArg =
+        '--glsl-shaders=~~/shaders/Anime4K/Anime4K_Clamp_Highlights.glsl';
+    const categoryArgs = [shaderArg, '--sub-file={subfile}', '{url}'];
+
+    test('全部注入开启时不查询元数据，附加参数照常注入', () async {
+      var calls = 0;
+      final (service, dir) = await makeService(args: categoryArgs);
+      addTearDown(() => dir.delete(recursive: true));
+      service.mediaInfoResolver = (sourceId, path) async {
+        calls++;
+        return const PlaybackMediaInfo(isSeries: false, isAnime: false);
+      };
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/01.mkv', catalogPath: 'Anime/01.mkv'),
+        ],
+      );
+      expect(result.args, contains(shaderArg));
+      expect(calls, 0);
+      await service.waitForExitSync(result.sessionId);
+    });
+
+    test('分类命中动漫时注入附加参数', () async {
+      final (service, dir) = await makeService(
+        args: categoryArgs,
+        argInjectionAllEnabled: false,
+        argInjectionAnimeEnabled: true,
+      );
+      addTearDown(() => dir.delete(recursive: true));
+      final lookups = <String>[];
+      service.mediaInfoResolver = (sourceId, path) async {
+        lookups.add('$sourceId|$path');
+        return const PlaybackMediaInfo(isSeries: true, isAnime: true);
+      };
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/01.mkv', catalogPath: 'Anime/01.mkv'),
+        ],
+        webDavSourceId: 'dav',
+      );
+      expect(result.args, contains(shaderArg));
+      expect(result.args, contains('http://h/dav/01.mkv'));
+      expect(lookups, ['dav|Anime/01.mkv']);
+      await service.waitForExitSync(result.sessionId);
+    });
+
+    test('分类未命中时只保留播放地址', () async {
+      final (service, dir) = await makeService(
+        args: categoryArgs,
+        argInjectionAllEnabled: false,
+        argInjectionAnimeEnabled: true,
+      );
+      addTearDown(() => dir.delete(recursive: true));
+      service.mediaInfoResolver = (sourceId, path) async =>
+          const PlaybackMediaInfo(isSeries: false, isAnime: false);
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/01.mkv', catalogPath: 'Movie/01.mkv'),
+        ],
+      );
+      expect(result.args, isNot(contains(shaderArg)));
+      expect(result.args, contains('http://h/dav/01.mkv'));
+      await service.waitForExitSync(result.sessionId);
+    });
+
+    test('无元数据与无来源路径时按未命中处理', () async {
+      for (final catalogPath in [null, 'Unknown/01.mkv']) {
+        final (service, dir) = await makeService(
+          args: categoryArgs,
+          argInjectionAllEnabled: false,
+          argInjectionAnimeEnabled: true,
+        );
+        addTearDown(() => dir.delete(recursive: true));
+        service.mediaInfoResolver = (sourceId, path) async => null;
+        final result = await service.launch(
+          entries: [
+            MediaEntry(url: 'http://h/dav/01.mkv', catalogPath: catalogPath),
+          ],
+        );
+        expect(result.args, isNot(contains(shaderArg)));
+        expect(result.args, contains('http://h/dav/01.mkv'));
+        await service.waitForExitSync(result.sessionId);
+      }
+    });
+
+    test('多集列表命中动漫时静态参数进入全局参数', () async {
+      final (service, dir) = await makeService(
+        args: categoryArgs,
+        argInjectionAllEnabled: false,
+        argInjectionAnimeEnabled: true,
+        autoSeasonTransitionEnabled: true,
+      );
+      addTearDown(() => dir.delete(recursive: true));
+      service.mediaInfoResolver = (sourceId, path) async =>
+          const PlaybackMediaInfo(isSeries: true, isAnime: true);
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(url: 'http://h/dav/01.mkv', catalogPath: 'Anime/01.mkv'),
+          MediaEntry(url: 'http://h/dav/02.mkv', catalogPath: 'Anime/02.mkv'),
+        ],
+      );
+      expect(result.args, contains(shaderArg));
+      expect(
+        result.args.where((arg) => arg.startsWith('--playlist=')),
+        hasLength(1),
+      );
+      await service.waitForExitSync(result.sessionId);
     });
   });
 }

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
+import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/app_language.dart';
 import '../../presentation/playback/menu_cache_panel_script.dart';
@@ -138,6 +139,7 @@ class RemoteMenuPlaybackService {
     required String sessionKey,
     required String ipcPipeName,
     String? localDiscPath,
+    PlaybackMediaInfo? mediaInfo,
   }) async {
     final script = await MpvScripts.ensureCurrent(
       p.join(sessionDirectory.path, 'iso-current.txt'),
@@ -161,6 +163,7 @@ class RemoteMenuPlaybackService {
       ipcPipeName: ipcPipeName,
       scriptPath: script,
       localDiscPath: localDiscPath,
+      mediaInfo: mediaInfo,
     )..insertAll(0, [
       if (cacheScript != null) '--script=$cacheScript',
       if (menuScript != null) '--script=$menuScript',
@@ -257,6 +260,7 @@ end)
     required String ipcPipeName,
     required String scriptPath,
     String? localDiscPath,
+    PlaybackMediaInfo? mediaInfo,
   }) {
     if (endpoint.scheme != 'file' ||
         (localDiscPath == null && endpoint.host.isNotEmpty) ||
@@ -273,7 +277,7 @@ end)
     }
     return [
       ...LocalDiscPlaybackService.filterUserArgs(
-        filterIsoPlayerArguments(config.args),
+        filterIsoPlayerArguments(config.argsFor(mediaInfo)),
       ).where(
         (arg) => !RegExp(
           r'^--(?:no-)?(?:bluray-|cache|demuxer|stream|start|end|length|log-file|resume|save-position|watch-later|video-latency-hacks)',

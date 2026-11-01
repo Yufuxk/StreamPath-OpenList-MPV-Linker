@@ -2004,6 +2004,55 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              SPToggleTile(
+                key: const Key('arg-injection-all'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('全部注入'),
+                subtitle: const AppText('每次播放都注入启动参数；关闭后改为按分类注入'),
+                value: _draft.argInjectionAllEnabled,
+                onChanged: (value) =>
+                    setState(() => _draft.argInjectionAllEnabled = value),
+              ),
+              SPToggleTile(
+                key: const Key('arg-injection-anime'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('动漫注入'),
+                subtitle: const AppText('影片元数据包含动画类型时注入'),
+                value: _draft.argInjectionAnimeEnabled,
+                onChanged: _draft.argInjectionAllEnabled
+                    ? null
+                    : (value) => setState(
+                        () => _draft.argInjectionAnimeEnabled = value,
+                      ),
+              ),
+              SPToggleTile(
+                key: const Key('arg-injection-movie'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('电影注入'),
+                subtitle: const AppText('影片元数据为电影时注入'),
+                value: _draft.argInjectionMovieEnabled,
+                onChanged: _draft.argInjectionAllEnabled
+                    ? null
+                    : (value) => setState(
+                        () => _draft.argInjectionMovieEnabled = value,
+                      ),
+              ),
+              SPToggleTile(
+                key: const Key('arg-injection-series'),
+                contentPadding: EdgeInsets.zero,
+                title: const AppText('剧集注入'),
+                subtitle: const AppText('影片元数据为剧集时注入'),
+                value: _draft.argInjectionSeriesEnabled,
+                onChanged: _draft.argInjectionAllEnabled
+                    ? null
+                    : (value) => setState(
+                        () => _draft.argInjectionSeriesEnabled = value,
+                      ),
+              ),
+              const SizedBox(height: 8),
+              const AppText('关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。'),
+              const AppText('含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。'),
               const SizedBox(height: 4),
               Align(
                 alignment: Alignment.centerRight,

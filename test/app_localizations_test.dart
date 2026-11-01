@@ -52,6 +52,35 @@ void main() {
       );
     }
   });
+  test('启动参数分类注入文案覆盖四种语言', () {
+    // 繁中与简中同形的条目只校验能取到文案。
+    const identicalInTraditional = {'全部注入', '动漫注入', '电影注入', '剧集注入'};
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final source in [
+        '全部注入',
+        '每次播放都注入启动参数；关闭后改为按分类注入',
+        '动漫注入',
+        '影片元数据包含动画类型时注入',
+        '电影注入',
+        '影片元数据为电影时注入',
+        '剧集注入',
+        '影片元数据为剧集时注入',
+        '关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。',
+        '含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。',
+      ]) {
+        final translated = l10n.text(source);
+        expect(translated.trim(), isNotEmpty, reason: '${language.name}: $source');
+        if (language == AppLanguage.simplifiedChinese ||
+            (language == AppLanguage.traditionalChinese &&
+                identicalInTraditional.contains(source))) {
+          continue;
+        }
+        expect(translated, isNot(source), reason: '${language.name}: $source');
+      }
+    }
+  });
+
   test('侧边栏、平铺和索引文案覆盖四种语言', () {
     const sources = [
       '网络文件夹',
