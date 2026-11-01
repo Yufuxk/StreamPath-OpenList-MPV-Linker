@@ -313,6 +313,7 @@ class FilmArtwork extends StatefulWidget {
     this.logoInkTint = false,
     this.logoPadding = 0,
     this.fallbackPath,
+    this.fallbackProvider,
     this.showCachedImmediately = false,
     this.provider,
   }) : assert(logoGlyphSize == null || transparent),
@@ -341,6 +342,9 @@ class FilmArtwork extends StatefulWidget {
   /// 透明徽标在裁剪框内留出的空白，避免贴边字形和描边被裁掉。
   final double logoPadding;
   final String? fallbackPath;
+
+  /// 已经解码的备用图，目标尺寸就绪前保持显示；不依赖文件位置缓存。
+  final ImageProvider<Object>? fallbackProvider;
 
   /// 作品与合集海报同步命中时跳过渐显，其他图片保留原策略。
   final bool showCachedImmediately;
@@ -384,7 +388,9 @@ class _FilmArtworkState extends State<FilmArtwork> {
             future: _image,
             initialData: known,
             builder: (context, state) {
-              final fallback = state.hasError ? null : _readyFallback();
+              final fallback = state.hasError
+                  ? null
+                  : (_readyFallback() ?? widget.fallbackProvider);
               final file = state.data;
               if (file != null || fallback != null) {
                 final provider = file != null

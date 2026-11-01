@@ -1238,6 +1238,10 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     final topInset = MediaQuery.paddingOf(context).top;
     final poster = filmConnectedPoster(context);
     final moving = StreamPathTransitionScope.of(context);
+    // 仅在仍使用飞行携带的海报路径时用它兜底，刷新元数据换图后不显示旧图。
+    final posterFallback = work?.posterPath == widget.initialWork?.posterPath
+        ? poster?.provider
+        : null;
     final initialSkeleton = _loading && _work == null;
     final numbers = _resources.map((r) => r.season).toSet().toList()
       ..sort((a, b) {
@@ -1331,6 +1335,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                 provider: moving && _loading
                                                     ? poster?.provider
                                                     : null,
+                                                fallbackProvider:
+                                                    posterFallback,
                                                 showCachedImmediately:
                                                     poster != null,
                                               ),

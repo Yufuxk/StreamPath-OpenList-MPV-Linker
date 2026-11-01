@@ -3528,6 +3528,110 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('共享封面：落位后文件位置记录被淘汰仍保持已显示封面', (tester) async {
+    await prepare(tester);
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppState>.value(
+        value: app,
+        child: MaterialApp(
+          theme: AppTheme.dark(),
+          builder: (_, child) =>
+              RepaintBoundary(key: const Key('handoff-frame'), child: child!),
+          home: FilmLibraryPage(onOpenItem: (_) async {}),
+        ),
+      ),
+    );
+    await settle(tester);
+    final poster = find.byKey(const Key('film-detail-poster'));
+    final card = find.byType(FilmWorkCard).first;
+    final work = tester.widget<FilmWorkCard>(card).work;
+    final posterPath = work.posterPath!;
+    // 落位后 w500 需要重新下载，形成与真实网络一致的升级窗口。
+    final w500 = File(
+      p.join(
+        catalog.images.directory.path,
+        '${FilmCatalogImageCache.cacheKey(posterPath, 'w500')}.img',
+      ),
+    );
+    if (w500.existsSync()) w500.deleteSync();
+    // 详情访问产生的其他图片位置记录足以挤掉主页海报的 w342 记录。
+    final file = catalog.images.knownFile(posterPath, 'w342')!;
+    await tester.runAsync(() async {
+      for (var i = 0; i < 129; i++) {
+        final path = '/handoff$i.png';
+        await file.copy(
+          p.join(
+            catalog.images.directory.path,
+            '${FilmCatalogImageCache.cacheKey(path, 'w342')}.img',
+          ),
+        );
+        await catalog.images.cached(path, 'w342');
+      }
+    });
+    expect(catalog.images.knownFile(posterPath, 'w342'), isNull);
+    Future<List<int>> sample(List<Offset> points) async =>
+        (await tester.runAsync(() async {
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(const Key('handoff-frame')),
+          );
+          final image = await boundary.toImage();
+          final bytes = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!.buffer.asUint8List();
+          final result = <int>[];
+          for (final point in points) {
+            final offset =
+                (point.dy.floor() * image.width + point.dx.floor()) * 4;
+            result.addAll(bytes.sublist(offset, offset + 4));
+          }
+          image.dispose();
+          return result;
+        }))!;
+    final sourcePoster = find.descendant(
+      of: card,
+      matching: find.byType(FilmSharedPoster),
+    );
+    final sourcePixels = await sample([tester.getCenter(sourcePoster)]);
+    await tester.tap(card);
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('film-connected-flight')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.pump(const Duration(milliseconds: 180));
+    await tester.pump(const Duration(milliseconds: 1));
+    final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
+    expect(route.animation!.status, AnimationStatus.completed);
+    await tester.pump();
+    expect(find.byKey(const Key('film-connected-flight')), findsNothing);
+    // 落位后 w500 会立即发起，但测试环境的下载会很快失败；
+    // 这里只检查真实用户可见的落位窗口：封面不得回落到骨架或重新淡入。
+    for (var frame = 0; frame < 2; frame++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+      expect(
+        find.descendant(of: poster, matching: find.byType(CinematicSkeleton)),
+        findsNothing,
+        reason: 'Landing poster must reuse the displayed w342 image',
+      );
+      expect(
+        find.descendant(of: poster, matching: find.byType(Image)),
+        findsWidgets,
+        reason: 'Landing poster must keep painting an image',
+      );
+      final pixels = await sample([tester.getCenter(poster)]);
+      for (var channel = 0; channel < 4; channel++) {
+        expect(
+          pixels[channel],
+          closeTo(sourcePixels[channel], 6),
+          reason: 'Landing poster must not reload while w500 is pending',
+        );
+      }
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('共享封面：左侧卡片不同悬停阶段、切换页面与后台恢复后二十次往返', (tester) async {
     await prepare(tester, count: 20);
     await tester.runAsync(() async {
