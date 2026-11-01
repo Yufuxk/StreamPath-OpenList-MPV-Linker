@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
 import 'dart:io';
@@ -783,7 +783,7 @@ void main() {
       expect(artwork.target, 'original');
       expect(artwork.logoAutoCenter, isTrue);
       expect(artwork.logoGlyphSize, isNull);
-      expect(artwork.logoInkLift, isFalse);
+      expect(artwork.logoInkTint, isFalse);
       for (var i = 0; i < 100; i++) {
         if (find
             .descendant(

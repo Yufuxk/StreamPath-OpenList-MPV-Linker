@@ -1,4 +1,4 @@
-import '../widgets/transition_content.dart';
+﻿import '../widgets/transition_content.dart';
 import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
 import '../widgets/skeleton_scope.dart';
@@ -1389,7 +1389,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                   as String?,
                                                     target: 'original',
                                                     transparent: true,
-                                                    logoInkLift: true,
+                                                    logoInkTint: true,
                                                     logoPadding: 3,
                                                     borderRadius: 0,
                                                     width: 500,

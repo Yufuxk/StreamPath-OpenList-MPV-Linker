@@ -1,4 +1,4 @@
-import 'package:streampath/presentation/widgets/transition_content.dart';
+﻿import 'package:streampath/presentation/widgets/transition_content.dart';
 import 'package:streampath/presentation/widgets/film_connected_transition.dart';
 import 'package:streampath/presentation/widgets/skeleton_scope.dart';
 import 'package:streampath/presentation/widgets/cinematic_states.dart';
@@ -3921,23 +3921,22 @@ void main() {
         (w) => w is FilmArtwork && w.transparent,
       );
       final artwork = tester.widget<FilmArtwork>(logo);
-      expect(artwork.logoInkLift, isTrue);
+      expect(artwork.logoInkTint, isTrue);
       expect(artwork.logoPadding, 3);
       expect(artwork.borderRadius, 0);
-      final lift = find.descendant(
+      final tint = find.descendant(
         of: logo,
-        matching: find.byKey(const Key('film-logo-lift')),
+        matching: find.byType(ColorFiltered),
       );
       if (theme.brightness == Brightness.dark) {
-        for (var i = 0; i < 200 && lift.evaluate().isEmpty; i++) {
+        for (var i = 0; i < 200 && tint.evaluate().isEmpty; i++) {
           await tester.runAsync(
             () => Future<void>.delayed(const Duration(milliseconds: 10)),
           );
           await tester.pump();
         }
-        expect(lift, findsOneWidget);
+        expect(tint, findsOneWidget);
       } else {
-        expect(lift, findsNothing);
         final outline = find.descendant(
           of: logo,
           matching: find.byType(ImageFiltered),
