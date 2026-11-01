@@ -302,8 +302,10 @@ class _CacheDialogState extends State<VideoCacheDownloadDialog> {
                 if (widget.groups[i].length > 1)
                   SPDropdownButtonFormField<FilmResource>(
                     initialValue: _selected[i],
+                    isExpanded: true,
                     decoration: InputDecoration(
                       labelText: context.l10n.text('缓存版本'),
+                      prefixIcon: const Icon(SPIcons.video),
                     ),
                     items: [
                       for (final r in widget.groups[i])

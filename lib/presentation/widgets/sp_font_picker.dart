@@ -5,6 +5,7 @@ import '../localization/app_text.dart';
 import '../theme/app_theme.dart';
 import '../theme/installed_fonts.dart';
 import 'sp_controls.dart';
+import 'sp_icons.dart';
 import 'sp_menu.dart';
 
 /// 从系统字体列表选择界面字体，空值使用系统推荐字体。
@@ -88,6 +89,9 @@ class _SPFontPickerState extends State<SPFontPicker> {
                 menuMaxHeight: 420,
                 dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                 borderRadius: AppTheme.dropdownBorderRadius,
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(SPIcons.font),
+                ),
                 items: [
                   DropdownMenuItem<String>(
                     value: '',

@@ -412,14 +412,18 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
 
   Widget _field(
     TextEditingController c,
-    String label, {
+    String label,
+    IconData icon, {
     bool obscure = false,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextField(
       controller: c,
       obscureText: obscure,
-      decoration: InputDecoration(label: AppText(label)),
+      decoration: InputDecoration(
+        label: AppText(label),
+        prefixIcon: Icon(icon),
+      ),
     ),
   );
   @override
@@ -440,6 +444,7 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                 isExpanded: true,
                 dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                 borderRadius: AppTheme.dropdownBorderRadius,
+                decoration: InputDecoration(prefixIcon: Icon(SPIcons.network)),
                 items: [
                   for (final kind in MediaSourceKind.values.where(
                     (k) => widget.servers
@@ -459,21 +464,26 @@ class _ConnectionEditorState extends State<_ConnectionEditor> {
                     : (value) => setState(() => _kind = value!),
               ),
               const SizedBox(height: 12),
-              _field(_name, '来源名称'),
-              _field(_url, '来源地址'),
+              _field(_name, '来源名称', SPIcons.label),
+              _field(_url, '来源地址', SPIcons.link),
               if (_kind != MediaSourceKind.nfs) ...[
-                _field(_user, '用户名'),
-                _field(_password, '密码', obscure: true),
+                _field(_user, '用户名', SPIcons.person),
+                _field(_password, '密码', SPIcons.lock, obscure: true),
               ],
-              if (_kind == MediaSourceKind.webdav) _field(_directory, '默认目录'),
-              if (_kind == MediaSourceKind.smb) _field(_domain, '域（可选）'),
+              if (_kind == MediaSourceKind.webdav)
+                _field(_directory, '默认目录', SPIcons.folder),
+              if (_kind == MediaSourceKind.smb)
+                _field(_domain, '域（可选）', SPIcons.globe),
               if (_kind == MediaSourceKind.nfs) ...[
-                _field(_uid, 'UID'),
-                _field(_gid, 'GID'),
+                _field(_uid, 'UID', SPIcons.person),
+                _field(_gid, 'GID', SPIcons.permissions),
                 SPDropdownButtonFormField<int>(
                   initialValue: _nfsVersion,
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
+                  decoration: InputDecoration(
+                    prefixIcon: Icon(SPIcons.settings),
+                  ),
                   items: [
                     for (final v in [3, 4])
                       DropdownMenuItem(value: v, child: Text('NFS v$v')),

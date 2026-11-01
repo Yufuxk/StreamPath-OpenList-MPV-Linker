@@ -532,7 +532,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                         SettingsGroupCard(
                           icon: SPIcons.settings,
                           title: 'TMDB 元数据设置',
-                          description: '',
+                          description: '凭据、元数据语言与图片缓存',
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -603,6 +603,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                   initialValue: _language,
                                   decoration: const InputDecoration(
                                     label: AppText('元数据语言'),
+                                    prefixIcon: Icon(SPIcons.language),
                                   ),
                                   items: const [
                                     DropdownMenuItem(
@@ -666,7 +667,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                         SettingsGroupCard(
                           icon: SPIcons.settings,
                           title: '影视库偏好',
-                          description: '',
+                          description: '扫描、防剧透与封面显示',
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -693,6 +694,9 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                         child: SPToggleTile(
                                           contentPadding: EdgeInsets.zero,
                                           title: const AppText('自动扫描'),
+                                          subtitle: const AppText(
+                                            '按设定间隔扫描已启用的影视目录',
+                                          ),
                                           value: _scanEnabled,
                                           onChanged: (value) => _settingAction(
                                             () => c.store.setPreference(
@@ -714,6 +718,12 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                           decoration: InputDecoration(
                                             labelText: context.l10n.text(
                                               '扫描间隔',
+                                            ),
+                                            helperText: context.l10n.text(
+                                              '两次自动扫描之间的间隔',
+                                            ),
+                                            prefixIcon: const Icon(
+                                              SPIcons.settings,
                                             ),
                                           ),
                                           items: [
@@ -750,6 +760,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               SPToggleTile(
                                 contentPadding: EdgeInsets.zero,
                                 title: const AppText('防剧透'),
+                                subtitle: const AppText('隐藏未看剧集的简介与封面'),
                                 value: _spoilers,
                                 onChanged: (value) => _settingAction(
                                   () => c.store.setPreference(
@@ -814,6 +825,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                 isExpanded: true,
                                 decoration: InputDecoration(
                                   labelText: context.l10n.text('文件夹名称匹配模式'),
+                                  prefixIcon: const Icon(SPIcons.manageSearch),
                                 ),
                                 items: const [
                                   DropdownMenuItem(
@@ -882,7 +894,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                         SettingsGroupCard(
                           icon: SPIcons.diagnostic,
                           title: '视频信息探测',
-                          description: '',
+                          description: '探测模式与探测任务状态',
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -898,6 +910,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                 ),
                                 decoration: const InputDecoration(
                                   label: AppText('探测模式'),
+                                  prefixIcon: Icon(SPIcons.diagnostic),
                                 ),
                                 items: const [
                                   DropdownMenuItem(
@@ -1197,7 +1210,10 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                   dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
                   borderRadius: AppTheme.dropdownBorderRadius,
                   isExpanded: true,
-                  decoration: const InputDecoration(label: AppText('已有来源')),
+                  decoration: const InputDecoration(
+                    label: AppText('已有来源'),
+                    prefixIcon: Icon(SPIcons.network),
+                  ),
                   items: [
                     for (final source in sources)
                       DropdownMenuItem(
@@ -1229,7 +1245,10 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                   borderRadius: AppTheme.dropdownBorderRadius,
                   isExpanded: true,
                   initialValue: _type,
-                  decoration: const InputDecoration(label: AppText('作品类型')),
+                  decoration: const InputDecoration(
+                    label: AppText('作品类型'),
+                    prefixIcon: Icon(SPIcons.movies),
+                  ),
                   items: const [
                     DropdownMenuItem(
                       value: FilmMediaType.movie,

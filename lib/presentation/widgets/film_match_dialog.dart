@@ -287,7 +287,10 @@ class _FilmMatchDialogState extends State<FilmMatchDialog> {
                     isExpanded: true,
                     key: ValueKey(_directory),
                     initialValue: _directory,
-                    decoration: const InputDecoration(label: AppText('作品目录')),
+                    decoration: const InputDecoration(
+                      label: AppText('作品目录'),
+                      prefixIcon: Icon(SPIcons.folder),
+                    ),
                     items: [
                       for (final ancestor in ancestors)
                         DropdownMenuItem(
@@ -574,7 +577,10 @@ class _FilmVersionDialogState extends State<_FilmVersionDialog> {
             controller: _name,
             contextMenuBuilder: buildSPTextSelectionMenu,
             onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(labelText: context.l10n.text('版本名称')),
+            decoration: InputDecoration(
+              labelText: context.l10n.text('版本名称'),
+              prefixIcon: const Icon(SPIcons.label),
+            ),
           ),
           const SizedBox(height: 12),
           const AppText('勾选属于同一套版本的文件；不同季使用相同版本名称'),

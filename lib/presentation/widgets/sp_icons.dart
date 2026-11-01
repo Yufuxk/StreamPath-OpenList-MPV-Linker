@@ -318,6 +318,11 @@ abstract final class SPIcons {
     fontFamily: _font,
     fontFamilyFallback: _fallback,
   );
+  static const font = IconData(
+    0xE8D2,
+    fontFamily: _font,
+    fontFamilyFallback: _fallback,
+  );
 
   static const favorite = IconData(
     0xE734,

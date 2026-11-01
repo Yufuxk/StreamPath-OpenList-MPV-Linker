@@ -210,7 +210,10 @@ class _FilmTransferDialogState extends State<_FilmTransferDialog> {
                         borderRadius: AppTheme.dropdownBorderRadius,
                         initialValue: _mapping[source],
                         isExpanded: true,
-                        decoration: InputDecoration(labelText: source),
+                        decoration: InputDecoration(
+                          labelText: source,
+                          prefixIcon: const Icon(SPIcons.network),
+                        ),
                         items: [
                           const DropdownMenuItem(
                             value: '',

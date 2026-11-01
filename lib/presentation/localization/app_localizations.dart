@@ -624,6 +624,30 @@ class AppLocalizations {
       '管理员登录请求超过总时间限制': '管理員登入要求超過總時間限制',
       '普通用户登录失败：': '一般使用者登入失敗：',
       '管理员登录失败：': '管理員登入失敗：',
+      '扫描正片目录内的特典子目录（SPs、PVs 等）': '掃描正片目錄內的特典子目錄（SPs、PVs 等）',
+      '扫描与正片目录并列的特典文件夹': '掃描與正片目錄同層的特典資料夾',
+      '按历史实测码率修正缓存目标': '依歷史實測位元率修正快取目標',
+      '为本地、WebDAV 与 SMB 分别调整缓存参数': '依本機、WebDAV 與 SMB 分別調整快取參數',
+      '记录本机缓存命中情况用于后续建议': '記錄本機快取命中情形以產生後續建議',
+      '按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名': '依目前語言顯示從檔名擷取的片名、年份與季集；辨識不足時保留原名',
+      '仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期':
+          '僅對已辨識劇集的隱式播放清單生效；季歸屬明確且在集數範圍內時忽略首播日期',
+      '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。':
+          '預設樣式為不透明介面；Windows 材質使用 Acrylic 或 Mica 背景。',
+      '参数在保存时应用，拖动滑块不会刷新窗口特效。': '參數於儲存時套用，拖曳滑桿不會重新整理視窗特效。',
+      '仅使用本机聚合数据，不上传媒体地址或播放记录': '僅使用本機彙總資料，不上傳媒體位址或播放紀錄',
+      '两次自动扫描之间的间隔': '兩次自動掃描之間的間隔',
+      '按设定间隔扫描已启用的影视目录': '依設定間隔掃描已啟用的影視目錄',
+      '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频': '隱式清單只包含目前集附近的集數；完整清單包含目錄內全部影片',
+      '决定特典视频加入播放列表的范围；关闭时只包含正片': '決定特典影片加入播放清單的範圍；關閉時只包含正片',
+      '决定收藏与最近记录是否跨来源共享': '決定收藏與最近紀錄是否跨來源共用',
+      '自动按媒体与网络估算；性能、节省与蓝光模式在基准上放大或收紧缓存': '自動依媒體與網路估算；效能、節省與藍光模式會在基準上放大或收緊快取',
+      '用于主按钮、选中态与滑块的强调色': '用於主要按鈕、選取狀態與滑桿的強調色',
+      '临时缓存只保留本次运行；持久缓存保存到本地文件': '暫存快取僅保留本次執行；持續快取會儲存到本機檔案',
+      '隐藏未看剧集的简介与封面': '隱藏未看劇集的簡介與封面',
+      '凭据、元数据语言与图片缓存': '憑證、中繼資料語言與圖片快取',
+      '扫描、防剧透与封面显示': '掃描、防劇透與封面顯示',
+      '探测模式与探测任务状态': '探測模式與探測任務狀態',
     },
     AppLanguage.japanese: <String, String>{
       '更换 Logo': 'Logo を変更',
@@ -936,6 +960,33 @@ class AppLocalizations {
       '管理员登录请求超过总时间限制': '管理者のログイン要求が全体の制限時間を超えました',
       '普通用户登录失败：': '一般ユーザーのログインに失敗しました：',
       '管理员登录失败：': '管理者のログインに失敗しました：',
+      '扫描正片目录内的特典子目录（SPs、PVs 等）': '本編フォルダー内にある特典サブフォルダー（SPs、PVs など）もスキャンします',
+      '扫描与正片目录并列的特典文件夹': '本編フォルダーと同じ階層にある特典フォルダーをスキャンします',
+      '按历史实测码率修正缓存目标': '実測した過去のビットレートでキャッシュ目標を補正します',
+      '为本地、WebDAV 与 SMB 分别调整缓存参数': 'ローカル、WebDAV、SMB ごとにキャッシュパラメーターを調整します',
+      '记录本机缓存命中情况用于后续建议': '本機のキャッシュヒット状況を記録し、今後の提案に使用します',
+      '按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名':
+          'ファイル名から抽出した作品名・年・シーズン／エピソードを表示言語で表示します。判別できない場合は元の名前を使います',
+      '仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期':
+          '認識済みのドラマ作品の暗黙プレイリストにのみ適用します。シーズンが明確で話数範囲内なら初回放送日を無視します',
+      '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。':
+          '既定のスタイルは不透明な画面です。Windows マテリアルでは Acrylic または Mica の背景を使用します。',
+      '参数在保存时应用，拖动滑块不会刷新窗口特效。': 'パラメーターは保存時に適用されます。スライダーの操作中にウィンドウ効果は更新されません。',
+      '仅使用本机聚合数据，不上传媒体地址或播放记录': '本機の集計データのみを使用し、メディアのアドレスや再生履歴は送信しません',
+      '两次自动扫描之间的间隔': '2 回の自動スキャンの間隔',
+      '按设定间隔扫描已启用的影视目录': '設定した間隔で有効なライブラリフォルダーをスキャンします',
+      '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频':
+          '暗黙リストは現在のエピソード付近のみを含み、完全リストはフォルダー内のすべての動画を含みます',
+      '决定特典视频加入播放列表的范围；关闭时只包含正片': '特典動画をプレイリストに含める範囲を指定します。オフの場合は本編のみです',
+      '决定收藏与最近记录是否跨来源共享': 'お気に入りと最近の記録を保存先間で共有するかを指定します',
+      '自动按媒体与网络估算；性能、节省与蓝光模式在基准上放大或收紧缓存':
+          '自動ではメディアとネットワークから推定します。性能・節約・Blu-ray モードは基準値を拡大または縮小します',
+      '用于主按钮、选中态与滑块的强调色': 'メインボタン、選択状態、スライダーに使うアクセントカラーです',
+      '临时缓存只保留本次运行；持久缓存保存到本地文件': '一時キャッシュは今回の実行中のみ保持し、永続キャッシュは本機のファイルに保存します',
+      '隐藏未看剧集的简介与封面': '未視聴エピソードのあらすじとカバーを隠します',
+      '凭据、元数据语言与图片缓存': '認証情報、メタデータ言語、画像キャッシュ',
+      '扫描、防剧透与封面显示': 'スキャン、ネタバレ防止、カバー表示',
+      '探测模式与探测任务状态': 'プローブモードとプローブタスクの状態',
     },
     AppLanguage.english: <String, String>{
       '更换 Logo': 'Change logo',
@@ -1293,6 +1344,45 @@ class AppLocalizations {
           'The administrator login request exceeded the overall time limit',
       '普通用户登录失败：': 'Standard-user login failed: ',
       '管理员登录失败：': 'Administrator login failed: ',
+      '扫描正片目录内的特典子目录（SPs、PVs 等）':
+          'Also scans special-feature subfolders (SPs, PVs, and similar) inside the main folder',
+      '扫描与正片目录并列的特典文件夹':
+          'Scans special-feature folders next to the main folder',
+      '按历史实测码率修正缓存目标':
+          'Adjusts cache targets using measured bitrates from past playback',
+      '为本地、WebDAV 与 SMB 分别调整缓存参数':
+          'Tunes cache parameters separately for local, WebDAV, and SMB sources',
+      '记录本机缓存命中情况用于后续建议':
+          'Records local cache hit rates to improve future suggestions',
+      '按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名':
+          'Shows the title, year, and episode parsed from the file name in the current language; keeps the original name when parsing fails',
+      '仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期':
+          'Applies only to implicit playlists of recognized series; ignores the air date when the season and episode range are clear',
+      '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。':
+          'The default style keeps an opaque interface; Windows material uses an Acrylic or Mica backdrop.',
+      '参数在保存时应用，拖动滑块不会刷新窗口特效。':
+          'Parameters apply on save; dragging the slider does not refresh window effects.',
+      '仅使用本机聚合数据，不上传媒体地址或播放记录':
+          'Uses only local aggregate data; media addresses and playback history are never uploaded',
+      '两次自动扫描之间的间隔': 'Time between two automatic scans',
+      '按设定间隔扫描已启用的影视目录':
+          'Scans enabled library folders at the configured interval',
+      '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频':
+          'Implicit lists include only nearby episodes; full lists include every video in the folder',
+      '决定特典视频加入播放列表的范围；关闭时只包含正片':
+          'Sets how special-feature videos join the playlist; when off, only main features are included',
+      '决定收藏与最近记录是否跨来源共享':
+          'Sets whether favorites and recent records are shared across sources',
+      '自动按媒体与网络估算；性能、节省与蓝光模式在基准上放大或收紧缓存':
+          'Auto estimates from media and network; performance, economy, and Blu-ray modes scale the baseline up or down',
+      '用于主按钮、选中态与滑块的强调色':
+          'Accent color used for primary buttons, selection states, and sliders',
+      '临时缓存只保留本次运行；持久缓存保存到本地文件':
+          'Temporary cache lasts for this run; persistent cache is saved to a local file',
+      '隐藏未看剧集的简介与封面': 'Hides summaries and artwork for unwatched episodes',
+      '凭据、元数据语言与图片缓存': 'Credentials, metadata language, and image cache',
+      '扫描、防剧透与封面显示': 'Scanning, spoiler protection, and poster display',
+      '探测模式与探测任务状态': 'Probe mode and probe task status',
     },
   };
 }

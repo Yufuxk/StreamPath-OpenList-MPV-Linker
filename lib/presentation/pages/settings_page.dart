@@ -1657,6 +1657,7 @@ class SettingsPageState extends State<SettingsPage> {
                         helperText: context.l10n.text(
                           '默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。',
                         ),
+                        prefixIcon: const Icon(SPIcons.folderOpen),
                       ),
                       items: const [
                         DropdownMenuItem(
@@ -2073,8 +2074,13 @@ class SettingsPageState extends State<SettingsPage> {
             children: [
               SPDropdownButtonFormField<VideoPlaylistMode>(
                 initialValue: _draft.videoPlaylistMode,
+                isExpanded: true,
                 decoration: InputDecoration(
                   labelText: context.l10n.text('视频播放列表模式'),
+                  helperText: context.l10n.text(
+                    '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频',
+                  ),
+                  prefixIcon: const Icon(SPIcons.list),
                 ),
                 items: [
                   for (final mode in VideoPlaylistMode.values)
@@ -2106,6 +2112,7 @@ class SettingsPageState extends State<SettingsPage> {
                       '包含当前正在播放的集数；2～10，默认 2，仅作用于隐式播放列表',
                     ),
                     suffixText: context.l10n.text('集'),
+                    prefixIcon: const Icon(SPIcons.list),
                     border: const OutlineInputBorder(),
                   ),
                   validator: (value) => _validateNumber(
@@ -2122,7 +2129,7 @@ class SettingsPageState extends State<SettingsPage> {
                 key: const Key('video-playlist-simple-naming'),
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('播放列表简洁命名'),
-                subtitle: const AppText('从文件名提取片名、年份和季集信息，按当前语言显示；识别不足时保留原名'),
+                subtitle: const AppText('按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名'),
                 value: _draft.videoPlaylistSimpleNaming,
                 onChanged: (value) =>
                     setState(() => _draft.videoPlaylistSimpleNaming = value),
@@ -2131,9 +2138,7 @@ class SettingsPageState extends State<SettingsPage> {
                 key: const Key('video-playlist-insert-decimal-episodes'),
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('按小数集号插入番外篇'),
-                subtitle: const AppText(
-                  '仅用于已识别剧集的隐式播放列表；季归属明确且在集数范围内时，忽略首播日期插入正片之间',
-                ),
+                subtitle: const AppText('仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期'),
                 value: _draft.videoPlaylistInsertDecimalEpisodes,
                 onChanged:
                     _draft.videoPlaylistMode != VideoPlaylistMode.implicit
@@ -2176,9 +2181,13 @@ class SettingsPageState extends State<SettingsPage> {
                 child: SPDropdownButtonFormField<SpecialPlaylistMode>(
                   key: const Key('special-playlist-mode'),
                   initialValue: _draft.specialPlaylistMode,
+                  isExpanded: true,
                   dropdownColor: _dropdownMenuColor,
                   borderRadius: AppTheme.dropdownBorderRadius,
-                  decoration: InputDecoration(),
+                  decoration: InputDecoration(
+                    helperText: context.l10n.text('决定特典视频加入播放列表的范围；关闭时只包含正片'),
+                    prefixIcon: const Icon(SPIcons.video),
+                  ),
                   items: const [
                     DropdownMenuItem(
                       value: SpecialPlaylistMode.off,
@@ -2220,6 +2229,7 @@ class SettingsPageState extends State<SettingsPage> {
                 key: const Key('special-child-folders'),
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('扫描视频文件夹内的特典目录'),
+                subtitle: const AppText('扫描正片目录内的特典子目录（SPs、PVs 等）'),
                 value: _draft.scanSpecialChildFolders,
                 onChanged: (value) =>
                     setState(() => _draft.scanSpecialChildFolders = value),
@@ -2228,6 +2238,7 @@ class SettingsPageState extends State<SettingsPage> {
                 key: const Key('special-sibling-folders'),
                 contentPadding: EdgeInsets.zero,
                 title: const AppText('扫描与视频文件夹同级的特典目录'),
+                subtitle: const AppText('扫描与正片目录并列的特典文件夹'),
                 value: _draft.scanSpecialSiblingFolders,
                 onChanged: (value) =>
                     setState(() => _draft.scanSpecialSiblingFolders = value),
@@ -2269,7 +2280,9 @@ class SettingsPageState extends State<SettingsPage> {
                   initialValue: _draft.menuProgressSharingEnabled,
                   dropdownColor: _dropdownMenuColor,
                   borderRadius: AppTheme.dropdownBorderRadius,
-                  decoration: InputDecoration(),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(SPIcons.progress),
+                  ),
                   items: const [
                     DropdownMenuItem(value: false, child: AppText('独立（不记录进度）')),
                     DropdownMenuItem(
@@ -2314,6 +2327,7 @@ class SettingsPageState extends State<SettingsPage> {
                   contextMenuBuilder: buildClipboardHistoryMenu,
                   decoration: InputDecoration(
                     helperText: context.l10n.text('填写 MPV 可用的字体名称；留空使用 Arial。'),
+                    prefixIcon: const Icon(SPIcons.lyrics),
                     border: const OutlineInputBorder(),
                   ),
                 ),
@@ -2363,6 +2377,7 @@ class SettingsPageState extends State<SettingsPage> {
     required TextEditingController controller,
     required String label,
     required String helperText,
+    required IconData icon,
     required int maximum,
   }) => _SettingsLabeledField(
     label: label,
@@ -2374,6 +2389,7 @@ class SettingsPageState extends State<SettingsPage> {
       decoration: InputDecoration(
         helperText: helperText,
         suffixText: context.l10n.text('条'),
+        prefixIcon: Icon(icon),
         border: const OutlineInputBorder(),
       ),
       validator: (value) => _validateNumber(
@@ -2454,6 +2470,16 @@ class SettingsPageState extends State<SettingsPage> {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
               ),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppText(
+                  '决定收藏与最近记录是否跨来源共享',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
               const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,
@@ -2506,6 +2532,7 @@ class SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-favorites-limit-field'),
                   controller: _mediaLibraryFavoritesController,
                   label: '收藏保存上限',
+                  icon: SPIcons.favorite,
                   helperText: context.l10n.format(
                     '目录、视频、STRM、音频和 ISO 合计；系统最高 {max} 条',
                     {'max': MediaLibraryConfig.systemMaxFavoritesPerSource},
@@ -2516,6 +2543,7 @@ class SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-continue-limit-field'),
                   controller: _mediaLibraryContinueController,
                   label: '继续播放显示上限',
+                  icon: SPIcons.play,
                   helperText: context.l10n.format(
                     '视频、音频、ISO 各自计算；系统最高 {max} 条',
                     {'max': MediaLibraryConfig.systemMaxContinuePerLane},
@@ -2529,6 +2557,7 @@ class SettingsPageState extends State<SettingsPage> {
                   key: const Key('media-library-recent-playback-limit-field'),
                   controller: _mediaLibraryRecentPlaybackController,
                   label: '最近播放保存上限',
+                  icon: SPIcons.history,
                   helperText: context.l10n.format(
                     '视频、音频、ISO 各自计算；系统最高 {max} 条',
                     {'max': MediaLibraryConfig.systemMaxRecentPlaybackPerLane},
@@ -2541,6 +2570,7 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                   controller: _mediaLibraryRecentDirectoriesController,
                   label: '最近目录保存上限',
+                  icon: SPIcons.folderOpen,
                   helperText: context.l10n.format('当前来源单独计算；系统最高 {max} 条', {
                     'max':
                         MediaLibraryConfig.systemMaxRecentDirectoriesPerSource,
@@ -2744,9 +2774,16 @@ class SettingsPageState extends State<SettingsPage> {
             child: SPDropdownButtonFormField<CachePolicyMode>(
               key: const Key('cache-mode-dropdown'),
               initialValue: _cacheMode,
+              isExpanded: true,
               dropdownColor: _dropdownMenuColor,
               borderRadius: AppTheme.dropdownBorderRadius,
-              decoration: InputDecoration(border: OutlineInputBorder()),
+              decoration: InputDecoration(
+                helperText: context.l10n.text(
+                  '自动按媒体与网络估算；性能、节省与蓝光模式在基准上放大或收紧缓存',
+                ),
+                prefixIcon: const Icon(SPIcons.settings),
+                border: OutlineInputBorder(),
+              ),
               items: [
                 for (final mode in CachePolicyMode.values)
                   DropdownMenuItem(value: mode, child: AppText(mode.label)),
@@ -2772,6 +2809,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('可用内存的 5%～50%'),
                   suffixText: context.l10n.text('%'),
+                  prefixIcon: const Icon(SPIcons.progress),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) =>
@@ -2788,6 +2826,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('策略目标时长'),
                   suffixText: context.l10n.text('秒'),
+                  prefixIcon: const Icon(SPIcons.clock),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2811,6 +2850,7 @@ class SettingsPageState extends State<SettingsPage> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   suffixText: context.l10n.text('MB'),
+                  prefixIcon: const Icon(SPIcons.package),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2833,6 +2873,7 @@ class SettingsPageState extends State<SettingsPage> {
                 ),
                 decoration: InputDecoration(
                   suffixText: context.l10n.text('Mbps'),
+                  prefixIcon: const Icon(SPIcons.network),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2878,6 +2919,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('超过后先显示旧快照并后台刷新'),
                   suffixText: context.l10n.text('分钟'),
+                  prefixIcon: const Icon(SPIcons.refresh),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2898,6 +2940,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('长时间未打开的目录不再恢复位置'),
                   suffixText: context.l10n.text('分钟'),
+                  prefixIcon: const Icon(SPIcons.history),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2921,6 +2964,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('按最后访问时间清理 Hive 快照'),
                   suffixText: context.l10n.text('天'),
+                  prefixIcon: const Icon(SPIcons.folder),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2941,6 +2985,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('同时作用于进度、历史和 MPV 恢复文件'),
                   suffixText: context.l10n.text('天'),
+                  prefixIcon: const Icon(SPIcons.play),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -2963,6 +3008,7 @@ class SettingsPageState extends State<SettingsPage> {
               decoration: InputDecoration(
                 helperText: context.l10n.text('适用于文件大小、时长、码率和资源验证器缓存'),
                 suffixText: context.l10n.text('天'),
+                prefixIcon: const Icon(SPIcons.document),
                 border: OutlineInputBorder(),
               ),
               validator: (value) => _validateNumber(
@@ -2996,7 +3042,7 @@ class SettingsPageState extends State<SettingsPage> {
             key: const Key('cache-intelligence-enabled-switch'),
             contentPadding: EdgeInsets.zero,
             title: const AppText('启用本地智能层'),
-            subtitle: const AppText('仅使用本机匿名聚合数据，不上传媒体地址或播放记录'),
+            subtitle: const AppText('仅使用本机聚合数据，不上传媒体地址或播放记录'),
             value: _intelligenceEnabled,
             onChanged: (value) => setState(() => _intelligenceEnabled = value),
           ),
@@ -3020,6 +3066,7 @@ class SettingsPageState extends State<SettingsPage> {
           SPToggleTile(
             contentPadding: EdgeInsets.zero,
             title: const AppText('历史码率预测'),
+            subtitle: const AppText('按历史实测码率修正缓存目标'),
             value: _bitratePredictionEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -3028,6 +3075,7 @@ class SettingsPageState extends State<SettingsPage> {
           SPToggleTile(
             contentPadding: EdgeInsets.zero,
             title: const AppText('不同存储类型优化'),
+            subtitle: const AppText('为本地、WebDAV 与 SMB 分别调整缓存参数'),
             value: _storageOptimizationEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -3037,6 +3085,7 @@ class SettingsPageState extends State<SettingsPage> {
           SPToggleTile(
             contentPadding: EdgeInsets.zero,
             title: const AppText('用户缓存习惯学习'),
+            subtitle: const AppText('记录本机缓存命中情况用于后续建议'),
             value: _habitLearningEnabled,
             onChanged: !_intelligenceEnabled
                 ? null
@@ -3053,6 +3102,7 @@ class SettingsPageState extends State<SettingsPage> {
                 keyboardType: TextInputType.number,
                 decoration: InputDecoration(
                   helperText: context.l10n.text('达到数量后历史画像才影响策略'),
+                  prefixIcon: const Icon(SPIcons.checklist),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -3076,6 +3126,7 @@ class SettingsPageState extends State<SettingsPage> {
                 decoration: InputDecoration(
                   helperText: context.l10n.text('相对基础缓存时间的调整上限'),
                   suffixText: context.l10n.text('%'),
+                  prefixIcon: const Icon(SPIcons.sparkle),
                   border: OutlineInputBorder(),
                 ),
                 validator: (value) => _validateNumber(
@@ -3203,7 +3254,7 @@ class SettingsPageState extends State<SettingsPage> {
             SettingsGroupCard(
               icon: SPIcons.layers,
               title: '界面样式',
-              description: '默认样式保持原有不透明界面；Windows 材质使用 Acrylic 或 Mica 系统背景。',
+              description: '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -3250,6 +3301,7 @@ class SettingsPageState extends State<SettingsPage> {
                     initialValue: _draft.accentColor,
                     decoration: InputDecoration(
                       labelText: context.l10n.text('强调色'),
+                      helperText: context.l10n.text('用于主按钮、选中态与滑块的强调色'),
                     ),
                     items: [
                       for (final preset in AccentColorPreset.values)
@@ -3314,6 +3366,13 @@ class SettingsPageState extends State<SettingsPage> {
                       }
                     },
                   ),
+                  const SizedBox(height: 6),
+                  AppText(
+                    '临时缓存只保留本次运行；持久缓存保存到本地文件',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -3321,7 +3380,7 @@ class SettingsPageState extends State<SettingsPage> {
             SettingsGroupCard(
               icon: SPIcons.color,
               title: 'Windows 系统材质',
-              description: '参数仅在保存时应用，不会在拖动过程中反复刷新窗口特效。',
+              description: '参数在保存时应用，拖动滑块不会刷新窗口特效。',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
