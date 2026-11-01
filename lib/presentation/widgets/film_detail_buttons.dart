@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../localization/app_text.dart';
 import '../theme/app_theme.dart';
-import 'sp_icons.dart';
+
+const _playRadius = BorderRadius.all(Radius.circular(8));
 
 class FilmDetailPlayButton extends StatefulWidget {
   const FilmDetailPlayButton({
@@ -16,6 +17,7 @@ class FilmDetailPlayButton extends StatefulWidget {
   final VoidCallback? onPressed;
   final Key buttonKey;
   final Widget label;
+
   @override
   State<FilmDetailPlayButton> createState() => _FilmDetailPlayButtonState();
 }
@@ -25,42 +27,99 @@ class _FilmDetailPlayButtonState extends State<FilmDetailPlayButton> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final enabled = widget.onPressed != null;
+    final foreground = scheme.onPrimary;
+    final glyphColor = enabled
+        ? foreground
+        : scheme.onSurface.withValues(alpha: .38);
+    final labelStyle = Theme.of(context).textTheme.labelLarge?.copyWith(
+      fontWeight: FontWeight.w500,
+      letterSpacing: .1,
+    );
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: AnimatedScale(
-        scale: _hovered && widget.onPressed != null ? 1.025 : 1,
+        scale: _hovered && enabled ? 1.025 : 1,
         duration: AppTheme.hoverDuration,
         curve: Curves.easeOutCubic,
-        child: AnimatedContainer(
-          duration: AppTheme.hoverDuration,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: widget.onPressed == null
-                ? const []
-                : AppTheme.accentGlow(scheme.primary),
-          ),
-          child: FilledButton.icon(
-            key: widget.buttonKey,
-            style: FilledButton.styleFrom(
-              backgroundColor: scheme.primary,
-              foregroundColor: scheme.onPrimary,
-              minimumSize: const Size(0, 44),
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-            ),
-            onPressed: widget.onPressed,
-            icon: Icon(
-              SPIcons.play,
-              color: widget.onPressed == null
-                  ? scheme.onSurface.withValues(alpha: .38)
-                  : scheme.onPrimary,
-            ),
-            label: widget.label,
-          ),
+        child: FilledButton.icon(
+          key: widget.buttonKey,
+          style:
+              FilledButton.styleFrom(
+                elevation: 0,
+                shadowColor: Colors.transparent,
+                surfaceTintColor: Colors.transparent,
+                backgroundColor: scheme.primary,
+                disabledBackgroundColor: scheme.surfaceContainerHighest
+                    .withValues(alpha: .85),
+                foregroundColor: foreground,
+                disabledForegroundColor: glyphColor,
+                minimumSize: const Size(0, 44),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                shape: const RoundedRectangleBorder(borderRadius: _playRadius),
+                textStyle: labelStyle,
+              ).copyWith(
+                // 仅保留 1px 极淡的白色高光描边，禁用态更淡。
+                side: WidgetStateProperty.resolveWith(
+                  (states) => BorderSide(
+                    color: Colors.white.withValues(
+                      alpha: states.contains(WidgetState.disabled) ? .06 : .12,
+                    ),
+                  ),
+                ),
+              ),
+          onPressed: widget.onPressed,
+          icon: _SolidPlayGlyph(color: glyphColor),
+          label: widget.label,
         ),
       ),
     );
   }
+}
+
+/// 实心播放三角：三个角用细圆角收边，替代原有空心字形。
+class _SolidPlayGlyph extends StatelessWidget {
+  const _SolidPlayGlyph({required this.color});
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: 16,
+    child: CustomPaint(painter: _SolidPlayGlyphPainter(color)),
+  );
+}
+
+class _SolidPlayGlyphPainter extends CustomPainter {
+  const _SolidPlayGlyphPainter(this.color);
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..moveTo(size.width * .22, size.height * .14)
+      ..lineTo(size.width * .88, size.height * .5)
+      ..lineTo(size.width * .22, size.height * .86)
+      ..close();
+    // 先填充再以同色圆角描边扩大轮廓，三个角自然圆润。
+    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = size.width * .16
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_SolidPlayGlyphPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 class FilmDetailActionButton extends StatelessWidget {

@@ -631,7 +631,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                   decoration: BoxDecoration(
                                     color: Theme.of(
                                       context,
-                                    ).colorScheme.primaryContainer,
+                                    ).colorScheme.primary,
                                     borderRadius: BorderRadius.circular(999),
                                   ),
                                   child: Text(
@@ -642,7 +642,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                         ?.copyWith(
                                           color: Theme.of(
                                             context,
-                                          ).colorScheme.onPrimaryContainer,
+                                          ).colorScheme.onPrimary,
                                         ),
                                   ),
                                 ),

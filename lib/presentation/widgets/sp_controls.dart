@@ -155,6 +155,7 @@ class SPTile extends StatelessWidget {
     this.onTap,
     this.onSecondaryTapDown,
     this.selected = false,
+    this.selectedColor,
     this.borderRadius = BorderRadius.zero,
   });
 
@@ -162,6 +163,7 @@ class SPTile extends StatelessWidget {
   final VoidCallback? onTap;
   final GestureTapDownCallback? onSecondaryTapDown;
   final bool selected;
+  final Color? selectedColor;
   final BorderRadius borderRadius;
 
   @override
@@ -170,7 +172,9 @@ class SPTile extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Ink(
       decoration: BoxDecoration(
-        color: selected ? scheme.primaryContainer : Colors.transparent,
+        color: selected
+            ? (selectedColor ?? scheme.primaryContainer)
+            : Colors.transparent,
         borderRadius: borderRadius,
       ),
       child: InkWell(

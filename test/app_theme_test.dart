@@ -64,7 +64,7 @@ void main() {
     expect(light.scaffoldBackgroundColor, isNot(light.colorScheme.surface));
     expect(dark.scaffoldBackgroundColor, isNot(dark.colorScheme.surface));
     expect(dark.colorScheme.surface, const Color(0xFF121922));
-    expect(dark.colorScheme.primary, const Color(0xFF6EA8FE));
+    expect(dark.colorScheme.primary, const Color(0xFF2563EB));
     expect(dark.colorScheme.secondary, const Color(0xFF59C3BB));
     expect(dark.colorScheme.tertiary, const Color(0xFFE0B06C));
     final segmentedStyle = dark.segmentedButtonTheme.style!;
@@ -88,13 +88,13 @@ void main() {
     final light = AppTheme.light(systemAccent: accent).colorScheme;
     final dark = AppTheme.dark(systemAccent: accent).colorScheme;
 
-    expect(light.primary, const Color(0xFF2F67D8));
+    expect(light.primary, const Color(0xFF1142B2));
     expect(light.onPrimary, Colors.white);
-    expect(light.primaryContainer, const Color(0xFFDFE9FF));
-    expect(dark.primary, const Color(0xFF6EA8FE));
-    expect(dark.onPrimary, const Color(0xFF071B34));
-    expect(dark.primaryContainer, const Color(0xFF17365F));
-    expect(dark.onPrimaryContainer, const Color(0xFFD8E7FF));
+    expect(light.primaryContainer, const Color(0xFFDCE7FF));
+    expect(dark.primary, const Color(0xFF2563EB));
+    expect(dark.onPrimary, Colors.white);
+    expect(dark.primaryContainer, const Color(0xFF143A78));
+    expect(dark.onPrimaryContainer, const Color(0xFFD6E5FF));
     expect(dark.onSurfaceVariant, Colors.white.withValues(alpha: 0.55));
   });
 
@@ -137,7 +137,7 @@ void main() {
           .color,
       clearerTokens.borderColor,
     );
-    expect(clearerGlass.colorScheme.primaryContainer, const Color(0xFF1E4D84));
+    expect(clearerGlass.colorScheme.primaryContainer, const Color(0xFF1A4A8C));
     expect(clearerGlass.snackBarTheme.backgroundColor!.a, greaterThan(0.9));
     expect(
       AppTheme.dropdownMenuColor(clearerGlass),

@@ -449,12 +449,10 @@ abstract final class AppTheme {
           (states) => states.contains(WidgetState.selected) ? 0 : 1,
         ),
       ),
-      progressIndicatorTheme: accentColor == defaultAccentColor
-          ? const ProgressIndicatorThemeData()
-          : ProgressIndicatorThemeData(
-              linearTrackColor: scheme.primaryContainer,
-              circularTrackColor: scheme.primaryContainer,
-            ),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        linearTrackColor: scheme.primaryContainer,
+        circularTrackColor: scheme.primaryContainer,
+      ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           elevation: 2,

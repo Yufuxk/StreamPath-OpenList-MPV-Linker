@@ -2053,7 +2053,9 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               const SizedBox(height: 8),
               const AppText('关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。'),
-              const AppText('含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。'),
+              const AppText(
+                '含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。',
+              ),
               const SizedBox(height: 4),
               Align(
                 alignment: Alignment.centerRight,
@@ -4011,6 +4013,7 @@ class _SettingsNavigationButton extends StatelessWidget {
       button: true,
       child: SPTile(
         selected: selected,
+        selectedColor: scheme.primary,
         onTap: onTap,
         borderRadius: AppTheme.controlRadius,
         child: ConstrainedBox(
@@ -4025,16 +4028,14 @@ class _SettingsNavigationButton extends StatelessWidget {
                 SPGlyph(
                   definition.icon,
                   size: 20,
-                  color: selected
-                      ? scheme.onPrimaryContainer
-                      : scheme.onSurfaceVariant,
+                  color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
                 AppText(
                   definition.label,
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
                     color: selected
-                        ? scheme.onPrimaryContainer
+                        ? scheme.onPrimary
                         : scheme.onSurfaceVariant,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),

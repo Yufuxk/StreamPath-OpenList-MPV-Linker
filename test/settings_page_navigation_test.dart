@@ -531,22 +531,17 @@ void main() {
     await tester.pumpAndSettle();
 
     final saveFinder = find.byKey(const Key('save-settings-button'));
+    final scheme = Theme.of(tester.element(saveFinder)).colorScheme;
     final saveButton = tester.widget<FilledButton>(saveFinder);
-    expect(
-      saveButton.style!.backgroundColor!.resolve({}),
-      const Color(0xFF6EA8FE),
-    );
-    expect(
-      saveButton.style!.foregroundColor!.resolve({}),
-      const Color(0xFF071B34),
-    );
+    expect(saveButton.style!.backgroundColor!.resolve({}), scheme.primary);
+    expect(saveButton.style!.foregroundColor!.resolve({}), scheme.onPrimary);
     final saveLabel = find.descendant(
       of: saveFinder,
       matching: find.text('保存全部配置'),
     );
     expect(
       DefaultTextStyle.of(tester.element(saveLabel)).style.color,
-      const Color(0xFF071B34),
+      scheme.onPrimary,
     );
     expect(
       tester
@@ -554,7 +549,18 @@ void main() {
             find.descendant(of: saveFinder, matching: find.byType(SPGlyph)),
           )
           .color,
-      const Color(0xFF071B34),
+      scheme.onPrimary,
+    );
+    expect(
+      tester
+          .widget<SPGlyph>(
+            find.descendant(
+              of: find.byKey(const Key('settings-section-server')),
+              matching: find.byType(SPGlyph),
+            ),
+          )
+          .color,
+      scheme.onPrimary,
     );
     expect(
       tester

@@ -19,17 +19,18 @@ abstract final class AccentColorController {
           : DynamicSchemeVariant.tonalSpot,
     );
     if (argb == AccentColorPreset.blue.argb) {
+      // 蓝色预设统一使用深邃宝蓝：暗色主色仍满足白字与深色表面的可读性。
       return base.copyWith(
-        primary: isDark ? const Color(0xFF6EA8FE) : const Color(0xFF2F67D8),
-        onPrimary: isDark ? const Color(0xFF071B34) : Colors.white,
+        primary: isDark ? const Color(0xFF2563EB) : const Color(0xFF1142B2),
+        onPrimary: Colors.white,
         primaryContainer: isDark
             ? glass
-                  ? const Color(0xFF1E4D84)
-                  : const Color(0xFF17365F)
-            : const Color(0xFFDFE9FF),
+                  ? const Color(0xFF1A4A8C)
+                  : const Color(0xFF143A78)
+            : const Color(0xFFDCE7FF),
         onPrimaryContainer: isDark
-            ? const Color(0xFFD8E7FF)
-            : const Color(0xFF10284D),
+            ? const Color(0xFFD6E5FF)
+            : const Color(0xFF0A2350),
         inversePrimary: generated.inversePrimary,
         primaryFixed: generated.primaryFixed,
         primaryFixedDim: generated.primaryFixedDim,

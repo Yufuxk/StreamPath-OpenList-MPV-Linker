@@ -1501,16 +1501,17 @@ void main() {
             .right,
         lessThanOrEqualTo(1920 - 24),
       );
-      final play = tester.widget<FilledButton>(
-        find.byKey(const ValueKey('featured-play')),
-      );
-      expect(
-        play.style!.backgroundColor!.resolve({}),
-        Theme.of(
-          tester.element(find.byKey(const ValueKey('featured-play'))),
-        ).colorScheme.primary,
-      );
+      final playKey = find.byKey(const ValueKey('featured-play'));
+      final play = tester.widget<FilledButton>(playKey);
+      final playScheme = Theme.of(tester.element(playKey)).colorScheme;
+      expect(play.style!.backgroundColor!.resolve({}), playScheme.primary);
+      expect(play.style!.foregroundColor!.resolve({}), playScheme.onPrimary);
       expect(play.style!.minimumSize!.resolve({}), const Size(0, 44));
+      expect(play.style!.elevation!.resolve({}), 0);
+      final playBorder = play.style!.side!.resolve({})!;
+      expect(playBorder.width, 1);
+      expect(playBorder.color.r, closeTo(1, .01));
+      expect(playBorder.color.a, closeTo(.12, .01));
       final open = tester.widget<OutlinedButton>(
         find.byKey(const ValueKey('featured-open')),
       );
