@@ -27,7 +27,7 @@ class VideoFilenameParser {
 
   static const minimumScore = 70;
   static final _extension = RegExp(
-    r'\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts|m2ts|mts|vob|ogm|rmvb|rm|strm)$',
+    r'\.(?:mkv|mp4|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts|m2ts|mts|vob|ogm|rmvb|rm|strm|iso|img|mdf|nrg)$',
     caseSensitive: false,
   );
   static final _year = RegExp(r'(?<!\d)((?:19|20)\d{2})(?!\d)');
@@ -333,6 +333,44 @@ class VideoFilenameParser {
     }
     return best;
   }
+
+  /// 解析失败时的检索词：去掉扩展名、发布组、版本标记与尾部年份。
+  static ({String title, int? year}) fallback(String filename) {
+    // 方括号内只有版本标记时整段丢弃，避免把 "Ma10p_1080p" 之类截成片名。
+    final value = filename
+        .replaceFirst(_extension, '')
+        .replaceAllMapped(
+          RegExp(r'\[[^\]]*\]'),
+          (match) => _technical.hasMatch(match[0]!) ? ' ' : match[0]!,
+        );
+    final technical = _technical.firstMatch(value);
+    final content = technical == null
+        ? value
+        : value.substring(0, technical.start);
+    var title = _clean(
+      _removeReleaseGroups(
+        content,
+      ).replaceAll(_identitySuffix, ' ').replaceAll(_releaseFlags, ' '),
+    );
+    int? year;
+    final years = _year
+        .allMatches(content)
+        .where((match) => match.start > 0)
+        .toList();
+    if (years.isNotEmpty) {
+      final candidate = _clean(content.substring(0, years.last.start));
+      if (candidate.isNotEmpty) {
+        title = candidate;
+        year = int.parse(years.last[1]!);
+      }
+    }
+    return (title: title, year: year);
+  }
+
+  /// 去掉分辨率、来源、编码、音轨、剪辑版与发布组，只留作品名。
+  static String stripVersionMarkers(String value) => _clean(
+    value.replaceAll(_technical, ' ').replaceAll(_identitySuffix, ' '),
+  );
 
   static String _episodes(String first, String tail) {
     final numbers = RegExp(r'(?:e|x)?(\d+)', caseSensitive: false)

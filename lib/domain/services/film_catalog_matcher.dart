@@ -7,6 +7,8 @@ import '../../core/utils/video_filename_parser.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import 'film_logo_selector.dart';
+import 'season_video_playlist_collector.dart';
+import 'special_video_playlist_collector.dart';
 import 'tmdb_metadata_service.dart';
 import 'film_file_metadata.dart';
 
@@ -28,6 +30,9 @@ class FilmCatalogMatcher {
     this.artworkBytes,
     this.logoBytes,
   });
+
+  /// 匹配规则版本；升级后自动重算非人工绑定。
+  static const matchingVersion = 1;
   final FilmCatalogStore store;
   final TmdbMetadataService tmdb;
   final Future<FilmFileMetadata?> Function(FilmCatalogRoot)? filesFor;
@@ -51,6 +56,10 @@ class FilmCatalogMatcher {
   );
   static final _fractionalEpisodeDescription = RegExp(
     r'^[ ._-]+\d+\.\d+\s*(?:集|话|話|回)(?=$|[ ._+&~–—-])',
+  );
+  /// 番剧三位以上编号视为绝对集号，季号未知时留给人工映射。
+  static final _absoluteEpisode = RegExp(
+    r'(?:[ ._]+-[ ._]+|\[)(\d{3,4})(?:v\d+)?(?![a-z0-9])',
   );
   static final _resolution = RegExp(
     r'(?<![a-z0-9])(?:[248]k|(?:480|576|720|1080|1440|2160|4320)[pi]|\d{3,4}x\d{3,4})(?![a-z0-9])',
@@ -118,6 +127,37 @@ class FilmCatalogMatcher {
         .replaceAll(_explicitId, '')
         .trim();
     var title = info?.title ?? clean.replaceAll(RegExp(r'[._]+'), ' ');
+    // 季集标记缺失时用解析结果补全，季号缺失再取最近的季目录。
+    // 已存在 SxxExx 标记的文件由上面的合并集判定负责；三位以上的
+    // 番剧编号按绝对集号处理，不在此补全。
+    if (episode == null &&
+        type == FilmMediaType.tv &&
+        info != null &&
+        !_singleEpisode.hasMatch(name) &&
+        !(info.season == null && _absoluteEpisode.hasMatch(name))) {
+      final number = info.special == null
+          ? int.tryParse(info.episodes ?? '')
+          : null;
+      if (number != null && number > 0) {
+        var season = info.season;
+        if (season == null) {
+          for (final folder in names.skip(1)) {
+            final value = SeasonVideoPlaylistCollector.seasonFromFolder(folder);
+            if (value != null) {
+              season = value;
+              break;
+            }
+          }
+        }
+        episode = (season ?? 1, number);
+      }
+    }
+    // 解析失败时仍要去掉版本标记与尾部年份，避免年份进入检索词。
+    final fallback = info == null ? VideoFilenameParser.fallback(name) : null;
+    var fallbackYear = fallback?.year;
+    if (info == null && fallback != null && fallback.title.isNotEmpty) {
+      title = fallback.title;
+    }
     // 只有季集标记的文件从作品目录取名，忽略中间的季目录。
     if (episode != null && info == null) {
       for (final folder in names.skip(1)) {
@@ -140,11 +180,12 @@ class FilmCatalogMatcher {
         if (candidate.isNotEmpty) {
           title = candidate;
           info = parsed;
+          fallbackYear = null;
           break;
         }
       }
     }
-    var year = info?.year ?? episodeYear;
+    var year = info?.year ?? fallbackYear ?? episodeYear;
     if (type == FilmMediaType.tv && episode != null && year == null) {
       for (final folder in names.skip(1)) {
         final years = _directoryYear.allMatches(folder).toList();
@@ -155,6 +196,49 @@ class FilmCatalogMatcher {
       }
     }
     return FilmMatchHint(title.trim(), year, ids, episode);
+  }
+
+  /// 容器名称是否只是季、特典或纯数字，不能代表作品身份。
+  static bool genericContainerTitle(String title) {
+    final value = title.trim();
+    if (value.length < 2) return true;
+    if (RegExp(r'^\d{1,4}$').hasMatch(value)) return true;
+    if (SpecialVideoPlaylistCollector.isSpecialName(value)) return true;
+    return SeasonVideoPlaylistCollector.seasonFromFolder(value) != null;
+  }
+
+  /// 条目容器（根下第一层目录）的名称与年份，作为文件名检索失败时的兜底依据。
+  static ({String title, int? year})? containerHint(
+    String parentPath,
+    String rootPath,
+  ) {
+    final parent = parentPath.replaceAll('\\', '/');
+    final root = rootPath.replaceAll('\\', '/');
+    if (parent == root || !filmPathWithin(parent, root)) return null;
+    final prefix = root.isEmpty ? '' : '$root/';
+    final inside = parent.substring(prefix.length);
+    if (inside.isEmpty) return null;
+    var label = inside
+        .split('/')
+        .first
+        .replaceFirst(RegExp(r'^(?:19|20)\d{2}\s*[-–—]\s*'), '')
+        .replaceFirst(RegExp(r'^\d{1,2}[.、]\s*'), '')
+        .trim();
+    if (label.isEmpty) return null;
+    int? year;
+    final years = _directoryYear.allMatches(label).toList();
+    if (years.length == 1) {
+      year = int.parse(years.single[1]!);
+      label = label.replaceFirst(years.single[0]!, ' ');
+    }
+    label = label
+        .replaceAll(RegExp(r'[《》「」『』]'), ' ')
+        .replaceAll(RegExp(r'^[\s\-–—.:：]+|[\s\-–—.:：]+$'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final stripped = VideoFilenameParser.stripVersionMarkers(label);
+    final title = stripped.isEmpty ? label : stripped;
+    return title.isEmpty ? null : (title: title, year: year);
   }
 
   Future<FilmWork> _details(FilmMediaType type, int id, String language) {
@@ -210,7 +294,8 @@ class FilmCatalogMatcher {
       )
       ..error = credentialError
       ..files = local
-      ..networkEnabled = enabled;
+      ..networkEnabled = enabled
+      ..staleBindings = await store.matcherVersion() < matchingVersion;
   }
 
   Future<Map<String, dynamic>?> loadSeason(
@@ -370,6 +455,164 @@ class FilmCatalogMatcher {
     }
   }
 
+  /// 同一作品的兄弟容器若剧集重叠且名称差异不是版本标记，保留证据最强的一方。
+  /// 真实库中同级目录代表不同作品，把两个作品当作版本是身份识别错误。
+  Future<int> resolveConflicts(int rootId) async {
+    final resources = await store.resources(rootId: rootId);
+    final containers = <String, List<FilmResource>>{};
+    final episodes = <String, Set<(int?, int?)>>{};
+    for (final resource in resources) {
+      if (resource.type != FilmMediaType.tv || resource.workId == null) {
+        continue;
+      }
+      final container = _containerOf(resource);
+      if (container == null) continue;
+      (containers[container] ??= []).add(resource);
+      (episodes[container] ??= {}).add((resource.season, resource.episode));
+    }
+    final byWork = <int, List<String>>{};
+    for (final entry in containers.entries) {
+      final workId = entry.value.first.workId!;
+      (byWork[workId] ??= []).add(entry.key);
+    }
+    final losers = <int>[];
+    for (final group in byWork.entries) {
+      if (group.value.length < 2) continue;
+      final labels = {
+        for (final path in group.value)
+          path: VideoFilenameParser.stripVersionMarkers(p.posix.basename(path)),
+      };
+      final conflicts = <String, Set<String>>{
+        for (final path in group.value) path: <String>{},
+      };
+      var conflict = false;
+      for (var i = 0; i < group.value.length; i++) {
+        for (var j = i + 1; j < group.value.length; j++) {
+          final a = group.value[i];
+          final b = group.value[j];
+          if (p.posix.dirname(a) != p.posix.dirname(b)) continue;
+          if (_identityKey(labels[a]!) == _identityKey(labels[b]!)) continue;
+          if (episodes[a]!.intersection(episodes[b]!).isEmpty) continue;
+          conflict = true;
+          conflicts[a]!.add(b);
+          conflicts[b]!.add(a);
+        }
+      }
+      if (!conflict) continue;
+      final work = await store.work(group.key);
+      if (work == null) continue;
+      double score(String path) {
+        final key = FilmScanMetadataSession._nameKey(labels[path]!);
+        return [
+              FilmScanMetadataSession._nameKey(work.title),
+              FilmScanMetadataSession._nameKey(work.originalTitle),
+            ]
+            .map((title) => FilmScanMetadataSession._similarity(key, title))
+            .reduce((x, y) => x > y ? x : y);
+      }
+
+      final pending = Set<String>.of(conflicts.keys);
+      while (pending.isNotEmpty) {
+        final seed = pending.first;
+        final component = <String>{seed};
+        final queue = <String>[seed];
+        while (queue.isNotEmpty) {
+          for (final next in conflicts[queue.removeLast()]!) {
+            if (component.add(next)) {
+              queue.add(next);
+            }
+          }
+        }
+        pending.removeAll(component);
+        if (component.length < 2) continue;
+        final ranked = component.toList()
+          ..sort((a, b) {
+            final byScore = score(b).compareTo(score(a));
+            if (byScore != 0) return byScore;
+            final byCount = containers[b]!.length.compareTo(
+              containers[a]!.length,
+            );
+            return byCount != 0 ? byCount : a.compareTo(b);
+          });
+        for (final path in ranked.skip(1)) {
+          losers.addAll(
+            containers[path]!
+                .where((r) => r.bindingOrigin != 'manual')
+                .map((r) => r.id),
+          );
+        }
+      }
+    }
+    return losers.isEmpty ? 0 : store.clearBindings(losers);
+  }
+
+  /// 特典目录内没有季集标记的媒体按 S00 顺序编号，避免长期留在待整理。
+  Future<int> assignExtras(int rootId) async {
+    final resources = await store.resources(rootId: rootId);
+    final pending = <int, List<FilmResource>>{};
+    for (final resource in resources) {
+      if (resource.type != FilmMediaType.tv ||
+          resource.workId == null ||
+          resource.season != null ||
+          resource.mappingOrigin == 'manual' ||
+          !_insideSpecials(resource)) {
+        continue;
+      }
+      (pending[resource.workId!] ??= []).add(resource);
+    }
+    var assigned = 0;
+    for (final entry in pending.entries) {
+      var next = 1;
+      for (final resource in resources) {
+        if (resource.workId != entry.key ||
+            resource.season != 0 ||
+            resource.episode == null) {
+          continue;
+        }
+        if (resource.episode! >= next) next = resource.episode! + 1;
+      }
+      final ordered = entry.value..sort((a, b) => a.path.compareTo(b.path));
+      final mappings = <FilmResource, (int, int)>{};
+      for (final resource in ordered) {
+        mappings[resource] = (0, next++);
+      }
+      await store.mapEpisodes(mappings, origin: 'filename');
+      assigned += mappings.length;
+    }
+    return assigned;
+  }
+
+  /// 资源是否位于条目容器下的特典目录中。
+  static bool _insideSpecials(FilmResource resource) {
+    final path = resource.path.replaceAll('\\', '/');
+    final root = resource.rootPath.replaceAll('\\', '/');
+    final prefix = root.isEmpty ? '' : '$root/';
+    if (!path.startsWith(prefix)) return false;
+    final parts = path.substring(prefix.length).split('/');
+    if (parts.length < 3) return false;
+    for (final part in parts.skip(1).take(parts.length - 2)) {
+      if (SpecialVideoPlaylistCollector.isSpecialName(part)) return true;
+    }
+    return false;
+  }
+
+  /// 容器名称归一化：只去标点与大小写，不抹掉剧场版等区分后缀。
+  static String _identityKey(String value) => value.toLowerCase().replaceAll(
+    RegExp(r'''[\s._:\-–—'’"()\[\]{}!?，。：、！？」「『』《》·・~～〜]+'''),
+    '',
+  );
+
+  static String? _containerOf(FilmResource resource) {
+    final parent = resource.parentPath.replaceAll('\\', '/');
+    final root = resource.rootPath.replaceAll('\\', '/');
+    if (parent == root) return null;
+    final prefix = root.isEmpty ? '' : '$root/';
+    if (!parent.startsWith(prefix)) return null;
+    final rest = parent.substring(prefix.length);
+    if (rest.isEmpty) return null;
+    return '$prefix${rest.split('/').first}';
+  }
+
   Future<Map<FilmResource, (int, int)>> mappingPreview(
     List<FilmResource> resources,
     int season,
@@ -436,6 +679,7 @@ class FilmScanMetadataSession {
   bool networkEnabled = true;
   FilmFileMetadata? files;
   int scraped = 0;
+  bool staleBindings = false;
   bool get paused => _paused;
 
   void releaseCommitted(Iterable<String> keys) {
@@ -515,37 +759,90 @@ class FilmScanMetadataSession {
     if (hint.title.isEmpty) return null;
     final key = (_nameKey(hint.title), hint.year);
     if (_queries.containsKey(key)) return _queries[key];
-    final bilingual = root.type == FilmMediaType.tv
-        ? _bilingualTitle.firstMatch(hint.title)
-        : null;
-    final digits = RegExp(r'\d+');
-    final splitNames =
-        bilingual != null &&
-        digits.allMatches(bilingual[1]!).map((m) => m[0]).join(',') ==
-            digits.allMatches(bilingual[2]!).map((m) => m[0]).join(',');
-    final names = [
-      hint.title,
-      if (splitNames) ...[bilingual[1]!.trim(), bilingual[2]!.trim()],
-    ];
-    final nameKeys = names.map(_nameKey).toSet();
-    final candidates = <int, FilmWork>{};
-    // 双语名称分别检索并合并候选，名称证据冲突时保留待整理。
-    for (final name in names) {
-      if (cancelled()) return null;
-      for (final candidate in await matcher.tmdb.search(
-        root.type,
-        name,
-        language,
-        year: hint.year,
-      )) {
-        candidates[candidate.tmdbId] = candidate;
+    // 完整名称是主要证据，双语拆分只补充解释，不能推翻完整名称的结论。
+    var work = await _matchTitles(hint, [hint.title]);
+    if (work == null) {
+      final parts = _splitBilingualTitle(hint.title);
+      if (parts != null) {
+        work = await _matchTitles(hint, [hint.title, ...parts]);
       }
     }
+    return _queries[key] = work;
+  }
+
+  /// 仅当两段分别以中文字符与拉丁字母为主时，才视为同一作品的双语标题并列。
+  static List<String>? _splitBilingualTitle(String title) {
+    final match = _bilingualTitle.firstMatch(title);
+    if (match == null) return null;
+    final cjk = match[1]!.trim();
+    final latin = match[2]!.trim();
+    if (cjk.length < 2 || latin.length < 2) return null;
+    if (_cjkRatio(cjk) < .6 || _latinRatio(latin) < .6) return null;
+    final digits = RegExp(r'\d+');
+    if (digits.allMatches(cjk).map((m) => m[0]).join(',') !=
+        digits.allMatches(latin).map((m) => m[0]).join(',')) {
+      return null;
+    }
+    return [cjk, latin];
+  }
+
+  static double _cjkRatio(String value) => value.isEmpty
+      ? 0
+      : value.runes.where((r) => r >= 0x3400 && r <= 0x9fff).length /
+            value.runes.length;
+
+  static double _latinRatio(String value) => value.isEmpty
+      ? 0
+      : value.runes
+                .where(
+                  (r) =>
+                      (r >= 0x41 && r <= 0x5a) ||
+                      (r >= 0x61 && r <= 0x7a) ||
+                      r == 0x20,
+                )
+                .length /
+            value.runes.length;
+
+  Future<FilmWork?> _matchTitles(FilmMatchHint hint, List<String> names) async {
+    final nameKeys = names.map(_nameKey).toSet();
+    final candidates = <int, FilmWork>{};
+    Future<void> collect(int page) async {
+      // 双语名称分别检索并合并候选，名称证据冲突时保留待整理。
+      for (final name in names) {
+        if (cancelled()) return;
+        for (final candidate in await matcher.tmdb.search(
+          root.type,
+          name,
+          language,
+          year: hint.year,
+          page: page,
+        )) {
+          candidates[candidate.tmdbId] = candidate;
+        }
+      }
+    }
+
+    await collect(1);
+    var work = await _rankTitles(hint, nameKeys, candidates);
+    // 首页候选没有可用结论时补读第二页，只额外消耗一次请求。
+    if (work == null && candidates.length >= 20) {
+      await collect(2);
+      work = await _rankTitles(hint, nameKeys, candidates);
+    }
+    return work;
+  }
+
+  Future<FilmWork?> _rankTitles(
+    FilmMatchHint hint,
+    Set<String> nameKeys,
+    Map<int, FilmWork> candidates,
+  ) async {
+    final year = hint.year;
     final eligible = {
       for (final work in candidates.values)
         if (root.type != FilmMediaType.movie ||
-            key.$2 == null ||
-            work.year == key.$2)
+            year == null ||
+            work.year == year)
           work.tmdbId: work,
     };
     final exact = {
@@ -583,12 +880,8 @@ class FilmScanMetadataSession {
     }
     // 剧集年份仅消除同名歧义，后续季的发行年可以不同于首播年。
     var matchedYear = false;
-    if (root.type == FilmMediaType.tv &&
-        exact.length > 1 &&
-        hint.year != null) {
-      final sameYear = exact.values
-          .where((work) => work.year == hint.year)
-          .toList();
+    if (root.type == FilmMediaType.tv && exact.length > 1 && year != null) {
+      final sameYear = exact.values.where((work) => work.year == year).toList();
       if (sameYear.length == 1) {
         exact
           ..clear()
@@ -606,12 +899,12 @@ class FilmScanMetadataSession {
             );
           }) ||
           ((root.type == FilmMediaType.movie || matchedYear) &&
-              key.$2 != null &&
-              work.year != key.$2)) {
+              year != null &&
+              work.year != year)) {
         work = null;
       }
     }
-    return _queries[key] = work;
+    return work;
   }
 
   Future<void> prepare(
@@ -624,6 +917,10 @@ class FilmScanMetadataSession {
       if (cancelled() || _paused) return;
       final key = filmPathKey(entry.path, root.sourceKind);
       final existing = _existing[key];
+      // 匹配算法升级后非人工绑定视为可重算；人工绑定与人工季集始终保留。
+      final bound = staleBindings && existing?.bindingOrigin != 'manual'
+          ? null
+          : existing;
       final hint = FilmCatalogMatcher.scanHint(
         entry.name,
         entry.parentPath,
@@ -632,9 +929,7 @@ class FilmScanMetadataSession {
       );
       if (hint.conflicting && existing?.bindingOrigin != 'manual') continue;
       FilmWork? work;
-      var origin = existing?.workId != null
-          ? existing!.bindingOrigin
-          : 'search';
+      var origin = bound?.workId != null ? bound!.bindingOrigin : 'search';
       FilmLocalMetadata? local;
       try {
         if (files?.localMode == true) {
@@ -643,8 +938,8 @@ class FilmScanMetadataSession {
         if (local != null && existing?.bindingOrigin != 'manual') {
           work = local.work;
           origin = 'nfo';
-        } else if (existing?.workId != null) {
-          final id = existing!.workId!;
+        } else if (bound?.workId != null) {
+          final id = bound!.workId!;
           if (!works.containsKey(id)) works[id] = await matcher.store.work(id);
           work = works[id];
         } else {
@@ -667,7 +962,43 @@ class FilmScanMetadataSession {
             work = folderWork;
             origin = 'folder';
           } else if (networkEnabled) {
-            work = await _search(hint);
+            final container = FilmCatalogMatcher.containerHint(
+              entry.parentPath,
+              root.path,
+            );
+            // 剧集的条目容器就是作品身份，先按容器检索再退回文件名。
+            if (root.type == FilmMediaType.tv &&
+                container != null &&
+                !FilmCatalogMatcher.genericContainerTitle(container.title)) {
+              try {
+                work = await _search(
+                  FilmMatchHint(container.title, container.year, const {}, null),
+                );
+              } on FilmCatalogException catch (cause) {
+                // 容器只是补充依据，数据类错误退回文件名检索；其余错误继续上报。
+                if (cause.code != 'metadataNotFound' &&
+                    cause.code != 'invalidMetadata') {
+                  rethrow;
+                }
+              }
+              if (work != null) origin = 'folder';
+            }
+            work ??= await _search(hint);
+            // 电影的文件名无法确定时，用条目目录名称再检索一次；剧集已先按容器检索。
+            if (work == null &&
+                root.type == FilmMediaType.movie &&
+                container != null &&
+                _nameKey(container.title) != _nameKey(hint.title)) {
+              // 电影先带目录年份筛选，目录年份过期时再去掉年份重试。
+              work = await _search(
+                FilmMatchHint(container.title, container.year, const {}, null),
+              );
+              if (work == null && container.year != null) {
+                work = await _search(
+                  FilmMatchHint(container.title, null, const {}, null),
+                );
+              }
+            }
           }
         }
         if (work != null &&

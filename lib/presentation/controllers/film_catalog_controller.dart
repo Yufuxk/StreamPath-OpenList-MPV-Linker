@@ -656,6 +656,16 @@ class FilmCatalogController extends ChangeNotifier {
   Future<void> _scrape() async {
     while (!_closed) {
       if (_scrapeQueue.isEmpty && _scrapeInputs == 0) {
+        if (scrapedCount > 0) {
+          for (final rootId in _scrapeSessions.keys.toList()) {
+            await matcher.resolveConflicts(rootId);
+            await matcher.assignExtras(rootId);
+          }
+          if (await store.matcherVersion() <
+              FilmCatalogMatcher.matchingVersion) {
+            await store.setMatcherVersion(FilmCatalogMatcher.matchingVersion);
+          }
+        }
         await store.reconcilePlaylists();
         return;
       }

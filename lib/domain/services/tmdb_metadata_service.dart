@@ -183,7 +183,8 @@ class TmdbMetadataService {
       'query': query,
       'language': language,
       'page': page,
-      if (type == FilmMediaType.movie && year != null) 'year': year,
+      if (type == FilmMediaType.movie && year != null)
+        'primary_release_year': year,
     });
     final rows = data['results'];
     if (rows is! List) throw const FilmCatalogException('invalidMetadata');

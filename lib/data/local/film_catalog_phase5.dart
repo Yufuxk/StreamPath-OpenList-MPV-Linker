@@ -224,6 +224,17 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
   Future<void> setLogoOverride(int workId, String? path) =>
       setPreference('logo_override:$workId', path);
 
+  /// 已完成的匹配规则版本，用于决定是否重算非人工绑定。
+  /// 仅内部记账，不改变任何展示数据，因此不触发界面刷新。
+  Future<int> matcherVersion() async =>
+      (await preference('matcher_version') as int?) ?? 0;
+
+  Future<void> setMatcherVersion(int value) => _db.insert(
+    'catalog_preferences',
+    {'key': 'matcher_version', 'value_json': jsonEncode(value)},
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+
   Future<List<int>> dailySelection({DateTime? now}) => _db.transaction((
     txn,
   ) async {

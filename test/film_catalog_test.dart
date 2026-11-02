@@ -1514,7 +1514,7 @@ void main() {
       };
       if (options.path.contains('/search/')) {
         expect(options.queryParameters['query'], 'Iron Man 3');
-        expect(options.queryParameters['year'], 2013);
+        expect(options.queryParameters['primary_release_year'], 2013);
         return {
           'results': [data],
         };

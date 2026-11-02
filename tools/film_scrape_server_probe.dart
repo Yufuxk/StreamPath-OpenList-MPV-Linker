@@ -36,7 +36,12 @@ class _Metadata extends TmdbMetadataService {
   }
 
   @override
-  Future<FilmWork> details(FilmMediaType type, int id, String language) async {
+  Future<FilmWork> details(
+    FilmMediaType type,
+    int id,
+    String language, {
+    LogoChooser? chooseLogo,
+  }) async {
     simulatedRequests++;
     return (await store.cachedWork(type, id)) ??
         (throw const FilmCatalogException('metadataNotFound'));

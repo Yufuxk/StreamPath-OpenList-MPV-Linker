@@ -935,7 +935,13 @@ class FilmCatalogStore extends ChangeNotifier {
         }
         if (row == null) continue;
         var version = match.bindingVersion;
-        if (row['work_id'] == null) {
+        // 非人工绑定允许被新结果替换；人工作品与人工季集始终保留。
+        final rebind =
+            row['work_id'] != null &&
+            row['work_id'] != workId &&
+            row['binding_origin'] != 'manual' &&
+            row['episode_mapping_origin'] != 'manual';
+        if (row['work_id'] == null || rebind) {
           changed = watchChanged = true;
           await txn.update(
             'resources',
@@ -943,6 +949,11 @@ class FilmCatalogStore extends ChangeNotifier {
               'work_id': workId,
               'binding_origin': match.origin,
               'binding_version': ++version,
+              if (rebind && match.episode == null) ...{
+                'season_number': null,
+                'episode_number': null,
+                'episode_mapping_origin': 'unset',
+              },
             },
             where: 'id = ?',
             whereArgs: [row['id']],
@@ -1536,7 +1547,8 @@ class FilmCatalogStore extends ChangeNotifier {
     );
     if (rows.isEmpty) return null;
     final metadata =
-        jsonDecode(rows.first['metadata_json'] as String) as Map<String, dynamic>;
+        jsonDecode(rows.first['metadata_json'] as String)
+            as Map<String, dynamic>;
     return playbackMediaInfoOf(
       rows.first['media_type'] as String?,
       metadata['genres'] as List? ?? const [],
@@ -1938,9 +1950,46 @@ class FilmCatalogStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 把疑似误配的自动绑定退回待整理；人工作品与人工季集保持原样。
+  Future<int> clearBindings(Iterable<int> resourceIds) async {
+    var cleared = 0;
+    await _db.transaction((txn) async {
+      for (final id in resourceIds) {
+        final rows = await txn.query(
+          'resources',
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        final row = rows.firstOrNull;
+        if (row == null ||
+            row['binding_origin'] == 'manual' ||
+            row['episode_mapping_origin'] == 'manual') {
+          continue;
+        }
+        await txn.update(
+          'resources',
+          {
+            'work_id': null,
+            'binding_origin': 'unset',
+            'binding_version': (row['binding_version'] as int) + 1,
+            'season_number': null,
+            'episode_number': null,
+            'episode_mapping_origin': 'unset',
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        cleared++;
+      }
+    });
+    if (cleared > 0) _notifyChange(watch: true);
+    return cleared;
+  }
+
   Future<String> language() async =>
       (await _db.query('catalog_settings')).single['metadata_language']
           as String;
+
   Future<void> setLanguage(String value) async {
     if (!['zh-CN', 'zh-TW', 'ja-JP', 'en-US'].contains(value)) {
       throw const FilmCatalogException('invalidMetadata');

@@ -1,4 +1,10 @@
-param([Parameter(Mandatory)][string]$OutputDirectory, [string]$Subdirectory = '')
+param(
+    [Parameter(Mandatory)][string]$OutputDirectory,
+    [string]$Subdirectory = '',
+    [switch]$Full,
+    [string]$Roots = ''
+)
+# 只读目录枚举：仅 PROPFIND Depth:1，只申请 displayname/resourcetype，不读取文件内容。
 $ErrorActionPreference = 'Stop'
 $baseUri = [Uri]'http://192.168.2.124:5244'
 $allowed = '/dav/QuarkFilmsData_STRM'
@@ -8,17 +14,18 @@ if (!$env:STREAMPATH_PROBE_USER -or !$env:STREAMPATH_PROBE_PASSWORD) {
 $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.AllowAutoRedirect = $false
 $client = [System.Net.Http.HttpClient]::new($handler)
-$client.Timeout = [TimeSpan]::FromSeconds(30)
+$client.Timeout = [TimeSpan]::FromSeconds(120)
 $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:STREAMPATH_PROBE_USER + ':' + $env:STREAMPATH_PROBE_PASSWORD))
 $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Basic', $auth)
 $records = [Collections.Generic.List[object]]::new()
 $listings = @{}
 $lastRequest = [DateTime]::MinValue
+$intervalMilliseconds = if ($Full) { 800 } else { 1000 }
 function Read-Directory([string]$Directory) {
     if (($Directory -ne $allowed -and !$Directory.StartsWith($allowed + '/', [StringComparison]::Ordinal)) -or $Directory.Split('/') -contains '..') {
         throw 'Probe request escaped the authorized root'
     }
-    $remaining = 1000 - ([DateTime]::UtcNow - $script:lastRequest).TotalMilliseconds
+    $remaining = $intervalMilliseconds - ([DateTime]::UtcNow - $script:lastRequest).TotalMilliseconds
     if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Ceiling($remaining)) }
     $encodedPath = ($Directory.Split('/') | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
     $uri = [Uri]::new($baseUri, $encodedPath)
@@ -29,7 +36,7 @@ function Read-Directory([string]$Directory) {
     $script:lastRequest = [DateTime]::UtcNow
     $response = $client.SendAsync($request).GetAwaiter().GetResult()
     $status = [int]$response.StatusCode
-    if ($status -ne 207) { throw "PROPFIND failed with status $status" }
+    if ($status -ne 207) { throw "PROPFIND failed with status $status at $Directory" }
     $xmlText = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
     $elapsed = $watch.Elapsed.TotalMilliseconds
     [xml]$xml = $xmlText
@@ -53,7 +60,117 @@ function Read-Directory([string]$Directory) {
 }
 try {
     $pending = [Collections.Generic.Stack[string]]::new()
-    $pending.Push($(if ($Subdirectory) { $allowed + '/' + $Subdirectory } else { $allowed }))
+    function Write-Manifest([string]$Path, [bool]$Complete, $Listings, $Records, $Failed, $Started, $Resumed) {
+        $entries = [Collections.Generic.List[object]]::new()
+        foreach ($directory in $Listings.Keys) {
+            foreach ($child in @($Listings[$directory].children)) {
+                $entries.Add([pscustomobject]@{
+                    path=($child.path.Substring(5))
+                    parent=($directory.Substring(5))
+                    name=$child.name
+                    directory=$child.directory
+                })
+            }
+        }
+        [pscustomobject]@{
+            root=$allowed
+            complete=$Complete
+            resumedEntries=$Resumed
+            started=@($Started)
+            skippedDirectoryNames=@('BDMV','CERTIFICATE','VIDEO_TS')
+            failed=@($Failed.ToArray())
+            requests=@($Records.ToArray())
+            entries=@($entries.ToArray())
+        } | ConvertTo-Json -Depth 6 -Compress | Set-Content -LiteralPath $Path -Encoding utf8
+        return ,$entries
+    }
+    if ($Full) {
+        $startDirectories = if ($Roots) {
+            foreach ($root in ($Roots -split ',')) {
+                $trimmed = $root.Trim().Trim('/')
+                if (!$trimmed -or $trimmed -match '(^|/)\.\.(/|$)') { throw "Full snapshot root escaped the authorized tree: $trimmed" }
+                if ($trimmed -notmatch '^QuarkFilmsData_STRM(/|$)') { $trimmed = 'QuarkFilmsData_STRM/' + $trimmed }
+                $allowed + '/' + $trimmed.Substring('QuarkFilmsData_STRM/'.Length)
+            }
+        } else { $allowed }
+    } else {
+        $pending.Push($(if ($Subdirectory) { $allowed + '/' + $Subdirectory } else { $allowed }))
+        $startDirectories = @()
+    }
+    if ($Full) {
+        $manifestPath = Join-Path $OutputDirectory 'server-manifest.json'
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+        $resumed = 0
+        $restored = [Collections.Generic.HashSet[string]]::new()
+        if (Test-Path -LiteralPath $manifestPath) {
+            # 断点续采：旧清单里已枚举的目录不再请求，空目录同样保留。
+            $previous = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+            foreach ($entry in @($previous.entries)) {
+                $directory = '/dav/' + $entry.parent
+                if (!$listings.ContainsKey($directory)) {
+                    $listings[$directory] = [pscustomobject]@{requestUrl='';xml='';children=@()}
+                }
+                $listings[$directory].children += [pscustomobject]@{
+                    path='/dav/' + $entry.path
+                    name=$entry.name
+                    directory=[bool]$entry.directory
+                }
+                $resumed++
+            }
+            $previous.requests | ForEach-Object { $null = $records.Add($_) }
+            foreach ($directory in $listings.Keys) { $null = $restored.Add($directory) }
+            Write-Host "resumed $($listings.Count) directories from the previous manifest"
+        }
+        foreach ($start in $startDirectories) { $pending.Push($start) }
+        foreach ($directory in $listings.Keys) {
+            foreach ($child in @($listings[$directory].children)) {
+                if ($child.directory -and $child.name -notin @('BDMV', 'CERTIFICATE', 'VIDEO_TS')) { $pending.Push($child.path) }
+            }
+        }
+        $visited = [Collections.Generic.HashSet[string]]::new()
+        $failed = [Collections.Generic.List[object]]::new()
+        $lastCheckpoint = 0
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            if ($restored.Contains($directory) -or !$visited.Add($directory)) { continue }
+            $children = $null
+            for ($attempt = 1; $attempt -le 3 -and $null -eq $children; $attempt++) {
+                try {
+                    $children = Read-Directory $directory
+                } catch {
+                    if ($attempt -eq 3) {
+                        $failed.Add([pscustomobject]@{path=$directory;error=$_.Exception.Message})
+                        Write-Host "FAILED $directory : $($_.Exception.Message)"
+                    } else {
+                        Start-Sleep -Seconds (2 * $attempt)
+                    }
+                }
+            }
+            if ($null -eq $children) { continue }
+            foreach ($entry in @($children | Where-Object directory | Sort-Object name -Descending)) {
+                if ($entry.name -notin @('BDMV', 'CERTIFICATE', 'VIDEO_TS')) { $pending.Push($entry.path) }
+            }
+            if ($records.Count - $lastCheckpoint -ge 25) {
+                $lastCheckpoint = $records.Count
+                Write-Host "requests=$($records.Count) visited=$($visited.Count) pending=$($pending.Count) failed=$($failed.Count)"
+                $null = Write-Manifest $manifestPath $false $listings $records $failed $startDirectories $resumed
+            }
+        }
+        $entries = Write-Manifest $manifestPath ($failed.Count -eq 0) $listings $records $failed $startDirectories $resumed
+        [pscustomobject]@{
+            mode='full'
+            complete=($failed.Count -eq 0)
+            requests=$records.Count
+            directories=$listings.Count
+            entries=$entries.Count
+            files=@($entries | Where-Object { !$_.directory }).Count
+            failed=$failed.Count
+            statuses=@($records.status | Select-Object -Unique)
+            fileReads=0
+            writes=0
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
     $leafDirectories = [Collections.Generic.List[string]]::new()
     while ($pending.Count -gt 0 -and $listings.Count -lt 35 -and $leafDirectories.Count -lt 10) {
         $directory = $pending.Pop()
