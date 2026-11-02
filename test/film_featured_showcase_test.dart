@@ -989,6 +989,38 @@ void main() {
   );
 
   testWidgets(
+    'selection border keeps following the accent color after switching covers',
+    (tester) async {
+      await prepare(tester);
+      await tester.pumpWidget(frame(showcase()));
+      await settle(tester);
+      final works = catalog.sectionWorks['daily']!;
+      Border? borderOf(int id) {
+        final container = tester.widget<AnimatedContainer>(
+          find.descendant(
+            of: poster(id),
+            matching: find.byType(AnimatedContainer),
+          ),
+        );
+        return (container.decoration as BoxDecoration?)?.border as Border?;
+      }
+
+      final scheme = Theme.of(
+        tester.element(poster(works.first.id)),
+      ).colorScheme;
+      expect(borderOf(works.first.id)?.top.color, scheme.primary);
+      await tester.tap(poster(works[1].id));
+      await settle(tester);
+      // 点击会把焦点交给海报栏，换选后的描边仍必须是强调色。
+      expect(borderOf(works[1].id)?.top.color, scheme.primary);
+      expect(borderOf(works.first.id)?.top.color, Colors.transparent);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await settle(tester);
+      expect(borderOf(works[2].id)?.top.color, scheme.primary);
+    },
+  );
+
+  testWidgets(
     'selection, independent tabs, keyboard and hidden synchronized scrollbars',
     (tester) async {
       await prepare(tester);

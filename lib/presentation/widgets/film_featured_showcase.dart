@@ -56,7 +56,6 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
   final _scroll = ScrollController();
   final _railScroll = ScrollController();
   final _railFocus = FocusNode();
-  bool _focused = false;
   (FilmCatalogController, String)? _backgroundSelection;
   ({int workId, String? path, String? poster})? _collectionBackdrop;
   ({int workId, String? path, String? poster})? _visibleBackdrop;
@@ -348,7 +347,6 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
       children: [
         Focus(
           focusNode: _railFocus,
-          onFocusChange: (value) => setState(() => _focused = value),
           onKeyEvent: (_, event) => _key(event, layout.width),
           child: SizedBox(
             height: math.max(
@@ -599,9 +597,7 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                             borderRadius: BorderRadius.circular(9),
                             border: Border.all(
                               color: selected
-                                  ? _focused
-                                        ? scheme.onPrimaryContainer
-                                        : scheme.primary
+                                  ? scheme.primary
                                   : Colors.transparent,
                               width: 2,
                             ),
