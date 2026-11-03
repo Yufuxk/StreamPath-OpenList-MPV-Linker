@@ -1,4 +1,4 @@
-﻿import '../widgets/transition_content.dart';
+import '../widgets/transition_content.dart';
 import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
 import '../widgets/skeleton_scope.dart';
@@ -335,7 +335,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
-    final theme = Theme.of(context);
     final score = work.metadata['vote_average'] as num?;
     final minutes = work.type == FilmMediaType.movie
         ? _resources
@@ -379,16 +378,15 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         if (work.year != null)
           _informationPill(foreground, Text('${work.year}')),
         if (minutes.isNotEmpty || work.metadata['runtime'] != null)
-          Text(
-            context.l10n.format(
-              minutes.isEmpty ? '官方时长：{minutes} 分钟' : '影片时长：{minutes} 分钟',
-              {
+          _informationPill(
+            foreground,
+            Text(
+              context.l10n.format('{minutes} 分钟', {
                 'minutes': minutes.isEmpty
                     ? work.metadata['runtime']
                     : minutes.join(' & '),
-              },
+              }),
             ),
-            style: theme.textTheme.bodySmall?.copyWith(color: foreground),
           ),
         for (final tag in tags) _informationPill(foreground, Text(tag)),
         FilmCertificationBadge(rating: work.certification, color: foreground),

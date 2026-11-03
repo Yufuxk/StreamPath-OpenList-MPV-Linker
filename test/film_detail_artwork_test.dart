@@ -37,6 +37,7 @@ import 'package:streampath/presentation/theme/window_appearance_status.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
+import 'package:streampath/presentation/widgets/glass_surface.dart';
 import 'package:streampath/presentation/widgets/film_library_background.dart';
 import 'package:streampath/presentation/widgets/directory_scroll_view.dart';
 import 'package:streampath/presentation/pages/film_related_page.dart';
@@ -306,6 +307,54 @@ void main() {
     await tester.tap(file);
     await tester.pump();
     expect(opened?.targetPath, '0.mkv');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('详情页时长只显示分钟数，并与年份同为磨砂胶囊', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('spoiler_protection', false);
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: original.title,
+          originalTitle: original.originalTitle,
+          overview: '',
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          metadata: const {'presentation_version': 4, 'runtime': 46},
+        ),
+      );
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: original.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    final metadata = find.byKey(const Key('film-detail-metadata'));
+    final runtime = find.descendant(of: metadata, matching: find.text('46 分钟'));
+    expect(runtime, findsOneWidget);
+    expect(
+      find.descendant(of: metadata, matching: find.textContaining('官方时长')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: metadata, matching: find.textContaining('影片时长')),
+      findsNothing,
+    );
+    expect(
+      find.ancestor(of: runtime, matching: find.byType(GlassSurface)),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

@@ -1265,11 +1265,11 @@ void main() {
     );
     await settle(tester);
     expect(
-      tester
-          .widget<Text>(find.byKey(const Key('film-detail-metadata')))
-          .textSpan!
-          .toPlainText(),
-      contains('影片时长：120 & 125 分钟'),
+      find.descendant(
+        of: find.byKey(const Key('film-detail-metadata')),
+        matching: find.text('120 & 125 分钟'),
+      ),
+      findsOneWidget,
     );
     await tester.tap(
       find.byKey(const Key('film-detail-poster')),
