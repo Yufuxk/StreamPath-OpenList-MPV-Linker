@@ -855,7 +855,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                 ),
               ),
             ),
-          if (_versionSelection != null &&
+          if (_activeSeason != null &&
+              _versionSelection != null &&
               (versionFamilies.length > 1 ||
                   !versionFamilies.any(
                     (f) =>
@@ -1250,12 +1251,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     final brief = filmTechnicalTags(
       playable == null ? null : _probes[playable.id],
     );
-    return StreamPathTransitionBuilder(
-      listenable: c,
-      builder: (context) => SkeletonScope(
-        ready: !_loading,
-        enabled: !moving,
-        child: Scaffold(
+    return SkeletonScope(
+      ready: !_loading,
+      enabled: !moving,
+      child: StreamPathTransitionBuilder(
+        listenable: c,
+        builder: (context) => Scaffold(
           backgroundColor: poster == null ? null : Colors.transparent,
           body: Stack(
             children: [

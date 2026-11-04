@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/core/errors/app_exception.dart';
@@ -23,6 +24,7 @@ import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
 import 'package:streampath/domain/services/cache_cleanup_service.dart';
 import 'package:streampath/domain/services/film_catalog_matcher.dart';
+import 'package:streampath/domain/services/film_logo_selector.dart';
 import 'package:streampath/domain/services/film_catalog_scanner.dart';
 import 'package:streampath/domain/services/local_media_source.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
@@ -1960,6 +1962,208 @@ void main() {
     expect(chosen.metadata['logo_path'], '/zh.png');
   });
 
+  test('Logo 全部下载失败不重新采用失败首项，单候选也经过选择', () async {
+    final adapter = _ApiAdapter(
+      (options) async => options.path.endsWith('/images')
+          ? {
+              'id': 1,
+              'backdrops': <Object>[],
+              'logos': [
+                {'file_path': '/bad.png', 'width': 800, 'height': 200},
+              ],
+            }
+          : _details(FilmMediaType.movie, 1),
+    );
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    addTearDown(tmdb.close);
+    var calls = 0;
+    final work = await tmdb.details(
+      FilmMediaType.movie,
+      1,
+      'zh-CN',
+      chooseLogo: (_) async {
+        calls++;
+        return null;
+      },
+    );
+    expect(calls, 1);
+    expect(work.metadata['logo_path'], isNull);
+    expect(work.metadata['logo_selection_version'], 1);
+  });
+
+  test('已验证 Logo 持久化后刷新资料不再下载或换图', () async {
+    final adapter = _ApiAdapter(
+      (options) async => options.path.endsWith('/images')
+          ? {
+              'id': 1,
+              'backdrops': <Object>[],
+              'logos': [
+                {'file_path': '/new.png', 'width': 1600, 'height': 200},
+                {'file_path': '/current.png', 'width': 800, 'height': 200},
+              ],
+            }
+          : _details(FilmMediaType.movie, 1),
+    );
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    addTearDown(tmdb.close);
+    await store.refreshWork(
+      FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 1,
+        title: 'Existing',
+        originalTitle: 'Existing',
+        overview: '',
+        language: 'zh-CN',
+        metadata: const {'logo_path': '/current.png'},
+      ),
+    );
+    final reads = <String>[];
+    final bytes = _readableLogoBytes();
+    final matcher = FilmCatalogMatcher(
+      store,
+      tmdb,
+      logoBytes: (path) async {
+        reads.add(path);
+        return bytes;
+      },
+    );
+    final selected = await matcher.lookup(
+      FilmMediaType.movie,
+      1,
+      refresh: true,
+    );
+    expect(selected.metadata['logo_path'], '/current.png');
+    expect(reads, ['/current.png']);
+    await store.refreshWork(selected);
+    reads.clear();
+    final refreshed = await matcher.lookup(
+      FilmMediaType.movie,
+      1,
+      refresh: true,
+    );
+    expect(refreshed.metadata['logo_path'], '/current.png');
+    expect(reads, isEmpty);
+    expect(
+      (await store.cachedWork(
+        FilmMediaType.movie,
+        1,
+      ))!.metadata['logo_selection_version'],
+      1,
+    );
+  });
+
+  test('Logo 下载持续无响应时取消连接并选择下一枚原图', () async {
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()
+        ..httpClientAdapter = _ApiAdapter(
+          (_) async => {
+            'images': {
+              'secure_base_url': 'https://image.tmdb.org/t/p/',
+              'backdrop_sizes': ['original'],
+            },
+          },
+        ),
+    );
+    addTearDown(tmdb.close);
+    final adapter = _StalledLogoAdapter(_readableLogoBytes());
+    final cache = FilmCatalogImageCache(
+      Directory(p.join(temp.path, 'logos')),
+      tmdb,
+      dio: Dio()..httpClientAdapter = adapter,
+      validateImage: (_) async {},
+    );
+    addTearDown(cache.close);
+    final selected = await selectBestLogo(
+      const [
+        LogoChoice('/stalled.png', 800, 0),
+        LogoChoice('/good.png', 800, 1),
+      ],
+      read: (path) async =>
+          (await cache.get(path, target: 'original')).readAsBytes(),
+    );
+    expect(selected, '/good.png');
+    expect(adapter.cancelled, isTrue);
+    expect(adapter.requests.map((r) => r.uri.path), [
+      '/t/p/original/stalled.png',
+      '/t/p/original/good.png',
+    ]);
+    expect(await cache.cached('/stalled.png', 'original'), isNull);
+    expect(await cache.cached('/good.png', 'original'), isNotNull);
+  });
+
+  test('刮削流程直接保存选择结果与原图，后续查阅不重复选择', () async {
+    final root = await addRoot();
+    await inventory(root, ['Movies/Film [tmdb-1].mkv']);
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()
+        ..httpClientAdapter = _ApiAdapter((options) async {
+          if (options.path.endsWith('/configuration')) {
+            return {
+              'images': {
+                'secure_base_url': 'https://image.tmdb.org/t/p/',
+                'backdrop_sizes': ['original'],
+              },
+            };
+          }
+          if (options.path.endsWith('/images')) {
+            return {
+              'id': 1,
+              'backdrops': <Object>[],
+              'logos': [
+                {
+                  'file_path': '/first.png',
+                  'width': 800,
+                  'height': 200,
+                  'vote_average': 9,
+                },
+                {'file_path': '/second.png', 'width': 1600, 'height': 200},
+              ],
+            };
+          }
+          return _details(FilmMediaType.movie, 1);
+        }),
+    );
+    final adapter = _ImageAdapter(bytes: _readableLogoBytes());
+    final images = FilmCatalogImageCache(
+      Directory(p.join(temp.path, 'logos')),
+      tmdb,
+      dio: Dio()..httpClientAdapter = adapter,
+      validateImage: (_) async {},
+    );
+    final catalog = FilmCatalogController(
+      store: store,
+      tmdb: tmdb,
+      images: images,
+      ownsResources: false,
+      sourceFor: (_) => throw StateError('No scanning'),
+    );
+    addTearDown(() async {
+      await catalog.close();
+      images.close();
+      tmdb.close();
+    });
+    await catalog.scrape(root);
+    await catalog.waitForScraping();
+    expect(catalog.scrapeError, isNull);
+    final work = (await store.works(type: null)).single;
+    expect(work.metadata['logo_path'], '/first.png');
+    expect(work.metadata['logo_selection_version'], 1);
+    expect(await images.cached('/first.png', 'original'), isNotNull);
+    expect(adapter.requests.map((r) => r.uri.path), [
+      '/t/p/original/first.png',
+    ]);
+    await catalog.matcher.lookup(FilmMediaType.movie, 1);
+    expect(adapter.requests, hasLength(1));
+  });
+
   test('英文译名、别名、剧场版与标点差异自动关联并复用标题核验', () async {
     final root = await addRoot();
     final data = {
@@ -3008,4 +3212,29 @@ class _ImageAdapter implements HttpClientAdapter {
 
   @override
   void close({bool force = false}) {}
+}
+
+class _StalledLogoAdapter extends _ImageAdapter {
+  _StalledLogoAdapter(List<int> bytes) : super(bytes: bytes);
+  bool cancelled = false;
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (!options.path.endsWith('/stalled.png')) {
+      return super.fetch(options, requestStream, cancelFuture);
+    }
+    requests.add(options);
+    await cancelFuture;
+    cancelled = true;
+    throw DioException(requestOptions: options, type: DioExceptionType.cancel);
+  }
+}
+
+Uint8List _readableLogoBytes() {
+  final image = img.Image(width: 8, height: 2, numChannels: 4);
+  img.fill(image, color: img.ColorRgba8(255, 255, 255, 255));
+  return Uint8List.fromList(img.encodePng(image));
 }

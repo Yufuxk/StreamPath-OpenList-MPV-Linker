@@ -241,15 +241,28 @@ class FilmCatalogMatcher {
     return title.isEmpty ? null : (title: title, year: year);
   }
 
-  Future<FilmWork> _details(FilmMediaType type, int id, String language) {
+  Future<FilmWork> _details(FilmMediaType type, int id, String language) async {
     final read = logoBytes;
+    final cached = read == null ? null : await store.cachedWork(type, id);
+    final previous = cached?.metadata['logo_path'] as String?;
     return tmdb.details(
       type,
       id,
       language,
       chooseLogo: read == null
           ? null
-          : (candidates) => selectBestLogo(candidates, read: read),
+          : (candidates) async {
+              if (previous != null &&
+                  cached?.metadata['logo_selection_version'] == 1 &&
+                  candidates.any((c) => c.path == previous)) {
+                return previous;
+              }
+              return selectBestLogo(
+                candidates,
+                read: read,
+                preferredPath: previous,
+              );
+            },
     );
   }
 

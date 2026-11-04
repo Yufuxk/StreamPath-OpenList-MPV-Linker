@@ -1005,6 +1005,10 @@ void main() {
             .season,
         isNull,
       );
+      expect(
+        find.byKey(const Key('film-season-version-selector')),
+        findsNothing,
+      );
       expect(tester.takeException(), isNull);
     }
   });
@@ -1947,7 +1951,7 @@ void main() {
         find.byType(SPDropdownButtonFormField<int>),
       );
       final sortFilter = tester.state(
-        find.byType(SPDropdownButtonFormField<bool>),
+        find.byType(SPDropdownButtonFormField<FilmCatalogSortMode>),
       );
       final pending = tester.element(
         find.byKey(const ValueKey('film-pending-button')),
@@ -1969,7 +1973,9 @@ void main() {
         rootFilter,
       );
       expect(
-        tester.state(find.byType(SPDropdownButtonFormField<bool>)),
+        tester.state(
+          find.byType(SPDropdownButtonFormField<FilmCatalogSortMode>),
+        ),
         sortFilter,
       );
       expect(
@@ -2012,7 +2018,9 @@ void main() {
         rootFilter,
       );
       expect(
-        tester.state(find.byType(SPDropdownButtonFormField<bool>)),
+        tester.state(
+          find.byType(SPDropdownButtonFormField<FilmCatalogSortMode>),
+        ),
         sortFilter,
       );
       expect(
@@ -2051,7 +2059,9 @@ void main() {
           rootFilter,
         );
         expect(
-          tester.state(find.byType(SPDropdownButtonFormField<bool>)),
+          tester.state(
+            find.byType(SPDropdownButtonFormField<FilmCatalogSortMode>),
+          ),
           sortFilter,
         );
         expect(
@@ -2112,6 +2122,8 @@ void main() {
       select('');
       await settle(tester);
       expectRetained();
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
       expect(find.text('影视目录库操作失败'), findsNothing);
     },
   );
@@ -2428,6 +2440,12 @@ void main() {
     await tester.drag(
       shelf,
       const Offset(-10000, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      shelf,
+      const Offset(-500, 0),
       kind: PointerDeviceKind.mouse,
     );
     await tester.pumpAndSettle();
@@ -3480,6 +3498,7 @@ void main() {
     await tester.pump();
     await tester.pump();
     expect(find.byType(FilmDetailPage), findsOneWidget);
+    final route = ModalRoute.of(tester.element(find.byType(FilmDetailPage)))!;
     final flight = find.byKey(const Key('film-connected-flight'));
     expect(flight, findsOneWidget);
     await tester.pump(const Duration(milliseconds: 120));
@@ -3497,7 +3516,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 210));
     tester.view.physicalSize = const Size(1360, 900);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 194));
+    await tester.pump(
+      route.reverseTransitionDuration - const Duration(milliseconds: 226),
+    );
     final landing = tester.getRect(flight);
     final homeHero = find.descendant(
       of: find.byType(FilmLibraryPage, skipOffstage: false),

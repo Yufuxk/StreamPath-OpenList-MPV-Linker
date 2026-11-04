@@ -8,6 +8,9 @@ void main() {
     () async {
       final store = WindowsCredentialTextStore(
         'StreamPath/test-text/${DateTime.now().microsecondsSinceEpoch}',
+        libraryPath: File(
+          'build/windows/x64/runner/Release/streampath_credentials.dll',
+        ).absolute.path,
       );
       expect(await store.read(), isNull);
       await store.delete();

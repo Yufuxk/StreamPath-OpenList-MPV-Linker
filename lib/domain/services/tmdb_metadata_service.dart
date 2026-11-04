@@ -257,9 +257,7 @@ class TmdbMetadataService {
               languagePriority(logo),
             ),
         ];
-        final chosen = chooseLogo == null || choices.length < 2
-            ? null
-            : await chooseLogo(choices);
+        final chosen = chooseLogo == null ? null : await chooseLogo(choices);
         for (final image in backdrops) {
           if (image is! Map ||
               image['width'] is! int ||
@@ -285,7 +283,10 @@ class TmdbMetadataService {
           'logo_path':
               chosen != null && choices.any((choice) => choice.path == chosen)
               ? chosen
-              : choices.firstOrNull?.path,
+              : chooseLogo == null
+              ? choices.firstOrNull?.path
+              : null,
+          if (chooseLogo != null) 'logo_selection_version': 1,
           'logo_candidates': [
             for (final logo in logos)
               {
@@ -454,6 +455,8 @@ class TmdbMetadataService {
           'belongs_to_collection': data['belongs_to_collection'],
           'logo_path': data['logo_path'],
           'logo_candidates': data['logo_candidates'],
+          if (data.containsKey('logo_selection_version'))
+            'logo_selection_version': data['logo_selection_version'],
           'credits': data['credits'],
           'presentation_version': data['presentation_version'],
           'backdrop_width': data['backdrop_width'],

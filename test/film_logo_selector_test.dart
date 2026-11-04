@@ -99,7 +99,84 @@ void main() {
     expect(chosen, '/color.png');
   });
 
-  test('single candidate is returned without downloading', () async {
+  test('first readable high-resolution logo stops further downloads', () async {
+    final reads = <String>[];
+    final chosen = await selectBestLogo(
+      const [
+        LogoChoice('/white.png', 800, 0),
+        LogoChoice('/color.png', 1600, 1),
+      ],
+      read: (path) async {
+        reads.add(path);
+        return _png(_solid(255, 255, 255));
+      },
+    );
+    expect(chosen, '/white.png');
+    expect(reads, ['/white.png']);
+  });
+
+  test(
+    'existing readable logo is retained even when a new candidate ranks first',
+    () async {
+      final reads = <String>[];
+      final chosen = await selectBestLogo(
+        const [
+          LogoChoice('/new.png', 1600, 0),
+          LogoChoice('/current.png', 800, 2),
+        ],
+        preferredPath: '/current.png',
+        read: (path) async {
+          reads.add(path);
+          return _png(_solid(255, 255, 255));
+        },
+      );
+      expect(chosen, '/current.png');
+      expect(reads, ['/current.png']);
+    },
+  );
+
+  test(
+    'unreadable and low-resolution logos allow the next readable candidate',
+    () async {
+      final chosen = await selectBestLogo(
+        const [
+          LogoChoice('/dark.png', 1200, 0),
+          LogoChoice('/small.png', 347, 0),
+          LogoChoice('/white.png', 800, 1),
+        ],
+        read: (path) async => _png(
+          _solid(
+            path == '/dark.png' ? 0 : 255,
+            path == '/dark.png' ? 0 : 255,
+            path == '/dark.png' ? 0 : 255,
+          ),
+        ),
+      );
+      expect(chosen, '/white.png');
+    },
+  );
+
+  test(
+    'duplicate failed paths are attempted once and all failures terminate',
+    () async {
+      final reads = <String>[];
+      final chosen = await selectBestLogo(
+        const [
+          LogoChoice('/bad.png', 800, 0),
+          LogoChoice('/bad.png', 800, 0),
+          LogoChoice('/bad2.png', 800, 1),
+        ],
+        read: (path) async {
+          reads.add(path);
+          throw const FormatException('invalid image');
+        },
+      );
+      expect(chosen, isNull);
+      expect(reads, ['/bad.png', '/bad2.png']);
+    },
+  );
+
+  test('single failed candidate is rejected', () async {
     var reads = 0;
     final chosen = await selectBestLogo(
       const [LogoChoice('/only.png', 800, 0)],
@@ -108,7 +185,7 @@ void main() {
         return Uint8List(0);
       },
     );
-    expect(chosen, '/only.png');
-    expect(reads, 0);
+    expect(chosen, isNull);
+    expect(reads, 1);
   });
 }

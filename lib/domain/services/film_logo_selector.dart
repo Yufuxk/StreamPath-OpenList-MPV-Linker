@@ -43,7 +43,12 @@ class LogoChoice {
 
 /// 统计可见像素的对立色通道与明度/饱和度占比，供 isolate 调用。
 LogoColorScore analyzeLogoColor(Uint8List bytes) {
-  final decoded = img.decodeImage(bytes);
+  img.Image? decoded;
+  try {
+    decoded = img.decodeImage(bytes);
+  } on RangeError {
+    throw const FormatException('invalid logo');
+  }
   if (decoded == null) throw const FormatException('invalid logo');
   final image = decoded.convert(numChannels: 4);
   final data = image.getBytes(order: img.ChannelOrder.rgba);
@@ -85,17 +90,36 @@ LogoColorScore analyzeLogoColor(Uint8List bytes) {
   );
 }
 
-/// 在候选 Logo 中选出色彩/明度/分辨率更好、且语言偏好更高的版本；单候选失败时跳过。
+/// 优先保留已有徽标，首个可读且分辨率足够的候选立即返回。
 Future<String?> selectBestLogo(
   List<LogoChoice> candidates, {
   required Future<Uint8List> Function(String path) read,
+  String? preferredPath,
 }) async {
-  if (candidates.length < 2) return candidates.firstOrNull?.path;
+  final ordered = candidates.indexed.toList()
+    ..sort((a, b) {
+      final preferred = (a.$2.path == preferredPath ? 0 : 1).compareTo(
+        b.$2.path == preferredPath ? 0 : 1,
+      );
+      if (preferred != 0) return preferred;
+      final priority = a.$2.priority.compareTo(b.$2.priority);
+      return priority != 0 ? priority : a.$1.compareTo(b.$1);
+    });
+  final visited = <String>{};
   String? best;
   var bestRank = double.negativeInfinity;
-  for (final candidate in candidates.take(6)) {
+  for (final candidate
+      in ordered
+          .map((entry) => entry.$2)
+          .where((c) => visited.add(c.path))
+          .take(6)) {
     try {
       final score = await compute(analyzeLogoColor, await read(candidate.path));
+      if (candidate.width >= 500 &&
+          score.meanValue >= .35 &&
+          score.heavyShare <= .6) {
+        return candidate.path;
+      }
       final rank = logoChoiceRank(score, candidate.width, candidate.priority);
       if (rank > bestRank) {
         bestRank = rank;

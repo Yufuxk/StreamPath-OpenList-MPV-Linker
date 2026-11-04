@@ -336,15 +336,28 @@ void main() {
     expect(tester.getRect(find.byType(FilmDetailPage)).top, 0);
     expect(tester.getRect(find.byKey(const Key('sidebar-rail'))).right, 0);
     expect(tester.getRect(find.byKey(const Key('film-detail-back'))).top, 34);
+    final metadata = find.byKey(const Key('film-detail-metadata'));
     expect(
-      find.textContaining('7.3 TMDB   2020', findRichText: true),
+      find.descendant(
+        of: metadata,
+        matching: find.text('★ 7.3  TMDB', findRichText: true),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: metadata, matching: find.text('2020')),
       findsOneWidget,
     );
     expect(find.textContaining('2222'), findsNothing);
     final play = tester.widget<FilledButton>(
       find.byKey(const Key('film-detail-play')),
     );
-    expect(play.style!.backgroundColor!.resolve({}), Colors.white);
+    expect(
+      play.style!.backgroundColor!.resolve({}),
+      Theme.of(
+        tester.element(find.byKey(const Key('film-detail-play'))),
+      ).colorScheme.primary,
+    );
     expect(
       tester
           .widget<Material>(find.byKey(WindowTitleBar.mainSurfaceKey))
@@ -543,8 +556,11 @@ void main() {
     tester.widget<FilmWorkCard>(find.byType(FilmWorkCard).first).onTap();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    expect(app.filmDetailChrome.value, 0);
+    expect(find.byType(FilmDetailPage), findsNothing);
+    expect(app.filmDetailChrome.value, isNull);
+    await tester.tap(find.byType(FilmWorkCard).first);
     await settle();
+    expect(app.filmDetailChrome.value, 0);
     await mouse.moveTo(
       tester.getCenter(find.byKey(const Key('film-detail-back'))),
     );

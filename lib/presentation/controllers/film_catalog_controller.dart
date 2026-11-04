@@ -41,7 +41,7 @@ class FilmCatalogController extends ChangeNotifier {
          artworkBytes: (path) async =>
              (await images.get(path, target: 'original')).readAsBytes(),
          logoBytes: (path) async =>
-             (await images.get(path, target: 'w300')).readAsBytes(),
+             (await images.get(path, target: 'original')).readAsBytes(),
        ) {
     store.addListener(_changed);
     mediaProbe?.addListener(_notify);

@@ -695,17 +695,37 @@ void main() {
     expect(find.text('标记未观看'), findsOneWidget);
     await tester.tapAt(const Offset(1100, 700));
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('film-season-0')), findsOneWidget);
-    expect(find.byKey(const ValueKey('film-season-1')), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(0)),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(1)),
+      ),
+      findsOneWidget,
+    );
     await tester.scrollUntilVisible(
       find.text('1. 常规第一集'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('1. 常规第一集'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const ValueKey('film-season-0')));
+    await tester.ensureVisible(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(0)),
+      ),
+    );
     await tester.tap(
-      find.byKey(const ValueKey('film-season-0')),
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(0)),
+      ),
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
@@ -714,12 +734,23 @@ void main() {
     expect(find.byType(Dialog), findsNothing);
     await tester.tapAt(const Offset(1100, 700));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('film-season-0')));
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(0)),
+      ),
+    );
     await tester.pump();
-    expect(find.text('特别篇'), findsWidgets);
+    expect(find.text('特别篇 (2)'), findsWidgets);
     expect(find.text('1. 特别篇第一集'), findsOneWidget);
     expect(find.text('41. 剧集作品'), findsOneWidget);
-    expect(find.byKey(const ValueKey('film-season-unmapped')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(null)),
+      ),
+      findsNothing,
+    );
     expect(
       await tester.runAsync(() => c.store.pendingCount(rootId: rootIds.last)),
       0,

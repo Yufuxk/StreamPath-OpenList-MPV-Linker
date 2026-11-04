@@ -9,20 +9,27 @@ import '../models/film_catalog_item.dart';
 
 /// Windows 通用凭据文本，目标名称由各功能独立指定。
 class WindowsCredentialTextStore {
-  const WindowsCredentialTextStore(this._targetName);
+  const WindowsCredentialTextStore(this._targetName, {this.libraryPath});
   final String _targetName;
+  final String? libraryPath;
+  static final _defaultLibrary = DynamicLibrary.open(
+    '${File(Platform.resolvedExecutable).parent.path}/streampath_credentials.dll',
+  );
+  DynamicLibrary get _library =>
+      libraryPath == null ? _defaultLibrary : DynamicLibrary.open(libraryPath!);
 
   Future<String?> read() async {
     if (!Platform.isWindows) return null;
     final target = _targetName.toNativeUtf16();
     final result = calloc<Pointer<CREDENTIAL>>();
     try {
-      // 预先初始化 FFI 绑定，避免首次读取覆盖 CredRead 的错误码。
-      GetLastError();
-      if (CredRead(target, CRED_TYPE_GENERIC, 0, result) != TRUE) {
-        if (GetLastError() == 1168) return null;
-        throw const FilmCatalogException('credentialStoreFailed');
-      }
+      final error = _library
+          .lookupFunction<
+            Uint32 Function(Pointer<Utf16>, Pointer<Pointer<CREDENTIAL>>),
+            int Function(Pointer<Utf16>, Pointer<Pointer<CREDENTIAL>>)
+          >('sp_credential_read')(target, result);
+      if (error == 1168) return null;
+      if (error != 0) throw const FilmCatalogException('credentialStoreFailed');
       return utf8.decode(
         result.value.ref.CredentialBlob.asTypedList(
           result.value.ref.CredentialBlobSize,
@@ -72,9 +79,12 @@ class WindowsCredentialTextStore {
     if (!Platform.isWindows) return;
     final target = _targetName.toNativeUtf16();
     try {
-      GetLastError();
-      if (CredDelete(target, CRED_TYPE_GENERIC, 0) != TRUE &&
-          GetLastError() != 1168) {
+      final error = _library
+          .lookupFunction<
+            Uint32 Function(Pointer<Utf16>),
+            int Function(Pointer<Utf16>)
+          >('sp_credential_delete')(target);
+      if (error != 0 && error != 1168) {
         throw const FilmCatalogException('credentialStoreFailed');
       }
     } finally {

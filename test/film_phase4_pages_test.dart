@@ -903,10 +903,18 @@ void main() {
     await tester.tap(find.text('标记未观看'));
     await settle(tester);
     expect(await tester.runAsync(marks), everyElement(false));
-    await tester.ensureVisible(find.byKey(const ValueKey('film-season-1')));
+    await tester.ensureVisible(
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(1)),
+      ),
+    );
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const ValueKey('film-season-1')),
+      find.descendant(
+        of: find.byKey(const Key('film-season-selector')),
+        matching: find.byKey(const ValueKey<int?>(1)),
+      ),
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
@@ -1124,11 +1132,15 @@ void main() {
         ),
       );
       expect(shade, findsOneWidget);
+      await tester.ensureVisible(card);
+      await tester.pumpAndSettle();
       final labels = find.descendant(of: card, matching: find.byType(Text));
       final labelRects = labels
           .evaluate()
           .map((e) => tester.getRect(find.byWidget(e.widget)))
           .toList();
+      await tester.ensureVisible(card);
+      await tester.pumpAndSettle();
       final original = tester.getRect(image);
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.addPointer(location: Offset.zero);
@@ -1218,6 +1230,8 @@ void main() {
       find.ancestor(of: source, matching: find.byType(FilmPosterHover)),
       findsOneWidget,
     );
+    await tester.ensureVisible(source);
+    await tester.pumpAndSettle();
     final sourceSize = tester.getSize(source);
     final sourcePointer = await tester.createGesture(
       kind: PointerDeviceKind.mouse,

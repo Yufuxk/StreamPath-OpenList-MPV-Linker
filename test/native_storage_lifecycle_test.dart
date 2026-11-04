@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:streampath/data/local/media_connection_store.dart';
+import 'package:streampath/data/local/windows_credential_text_store.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
@@ -13,6 +15,20 @@ import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/domain/services/native_storage_source.dart';
 import 'helpers/shell_test_app_state.dart';
+
+final _credentialLibraryPath = p.absolute(
+  'build/windows/x64/runner/Release/streampath_credentials.dll',
+);
+
+class _AuditConnectionStore extends MediaConnectionStore {
+  _AuditConnectionStore(super.file);
+  @override
+  WindowsCredentialTextStore credential(String id) =>
+      WindowsCredentialTextStore(
+        'StreamPath/media-source/$id',
+        libraryPath: _credentialLibraryPath,
+      );
+}
 
 class _HeldSecrets extends MediaConnectionStore {
   _HeldSecrets(super.file);
@@ -38,6 +54,27 @@ class _App extends ShellTestAppState {
 }
 
 void main() {
+  test(
+    'missing credential reads and deletes preserve the native error on cold isolates',
+    () async {
+      for (var i = 0; i < 100; i++) {
+        final target =
+            'StreamPath/tests/missing-$pid-$i-${DateTime.now().microsecondsSinceEpoch}';
+        final value = await Isolate.run(() async {
+          final store = WindowsCredentialTextStore(
+            target,
+            libraryPath: _credentialLibraryPath,
+          );
+          final text = await store.read();
+          await store.delete();
+          return text;
+        });
+        expect(value, isNull);
+      }
+    },
+    skip: !Platform.isWindows,
+  );
+
   test(
     'removed or replaced native connection cannot mount stale credentials',
     () async {
@@ -156,7 +193,7 @@ void main() {
       final root = await Directory.systemTemp.createTemp(
         'sp_credentials_audit_',
       );
-      final store = MediaConnectionStore(
+      final store = _AuditConnectionStore(
         File(p.join(root.path, 'sources.json')),
       );
       final config = MediaConnection(
@@ -175,7 +212,7 @@ void main() {
         await store.file.readAsString(),
         isNot(contains('fixture password')),
       );
-      final reloaded = MediaConnectionStore(store.file);
+      final reloaded = _AuditConnectionStore(store.file);
       await reloaded.load();
       expect(reloaded.connections.single.id, config.id);
       expect(

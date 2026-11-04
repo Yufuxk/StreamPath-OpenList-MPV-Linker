@@ -32,13 +32,10 @@ void main() {
     'close preparation does not replay an already reported scan error',
     () async {
       final fixture = await _Fixture.create(
-        (_) async => [_file('Movies/A.2020.mkv')],
+        (_) async => throw const FilmCatalogException('invalidImage'),
         credentials: _NoToken(),
       );
       final c = fixture.controller;
-      final images = fixture.controller.images.directory;
-      await images.create(recursive: true);
-      await File(p.join(images.path, 'configuration.json')).writeAsString('{}');
       await fixture.inventory(['Movies/A.2020.mkv']);
       await c.store.bind(
         await c.store.resources(),
@@ -53,7 +50,7 @@ void main() {
         ),
       );
       try {
-        expect(await c.run(() => c.scan(fixture.root)), isFalse);
+        await c.scan(fixture.root);
         expect(c.error, 'invalidImage');
         expect(c.busy, isFalse);
         await c.waitForScraping();
@@ -74,7 +71,7 @@ void main() {
       final fixture = await _Fixture.create((_) async {
         entered.complete();
         await release.future;
-        return [];
+        throw const FilmCatalogException('invalidImage');
       });
       final c = fixture.controller;
       await fixture.inventory(['Movies/A.2020.mkv']);
@@ -90,20 +87,7 @@ void main() {
           posterPath: '/fixture.jpg',
         ),
       );
-      await c.images.directory.create(recursive: true);
-      await File(
-        p.join(c.images.directory.path, 'configuration.json'),
-      ).writeAsString('{}');
-      final scanning = expectLater(
-        c.scan(fixture.root),
-        throwsA(
-          isA<FilmCatalogException>().having(
-            (error) => error.code,
-            'code',
-            'invalidImage',
-          ),
-        ),
-      );
+      final scanning = c.scan(fixture.root);
       try {
         await entered.future.timeout(const Duration(seconds: 2));
         var ready = false;
@@ -115,6 +99,7 @@ void main() {
         release.complete();
         await preparing.timeout(const Duration(seconds: 2));
         await scanning;
+        expect(c.error, 'invalidImage');
         expect(ready, isTrue);
         expect((await c.store.resources()).single.availability, 'present');
       } finally {

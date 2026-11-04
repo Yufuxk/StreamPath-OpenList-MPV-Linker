@@ -356,11 +356,29 @@ void main() {
         );
         await _settle(tester);
         Future<void> menu() async {
-          await tester.tapAt(
-            tester.getTopLeft(find.byKey(ValueKey(id))) + const Offset(64, 32),
-            buttons: kSecondaryMouseButton,
+          final tile = find.byKey(ValueKey(id));
+          await tester.ensureVisible(tile);
+          await tester.pumpAndSettle();
+          final bounds = tester.getRect(tile);
+          final elapsed = Stopwatch()..start();
+          // 后台读库期间不受理菜单；推进真实 I/O，直到入口接受请求。
+          while (spMenuAnchor.value == null &&
+              elapsed.elapsed < const Duration(seconds: 10)) {
+            await tester.tapAt(
+              bounds.topLeft + Offset(48, bounds.height / 2),
+              buttons: kSecondaryMouseButton,
+            );
+            await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 10)),
+            );
+            await tester.pump(const Duration(milliseconds: 50));
+          }
+          await pumpUntil(
+            tester,
+            () => find.text('以本列表创建播放列表').evaluate().isNotEmpty,
+            reason: 'The playlist snapshot must load before checking its menu',
           );
-          await _settle(tester);
+          await tester.pumpAndSettle();
         }
 
         await menu();
