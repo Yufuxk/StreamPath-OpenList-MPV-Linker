@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
 import 'dart:io';
@@ -41,6 +41,7 @@ import 'package:streampath/presentation/widgets/film_detail_buttons.dart';
 import 'package:streampath/presentation/widgets/film_segmented_control.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/film_featured_showcase.dart';
+import 'package:streampath/presentation/widgets/film_information_pill.dart';
 import 'package:streampath/presentation/widgets/film_detail_back_button.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
 
@@ -395,9 +396,7 @@ void main() {
               find.text('查看详情'),
               find.text('每日精选'),
               find.text('合集'),
-              find.byWidgetPredicate(
-                (w) => w is Text && (w.data?.contains('官方时长') ?? false),
-              ),
+              find.text('120 分钟'),
             ]) {
               final element = tester.element(finder);
               final text = element.widget as Text;
@@ -451,7 +450,10 @@ void main() {
               if (backing == null) {
                 informationRects.add(rect);
                 informationColors.add(style.color!);
-                expect(style.shadows, isNull);
+                expect(
+                  style.shadows,
+                  anyOf(isNull, equals(FilmFeaturedShowcase.textShadows)),
+                );
               }
               final painter = TextPainter(
                 text: TextSpan(text: text.data!, style: style),
@@ -518,7 +520,10 @@ void main() {
             expect(backdrop.textColors, isNull);
             expect(find.byType(FilmAdaptiveForeground), findsNothing);
             expect(find.byType(FilmBackdropSamplingBoundary), findsNothing);
-            expect(informationColors, {Colors.white});
+            expect(informationColors, {
+              Colors.white,
+              Colors.white.withValues(alpha: .82),
+            });
             final posterTitle = tester.widget<Text>(
               find.descendant(
                 of: poster(work.id),
@@ -566,7 +571,7 @@ void main() {
               expect(brightness(.5, .46), lessThan(brightness(.24, .46)));
               expect(brightness(.5, .99), lessThan(10));
             }
-            final informationColor = informationColors.single;
+            final informationColor = Colors.white;
             var readingLuminance = 0.0;
             var readingSamples = 0;
             var whiteReadable = 0;
@@ -763,6 +768,58 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets(
+    'showcase metadata uses individual pills and relaxed overview text',
+    (tester) async {
+      await prepare(tester);
+      await tester.pumpWidget(frame(showcase()));
+      await settle(tester);
+      expect(find.text('Drama'), findsOneWidget);
+      expect(find.text('★ 8.2'), findsOneWidget);
+      expect(find.text('120 分钟'), findsOneWidget);
+      expect(find.textContaining('官方时长'), findsNothing);
+      expect(find.byType(FilmInformationPill), findsWidgets);
+      final overviews = tester.widgetList<Text>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Text && (widget.data?.startsWith('Overview ') ?? false),
+        ),
+      );
+      expect(overviews, isNotEmpty);
+      final overview = overviews.first;
+      expect(overview.style?.height, 1.75);
+      expect(overview.style?.color?.a, closeTo(.82, .01));
+      final finder = find.byWidgetPredicate(
+        (widget) => widget is Text && widget.data == overview.data,
+      );
+      final constrained = tester.widgetList<ConstrainedBox>(
+        find.ancestor(of: finder, matching: find.byType(ConstrainedBox)),
+      );
+      expect(constrained.any((box) => box.constraints.maxWidth == 620), isTrue);
+      final shadowed = tester.widgetList<Text>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Text &&
+              widget.style?.shadows == FilmFeaturedShowcase.textShadows,
+        ),
+      );
+      expect(shadowed.length, greaterThanOrEqualTo(2));
+      expect(
+        tester
+            .widget<Text>(
+              find.descendant(
+                of: find.byType(FilmInformationPill),
+                matching: find.text('Drama'),
+              ),
+            )
+            .style
+            ?.shadows,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'showcase displays the original clearlogo and falls back to its title',

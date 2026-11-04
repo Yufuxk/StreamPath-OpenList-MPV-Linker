@@ -18,6 +18,7 @@ import 'film_artwork.dart';
 import 'film_detail_back_button.dart';
 import 'film_detail_backdrop.dart';
 import 'film_detail_buttons.dart';
+import 'film_information_pill.dart';
 import 'film_segmented_control.dart';
 import 'film_shelf.dart';
 import 'film_watch_overlay.dart';
@@ -43,6 +44,12 @@ class FilmFeaturedShowcase extends StatefulWidget {
   final ValueChanged<FilmCollection> onOpenCollection;
   final void Function(FilmWork, Offset) onWorkMenu;
   final void Function(FilmCollection, Offset)? onCollectionMenu;
+
+  /// 极轻微的暗色文字阴影：亮背景上勾出字形边缘，暗背景上几乎不可见。
+  static const textShadows = [
+    Shadow(color: Color(0xCC000000), offset: Offset(0, 1), blurRadius: 3),
+    Shadow(color: Color(0x80000000), offset: Offset(0, 2), blurRadius: 8),
+  ];
 
   @override
   State<FilmFeaturedShowcase> createState() => _FilmFeaturedShowcaseState();
@@ -387,26 +394,57 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
         : compact
         ? 32.0
         : 40.0;
-    final metadata = <String>[
-      if (work?.year != null) '${work!.year}',
+    final metadata = <Widget>[
+      if ((work?.metadata['vote_average'] as num? ?? 0) > 0)
+        FilmInformationPill(
+          foreground: _foreground(context),
+          child: Text(
+            '★ ${(work!.metadata['vote_average'] as num).toStringAsFixed(1)}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+      if (work?.year != null)
+        FilmInformationPill(
+          foreground: _foreground(context),
+          child: Text('${work!.year}'),
+        ),
       if (work != null)
-        context.l10n.text(work.type == FilmMediaType.movie ? '电影' : '剧集'),
+        FilmInformationPill(
+          foreground: _foreground(context),
+          child: Text(
+            context.l10n.text(work.type == FilmMediaType.movie ? '电影' : '剧集'),
+          ),
+        ),
+      if ((work?.metadata['runtime'] as num? ?? 0) > 0)
+        FilmInformationPill(
+          foreground: _foreground(context),
+          child: Text(
+            context.l10n.format('{minutes} 分钟', {
+              'minutes': work!.metadata['runtime'],
+            }),
+          ),
+        ),
       if (work?.metadata['genres'] is List)
         for (final genre in (work!.metadata['genres'] as List).take(3))
           if (genre is String && genre.isNotEmpty)
-            genre
+            FilmInformationPill(
+              foreground: _foreground(context),
+              child: Text(genre),
+            )
           else if (genre is Map &&
               genre['name'] is String &&
               (genre['name'] as String).isNotEmpty)
-            genre['name'] as String,
-      if ((work?.metadata['runtime'] as num? ?? 0) > 0)
-        context.l10n.format('官方时长：{minutes} 分钟', {
-          'minutes': work!.metadata['runtime'],
-        }),
-      if ((work?.metadata['vote_average'] as num? ?? 0) > 0)
-        '★ ${(work!.metadata['vote_average'] as num).toStringAsFixed(1)}',
+            FilmInformationPill(
+              foreground: _foreground(context),
+              child: Text(genre['name'] as String),
+            ),
       if (collection != null)
-        context.l10n.format('收录 {count} 部作品', {'count': collection.count}),
+        FilmInformationPill(
+          foreground: _foreground(context),
+          child: Text(
+            context.l10n.format('收录 {count} 部作品', {'count': collection.count}),
+          ),
+        ),
     ];
     final identity = work?.id ?? collection!.id;
     final title = Text(
@@ -420,6 +458,7 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
         height: 1.2,
         fontWeight: FontWeight.w700,
         color: _foreground(context),
+        shadows: FilmFeaturedShowcase.textShadows,
       ),
     );
     final logo = work?.metadata['logo_path'] as String?;
@@ -482,37 +521,42 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
               ),
               if (metadata.isNotEmpty) ...[
                 const SizedBox(height: 12),
-                Text(
-                  metadata.join(' · '),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 14, color: _foreground(context)),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: metadata,
                 ),
               ],
               if (work != null && work.overview.isNotEmpty) ...[
                 const SizedBox(height: 16),
-                FilmSpoilerScope(
-                  key: ValueKey<Object>(('featured-overview', identity)),
-                  child: FilmWatchOverlay(
-                    store: widget.catalog.store,
-                    workId: work.id,
-                    rootId: widget.catalog.rootId,
-                    sourceIds: widget.catalog.sourceId == null
-                        ? null
-                        : {widget.catalog.sourceId!},
-                    spoilerSensitive: true,
-                    showStatus: false,
-                    revealBelow: true,
-                    child: Text(
-                      work.overview,
-                      textAlign: TextAlign.center,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 15,
-                        height: 1.6,
-                        color: _foreground(context),
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 620),
+                    child: FilmSpoilerScope(
+                      key: ValueKey<Object>(('featured-overview', identity)),
+                      child: FilmWatchOverlay(
+                        store: widget.catalog.store,
+                        workId: work.id,
+                        rootId: widget.catalog.rootId,
+                        sourceIds: widget.catalog.sourceId == null
+                            ? null
+                            : {widget.catalog.sourceId!},
+                        spoilerSensitive: true,
+                        showStatus: false,
+                        revealBelow: true,
+                        child: Text(
+                          work.overview,
+                          textAlign: TextAlign.center,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 15,
+                            height: 1.75,
+                            color: _foreground(context).withValues(alpha: .82),
+                            shadows: FilmFeaturedShowcase.textShadows,
+                          ),
+                        ),
                       ),
                     ),
                   ),

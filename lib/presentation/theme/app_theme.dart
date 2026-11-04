@@ -450,8 +450,13 @@ abstract final class AppTheme {
         ),
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(
-        linearTrackColor: scheme.primaryContainer,
-        circularTrackColor: scheme.primaryContainer,
+        // 白色强调色的 primary 与 primaryContainer 明度接近，轨道改用中性色保证可读。
+        linearTrackColor: accentColor == AccentColorPreset.white.argb
+            ? (isDark ? const Color(0xFF3A404A) : const Color(0xFFC6CCD5))
+            : scheme.primaryContainer,
+        circularTrackColor: accentColor == AccentColorPreset.white.argb
+            ? (isDark ? const Color(0xFF3A404A) : const Color(0xFFC6CCD5))
+            : scheme.primaryContainer,
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(

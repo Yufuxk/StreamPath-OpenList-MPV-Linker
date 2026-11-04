@@ -1,4 +1,4 @@
-import '../widgets/transition_content.dart';
+﻿import '../widgets/transition_content.dart';
 import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
 import '../widgets/skeleton_scope.dart';
@@ -36,8 +36,6 @@ import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
-import '../theme/glass_tokens.dart';
-import '../widgets/glass_surface.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/film_artwork.dart';
@@ -45,6 +43,7 @@ import '../widgets/film_detail_back_button.dart';
 import '../widgets/film_detail_backdrop.dart';
 import '../widgets/film_adaptive_foreground.dart';
 import '../widgets/film_certification_badge.dart';
+import '../widgets/film_information_pill.dart';
 import '../widgets/film_detail_buttons.dart';
 import '../widgets/film_catalog_tasks.dart';
 import '../widgets/film_library_background.dart';
@@ -118,7 +117,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   final _titleTextKey = GlobalKey();
   final _originalTitleTextKey = GlobalKey();
   final _metadataTextKey = GlobalKey();
-  final _genresTextKey = GlobalKey();
   final _overviewTextKey = GlobalKey();
   FilmWork? _work;
   String? _logoOverride;
@@ -345,9 +343,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               .toSet()
               .toList()
         : <int>[];
+    final genres = (work.metadata['genres'] as List? ?? [])
+        .whereType<String>()
+        .where((genre) => genre.isNotEmpty);
     return Wrap(
       key: const Key('film-detail-metadata'),
-      spacing: 10,
+      spacing: 8,
       runSpacing: 8,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
@@ -357,9 +358,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               'score': score,
               'votes': work.metadata['vote_count'] ?? 0,
             }),
-            child: _informationPill(
-              foreground,
-              Text.rich(
+            child: FilmInformationPill(
+              foreground: foreground,
+              child: Text.rich(
                 TextSpan(
                   children: [
                     TextSpan(
@@ -376,11 +377,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             ),
           ),
         if (work.year != null)
-          _informationPill(foreground, Text('${work.year}')),
+          FilmInformationPill(
+            foreground: foreground,
+            child: Text('${work.year}'),
+          ),
         if (minutes.isNotEmpty || work.metadata['runtime'] != null)
-          _informationPill(
-            foreground,
-            Text(
+          FilmInformationPill(
+            foreground: foreground,
+            child: Text(
               context.l10n.format('{minutes} 分钟', {
                 'minutes': minutes.isEmpty
                     ? work.metadata['runtime']
@@ -388,28 +392,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               }),
             ),
           ),
-        for (final tag in tags) _informationPill(foreground, Text(tag)),
+        for (final genre in genres)
+          FilmInformationPill(foreground: foreground, child: Text(genre)),
+        for (final tag in tags)
+          FilmInformationPill(foreground: foreground, child: Text(tag)),
         FilmCertificationBadge(rating: work.certification, color: foreground),
       ],
     );
   }
-
-  Widget _informationPill(Color foreground, Widget child) => GlassSurface(
-    level: GlassSurfaceLevel.content,
-    borderRadius: AppTheme.pillRadius,
-    border: Border.all(color: foreground.withValues(alpha: .14)),
-    color: Theme.of(context).colorScheme.surface.withValues(alpha: .18),
-    showShadow: false,
-    blur: true,
-    blurSigma: 10,
-    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
-    child: DefaultTextStyle(
-      style: Theme.of(
-        context,
-      ).textTheme.labelMedium!.copyWith(color: foreground),
-      child: child,
-    ),
-  );
 
   Widget _overview(
     FilmWork work,
@@ -1364,7 +1354,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                             _titleTextKey,
                                             _originalTitleTextKey,
                                             _metadataTextKey,
-                                            _genresTextKey,
                                             _overviewTextKey,
                                           ],
                                           scrollController: _scroll,
@@ -1458,34 +1447,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                       foreground,
                                                     ),
                                                   ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 8),
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-genres',
-                                                ),
-                                                child: SizedBox(
-                                                  width: initialSkeleton
-                                                      ? 260
-                                                      : null,
-                                                  child:
-                                                      (work.metadata['genres']
-                                                                      as List? ??
-                                                                  [])
-                                                              .isEmpty &&
-                                                          !initialSkeleton
-                                                      ? const SizedBox.shrink()
-                                                      : _informationPill(
-                                                          foreground,
-                                                          Text(
-                                                            key: _genresTextKey,
-                                                            (work.metadata['genres']
-                                                                        as List? ??
-                                                                    [])
-                                                                .join(' · '),
-                                                          ),
-                                                        ),
                                                 ),
                                               ),
                                               const SizedBox(height: 16),

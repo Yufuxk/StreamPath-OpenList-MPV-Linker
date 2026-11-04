@@ -1,4 +1,4 @@
-﻿import 'package:streampath/presentation/widgets/transition_content.dart';
+import 'package:streampath/presentation/widgets/transition_content.dart';
 import 'package:streampath/presentation/widgets/film_connected_transition.dart';
 import 'package:streampath/presentation/widgets/skeleton_scope.dart';
 import 'package:streampath/presentation/widgets/cinematic_states.dart';
@@ -613,7 +613,6 @@ void main() {
       'logo',
       'original-title',
       'metadata',
-      'genres',
       'actions',
       'overview',
     ]) {
@@ -1443,7 +1442,8 @@ void main() {
         for (final label in [
           old.title,
           'Original detail title with a long readable name',
-          'Drama · Science Fiction',
+          'Drama',
+          'Science Fiction',
           overview,
         ]) {
           final finder = find.text(label).first;
@@ -2283,6 +2283,55 @@ void main() {
     await settle(tester);
     expect(catalog.sectionId, 'rating:TV-PG');
     expect(catalog.works.map((w) => w.id), [work.id]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('详情信息逐项胶囊排列且分级保持末位', (tester) async {
+    await prepare(tester, count: 1);
+    final work = works.single;
+    await tester.runAsync(() async {
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: work.id,
+          type: work.type,
+          tmdbId: work.tmdbId,
+          title: work.title,
+          originalTitle: work.originalTitle,
+          overview: work.overview,
+          language: work.language,
+          posterPath: work.posterPath,
+          backdropPath: work.backdropPath,
+          year: 2013,
+          metadata: {
+            ...work.metadata,
+            'vote_average': 8.6,
+            'runtime': 124,
+            'genres': ['Animation', 'Drama'],
+            'certification': 'PG-13',
+          },
+        ),
+      );
+      works = await catalog.store.works(type: null);
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: work.id,
+          initialWork: works.single,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+    final metadata = tester.widget<Wrap>(
+      find.byKey(const Key('film-detail-metadata')),
+    );
+    expect(metadata.children.last, isA<FilmCertificationBadge>());
+    expect(metadata.children.whereType<FilmCertificationBadge>(), hasLength(1));
+    expect(find.text('Animation'), findsOneWidget);
+    expect(find.text('Drama'), findsOneWidget);
+    expect(find.text('动画 · 剧情'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

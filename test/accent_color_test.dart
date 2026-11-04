@@ -91,7 +91,14 @@ void main() {
         );
         expect(
           theme.progressIndicatorTheme.linearTrackColor,
-          scheme.primaryContainer,
+          dark ? const Color(0xFF3A404A) : const Color(0xFFC6CCD5),
+        );
+        expect(
+          contrast(
+            scheme.primary,
+            theme.progressIndicatorTheme.linearTrackColor!,
+          ),
+          greaterThanOrEqualTo(4.5),
         );
         expect(
           theme.segmentedButtonTheme.style!.foregroundColor!.resolve({
@@ -121,6 +128,28 @@ void main() {
         contrast(selected.colorScheme.primary, selected.colorScheme.onPrimary),
         greaterThanOrEqualTo(4.5),
       );
+    }
+  });
+
+  test('白色强调色的进度轨道加深，其他强调色保持原有轨道', () {
+    for (final brightness in Brightness.values) {
+      for (final preset in AccentColorPreset.values) {
+        final theme = brightness == Brightness.dark
+            ? AppTheme.dark(accentColor: preset.argb)
+            : AppTheme.light(accentColor: preset.argb);
+        final track = theme.progressIndicatorTheme.linearTrackColor!;
+        final fill = theme.colorScheme.primary;
+        if (preset == AccentColorPreset.white) {
+          expect(track, isNot(theme.colorScheme.primaryContainer));
+          expect(
+            contrast(fill, track),
+            greaterThanOrEqualTo(4.5),
+            reason: '${brightness.name} 白色强调色的进度轨道需要与已填充部分区分',
+          );
+        } else {
+          expect(track, theme.colorScheme.primaryContainer);
+        }
+      }
     }
   });
 
