@@ -17,6 +17,11 @@ import 'package:streampath/domain/services/mpv_session_controller.dart';
 
 void main() {
   final image = Platform.environment['STREAMPATH_DVD_ISO'];
+  final programme =
+      Platform.environment['STREAMPATH_DVD_PROGRAMME'] ?? 'dvd-title-01';
+  final chapters = int.parse(
+    Platform.environment['STREAMPATH_DVD_CHAPTERS'] ?? '8',
+  );
   final playerRoot = Platform.environment['STREAMPATH_MPV_TEST_ROOT'];
   final helper = Platform.environment['STREAMPATH_DVD_HELPER'];
   final players = playerRoot == null
@@ -37,7 +42,7 @@ void main() {
           p.absolute(
             'build',
             'dvd-support',
-            'service-${p.basename(player.parent.path)}',
+            'service-$programme-${p.basename(player.parent.path)}',
           ),
         ).create(recursive: true);
         final local = LocalMediaSource(
@@ -58,7 +63,9 @@ void main() {
         );
         final resourceRoot = Directory(p.join(root.path, 'resources'))
           ..createSync();
-        final subtitle = File(p.join(resourceRoot.path, 'Disc.TITLE01.ass'));
+        final subtitle = File(
+          p.join(resourceRoot.path, 'Disc.TITLE${programme.substring(10)}.ass'),
+        );
         await File(
           p.join(resourceRoot.path, 'Disc.iso'),
         ).writeAsBytes([1, 2, 3]);
@@ -139,9 +146,14 @@ Dialogue: 0,0:00:00.00,0:58:00.00,Default,,0,0,0,,DVD TEST
           file: iso,
           subtitles: subtitles,
           selectTitles: (request) async {
-            expect(request.titles.first.programmeId, 'dvd-title-01');
-            expect(request.titles.first.chapters, hasLength(8));
-            return IsoTitleSelection.all(request.titles);
+            final title = request.titles.firstWhere(
+              (title) => title.programmeId == programme,
+            );
+            expect(title.chapters, hasLength(chapters));
+            return IsoTitleSelection(
+              orderedTitles: request.titles,
+              selectedProgrammeIds: {programme},
+            );
           },
         );
         expect(result, isNotNull);
@@ -171,6 +183,8 @@ Dialogue: 0,0:00:00.00,0:58:00.00,Default,,0,0,0,,DVD TEST
           ),
           hasLength(1),
         );
+        expect(tracks.any((track) => track['type'] == 'video'), isTrue);
+        expect(tracks.any((track) => track['type'] == 'audio'), isTrue);
         final options = await Process.run(player.path, [
           '--no-config',
           '--list-options',
@@ -181,17 +195,22 @@ Dialogue: 0,0:00:00.00,0:58:00.00,Default,,0,0,0,,DVD TEST
             contains(result.sessionDirectoryPath),
           );
         }
-        expect((await ipc.getProperty('chapter-list') as List).length, 8);
+        expect(
+          (await ipc.getProperty('chapter-list') as List).length,
+          chapters,
+        );
         await ipc.setProperty('pause', false);
         await Future<void>.delayed(const Duration(milliseconds: 350));
-        await ipc.command(['seek', 671.934, 'absolute+exact']);
         num? position;
-        for (var attempt = 0; attempt < 60; attempt++) {
-          position = await ipc.getProperty('time-pos') as num?;
-          if (position != null && (position - 671.934).abs() < 2) break;
-          await Future<void>.delayed(const Duration(milliseconds: 100));
+        for (final target in [671.934, 121.0, 671.934]) {
+          await ipc.command(['seek', target, 'absolute+exact']);
+          for (var attempt = 0; attempt < 60; attempt++) {
+            position = await ipc.getProperty('time-pos') as num?;
+            if (position != null && (position - target).abs() < 2) break;
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          }
+          expect(position, closeTo(target, 2));
         }
-        expect(position, closeTo(671.934, 2));
         expect(
           (await ipc.getProperty('track-list') as List).where(
             (track) => track['type'] == 'sub' && track['external'] == true,
@@ -211,24 +230,62 @@ Dialogue: 0,0:00:00.00,0:58:00.00,Default,,0,0,0,,DVD TEST
           resolvedUrl: source.persistentUrl(iso.href),
           playbackMode: result.playbackMode,
         );
-        expect((state['titles'] as Map).containsKey('dvd-title-01'), isTrue);
+        expect((state['titles'] as Map).containsKey(programme), isTrue);
         expect(
-          (state['titles']['dvd-title-01']['position'] as num),
+          (state['titles'][programme]['position'] as num),
           greaterThan(670),
         );
+        result = await service.start(
+          webDavService: source,
+          file: iso,
+          selectTitles: (request) async {
+            expect(
+              request.resumeByProgrammeId[programme]!.position.inMilliseconds /
+                  1000,
+              greaterThan(670),
+            );
+            return IsoTitleSelection(
+              orderedTitles: request.titles,
+              selectedProgrammeIds: {programme},
+            );
+          },
+        );
+        final resumePipe = result!.args
+            .firstWhere((arg) => arg.startsWith('--input-ipc-server='))
+            .substring('--input-ipc-server='.length);
+        ipc = MpvSessionController(pipeName: resumePipe);
+        expect(await ipc.connect(), isTrue);
+        num? restoredPosition;
+        for (var attempt = 0; attempt < 80; attempt++) {
+          restoredPosition = await ipc.getProperty('time-pos') as num?;
+          if (restoredPosition != null && restoredPosition > 670) break;
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        expect(restoredPosition, closeTo(position!, 3));
+        await ipc.command(['quit']);
+        await ipc.dispose();
+        ipc = null;
+        for (var attempt = 0; attempt < 80 && service.isBusy; attempt++) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        expect(service.isBusy, isFalse);
         final evidence = await Directory(
           p.absolute('build', 'dvd-support', 'service-evidence'),
         ).create(recursive: true);
         await File(
-          p.join(evidence.path, '${p.basename(player.parent.path)}.json'),
+          p.join(
+            evidence.path,
+            '$programme-${p.basename(player.parent.path)}.json',
+          ),
         ).writeAsString(
           jsonEncode({
-            'chapters': 8,
+            'chapters': chapters,
             'subtitleTracks': 1,
             'fontsDirectorySupported': (options.stdout as String).contains(
               '--sub-fonts-dir',
             ),
             'seekPosition': position,
+            'restoredPosition': restoredPosition,
             'portableState': state,
           }),
         );

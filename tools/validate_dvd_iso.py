@@ -5,6 +5,7 @@ from ctypes import wintypes
 import hashlib
 import json
 import os
+import socket
 from pathlib import Path
 import struct
 import subprocess
@@ -21,6 +22,7 @@ class IsoServer:
         self.version = 'dvd-test-v1'
         self.bytes = 0
         self.prefix = prefix
+        self.disconnect = False
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -54,6 +56,11 @@ class IsoServer:
                 self.send_header('ETag', '"' + owner.version + '"')
                 self.end_headers()
                 if head:
+                    return
+                if owner.disconnect:
+                    self.wfile.flush()
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.close_connection = True
                     return
                 try:
                     with owner.path.open('rb') as source:
@@ -172,6 +179,7 @@ def main():
     parser.add_argument('--output', default='build/dvd-support/real')
     parser.add_argument('--mpv-root')
     parser.add_argument('--network', action='store_true')
+    parser.add_argument('--title-number', type=int)
     args = parser.parse_args()
     started = time.monotonic()
     server = IsoServer(args.iso) if args.network else None
@@ -181,7 +189,8 @@ def main():
                        prepareSeconds=time.monotonic() - started)
         (bridge.output / 'catalog.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
         print(json.dumps(summary), flush=True)
-        title = bridge.ready['titles'][0]
+        title = (next(t for t in bridge.ready['titles'] if int(t['programmeId'][-2:]) == args.title_number)
+                 if args.title_number else max(bridge.ready['titles'], key=lambda t: t['durationMs']))
         url = bridge.url(title)
         size = min(title['size'], 8 * 1024 * 1024)
         request = urllib.request.Request(url, headers={'Range': f'bytes=0-{size-1}'})
@@ -202,15 +211,15 @@ def main():
             matrix = []
             for player in sorted(Path(args.mpv_root).rglob('mpv.exe')):
                 cases = []
-                for seek in [0, 671.934, 3342.602]:
+                for seek in [0, round(title['durationMs'] / 5000, 3), round(title['durationMs'] * .00096, 3)]:
                     result = subprocess.run([str(player.resolve()), '--no-config', '--vo=null', '--ao=null',
                         '--speed=10', '--start=' + str(seek), '--length=2', '--idle=no', '--keep-open=no',
                         url], capture_output=True, timeout=45,
                         creationflags=subprocess.CREATE_NO_WINDOW)
                     log = result.stdout.decode('utf-8', errors='replace') + result.stderr.decode('utf-8', errors='replace')
                     (bridge.output / (player.parent.name + '-' + str(seek) + '.log')).write_text(log, encoding='utf-8')
-                    success = result.returncode == 0 and 'VO:' in log and 'AO:' in log and 'error' not in log.lower()
-                    cases.append(dict(seek=seek, exitCode=result.returncode, passed=success))
+                    success = result.returncode == 0 and 'VO:' in log and 'AO:' in log and not any(fatal in log for fatal in ['Failed to open', 'No video or audio streams', 'Exiting... (Errors'])
+                    cases.append(dict(seek=seek, exitCode=result.returncode, passed=success, audioDecodeWarnings=log.count('Error decoding audio.')))
                 matrix.append(dict(player=player.parent.name, cases=cases))
                 print(json.dumps(matrix[-1]), flush=True)
             (bridge.output / 'mpv-matrix.json').write_text(json.dumps(matrix, indent=2), encoding='utf-8')
@@ -224,7 +233,7 @@ def main():
             server.version = 'dvd-test-v2'
             changed_rejected = False
             try:
-                urllib.request.urlopen(urllib.request.Request(warm.url(warm.ready['titles'][0]),
+                urllib.request.urlopen(urllib.request.Request(warm.url(next(t for t in warm.ready['titles'] if t['programmeId'] == title['programmeId'])),
                     headers={'Range': 'bytes=2147483648-2147549183'}), timeout=10).read()
             except (urllib.error.HTTPError, ConnectionResetError):
                 changed_rejected = True
@@ -234,8 +243,29 @@ def main():
                           structureCacheHit=metrics['bluray']['structureCacheHit'], changedRejected=changed_rejected, lastErrorCode=metrics['lastErrorCode'])
             (bridge.output / 'network-cache.json').write_text(json.dumps(result, indent=2))
             print(json.dumps(result), flush=True)
-            server.close()
             assert changed_rejected and metrics['lastErrorCode'] == 'remote_changed'
+            interrupted = None
+            try:
+                server.version = 'dvd-test-v3'
+                interrupted = Bridge(args.helper, args.iso, bridge.output / 'interrupted', server.url)
+                server.disconnect = True
+                target = next(t for t in interrupted.ready['titles'] if t['programmeId'] == title['programmeId'])
+                start = min(2147483648, target['size']//2)
+                try:
+                    urllib.request.urlopen(urllib.request.Request(interrupted.url(target),
+                        headers={'Range': f'bytes={start}-{min(start+65535,target["size"]-1)}'}), timeout=10).read()
+                    raise AssertionError('Truncated source read was accepted')
+                except (urllib.error.HTTPError, ConnectionResetError):
+                    pass
+                interrupted.close()
+                interrupted_metrics = json.loads((interrupted.session / 'iso-bridge-metrics.json').read_text())
+                assert interrupted_metrics['lastErrorCode'] == 'network_error', interrupted_metrics.get('lastErrorCode')
+                (bridge.output / 'network-interruption.json').write_text(json.dumps(dict(rejected=True, lastErrorCode=interrupted_metrics['lastErrorCode'])))
+                interrupted = None
+            finally:
+                if interrupted and interrupted.process.poll() is None:
+                    interrupted.close()
+                server.close()
 
 
 if __name__ == '__main__':

@@ -282,6 +282,22 @@ bool FlutterWindow::OnCreate() {
       [this](const auto& call, auto result) {
         const std::string method = call.method_name();
 
+        if (method == "setTaskLocked") {
+          const auto* locked = std::get_if<bool>(call.arguments());
+          if (!locked) {
+            result->Error("invalid_argument", "Expected task lock boolean");
+            return;
+          }
+          if (*locked) SetProp(GetHandle(), L"StreamPathTaskLocked", reinterpret_cast<HANDLE>(1));
+          else RemoveProp(GetHandle(), L"StreamPathTaskLocked");
+          result->Success();
+          return;
+        }
+        if (GetProp(GetHandle(), L"StreamPathTaskLocked") &&
+            (method == "minimize" || method == "toggleMaximize" || method == "toggleFullscreen")) {
+          result->Success();
+          return;
+        }
         // Window controls for the custom Flutter title bar.
         if (method == "activate") {
           RequestActivation();

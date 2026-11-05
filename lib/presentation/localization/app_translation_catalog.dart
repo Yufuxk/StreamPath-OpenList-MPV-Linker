@@ -2,8 +2,18 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  '该 DVD 标题无法转换为固定播放流':
+      'This DVD title cannot be represented as a fixed playback stream',
+  '该 DVD 标题需要交互式菜单操作': 'This DVD title requires interactive menu input',
+  '该 DVD 标题包含随机、计时或循环导航，无法确定播放路径':
+      'This DVD title uses random, timed or looping navigation; its playback path cannot be determined',
+  'DVD 导航数据损坏或超出有效范围': 'DVD navigation data is damaged or out of bounds',
+  '该 DVD 标题的静止等待需要独立导航会话':
+      'A timed still in this DVD title requires a separate navigation session',
+
   '正在识别光盘类型…': 'Detecting disc type…',
-  'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'The DVD has changed. Previous bindings are suspended; please confirm them again.',
+  'DVD 内容已变化，旧绑定暂停应用；请重新确认。':
+      'The DVD has changed. Previous bindings are suspended; please confirm them again.',
   '不支持加密光盘（AACS、BD+、CSS）': 'Encrypted discs (AACS, BD+, CSS) are not supported',
   '光盘标题选择结果无效': 'The disc title selection is invalid',
   '仅支持 Blu-ray 或 DVD ISO 文件': 'Only Blu-ray or DVD ISO files are supported',
@@ -1081,6 +1091,13 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  '该 DVD 标题无法转换为固定播放流': 'この DVD タイトルは固定再生ストリームに変換できません',
+  '该 DVD 标题需要交互式菜单操作': 'この DVD タイトルには対話式メニュー操作が必要です',
+  '该 DVD 标题包含随机、计时或循环导航，无法确定播放路径':
+      'この DVD タイトルにはランダム・時間依存・ループのナビゲーションがあり、再生経路を確定できません',
+  'DVD 导航数据损坏或超出有效范围': 'DVD ナビゲーションデータが破損しているか有効範囲外です',
+  '该 DVD 标题的静止等待需要独立导航会话': 'この DVD タイトルの静止待機には独立したナビゲーションセッションが必要です',
+
   '正在识别光盘类型…': 'ディスク形式を識別中…',
   'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'DVD が変更されています。以前の割り当ては適用されません。再確認してください。',
   '不支持加密光盘（AACS、BD+、CSS）': '暗号化ディスク（AACS、BD+、CSS）には対応していません',
@@ -1761,11 +1778,9 @@ const Map<String, String> japaneseTranslations = <String, String>{
   "配置已保存，但媒体中心容量应用失败": "構成は保存されましたが、メディア センター容量の適用に失敗しました",
   "启动参数（每行一个）": "起動パラメータ (1 行に 1 つ)",
   "全部注入": "すべて注入",
-  "每次播放都注入启动参数；关闭后改为按分类注入":
-      "毎回起動パラメーターを注入します。オフにすると分類別に注入します",
+  "每次播放都注入启动参数；关闭后改为按分类注入": "毎回起動パラメーターを注入します。オフにすると分類別に注入します",
   "动漫注入": "アニメのみ",
-  "影片元数据包含动画类型时注入":
-      "メタデータにアニメーションのジャンルが含まれる場合に注入します",
+  "影片元数据包含动画类型时注入": "メタデータにアニメーションのジャンルが含まれる場合に注入します",
   "电影注入": "映画のみ",
   "影片元数据为电影时注入": "メタデータが映画の場合に注入します",
   "剧集注入": "シリーズのみ",
@@ -2013,6 +2028,12 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  '该 DVD 标题无法转换为固定播放流': '此 DVD 標題無法轉換為固定播放串流',
+  '该 DVD 标题需要交互式菜单操作': '此 DVD 標題需要互動式選單操作',
+  '该 DVD 标题包含随机、计时或循环导航，无法确定播放路径': '此 DVD 標題包含隨機、計時或循環導覽，無法確定播放路徑',
+  'DVD 导航数据损坏或超出有效范围': 'DVD 導覽資料損壞或超出有效範圍',
+  '该 DVD 标题的静止等待需要独立导航会话': '此 DVD 標題的靜止等待需要獨立導覽工作階段',
+
   '正在识别光盘类型…': '正在識別光碟類型…',
   'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'DVD 內容已變更，舊綁定暫停套用；請重新確認。',
   '不支持加密光盘（AACS、BD+、CSS）': '不支援加密光碟（AACS、BD+、CSS）',
@@ -2647,16 +2668,14 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "配置已保存，但媒体中心容量应用失败": "配置已儲存，但媒體中心容量應用失敗",
   "启动参数（每行一个）": "啟動參數（每行一個）",
   "全部注入": "全部注入",
-  "每次播放都注入启动参数；关闭后改为按分类注入":
-      "每次播放都注入啟動參數；關閉後改為按分類注入",
+  "每次播放都注入启动参数；关闭后改为按分类注入": "每次播放都注入啟動參數；關閉後改為按分類注入",
   "动漫注入": "動漫注入",
   "影片元数据包含动画类型时注入": "影片中繼資料包含動畫類型時注入",
   "电影注入": "電影注入",
   "影片元数据为电影时注入": "影片中繼資料為電影時注入",
   "剧集注入": "劇集注入",
   "影片元数据为剧集时注入": "影片中繼資料為劇集時注入",
-  "关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。":
-      "關閉「全部注入」後，僅在影片中繼資料命中已開啟的分類時注入附加參數。",
+  "关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。": "關閉「全部注入」後，僅在影片中繼資料命中已開啟的分類時注入附加參數。",
   "含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。":
       "含 {url}、{subfile}、{start} 的行始終注入；沒有影視庫中繼資料的播放不注入附加參數。",
   "启用 2FA 时请使用 Token": "啟用 2FA 時請使用 Token",

@@ -776,7 +776,7 @@ session/generation/MPLS 并等待 Lua 回执。该链路不依赖菜单进度共
 
 本地与现有网络适配器的未加密 DVD-Video ISO 由同一 ISO Bridge 提供标题播放列表；ISO 准备阶段识别盘种，DVD 不提供蓝光菜单入口。普通 MPV 仅解复用和解码 MPEG-PS，支持不带原生 DVD 功能的构建；不需要 WinFsp、专用 MPV、DVD 菜单或音视频转码。DVD 不加入普通视频扩展名或进度数据库。
 
-固定 `libdvdread 7.1.1`／`libdvdnav 7.0.0` 从本地校验源码归档以 MSVC C11 构建，许可证、归档与构建补丁随包提供。源读取复用 LocalIsoSource／RangeSource、Metadata Cache、BlockCache、If-Range、播放代次和双进程生命周期。标题按 IFO／PGC／Cell 构造固定扇区映射，VOBU 通过 IFO 地址表定位并按需读取 NAV；SCR／PTS／DTS 以 90 kHz 时基和逻辑 Cell 累计时间规范化，随机 Range 的输出字节保持一致。相同物理 Cell 的不同逻辑位置具有各自时间轴。默认第一角度；交错角度、随机／交互 Cell 与非线性跨 PGC 路径明确报告不支持，CSS 加密不解密。不可线性播放的标题在列表中明确提示并跳过，其余标题仍可选择；整盘没有可用标题时结束准备。DVD 位图字幕包随 MPEG-PS 保留，IFO 调色板未单独注入，字幕颜色需要单独验证。
+固定 `libdvdread 7.1.1`／`libdvdnav 7.0.0` 从本地校验源码归档以 MSVC C11 构建，许可证、归档与构建补丁随包提供。源读取复用 LocalIsoSource／RangeSource、Metadata Cache、BlockCache、If-Range、播放代次和双进程生命周期。标题从复位 VM 寄存器进入，libdvdnav 执行 pre／Cell／post 命令和确定性跨 PGC 跳转；进入菜单或其他标题即结束当前标题路径。普通 Cell 直接构造固定扇区映射，交错 Cell 按 NAV／DSI 与 libdvdnav 的第一角度 VOBU／ILVU 算法建立固定索引；索引完成后 HTTP 请求只读取不可变映射，不共享顺序导航状态。交错索引使用独立 2 KiB BlockCache 按需读取 NAV，不遍历音视频扇区；普通标题无需初始化扫描 NAV，远程交错标题的初始化成本随选定路径的 NAV 数量增长，长标题在高延迟来源上的首帧等待仍需评估。SCR／PTS／DTS 以 90 kHz 时基和逻辑 Cell 累计时间规范化，随机 Range 的输出字节保持一致，映射查找采用二分。相同物理 Cell 的不同逻辑位置具有各自时间轴，章节只包含实际经过的路径。随机／计时／计数器命令、循环、Cell 中途恢复及静止等待明确报告不支持；无限等待和交互按钮要求独立菜单会话。CSS 加密不解密。不可线性播放的标题在列表中明确提示并跳过，其余标题仍可选择；整盘没有可用标题时结束准备。DVD 位图字幕包随 MPEG-PS 保留，IFO 调色板未单独注入，字幕颜色需要单独验证。
 
 结果包含 `discType`，标题使用 `programmeId`；Blu-ray 五位 MPLS 与旧 manifest／catalog／字幕绑定可继续读取，DVD 使用 `dvd-title-01`～`dvd-title-99`，内部续播身份为 `dvd-title://01` 等，不用于 MPV 启动。目录选择、排序、逐标题续播和影视库状态导入／导出复用原有独立 ISO 状态；本地 DVD 使用 `legacyTitle`，本地 Blu-ray 沿用 `localHdmvMenu`，进度读取按播放模式选择对应服务。
 

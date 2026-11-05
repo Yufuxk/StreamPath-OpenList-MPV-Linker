@@ -1,4 +1,8 @@
 #include "dvd_disc.h"
+#pragma warning(push)
+#pragma warning(disable: 4201)
+#include "dvd_navigation.h"
+#pragma warning(pop)
 
 #include <array>
 #include <cstring>
@@ -8,6 +12,16 @@ using namespace streampath::iso_bridge;
 
 int main() {
   try {
+    const std::array<std::uint8_t, 8> set_gprm{0x71,0,0,1,0,0,0,0};
+    const std::array<std::uint8_t, 8> link_cell{0x20,0x07,0,0,0,0,0,3};
+    const std::array<std::uint8_t, 8> random{0x78,0,0,1,0,2,0,0};
+    const std::array<std::uint8_t, 8> timer{0x52,0,0,1,0,0,0,0};
+    const std::array<std::uint8_t, 8> counter{0x53,0,0,1,0,0x80,0,0};
+    const std::array<std::uint8_t, 8> register_mode{0x53,0,0,1,0,0,0,0};
+    if (!sp_dvdnav_command_fixed(register_mode.data()) || !sp_dvdnav_command_fixed(set_gprm.data()) || !sp_dvdnav_command_fixed(link_cell.data()) ||
+        sp_dvdnav_command_fixed(random.data()) || sp_dvdnav_command_fixed(timer.data()) ||
+        sp_dvdnav_command_fixed(counter.data()))
+      throw std::runtime_error("DVD deterministic command policy is invalid");
     std::array<std::uint8_t, 2048> sector{};
     // MPEG-2 pack，SCR=0，PTS=90000，DTS=0，其余为 padding_stream。
     const std::uint8_t prefix[] = {0,0,1,0xba,0x44,0,4,0,4,1,0,0,3,0,

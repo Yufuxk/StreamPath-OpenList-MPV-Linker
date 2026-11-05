@@ -3208,7 +3208,14 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
           static_cast<void>(read_frame(pipe.get()));
           return 0;
         }
-        if (dvd->detected()) titles = dvd->enumerate();
+        if (dvd->detected()) {
+          bridge::BlockCache navigation_cache(source, 2048, 4096);
+          titles = dvd->enumerate(&navigation_cache);
+          const auto nav_metrics = navigation_cache.metrics();
+          std::fprintf(stderr, "DVD sparse NAV cache: hits=%llu misses=%llu\n",
+              static_cast<unsigned long long>(nav_metrics.hits),
+              static_cast<unsigned long long>(nav_metrics.cache_miss_count));
+        }
         else dvd.reset();
       }
       if (dvd) {

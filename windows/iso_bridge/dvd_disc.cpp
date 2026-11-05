@@ -2,6 +2,7 @@
 
 #pragma warning(push)
 #pragma warning(disable: 4201)
+#include "dvd_navigation.h"
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
 #include <dvdread/nav_read.h>
@@ -12,6 +13,8 @@
 #include <array>
 #include <cstring>
 #include <map>
+#include <set>
+#include <chrono>
 
 namespace streampath::iso_bridge {
 namespace {
@@ -156,8 +159,14 @@ struct DvdDisc::Impl {
     if (!result) throw DvdError("invalid_disc", "DVD title VOB cannot be opened");
     return result;
   }
-  void sector(int vts, std::uint32_t offset, std::uint8_t* data) {
-    const auto count = DVDReadBlocks(vob(vts), static_cast<int>(offset), 1, data);
+  void sector(int vts, std::uint32_t offset, std::uint8_t* data, BlockCache* sparse = nullptr) {
+    auto* file = vob(vts);
+    auto* original = cache;
+    if (sparse) cache = sparse;
+    int count = 0;
+    try { count = static_cast<int>(DVDReadBlocks(file, static_cast<int>(offset), 1, data)); }
+    catch (...) { cache = original; throw; }
+    cache = original;
     rethrow();
     if (count != 1) throw DvdError("invalid_disc", "DVD title sector read failed at " + std::to_string(offset));
   }
@@ -174,87 +183,206 @@ void DvdDisc::bind(BlockCache& cache, std::uint64_t generation, std::size_t read
   impl_->error = {};
 }
 
-std::vector<TitleInfo> DvdDisc::enumerate() {
+namespace {
+void validate_pgc(const pgc_t* pgc) {
+  if (!pgc || !pgc->cell_playback || !pgc->program_map || !pgc->nr_of_cells || !pgc->nr_of_programs)
+    throw DvdError("invalid_dvd_navigation", "DVD PGC is incomplete");
+  for (unsigned p = 0; p < pgc->nr_of_programs; ++p)
+    if (!pgc->program_map[p] || pgc->program_map[p] > pgc->nr_of_cells)
+      throw DvdError("invalid_dvd_navigation", "DVD program cell is out of bounds");
+  bool angle = false;
+  for (unsigned i = 0; i < pgc->nr_of_cells; ++i) {
+    const auto& c = pgc->cell_playback[i];
+    if (c.last_sector < c.first_sector || c.last_sector > INT32_MAX)
+      throw DvdError("invalid_dvd_navigation", "DVD cell sector bounds are invalid");
+    if (c.block_type == BLOCK_TYPE_ANGLE_BLOCK) {
+      if (c.block_mode == BLOCK_MODE_FIRST_CELL && !angle) angle = true;
+      else if (!angle || c.block_mode < BLOCK_MODE_IN_BLOCK)
+        throw DvdError("invalid_dvd_navigation", "DVD angle block is invalid");
+      if (c.block_mode == BLOCK_MODE_LAST_CELL) angle = false;
+    } else if (angle || c.block_type || c.block_mode)
+      throw DvdError("invalid_dvd_navigation", "DVD angle block is unterminated");
+    if (c.cell_cmd_nr && (!pgc->command_tbl || c.cell_cmd_nr > pgc->command_tbl->nr_of_cell))
+      throw DvdError("invalid_dvd_navigation", "DVD cell command is out of bounds");
+  }
+  if (angle) throw DvdError("invalid_dvd_navigation", "DVD angle block is unterminated");
+
+}
+void parse_nav(const std::uint8_t* nav, std::uint32_t sector, pci_t& pci, dsi_t& dsi) {
+  if (std::memcmp(nav, "\0\0\1\xba", 4) ||
+      std::memcmp(nav + 38, "\0\0\1\xbf\3\xd4\0", 7) ||
+      std::memcmp(nav + 1024, "\0\0\1\xbf\3\xfa\1", 7))
+    throw DvdError("invalid_dvd_navigation", "DVD NAV PCI/DSI packets are invalid");
+  navRead_PCI(&pci, const_cast<std::uint8_t*>(nav) + 45);
+  navRead_DSI(&dsi, const_cast<std::uint8_t*>(nav) + 1031);
+  if (pci.pci_gi.nv_pck_lbn != sector || dsi.dsi_gi.nv_pck_lbn != sector)
+    throw DvdError("invalid_dvd_navigation", "DVD NAV address does not match its sector");
+  if (pci.hli.hl_gi.hli_ss && pci.hli.hl_gi.btn_ns)
+    throw DvdError("dvd_menu_required", "DVD title contains interactive buttons");
+}
+bool unavailable_code(const std::string& code) {
+  return code == "dvd_menu_required" || code == "dvd_navigation_indeterminate" ||
+      code == "dvd_still_unsupported" || code == "invalid_dvd_navigation";
+}
+}
+
+std::vector<TitleInfo> DvdDisc::enumerate(BlockCache* navigation_cache) {
   auto& self = *impl_;
   if (!detected()) return {};
-  // 使用独立导航上下文核对 DVD 标题表，读取回调与缓存仍由当前会话提供。
+  const auto started = std::chrono::steady_clock::now();
   const dvdnav_logger_cb logger{[](void*, dvdnav_logger_level_t, const char*, va_list) {}};
   self.nav_callbacks = {self.callbacks.pf_seek, self.callbacks.pf_read, nullptr};
-  if (dvdnav_open_stream2(&self.nav, &self, &logger, &self.nav_callbacks) != DVDNAV_STATUS_OK)
-    throw DvdError("invalid_disc", "DVD navigation structure cannot be opened");
-  self.rethrow();
-  dvdnav_set_readahead_flag(self.nav, 0);
   std::vector<TitleInfo> result;
+  std::string last_code = "invalid_disc";
+  std::uint64_t nav_reads = 0, spans = 0;
   for (std::uint32_t index = 0; index < self.vmg->tt_srpt->nr_of_srpts; ++index) {
     try {
-    const auto& entry = self.vmg->tt_srpt->title[index];
-    auto* vts = self.ifo(entry.title_set_nr);
-    if (!vts->vts_ptt_srpt || !vts->vts_pgcit || !vts->vts_vobu_admap ||
-        entry.vts_ttn == 0 || entry.vts_ttn > vts->vts_ptt_srpt->nr_of_srpts)
-      throw DvdError("invalid_disc", "DVD title tables are incomplete");
-    const auto& parts = vts->vts_ptt_srpt->title[entry.vts_ttn - 1];
-    if (parts.nr_of_ptts == 0) continue;
-    const auto pgcn = parts.ptt[0].pgcn;
-    if (pgcn == 0 || pgcn > vts->vts_pgcit->nr_of_pgci_srp)
-      throw DvdError("invalid_disc", "DVD PGC index is invalid");
-    const auto* pgc = vts->vts_pgcit->pgci_srp[pgcn - 1].pgc;
-    if (!pgc || !pgc->cell_playback || !pgc->program_map) throw DvdError("invalid_disc", "DVD PGC is incomplete");
-    if (pgc->pg_playback_mode != 0)
-      throw DvdError("unsupported_dvd_title", "DVD title uses random program playback");
-    for (unsigned part = 0; part < parts.nr_of_ptts; ++part) {
-      if (parts.ptt[part].pgcn != pgcn || parts.ptt[part].pgn == 0 || parts.ptt[part].pgn > pgc->nr_of_programs)
-        throw DvdError("unsupported_dvd_title", "DVD title requires a non-linear PGC path");
-    }
-    Impl::Title title{};
-    title.vts = entry.title_set_nr;
-    title.info.title_index = index;
-    title.info.playlist = index + 1;
-    title.info.dvd = true;
-    std::int64_t elapsed = 0;
-    std::vector<std::int64_t> cell_times(pgc->nr_of_cells);
-    bool in_angle = false;
-    const auto first_cell = pgc->program_map[parts.ptt[0].pgn - 1];
-    if (first_cell == 0 || first_cell > pgc->nr_of_cells)
-      throw DvdError("invalid_disc", "DVD first program cell is invalid");
-    for (unsigned cell_index = first_cell - 1; cell_index < pgc->nr_of_cells; ++cell_index) {
-      const auto& cell = pgc->cell_playback[cell_index];
-      cell_times[cell_index] = elapsed;
-      if (cell.block_type == BLOCK_TYPE_ANGLE_BLOCK) {
-        if (cell.block_mode == BLOCK_MODE_FIRST_CELL) in_angle = false;
-        if (in_angle) continue;
-        in_angle = true;
-      } else in_angle = false;
-      if (cell.interleaved || cell.playback_mode || cell.still_time || cell.cell_cmd_nr)
-        throw DvdError("unsupported_dvd_title", "DVD title requires interleaved or interactive cell navigation");
-      if (cell.last_sector < cell.first_sector) throw DvdError("invalid_disc", "DVD cell sector range is invalid");
-      const auto bytes = (std::uint64_t(cell.last_sector) - cell.first_sector + 1) * kSector;
-      title.cells.push_back({title.info.size, title.info.size + bytes, cell.first_sector, cell.last_sector, elapsed});
-      title.info.size += bytes;
-      elapsed += dvd_time(cell.playback_time);
-    }
-    title.info.duration_milliseconds = static_cast<std::uint64_t>(elapsed / 90);
-    for (unsigned part = 0; part < parts.nr_of_ptts; ++part) {
-      const auto cell = pgc->program_map[parts.ptt[part].pgn - 1];
-      if (cell == 0 || cell > cell_times.size()) throw DvdError("invalid_disc", "DVD chapter cell is invalid");
-      const auto start = static_cast<std::uint64_t>(cell_times[cell - 1] / 90);
-      if (!title.info.chapters.empty() && start <= title.info.chapters.back().start_milliseconds) continue;
-      title.info.chapters.push_back({start, 0, {}});
-    }
-    for (std::size_t part = 0; part < title.info.chapters.size(); ++part) {
-      auto& chapter = title.info.chapters[part];
-      const auto end = part + 1 < title.info.chapters.size() ? title.info.chapters[part + 1].start_milliseconds : title.info.duration_milliseconds;
-      chapter.duration_milliseconds = end - chapter.start_milliseconds;
-    }
-    if (title.info.size && title.info.duration_milliseconds) {
-      result.push_back(title.info);
-      self.titles.push_back(std::move(title));
-    }
+      const auto& entry = self.vmg->tt_srpt->title[index];
+      auto* vts = self.ifo(entry.title_set_nr);
+      if (!vts->vts_ptt_srpt || !vts->vts_pgcit || !vts->vts_vobu_admap ||
+          !entry.vts_ttn || entry.vts_ttn > vts->vts_ptt_srpt->nr_of_srpts)
+        throw DvdError("invalid_dvd_navigation", "DVD title tables are incomplete");
+      const auto vob_sectors = DVDFileSize(self.vob(entry.title_set_nr));
+      self.rethrow();
+      if (vob_sectors <= 0) throw DvdError("invalid_dvd_navigation", "DVD VOB file is empty or unreadable");
+      const auto* address_map = vts->vts_vobu_admap;
+      if (address_map->last_byte < VOBU_ADMAP_SIZE ||
+          (address_map->last_byte + 1 - VOBU_ADMAP_SIZE) % sizeof(std::uint32_t))
+        throw DvdError("invalid_dvd_navigation", "DVD VOBU address table size is invalid");
+      const auto address_count = (address_map->last_byte + 1 - VOBU_ADMAP_SIZE) / sizeof(std::uint32_t);
+      if (!address_count || !std::is_sorted(address_map->vobu_start_sectors, address_map->vobu_start_sectors + address_count))
+        throw DvdError("invalid_dvd_navigation", "DVD VOBU address table is empty or unordered");
+      const auto& parts = vts->vts_ptt_srpt->title[entry.vts_ttn - 1];
+      if (!parts.nr_of_ptts) continue;
+      // 在进入 VM 前校验本 VTS 的表结构，播放能力只按实际经过的路径判断。
+      for (unsigned p = 0; p < vts->vts_pgcit->nr_of_pgci_srp; ++p)
+        validate_pgc(vts->vts_pgcit->pgci_srp[p].pgc);
+      for (unsigned p = 0; p < parts.nr_of_ptts; ++p) {
+        const auto& part = parts.ptt[p];
+        if (!part.pgcn || part.pgcn > vts->vts_pgcit->nr_of_pgci_srp || !part.pgn ||
+            part.pgn > vts->vts_pgcit->pgci_srp[part.pgcn - 1].pgc->nr_of_programs)
+          throw DvdError("invalid_dvd_navigation", "DVD chapter program is invalid");
+      }
+      if (self.nav) { dvdnav_close(self.nav); self.nav = nullptr; }
+      const auto opened = dvdnav_open_stream2(&self.nav, &self, &logger, &self.nav_callbacks);
+      self.rethrow();
+      if (opened != DVDNAV_STATUS_OK)
+        throw DvdError("invalid_dvd_navigation", "DVD VM cannot be opened");
+      dvdnav_set_readahead_flag(self.nav, 0);
+      const auto played = sp_dvdnav_title(self.nav, static_cast<int>(index + 1));
+      self.rethrow();
+      if (!played) throw DvdError("invalid_dvd_navigation", "DVD VM cannot enter title");
+      dvdnav_angle_change(self.nav, 1);
+      Impl::Title title{};
+      title.vts = entry.title_set_nr;
+      title.info.title_index = index;
+      title.info.playlist = index + 1;
+      title.info.dvd = true;
+      std::int64_t elapsed = 0;
+      std::set<std::vector<int>> visited;
+      const auto append = [&](std::uint32_t first, std::uint32_t last) {
+        const auto bytes = (std::uint64_t(last) - first + 1) * kSector;
+        title.cells.push_back({title.info.size, title.info.size + bytes, first, last, elapsed});
+        title.info.size += bytes;
+      };
+      for (;;) {
+        sp_dvdnav_state state{};
+        sp_dvdnav_state_get(self.nav, &state);
+        if (!state.title_domain || state.vts_title != entry.vts_ttn || state.vts != title.vts) {
+          if (title.cells.empty()) throw DvdError("dvd_menu_required", "DVD title enters a menu before any media");
+          break;
+        }
+        if (state.navigation_error)
+          throw DvdError("dvd_navigation_indeterminate", "DVD VM uses non-deterministic commands or exceeds navigation limits");
+        if (state.stopped) break;
+        if (!state.pgc || state.cell < 1 || state.cell > state.pgc->nr_of_cells)
+          throw DvdError("invalid_dvd_navigation", "DVD VM cell position is invalid");
+        if (state.block != 0)
+          throw DvdError("dvd_navigation_indeterminate", "DVD VM resumes inside a cell without a fixed stream mapping");
+        std::vector<int> key{state.vts, state.pgcn, state.cell};
+        key.insert(key.end(), std::begin(state.registers), std::end(state.registers));
+        if (!visited.insert(std::move(key)).second || visited.size() > 65536)
+          throw DvdError("dvd_navigation_indeterminate", "DVD title navigation does not terminate");
+        const auto& cell = state.pgc->cell_playback[state.cell - 1];
+        if (cell.last_sector >= static_cast<std::uint64_t>(vob_sectors))
+          throw DvdError("invalid_dvd_navigation", "DVD cell exceeds its VOB file");
+        if (cell.block_type == BLOCK_TYPE_ANGLE_BLOCK && cell.block_mode != BLOCK_MODE_FIRST_CELL)
+          throw DvdError("dvd_navigation_indeterminate", "DVD VM selected a non-default angle cell");
+        dvdnav_angle_change(self.nav, 1);
+        auto logical_last = state.cell;
+        if (cell.block_type == BLOCK_TYPE_ANGLE_BLOCK) {
+          while (logical_last < state.pgc->nr_of_cells &&
+              state.pgc->cell_playback[logical_last].block_type == BLOCK_TYPE_ANGLE_BLOCK &&
+              state.pgc->cell_playback[logical_last].block_mode >= BLOCK_MODE_IN_BLOCK) ++logical_last;
+        }
+        const auto pgc_still = logical_last == state.pgc->nr_of_cells ? state.pgc->still_time : 0;
+        const auto still = static_cast<unsigned>(cell.still_time) + pgc_still;
+        if (cell.still_time == 255 || pgc_still == 255)
+          throw DvdError("dvd_menu_required", "DVD title waits indefinitely for user input");
+        if (still || cell.playback_mode)
+          throw DvdError("dvd_still_unsupported", "DVD timed still requires a navigation session to preserve frame hold and audio timing");
+        for (unsigned p = 0; p < parts.nr_of_ptts; ++p) {
+          const auto& part = parts.ptt[p];
+          if (part.pgcn == state.pgcn && state.pgc->program_map[part.pgn - 1] == state.cell &&
+              (title.info.chapters.empty() || title.info.chapters.back().start_milliseconds < static_cast<std::uint64_t>(elapsed / 90)))
+            title.info.chapters.push_back({static_cast<std::uint64_t>(elapsed / 90), 0, {}});
+        }
+        if (!cell.interleaved) {
+          append(cell.first_sector, cell.last_sector);
+        } else {
+          // 只遍历 NAV，物理跳转与 ILVU 长度由固定版本 libdvdnav 选择角度。
+          std::set<std::uint32_t> seen;
+          auto current = cell.first_sector;
+          for (;;) {
+            if (current < cell.first_sector || current > cell.last_sector || !seen.insert(current).second)
+              throw DvdError("invalid_dvd_navigation", "DVD ILVU jump leaves the cell or loops");
+            std::array<std::uint8_t, kSector> nav{};
+            self.sector(title.vts, current, nav.data(), navigation_cache);
+            ++nav_reads;
+            pci_t pci{}; dsi_t dsi{};
+            parse_nav(nav.data(), current, pci, dsi);
+            int32_t length = 0, next = 0;
+            sp_dvdnav_vobu(self.nav, &pci, &dsi, &length, &next);
+            if (length < 0 || static_cast<std::uint64_t>(current) + length > cell.last_sector ||
+                dsi.dsi_gi.vobu_ea > static_cast<std::uint32_t>(length))
+              throw DvdError("invalid_dvd_navigation", "DVD ILVU extent is out of bounds");
+            append(current, current + static_cast<std::uint32_t>(length));
+            if (next == SRI_END_OF_CELL) break;
+            const auto target = static_cast<std::int64_t>(current) + next;
+            if (target < cell.first_sector || target > cell.last_sector ||
+                (next > 0 && target <= static_cast<std::int64_t>(current) + length))
+              throw DvdError("invalid_dvd_navigation", "DVD ILVU next address is invalid");
+            current = static_cast<std::uint32_t>(target);
+          }
+        }
+        elapsed += dvd_time(cell.playback_time);
+        sp_dvdnav_next_cell(self.nav);
+        self.rethrow();
+      }
+      title.info.duration_milliseconds = static_cast<std::uint64_t>(elapsed / 90);
+      if (title.info.chapters.empty()) title.info.chapters.push_back({0, title.info.duration_milliseconds, {}});
+      for (std::size_t p = 0; p < title.info.chapters.size(); ++p) {
+        auto& chapter = title.info.chapters[p];
+        const auto end = p + 1 < title.info.chapters.size() ? title.info.chapters[p + 1].start_milliseconds : title.info.duration_milliseconds;
+        chapter.duration_milliseconds = end - chapter.start_milliseconds;
+      }
+      if (title.info.size && title.info.duration_milliseconds) {
+        spans += title.cells.size();
+        result.push_back(title.info);
+        self.titles.push_back(std::move(title));
+      }
     } catch (const DvdError& error) {
-      if (error.code != "unsupported_dvd_title") throw;
+      if (!unavailable_code(error.code)) throw;
+      last_code = error.code;
+      std::fprintf(stderr, "DVD title %u unavailable: %s: %s\n", index + 1, error.code.c_str(), error.what());
       self.unavailable.push_back(index + 1);
     }
   }
-  if (result.empty()) throw DvdError(self.unavailable.empty() ? "invalid_disc" : "unsupported_dvd_title", "No linear DVD title was found");
+  if (self.nav) { dvdnav_close(self.nav); self.nav = nullptr; }
+  std::fprintf(stderr, "DVD navigation index: titles=%zu spans=%llu navSectors=%llu elapsedMs=%lld\n",
+      result.size(), static_cast<unsigned long long>(spans), static_cast<unsigned long long>(nav_reads),
+      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()));
+  if (result.empty()) throw DvdError(last_code, "No playable DVD title path was found");
   return result;
 }
 
@@ -271,7 +399,8 @@ std::size_t DvdDisc::read(std::uint32_t id, std::uint64_t offset, std::uint8_t* 
   std::uint32_t source_anchor = 0;
   while (completed < length) {
     if (self.generation && !self.cache->is_playback_current(self.generation)) return completed;
-    const auto cell = std::find_if(title->cells.begin(), title->cells.end(), [offset](const Impl::Cell& c) { return offset >= c.begin && offset < c.end; });
+    const auto cell = std::prev(std::upper_bound(title->cells.begin(), title->cells.end(), offset,
+        [](std::uint64_t value, const Impl::Cell& c) { return value < c.begin; }));
     const auto physical = cell->first + static_cast<std::uint32_t>((offset - cell->begin) / kSector);
     const auto* map = self.ifo(title->vts)->vts_vobu_admap;
     const auto count = (map->last_byte + 1 - VOBU_ADMAP_SIZE) / sizeof(std::uint32_t);
@@ -281,10 +410,8 @@ std::size_t DvdDisc::read(std::uint32_t id, std::uint64_t offset, std::uint8_t* 
     const auto nav_sector = *(upper - 1);
     if (nav_sector != previous_nav || previous_cell != &*cell) {
       self.sector(title->vts, nav_sector, nav.data());
-      if (nav[38] != 0 || nav[39] != 0 || nav[40] != 1 || nav[41] != 0xbf || nav[44] != 0)
-        throw DvdError("invalid_disc", "DVD NAV packet is invalid");
-      pci_t pci{};
-      navRead_PCI(&pci, nav.data() + 45);
+      pci_t pci{}; dsi_t dsi{};
+      parse_nav(nav.data(), nav_sector, pci, dsi);
       adjustment = kEpoch + cell->elapsed + dvd_time(pci.pci_gi.e_eltm) - pci.pci_gi.vobu_s_ptm;
       source_anchor = pci.pci_gi.vobu_s_ptm;
       previous_nav = nav_sector;

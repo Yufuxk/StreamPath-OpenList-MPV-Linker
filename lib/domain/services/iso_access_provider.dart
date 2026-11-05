@@ -17,7 +17,11 @@ import 'webdav_service.dart';
 String isoBridgePlaybackErrorMessage(String code) => switch (code) {
   'remote_changed' => '远端 ISO 在播放期间发生变化',
   'invalid_disc' => '没有解析到可播放的 Blu-ray 或 DVD 标题',
-  'unsupported_dvd_title' => '该 DVD 标题需要暂不支持的交互或交错角度导航',
+  'dvd_menu_required' => '该 DVD 标题需要交互式菜单操作',
+  'dvd_navigation_indeterminate' => '该 DVD 标题包含随机、计时或循环导航，无法确定播放路径',
+  'invalid_dvd_navigation' => 'DVD 导航数据损坏或超出有效范围',
+  'dvd_still_unsupported' => '该 DVD 标题的静止等待需要独立导航会话',
+  'unsupported_dvd_title' => '该 DVD 标题无法转换为固定播放流',
   'encrypted_disc' => '不支持加密光盘（AACS、BD+、CSS）',
   'network_error' => 'ISO Bridge 远端读取失败',
   'winfsp_unavailable' => '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单',
@@ -935,9 +939,15 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
       'length_unavailable' => AppException.network('当前 WebDAV 源不支持 ISO 流式随机读取'),
       'remote_changed' => AppException.network('远端 ISO 在播放期间发生变化'),
       'encrypted_disc' => AppException.config('不支持加密光盘（AACS、BD+、CSS）'),
-      'unsupported_dvd_title' => AppException.config(
-        '该 DVD 标题需要暂不支持的交互或交错角度导航',
+      'dvd_menu_required' ||
+      'dvd_navigation_indeterminate' ||
+      'dvd_still_unsupported' => AppException.config(
+        isoBridgePlaybackErrorMessage(code),
       ),
+      'invalid_dvd_navigation' => AppException.parse(
+        isoBridgePlaybackErrorMessage(code),
+      ),
+      'unsupported_dvd_title' => AppException.config('该 DVD 标题无法转换为固定播放流'),
       'libbluray_unavailable' => AppException.config(
         'ISO Bridge 缺少固定版本 libbluray',
       ),

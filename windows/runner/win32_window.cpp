@@ -56,7 +56,7 @@ int GetResizeMargin(HWND window) {
 }
 
 LRESULT HitTestCustomFrame(HWND window, LPARAM lparam, bool fullscreen) {
-  if (fullscreen) return HTCLIENT;
+  if (fullscreen || GetProp(window, L"StreamPathTaskLocked")) return HTCLIENT;
   POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
   ScreenToClient(window, &point);
   RECT client_rect{};
@@ -418,6 +418,19 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  if (GetProp(hwnd, L"StreamPathTaskLocked")) {
+    if (message == WM_WINDOWPOSCHANGING) {
+      auto* position = reinterpret_cast<WINDOWPOS*>(lparam);
+      position->flags |= SWP_NOMOVE | SWP_NOSIZE;
+    }
+    if (message == WM_SYSCOMMAND) {
+      const WPARAM command = wparam & 0xFFF0;
+      if (command == SC_MOVE || command == SC_SIZE || command == SC_MINIMIZE ||
+          command == SC_MAXIMIZE || command == SC_RESTORE || command == SC_KEYMENU) return 0;
+    }
+    if (message == WM_NCHITTEST) return HTCLIENT;
+    if (message == WM_NCLBUTTONDBLCLK || message == WM_NCRBUTTONUP) return 0;
+  }
   switch (message) {
     case WM_NCCALCSIZE:
       // 最大化的系统边框位于屏幕外，客户区只覆盖可见区域。

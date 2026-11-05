@@ -22,7 +22,7 @@ class DvdDisc final {
   DvdDisc(const DvdDisc&) = delete;
   DvdDisc& operator=(const DvdDisc&) = delete;
   bool detected() const;
-  std::vector<TitleInfo> enumerate();
+  std::vector<TitleInfo> enumerate(BlockCache* navigation_cache = nullptr);
   const std::vector<std::uint32_t>& unavailable_titles() const;
   void bind(BlockCache& cache, std::uint64_t generation, std::size_t read_ahead);
   std::size_t read(std::uint32_t title, std::uint64_t offset,

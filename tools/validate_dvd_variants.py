@@ -86,7 +86,7 @@ def main():
             try:
                 bridge = Bridge(args.helper, args.iso, output / mode, server.url)
             except RuntimeError as failure:
-                if mode != 'unsupported-interactive' or failure.args[0].get('code') != 'unsupported_dvd_title':
+                if mode != 'unsupported-interactive' or failure.args[0].get('code') != 'dvd_menu_required':
                     raise
                 results.append(dict(mode=mode, rejected=True))
                 continue

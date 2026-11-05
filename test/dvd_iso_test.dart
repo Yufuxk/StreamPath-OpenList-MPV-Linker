@@ -12,6 +12,25 @@ import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/iso_subtitle_matcher.dart';
 
 void main() {
+  test('DVD 导航错误区分菜单、路径、结构与静止等待', () {
+    expect(
+      isoBridgePlaybackErrorMessage('dvd_menu_required'),
+      '该 DVD 标题需要交互式菜单操作',
+    );
+    expect(
+      isoBridgePlaybackErrorMessage('dvd_navigation_indeterminate'),
+      contains('无法确定播放路径'),
+    );
+    expect(
+      isoBridgePlaybackErrorMessage('invalid_dvd_navigation'),
+      'DVD 导航数据损坏或超出有效范围',
+    );
+    expect(
+      isoBridgePlaybackErrorMessage('dvd_still_unsupported'),
+      contains('静止等待'),
+    );
+    expect(isoBridgePlaybackErrorMessage('network_error'), 'ISO Bridge 远端读取失败');
+  });
   test('本地 DVD 文件 URI 与原路径使用相同身份，保留文件名中的井号', () {
     const path = r'C:\DVD\Disc#01.iso';
     final raw = IsoPlaybackService.libraryKey(
