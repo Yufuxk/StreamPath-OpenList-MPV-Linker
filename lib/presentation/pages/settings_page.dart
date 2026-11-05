@@ -8,6 +8,9 @@ import '../widgets/sp_control_bar.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+import '../../features/mpv_manager/mpv_manager_page.dart';
+import '../../features/mpv_manager/mpv_file_store.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_notice.dart';
@@ -1985,6 +1988,31 @@ class SettingsPageState extends State<SettingsPage> {
                       ),
                     );
                   },
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SPButton(
+                  controlKey: const Key('mpv-manager-button'),
+                  onPressed: () {
+                    final store = context.read<AppState>().configStore;
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => MpvManagerPage(
+                          player: store.current.toPlayerConfig(),
+                          store: MpvFileStore(
+                            p.join(
+                              p.dirname(store.configFilePath),
+                              'mpv_manager_history',
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                  label: const Flexible(child: AppText('管理已保存的 MPV 配置')),
+                  icon: Icon(SPIcons.playerSettings),
                 ),
               ),
               const SizedBox(height: 12),
