@@ -53,12 +53,23 @@ class WebDavClient {
   /// 执行 PROPFIND（Depth: 1），返回原始 XML 文本。
   ///
   /// [path] 为相对路径（如 `电影/动作`、`''` 表示根目录）。
-  Future<String> propfind(String path, {bool namesOnly = false}) async {
+  Future<String> propfind(String path, {bool namesOnly = false}) =>
+      _propfind(path, namesOnly: namesOnly);
+
+  Future<String> propfindForTask(String path, CancelToken cancelToken) =>
+      _propfind(path, namesOnly: true, cancelToken: cancelToken);
+
+  Future<String> _propfind(
+    String path, {
+    bool namesOnly = false,
+    CancelToken? cancelToken,
+  }) async {
     final url = joinUrl(baseUrl, path);
     try {
       final response = await _requestFollowingRedirects<String>(
         url: url,
         method: 'PROPFIND',
+        cancelToken: cancelToken,
         headers: {
           'Depth': '1',
           if (namesOnly) 'Content-Type': 'application/xml; charset=utf-8',
@@ -109,6 +120,25 @@ class WebDavClient {
     String href, {
     int? maxBytes,
     Duration? timeout,
+  }) => _getFileBytes(href, maxBytes: maxBytes, timeout: timeout);
+
+  Future<List<int>> getTaskFileBytes(
+    String href, {
+    required int maxBytes,
+    required Duration timeout,
+    required CancelToken cancelToken,
+  }) => _getFileBytes(
+    href,
+    maxBytes: maxBytes,
+    timeout: timeout,
+    cancelToken: cancelToken,
+  );
+
+  Future<List<int>> _getFileBytes(
+    String href, {
+    int? maxBytes,
+    Duration? timeout,
+    CancelToken? cancelToken,
   }) async {
     final url = resolveHref(baseUrl, href);
     try {
@@ -117,6 +147,7 @@ class WebDavClient {
         method: 'GET',
         responseType: ResponseType.stream,
         requestTimeout: timeout,
+        cancelToken: cancelToken,
       );
       final body = response.data;
       if (body == null) return const [];

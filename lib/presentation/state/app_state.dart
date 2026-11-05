@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import '../../domain/services/film_scan_scheduler.dart';
 import '../../features/video_cache/video_cache_service.dart';
 import '../../features/video_cache/video_cache_models.dart';
@@ -1013,6 +1014,55 @@ class AppState extends ChangeNotifier {
 
   FilmScanScheduler? _filmScanScheduler;
   bool catalogWritesSuspended = false;
+  final fullSpeedExclusive = ValueNotifier(false);
+
+  Future<void> _withFullSpeedExclusive(
+    Future<void> Function() operation,
+  ) async {
+    if (_closing || fullSpeedExclusive.value || catalogWritesSuspended) {
+      throw const FilmCatalogException('fullSpeedStartBlocked');
+    }
+    fullSpeedExclusive.value = true;
+    var nativeLocked = false;
+    try {
+      if (_downloadPreparation > 0 ||
+          await anyPlaybackActive(
+            catalog: _filmCatalogValue,
+            ignoreFullSpeed: true,
+          )) {
+        throw const FilmCatalogException('fullSpeedStartBlocked');
+      }
+      try {
+        await const MethodChannel(
+          'streampath/appearance',
+        ).invokeMethod<void>('setTaskLocked', true);
+        nativeLocked = true;
+      } on MissingPluginException {
+        // 非 Windows 和单元测试没有窗口通道。
+      }
+      catalogWritesSuspended = true;
+      await videoCache?.setPlaybackSuspended(true);
+      final probe = _filmCatalogValue?.mediaProbe;
+      if (probe == null) {
+        await operation();
+      } else {
+        await probe.withPlaybackPriority(operation);
+      }
+    } finally {
+      catalogWritesSuspended = _closing;
+      try {
+        if (nativeLocked) {
+          await const MethodChannel(
+            'streampath/appearance',
+          ).invokeMethod<void>('setTaskLocked', false);
+        }
+      } finally {
+        fullSpeedExclusive.value = false;
+        if (!_closing) await videoCache?.setPlaybackSuspended(false);
+      }
+    }
+  }
+
   Future<FilmLibraryTransfer> filmTransfer() async {
     final catalog = await getFilmCatalog();
     await initializeFilmPlayback();
@@ -1425,7 +1475,13 @@ class AppState extends ChangeNotifier {
               )) {
                 await mountMediaConnection(root.sourceId);
               }
-              await catalog.scanRoots(enabled);
+              final available = <FilmCatalogRoot>[];
+              for (final root in enabled) {
+                if (!await catalog.store.fastOwnsRoot(root.id)) {
+                  available.add(root);
+                }
+              }
+              if (available.isNotEmpty) await catalog.scanRoots(available);
             });
           },
         )).start();
@@ -1433,7 +1489,13 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  Future<bool> anyPlaybackActive({FilmCatalogController? catalog}) async =>
+  Future<bool> anyPlaybackActive({
+    FilmCatalogController? catalog,
+    bool ignoreFullSpeed = false,
+  }) async =>
+      (!ignoreFullSpeed && fullSpeedExclusive.value) ||
+      (catalog?.standardTasksActive ?? false) ||
+      _downloadPreparation > 0 ||
       catalogWritesSuspended ||
       (catalog?.busy ?? false) ||
       (catalog?.scraping ?? false) ||
@@ -1467,6 +1529,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> prepareForClose() => _closePreparation ??= () async {
     _closing = true;
+    await _filmCatalogValue?.pauseFastTask();
     if (_videoCacheDownloadListener case final listener?) {
       videoCache?.changes.removeListener(listener);
       _videoCacheDownloadListener = null;
@@ -1610,6 +1673,12 @@ class AppState extends ChangeNotifier {
             (await _filmIsoPlaybackService?.hasActivePlayback() ?? false),
       ),
       sourceFor: _filmSource,
+      fullSpeedGuard: _withFullSpeedExclusive,
+      prepareFastSources: (roots) async {
+        for (final root in roots) {
+          await mountMediaConnectionIfConfigured(root.sourceId);
+        }
+      },
       serverRefresh: (root) => refreshMediaServer(root.sourceId),
       filesFor: (root) async {
         if (root.sourceKind.isMediaServer) return null;
@@ -1630,6 +1699,7 @@ class AppState extends ChangeNotifier {
       },
     );
     _filmCatalogValue = controller;
+    await controller.reloadFastTask();
     if (!_disposed) {
       controller.mediaProbe!.start();
     }
@@ -1695,6 +1765,9 @@ class AppState extends ChangeNotifier {
   }
 
   Future<T> withMediaPlaybackPriority<T>(Future<T> Function() operation) async {
+    if (fullSpeedExclusive.value) {
+      throw const FilmCatalogException('fullSpeedPlaybackBlocked');
+    }
     _downloadPreparation++;
     try {
       try {
@@ -2044,6 +2117,10 @@ class AppState extends ChangeNotifier {
     }
     filmDetailChrome.dispose();
     filmLibraryActive.dispose();
+    unawaited(() async {
+      await _filmCatalogValue?.pauseFastTask();
+      fullSpeedExclusive.dispose();
+    }());
     startupReady.dispose();
     _isoPlaybackService?.dispose();
     unawaited(_closeFilmPlayback());

@@ -11,6 +11,8 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../core/errors/app_exception.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/film_fast_task.dart';
+import '../../domain/services/film_fast_task_runner.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/film_home_section.dart';
 import '../../domain/repositories/media_directory_source.dart';
@@ -32,6 +34,9 @@ class FilmCatalogController extends ChangeNotifier {
     this.serverRefresh,
     this.sourceId,
     this.ownsResources = true,
+    this.taskOwner,
+    this.fullSpeedGuard,
+    this.prepareFastSources,
     Future<FilmFileMetadata?> Function(FilmCatalogRoot)? filesFor,
   }) : scanner = FilmCatalogScanner(store),
        matcher = FilmCatalogMatcher(
@@ -56,6 +61,216 @@ class FilmCatalogController extends ChangeNotifier {
   final Future<void> Function(FilmCatalogRoot)? serverRefresh;
   final String? sourceId;
   final bool ownsResources;
+  final FilmCatalogController? taskOwner;
+  final Future<void> Function(Future<void> Function())? fullSpeedGuard;
+  final Future<void> Function(List<FilmCatalogRoot>)? prepareFastSources;
+  FilmCatalogController get _taskOwner => taskOwner ?? this;
+  final _fastTaskState = ValueNotifier<FilmFastTask?>(null);
+  ValueNotifier<FilmFastTask?> get fastTaskState =>
+      taskOwner?.fastTaskState ?? _fastTaskState;
+  bool get standardTasksActive =>
+      _taskOwner._normalActivities > 0 || _taskOwner._normalScrapers > 0;
+  FilmFastTaskRunner? _fastRunner;
+  Future<void>? _fastLifecycle;
+  bool _fastStopRequested = false;
+  bool _startingFast = false;
+  int _normalActivities = 0;
+  int _normalScrapers = 0;
+  int fastCompletion = 0;
+  bool get fullSpeedActive =>
+      _taskOwner._fastRunner != null || _taskOwner._startingFast;
+
+  Future<void> reloadFastTask() async {
+    _taskOwner.fastTaskState.value = await store.fastTask();
+  }
+
+  Future<void> startFastTask(
+    List<FilmCatalogRoot> selected, {
+    bool scrapeOnly = false,
+    bool incremental = false,
+    FilmScanScope? scope,
+  }) {
+    if (taskOwner != null) {
+      return taskOwner!.startFastTask(
+        selected,
+        scrapeOnly: scrapeOnly,
+        incremental: incremental,
+        scope: scope,
+      );
+    }
+    if (fullSpeedActive) {
+      return Future.error(const FilmCatalogException('scanBusy'));
+    }
+    final task = _startFastTask(
+      selected,
+      scrapeOnly: scrapeOnly,
+      incremental: incremental,
+      scope: scope,
+    );
+    _fastLifecycle = task.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return task;
+  }
+
+  Future<void> _startFastTask(
+    List<FilmCatalogRoot> selected, {
+    bool scrapeOnly = false,
+    bool incremental = false,
+    FilmScanScope? scope,
+  }) async {
+    if (_startingFast ||
+        _fastRunner != null ||
+        standardTasksActive ||
+        tmdb.busy ||
+        _writesSuspended ||
+        _closed) {
+      throw const FilmCatalogException('scanBusy');
+    }
+    if (selected.isEmpty ||
+        selected.any((root) => root.sourceKind.isMediaServer) ||
+        (scope != null &&
+            (selected.length != 1 ||
+                scope.rootId != selected.single.id ||
+                !filmPathWithin(
+                  filmPathKey(scope.path, selected.single.sourceKind),
+                  filmPathKey(selected.single.path, selected.single.sourceKind),
+                )))) {
+      throw const FilmCatalogException('invalidPath');
+    }
+    _startingFast = true;
+    _fastStopRequested = false;
+    try {
+      Future<void> operation() async {
+        await prepareFastSources?.call(selected);
+        _checkFastContinuation();
+        final current = <FilmCatalogRoot>[];
+        final snapshots = <Map<String, dynamic>>[];
+        for (final selectedRoot in selected) {
+          final root = await store.root(selectedRoot.id);
+          if (root == null) throw const FilmCatalogException('staleScan');
+          _checkFastContinuation();
+          current.add(root);
+          snapshots.add(
+            await FilmFastTaskRunner.snapshot(
+              store,
+              matcher,
+              root,
+              sourceFor(root),
+            ),
+          );
+        }
+        _checkFastContinuation();
+        await store.createFastTask(
+          current,
+          snapshots,
+          scrapeOnly: scrapeOnly,
+          incremental: incremental,
+          scope: scope?.path,
+        );
+        await _runFastTask();
+      }
+
+      await (fullSpeedGuard == null ? operation() : fullSpeedGuard!(operation));
+    } finally {
+      _startingFast = false;
+      await reloadFastTask();
+      _notify();
+    }
+  }
+
+  Future<void> resumeFastTask() {
+    if (taskOwner != null) return taskOwner!.resumeFastTask();
+    if (fullSpeedActive) {
+      return Future.error(const FilmCatalogException('scanBusy'));
+    }
+    final task = _resumeFastTask();
+    _fastLifecycle = task.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return task;
+  }
+
+  Future<void> _resumeFastTask() async {
+    if (fullSpeedActive ||
+        standardTasksActive ||
+        tmdb.busy ||
+        _writesSuspended ||
+        _closed) {
+      throw const FilmCatalogException('scanBusy');
+    }
+    _startingFast = true;
+    _fastStopRequested = false;
+    try {
+      Future<void> operation() async {
+        final selected = <FilmCatalogRoot>[];
+        for (final taskRoot in await store.fastRoots()) {
+          final root = await store.root(taskRoot.rootId);
+          if (root == null) {
+            throw const FilmCatalogException('fastCheckpointChanged');
+          }
+          selected.add(root);
+        }
+        if (selected.isEmpty) return;
+        await prepareFastSources?.call(selected);
+        _checkFastContinuation();
+        await _runFastTask();
+      }
+
+      await (fullSpeedGuard == null ? operation() : fullSpeedGuard!(operation));
+    } finally {
+      _startingFast = false;
+      await reloadFastTask();
+      _notify();
+    }
+  }
+
+  void _checkFastContinuation() {
+    if (_fastStopRequested || _closed) {
+      throw const FilmCatalogException('cancelled');
+    }
+  }
+
+  Future<void> _runFastTask() async {
+    _checkFastContinuation();
+    final runner = FilmFastTaskRunner(
+      store: store,
+      matcher: matcher,
+      sourceFor: sourceFor,
+      onProgress: reloadFastTask,
+      onStop: images.stopFullSpeed,
+    );
+    _fastRunner = runner;
+    images.beginFullSpeed();
+    try {
+      await runner.run();
+      if (await store.fastTask() == null) fastCompletion++;
+    } finally {
+      images.endFullSpeed();
+      _fastRunner = null;
+      await reloadFastTask();
+      _refreshPending = false;
+      await refresh();
+    }
+  }
+
+  Future<void> pauseFastTask() async {
+    final owner = _taskOwner;
+    owner._fastStopRequested = true;
+    owner._fastRunner?.stop();
+    // 退出等待准备、执行和解锁全部完成，错误仍交给原调用者。
+    await owner._fastLifecycle;
+  }
+
+  Future<void> discardFastTask() async {
+    if (fullSpeedActive) throw const FilmCatalogException('scanBusy');
+    await store.discardFastTask();
+    await reloadFastTask();
+    await refresh();
+  }
+
   FilmCatalogController forSource(String id) =>
       FilmCatalogController(
           store: store,
@@ -66,6 +281,7 @@ class FilmCatalogController extends ChangeNotifier {
           filesFor: matcher.filesFor,
           sourceId: id,
           ownsResources: false,
+          taskOwner: _taskOwner,
         )
         .._collectionBackdropMembers = _collectionBackdropMembers
         .._collectionBackdrops = _collectionBackdrops;
@@ -277,6 +493,10 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _changed() {
+    if (fullSpeedActive) {
+      _refreshPending = true;
+      return;
+    }
     if (_closed || _writesSuspended) return;
     if (_refreshTimer?.isActive == true) return;
     _refreshTimer = Timer(const Duration(milliseconds: 150), () {
@@ -497,13 +717,28 @@ class FilmCatalogController extends ChangeNotifier {
     FilmCatalogRoot root, {
     bool incremental = false,
     FilmScanScope? scope,
-  }) => scanRoots([root], incremental: incremental, scope: scope);
+    FilmTaskExecutionMode executionMode = FilmTaskExecutionMode.standard,
+  }) => scanRoots(
+    [root],
+    incremental: incremental,
+    scope: scope,
+    executionMode: executionMode,
+  );
 
   Future<void> scanRoots(
     List<FilmCatalogRoot> roots, {
     bool incremental = false,
     FilmScanScope? scope,
+    FilmTaskExecutionMode executionMode = FilmTaskExecutionMode.standard,
   }) async {
+    if (executionMode == FilmTaskExecutionMode.fullSpeed) {
+      return startFastTask(roots, incremental: incremental, scope: scope);
+    }
+    if (fullSpeedActive || await _ownsFastRoots(roots)) {
+      error = 'fastTaskPending';
+      _notify();
+      return;
+    }
     if (busy || _writesSuspended) {
       error = 'scanBusy';
       _notify();
@@ -568,6 +803,7 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _beginScrapeInput() {
+    _taskOwner._normalActivities++;
     if (!scraping) {
       scrapeTotal = scrapeProcessed = scrapedCount = 0;
       scrapePaused = false;
@@ -580,6 +816,7 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _endScrapeInput() {
+    _taskOwner._normalActivities--;
     _scrapeInputs--;
     _wakeScraping();
     _releaseFinishedScraping();
@@ -616,7 +853,9 @@ class FilmCatalogController extends ChangeNotifier {
       }
     }
     if (_scrapeTask == null && _scrapeQueue.isNotEmpty) {
+      _taskOwner._normalScrapers++;
       _scrapeTask = _scrape().whenComplete(() {
+        _taskOwner._normalScrapers--;
         _scrapeTask = null;
         if (!_closed &&
             scrapeProcessed > 0 &&
@@ -757,7 +996,26 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   /// 对现有清单独立刮削，不重新读取媒体来源目录。
-  Future<void> scrape(FilmCatalogRoot root, {bool incremental = false}) async {
+  Future<bool> _ownsFastRoots(List<FilmCatalogRoot> roots) async {
+    for (final root in roots) {
+      if (await store.fastOwnsRoot(root.id)) return true;
+    }
+    return fullSpeedActive;
+  }
+
+  Future<void> scrape(
+    FilmCatalogRoot root, {
+    bool incremental = false,
+    FilmTaskExecutionMode executionMode = FilmTaskExecutionMode.standard,
+  }) async {
+    if (executionMode == FilmTaskExecutionMode.fullSpeed) {
+      return startFastTask([root], scrapeOnly: true, incremental: incremental);
+    }
+    if (fullSpeedActive || await _ownsFastRoots([root])) {
+      error = 'fastTaskPending';
+      _notify();
+      return;
+    }
     if (_closed ||
         isScrapingRoot(root.id) ||
         (incremental && root.type != FilmMediaType.tv)) {
@@ -791,6 +1049,7 @@ class FilmCatalogController extends ChangeNotifier {
   Future<void> waitForScraping() async => _scrapeTask;
 
   Future<void> close() async {
+    if (taskOwner == null) await pauseFastTask();
     _closed = true;
     ++_queryGeneration;
     _refreshTimer?.cancel();
@@ -812,6 +1071,7 @@ class FilmCatalogController extends ChangeNotifier {
       _scrapeSessions.clear();
       _scrapeSeen.clear();
       if (ownsResources) await store.close();
+      _fastTaskState.dispose();
       _taskChanges.dispose();
       super.dispose();
     }
@@ -847,6 +1107,14 @@ String filmCatalogErrorText(String code) => switch (code) {
   'serverDirectPlayUnavailable' => '服务器未提供可直接播放的版本',
   'sourcePlaybackActive' => '来源正在播放，请结束播放后修改连接',
   'directoryReadFailed' => '读取目录失败，已保留上一份完整清单',
+  'fastTaskPending' => '请先恢复或放弃未完成的全速任务',
+  'fastCheckpointChanged' => '来源或刮削设置已变化，请放弃断点后重新启动任务',
+  'fastTaskFailed' => '全速任务发生内部错误，任务进度已保留',
+  'fastSourceAuthenticationFailed' => '来源服务器认证失败，请检查连接设置后恢复任务',
+  'fastSourceRateLimited' => '来源服务器限制了请求，请稍后恢复任务',
+  'fastSourceConnectionFailed' => '来源服务器连接失败或响应超时，请检查网络及连接设置',
+  'fullSpeedPlaybackBlocked' => '全速任务运行期间无法开始播放',
+  'fullSpeedStartBlocked' => '请等待播放、播放准备及其他后台任务结束后再启动全速模式',
   'scanBusy' => '请等待当前影视目录扫描完成',
   'cancelled' => '扫描已取消，原清单保持不变',
   'staleScan' => '扫描已失效，未提交清单',

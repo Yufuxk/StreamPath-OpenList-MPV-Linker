@@ -7,12 +7,14 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:ui' as ui;
 import 'dart:ui' show FramePhase, PointerDeviceKind;
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show setEquals, compute;
 import 'package:hive/hive.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -30,6 +32,7 @@ import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/film_catalog_image_cache.dart';
+import 'package:streampath/domain/services/film_logo_selector.dart';
 import 'package:streampath/domain/services/film_catalog_scanner.dart';
 import 'package:streampath/domain/services/tmdb_metadata_service.dart';
 import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
@@ -43,6 +46,51 @@ import '../test/helpers/shell_test_app_state.dart';
 class _Credentials extends TmdbCredentialStore {
   @override
   Future<String?> read() async => 'isolated-probe';
+}
+
+// 冷徽标对照只替换选择策略，其余调用生产刮削链路。
+class _LogoProbeTmdb extends TmdbMetadataService {
+  _LogoProbeTmdb({
+    required super.credentials,
+    required super.dio,
+    required this.legacy,
+  });
+  final bool legacy;
+  late Future<Uint8List> Function(String) readLogo;
+  int logoReads = 0;
+  @override
+  Future<FilmWork> details(
+    FilmMediaType type,
+    int id,
+    String language, {
+    LogoChooser? chooseLogo,
+  }) => super.details(
+    type,
+    id,
+    language,
+    chooseLogo: legacy
+        ? (candidates) async {
+            String? best;
+            var rank = double.negativeInfinity;
+            for (final candidate in candidates.take(6)) {
+              final score = await compute(
+                analyzeLogoColor,
+                await readLogo(candidate.path),
+              );
+              final next = logoChoiceRank(
+                score,
+                candidate.width,
+                candidate.priority,
+              );
+              if (next > rank) {
+                rank = next;
+                best = candidate.path;
+              }
+            }
+            return best;
+          }
+        : chooseLogo,
+  );
 }
 
 class _App extends ShellTestAppState {
@@ -272,6 +320,17 @@ Future<void> _runProbe(List<String> arguments) async {
     for (final work in await store.works(type: null, limit: 1000))
       work.tmdbId: work,
   };
+  final coldLogos = arguments.length > 2 && arguments[2].startsWith('cold-');
+  final legacyLogos = coldLogos && arguments[2] == 'cold-legacy';
+  final logoPaths = [for (var i = 0; i < 6; i++) '/probe-logo-$i.png'];
+  if (coldLogos) {
+    final db = await databaseFactoryFfi.openDatabase(
+      file,
+      options: OpenDatabaseOptions(singleInstance: false),
+    );
+    await db.update('works', {'metadata_language': 'en-US'});
+    await db.close();
+  }
   var requests = 0;
   final dio = Dio()
     ..interceptors.add(
@@ -297,7 +356,18 @@ Future<void> _runProbe(List<String> arguments) async {
                 data: {
                   'id': int.parse(segments[3]),
                   'backdrops': [],
-                  'logos': [],
+                  'logos': coldLogos
+                      ? [
+                          for (final path in logoPaths)
+                            {
+                              'file_path': path,
+                              'width': 1200,
+                              'height': 300,
+                              'iso_639_1': 'en',
+                              'vote_average': 8,
+                            },
+                        ]
+                      : [],
                 },
               ),
             );
@@ -335,7 +405,11 @@ Future<void> _runProbe(List<String> arguments) async {
         },
       ),
     );
-  final tmdb = TmdbMetadataService(credentials: _Credentials(), dio: dio);
+  final tmdb = _LogoProbeTmdb(
+    credentials: _Credentials(),
+    dio: dio,
+    legacy: legacyLogos,
+  );
   final images = FilmCatalogImageCache(
     Directory(p.join(root, 'artwork')),
     tmdb,
@@ -350,6 +424,39 @@ Future<void> _runProbe(List<String> arguments) async {
         ),
       ),
   );
+  tmdb.readLogo = (path) async {
+    tmdb.logoReads++;
+    return (await images.get(path, target: 'w300')).readAsBytes();
+  };
+  if (coldLogos) {
+    await images.directory.create(recursive: true);
+    for (final (target, width, height) in [
+      ('original', 1200, 300),
+      ('w300', 300, 75),
+    ]) {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawRect(
+        Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+        Paint()..color = Colors.white,
+      );
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(width, height);
+      final bytes = (await image.toByteData(
+        format: ui.ImageByteFormat.png,
+      ))!.buffer.asUint8List();
+      for (final path in logoPaths) {
+        await File(
+          p.join(
+            images.directory.path,
+            '${FilmCatalogImageCache.cacheKey(path, target)}.img',
+          ),
+        ).writeAsBytes(bytes);
+      }
+      image.dispose();
+      picture.dispose();
+    }
+  }
   final catalog = _Catalog(
     store: store,
     tmdb: tmdb,
@@ -638,6 +745,9 @@ Future<void> _runProbe(List<String> arguments) async {
       'loadedWorks': loadedWorks,
       'backdrop': material.lastResult?.actualBackdrop.name,
       'simulatedApiRequests': requests,
+      'coldLogos': coldLogos,
+      'legacyLogos': legacyLogos,
+      'legacyLogoReads': tmdb.logoReads,
       'actualNetworkRequests': 0,
       'processed': processed,
       'controllerNotifications': notifications,

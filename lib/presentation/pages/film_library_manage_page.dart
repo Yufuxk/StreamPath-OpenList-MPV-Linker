@@ -25,6 +25,8 @@ import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/film_catalog_tasks.dart';
+import '../widgets/film_fast_task_ui.dart';
+import '../../data/models/film_fast_task.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
@@ -145,6 +147,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
   Future<void> _scanMultiple() async {
     final selected = <int>{...widget.catalog.roots.map((r) => r.id)};
     var incremental = false;
+    var fullSpeed = false;
     final start = await showGlassDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -172,6 +175,19 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                         }),
                       ),
                     SwitchListTile(
+                      title: const AppText('全速扫描/刮削'),
+                      value: fullSpeed,
+                      onChanged: (value) =>
+                          setDialogState(() => fullSpeed = value),
+                    ),
+                    if (fullSpeed &&
+                        widget.catalog.roots.any(
+                          (root) =>
+                              selected.contains(root.id) &&
+                              root.sourceKind.isMediaServer,
+                        ))
+                      const AppText('全速模式仅支持文件来源，请取消勾选媒体服务器'),
+                    SwitchListTile(
                       title: const AppText('增量扫描'),
                       value: incremental,
                       onChanged: (value) =>
@@ -188,7 +204,14 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
               child: const AppText('取消'),
             ),
             FilledButton(
-              onPressed: selected.isEmpty
+              onPressed:
+                  (selected.isEmpty ||
+                      (fullSpeed &&
+                          widget.catalog.roots.any(
+                            (root) =>
+                                selected.contains(root.id) &&
+                                root.sourceKind.isMediaServer,
+                          )))
                   ? null
                   : () => Navigator.of(context).pop(true),
               child: const AppText('开始扫描'),
@@ -198,10 +221,22 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
       ),
     );
     if (start == true) {
-      await widget.catalog.scanRoots(
-        widget.catalog.roots.where((r) => selected.contains(r.id)).toList(),
-        incremental: incremental,
-      );
+      final roots = widget.catalog.roots
+          .where((r) => selected.contains(r.id))
+          .toList();
+      if (fullSpeed && mounted) {
+        await runFilmFastTask(
+          context,
+          widget.catalog,
+          () => widget.catalog.scanRoots(
+            roots,
+            incremental: incremental,
+            executionMode: FilmTaskExecutionMode.fullSpeed,
+          ),
+        );
+      } else {
+        await widget.catalog.scanRoots(roots, incremental: incremental);
+      }
     }
   }
 
@@ -410,6 +445,14 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                 ),
                 TextButton.icon(
                   onPressed:
+                      root.sourceKind.isMediaServer || c.busy || c.scraping
+                      ? null
+                      : () => showFilmFastTaskOptions(context, c, root),
+                  icon: const Icon(SPIcons.sync),
+                  label: const AppText('全速扫描/刮削'),
+                ),
+                TextButton.icon(
+                  onPressed:
                       root.type != FilmMediaType.tv || c.isScrapingRoot(root.id)
                       ? null
                       : () => c.scrape(root, incremental: true),
@@ -447,6 +490,7 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
               widget.embedded && !widget.directories ? 0 : 24,
             ),
             children: [
+              FilmFastTaskActions(catalog: c),
               if (widget.directories) ...[
                 _statisticsCards(context),
                 const SizedBox(height: 16),

@@ -58,6 +58,21 @@ int main() {
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     if (!SameSize(window.GetHandle(), child)) return 6;
   }
+  RECT locked_bounds{}, after_command{};
+  GetWindowRect(window.GetHandle(), &locked_bounds);
+  SetProp(window.GetHandle(), L"StreamPathTaskLocked", reinterpret_cast<HANDLE>(1));
+  for (WPARAM command : {SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_SIZE, SC_RESTORE}) {
+    SendMessage(window.GetHandle(), WM_SYSCOMMAND, command, 0);
+    GetWindowRect(window.GetHandle(), &after_command);
+    if (!EqualRect(&locked_bounds, &after_command)) return 7;
+  }
+  if (SendMessage(window.GetHandle(), WM_NCHITTEST, 0,
+      MAKELPARAM(locked_bounds.left + 2, locked_bounds.top + 2)) != HTCLIENT) return 8;
+  SetWindowPos(window.GetHandle(), nullptr, locked_bounds.left + 20,
+               locked_bounds.top + 20, 500, 400, SWP_NOZORDER | SWP_NOACTIVATE);
+  GetWindowRect(window.GetHandle(), &after_command);
+  if (!EqualRect(&locked_bounds, &after_command)) return 9;
+  RemoveProp(window.GetHandle(), L"StreamPathTaskLocked");
   window.Destroy();
   std::cout << "PASS: minimize preserves content bounds; restore, maximize and resize apply bounds\n";
   return 0;

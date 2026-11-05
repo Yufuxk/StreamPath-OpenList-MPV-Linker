@@ -62,8 +62,27 @@ class FilmCatalogImageCache {
   final Set<CancelToken> _tokens = {};
   final Set<String> _protected = {};
   int _active = 0;
+  int _downloadConcurrency = 2;
+  bool _fullSpeedStopped = false;
   bool _closed = false;
   int _revision = 0;
+
+  void beginFullSpeed() {
+    _downloadConcurrency = 4;
+    _fullSpeedStopped = false;
+  }
+
+  void stopFullSpeed() {
+    _fullSpeedStopped = true;
+    for (final token in _tokens) {
+      token.cancel();
+    }
+  }
+
+  void endFullSpeed() {
+    _downloadConcurrency = 2;
+    _fullSpeedStopped = false;
+  }
 
   /// 清理缓存后，依赖图片内容的布局计算使用新的身份。
   int get revision => _revision;
@@ -169,6 +188,9 @@ class FilmCatalogImageCache {
   }
 
   Future<File> get(String path, {String target = 'w342'}) async {
+    if (_closed || _fullSpeedStopped) {
+      throw const FilmCatalogException('cancelled');
+    }
     _checkPath(path);
     final key = '$target:$path';
     return _pending.putIfAbsent(
@@ -182,10 +204,12 @@ class FilmCatalogImageCache {
   }
 
   Future<File> _get(String path, String target) async {
-    if (_closed) throw const FilmCatalogException('cancelled');
+    if (_closed || _fullSpeedStopped) {
+      throw const FilmCatalogException('cancelled');
+    }
     final existing = await cached(path, target);
     if (existing != null) return existing;
-    if (_active >= 2) {
+    if (_active >= _downloadConcurrency) {
       final waiter = Completer<void>();
       _waiters.add(waiter);
       await waiter.future;
@@ -193,7 +217,9 @@ class FilmCatalogImageCache {
       _active++;
     }
     try {
-      if (_closed) throw const FilmCatalogException('cancelled');
+      if (_closed || _fullSpeedStopped) {
+        throw const FilmCatalogException('cancelled');
+      }
       final again = await cached(path, target);
       if (again != null) return again;
       if (FilmImageReference.parse(path) case final reference?) {
@@ -269,6 +295,9 @@ class FilmCatalogImageCache {
   }
 
   Future<File> _fetchImage(File file, String url) async {
+    if (_closed || _fullSpeedStopped) {
+      throw const FilmCatalogException('cancelled');
+    }
     final partial = File('${file.path}.partial');
     _protected.add(file.path);
     final token = CancelToken();

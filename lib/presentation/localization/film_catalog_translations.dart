@@ -1,5 +1,98 @@
 /// 影视库新增文案：繁体中文、日语、英语。
 const filmCatalogTranslations = <String, List<String>>{
+  "来源服务器认证失败，请检查连接设置后恢复任务": [
+    "來源伺服器驗證失敗，請檢查連線設定後恢復任務",
+    "ソースサーバーの認証に失敗しました。接続設定を確認して再開してください",
+    "Source server authentication failed. Check connection settings before resuming.",
+  ],
+  "来源服务器限制了请求，请稍后恢复任务": [
+    "來源伺服器限制了請求，請稍後恢復任務",
+    "ソースサーバーでリクエストが制限されています。時間をおいて再開してください",
+    "The source server is limiting requests. Resume later.",
+  ],
+  "来源服务器连接失败或响应超时，请检查网络及连接设置": [
+    "來源伺服器連線失敗或回應逾時，請檢查網路及連線設定",
+    "ソースサーバーへの接続に失敗したかタイムアウトしました。ネットワークと接続設定を確認してください",
+    "Source server connection failed or timed out. Check the network and connection settings.",
+  ],
+
+  "全速扫描/刮削": ["全速掃描/刮削", "高速スキャン／情報取得", "Full-speed scan/scrape"],
+  "全速模式风险提示": ["全速模式風險提示", "高速モードのリスク", "Full-speed mode risks"],
+  "理解风险并开始": ["理解風險並開始", "リスクを理解して開始", "Accept risks and start"],
+  "仅刮削现有清单": ["僅刮削現有清單", "既存リストの情報のみ取得", "Scrape existing inventory only"],
+  "全速任务已完成": ["全速任務已完成", "高速タスクが完了しました", "Full-speed task completed"],
+  "全速任务已暂停": ["全速任務已暫停", "高速タスクは一時停止中です", "Full-speed task paused"],
+  "恢复全速任务": ["恢復全速任務", "高速タスクを再開", "Resume full-speed task"],
+  "放弃任务": ["放棄任務", "タスクを破棄", "Discard task"],
+  "恢复": ["恢復", "再開", "Resume"],
+  "稍后": ["稍後", "後で", "Later"],
+  "发现未完成的全速任务": ["發現未完成的全速任務", "未完了の高速タスクがあります", "Unfinished full-speed task"],
+  "上次任务进度已保存，是否继续？": [
+    "上次任務進度已儲存，是否繼續？",
+    "前回の進行状況は保存されています。再開しますか？",
+    "Previous progress was saved. Resume the task?",
+  ],
+  "目录：已完成 {done} / 已发现 {total} · 资源 {files}": [
+    "目錄：已完成 {done} / 已發現 {total} · 資源 {files}",
+    "フォルダー：完了 {done} / 検出 {total} · ファイル {files}",
+    "Directories: {done} complete / {total} discovered · {files} files",
+  ],
+  "刮削：已处理 {done} / 已发现 {total} · 已匹配 {matched}": [
+    "刮削：已處理 {done} / 已發現 {total} · 已配對 {matched}",
+    "情報取得：処理済み {done} / 検出 {total} · 一致 {matched}",
+    "Scraping: {done} processed / {total} discovered · {matched} matched",
+  ],
+  "耗时：{seconds} 秒": [
+    "耗時：{seconds} 秒",
+    "経過時間：{seconds} 秒",
+    "Elapsed: {seconds} seconds",
+  ],
+  "关闭软件将保存进度并暂停任务": [
+    "關閉軟體將儲存進度並暫停任務",
+    "終了すると進行状況を保存して一時停止します",
+    "Closing saves progress and pauses the task",
+  ],
+  "关闭软件": ["關閉軟體", "アプリを終了", "Close application"],
+  "正在保存任务进度并关闭": [
+    "正在儲存任務進度並關閉",
+    "進行状況を保存して終了しています",
+    "Saving task progress and closing",
+  ],
+  "全速模式仅支持文件来源，请取消勾选媒体服务器": [
+    "全速模式僅支援檔案來源，請取消勾選媒體伺服器",
+    "高速モードはファイルソース専用です。メディアサーバーの選択を解除してください",
+    "Full-speed mode supports file sources only. Deselect media servers.",
+  ],
+  "请先恢复或放弃未完成的全速任务": [
+    "請先恢復或放棄未完成的全速任務",
+    "未完了の高速タスクを再開するか破棄してください",
+    "Resume or discard the unfinished full-speed task first",
+  ],
+  "来源或刮削设置已变化，请放弃断点后重新启动任务": [
+    "來源或刮削設定已變更，請放棄斷點後重新啟動任務",
+    "ソースまたは情報取得設定が変更されています。保存タスクを破棄して再開始してください",
+    "Source or scraping settings changed. Discard the checkpoint and start a new task.",
+  ],
+  "全速任务发生内部错误，任务进度已保留": [
+    "全速任務發生內部錯誤，任務進度已保留",
+    "高速タスクで内部エラーが発生しました。進行状況は保存されています",
+    "An internal error interrupted the full-speed task. Progress was retained.",
+  ],
+  "全速任务运行期间无法开始播放": [
+    "全速任務執行期間無法開始播放",
+    "高速タスクの実行中は再生を開始できません",
+    "Playback cannot start during a full-speed task",
+  ],
+  "请等待播放、播放准备及其他后台任务结束后再启动全速模式": [
+    "請等待播放、播放準備及其他背景任務結束後再啟動全速模式",
+    "再生、再生準備、他のバックグラウンドタスクが終了してから高速モードを開始してください",
+    "Wait for playback, playback preparation, and other background tasks to finish before starting full-speed mode",
+  ],
+  "全速模式会提高并发请求和 CPU、内存、磁盘及带宽占用，可能影响系统响应。对于网盘等非您完全可控的服务器，可能触发限流、风控或账号访问限制。运行期间仅能关闭软件；关闭会保存进度并暂停任务，下次启动询问是否继续。请确认您有权访问所选来源并愿意承担这些风险。": [
+    "全速模式會提高並行請求和 CPU、記憶體、磁碟及頻寬佔用，可能影響系統回應。對於網盤等非您完全可控的伺服器，可能觸發限流、風控或帳號存取限制。執行期間僅能關閉軟體；關閉會儲存進度並暫停任務，下次啟動詢問是否繼續。請確認您有權存取所選來源並願意承擔這些風險。",
+    "高速モードは同時リクエストと CPU・メモリ・ディスク・帯域の使用量を増やし、システムの応答に影響する場合があります。クラウドストレージなど管理外のサーバーでは、レート制限、不正利用検知、アカウントのアクセス制限が発生する可能性があります。実行中はアプリの終了のみ可能です。終了時は進行状況を保存して一時停止し、次回起動時に再開を確認します。選択したソースへのアクセス権があり、これらのリスクを承諾していることをご確認ください。",
+    "Full-speed mode increases concurrent requests and CPU, memory, disk, and bandwidth usage, which may affect system responsiveness. Servers outside your control, including cloud drives, may apply rate limits, risk controls, or account access restrictions. Only closing the application is available while running. Closing saves progress and pauses the task; the next launch asks whether to resume. Confirm that you have permission to access the selected sources and accept these risks.",
+  ],
   '同一版本不能包含同一集的多个文件，请分别设置版本归属': [
     '同一版本不能包含同一集的多個檔案，請分別設定版本歸屬',
     '同じエピソードの複数ファイルを同じバージョンに割り当てることはできません',

@@ -5,6 +5,8 @@ import 'dart:io';
 import '../../core/errors/app_exception.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/media_directory_entry.dart';
+import '../../data/models/film_directory_exclusions.dart';
 import '../../data/models/media_source.dart';
 import '../repositories/media_directory_source.dart';
 import 'local_media_source.dart';
@@ -88,6 +90,82 @@ class FilmCatalogScanner {
     if (_cancelled) throw const FilmCatalogException('cancelled');
   }
 
+  static (List<FilmScanEntry>, List<String>) collectDirectory(
+    FilmCatalogRoot root,
+    MediaDirectorySource source,
+    String path,
+    List<MediaDirectoryEntry> entries,
+    FilmDirectoryExclusions exclusions,
+    Set<String> known,
+  ) {
+    if (entries.any(
+      (e) =>
+          e.isDirectory && !e.isSelfEntry && e.name.toLowerCase() == 'video_ts',
+    )) {
+      if (path == root.path) {
+        throw const FilmCatalogException('unsupportedDirectory');
+      }
+      return (<FilmScanEntry>[], <String>[]);
+    }
+    final staging = <FilmScanEntry>[];
+    final children = <String>[];
+    if (entries.any(
+      (e) => e.isDirectory && !e.isSelfEntry && e.name.toLowerCase() == 'bdmv',
+    )) {
+      if (!known.contains(filmPathKey(path, root.sourceKind))) {
+        staging.add(
+          FilmScanEntry(
+            path: path,
+            parentPath: path.contains('/')
+                ? path.substring(0, path.lastIndexOf('/'))
+                : '',
+            name: path.isEmpty ? root.displayName : path.split('/').last,
+            mediaKind: 'bdmv',
+          ),
+        );
+      }
+      return (staging, children);
+    }
+    for (final entry in entries) {
+      if (entry.isSelfEntry) continue;
+      if (entry.isDirectory &&
+          (excludedDirectory(entry.name) ||
+              exclusions.excludesName(entry.name))) {
+        continue;
+      }
+      final playable =
+          !entry.isDirectory &&
+          (entry.isIso ||
+              entry.isVideo ||
+              (root.sourceKind != MediaSourceKind.local && entry.isStrm));
+      if (!entry.isDirectory && !playable) continue;
+      final child = SpecialVideoPlaylistCollector.directChildPath(
+        source,
+        path,
+        entry,
+      );
+      if (child == null) throw const FilmCatalogException('invalidPath');
+      validateFilmPath(child);
+      if (entry.isDirectory) {
+        children.add(child);
+      } else if (!known.contains(filmPathKey(child, root.sourceKind))) {
+        staging.add(
+          FilmScanEntry(
+            path: child,
+            parentPath: path,
+            name: entry.name,
+            mediaKind: entry.isIso
+                ? 'iso'
+                : entry.isStrm
+                ? 'strm'
+                : 'video',
+          ),
+        );
+      }
+    }
+    return (staging, children);
+  }
+
   Future<void> _scan(
     FilmCatalogRoot root,
     MediaDirectorySource source,
@@ -135,78 +213,16 @@ class FilmCatalogScanner {
             : await source.fetchDirectory(path, forceRefresh: true);
         _checkCancelled();
         directories++;
-        if (entries.any(
-          (e) =>
-              e.isDirectory &&
-              !e.isSelfEntry &&
-              e.name.toLowerCase() == 'video_ts',
-        )) {
-          if (path == root.path) {
-            throw const FilmCatalogException('unsupportedDirectory');
-          }
-          continue;
-        }
-        final staging = <FilmScanEntry>[];
-        if (entries.any(
-          (e) =>
-              e.isDirectory && !e.isSelfEntry && e.name.toLowerCase() == 'bdmv',
-        )) {
-          if (!known.contains(filmPathKey(path, root.sourceKind))) {
-            staging.add(
-              FilmScanEntry(
-                path: path,
-                parentPath: path.contains('/')
-                    ? path.substring(0, path.lastIndexOf('/'))
-                    : '',
-                name: path.isEmpty ? root.displayName : path.split('/').last,
-                mediaKind: 'bdmv',
-              ),
-            );
-          }
-          await store.stage(root, generation, staging);
-          files += staging.length;
-          if (staging.isNotEmpty) await onEntries?.call(staging);
-          _checkCancelled();
-          continue;
-        }
-        for (final entry in entries) {
-          if (entry.isSelfEntry) continue;
-          if (entry.isDirectory &&
-              (excludedDirectory(entry.name) ||
-                  exclusions.excludesName(entry.name))) {
-            continue;
-          }
-          final playable =
-              !entry.isDirectory &&
-              (entry.isIso ||
-                  entry.isVideo ||
-                  (root.sourceKind != MediaSourceKind.local && entry.isStrm));
-          if (!entry.isDirectory && !playable) continue;
-          final child = SpecialVideoPlaylistCollector.directChildPath(
-            source,
-            path,
-            entry,
-          );
-          if (child == null) throw const FilmCatalogException('invalidPath');
-          validateFilmPath(child);
-          if (entry.isDirectory) {
-            queue.add(child);
-          } else {
-            if (known.contains(filmPathKey(child, root.sourceKind))) continue;
-            staging.add(
-              FilmScanEntry(
-                path: child,
-                parentPath: path,
-                name: entry.name,
-                mediaKind: entry.isIso
-                    ? 'iso'
-                    : entry.isStrm
-                    ? 'strm'
-                    : 'video',
-              ),
-            );
-          }
-        }
+        final collected = collectDirectory(
+          root,
+          source,
+          path,
+          entries,
+          exclusions,
+          known,
+        );
+        queue.addAll(collected.$2);
+        final staging = collected.$1;
         await store.stage(root, generation, staging);
         files += staging.length;
         report?.call(

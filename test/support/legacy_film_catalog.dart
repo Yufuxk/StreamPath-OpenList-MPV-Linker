@@ -4,6 +4,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 Future<void> restoreVersion6Fixture(Database db) async {
   await db.execute('PRAGMA foreign_keys=OFF');
   for (final table in [
+    'fast_task_jobs',
+    'fast_task_roots',
+    'fast_tasks',
     'film_resource_versions',
     'film_playlist_scopes',
     'film_playlist_items',

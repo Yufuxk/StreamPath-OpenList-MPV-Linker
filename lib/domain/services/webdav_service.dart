@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:dio/dio.dart';
 
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/strm_parser.dart';
@@ -114,6 +115,15 @@ class WebDAVService implements DirectoryRepository {
     return _parser.parse(xml, requestUrl: fullUrl(path));
   }
 
+  Future<List<WebDavFile>> fetchFastCatalogDirectory(
+    String path, {
+    required CancelToken cancelToken,
+    required Future<List<WebDavFile>> Function(String, String) parse,
+  }) async {
+    final xml = await _client.propfindForTask(path, cancelToken);
+    return parse(xml, fullUrl(path));
+  }
+
   /// 强制从网络加载并刷新缓存（用户下拉/点击刷新时调用）。
   Future<List<WebDavFile>> refreshDirectory(String path) {
     final key = _key(path);
@@ -176,6 +186,18 @@ class WebDAVService implements DirectoryRepository {
     required int maxBytes,
     required Duration timeout,
   }) => _client.getFileBytes(url, maxBytes: maxBytes, timeout: timeout);
+
+  Future<List<int>> fetchTaskFileBytes(
+    String url, {
+    required int maxBytes,
+    required Duration timeout,
+    required CancelToken cancelToken,
+  }) => _client.getTaskFileBytes(
+    url,
+    maxBytes: maxBytes,
+    timeout: timeout,
+    cancelToken: cancelToken,
+  );
 
   Future<void> createMissingFile(String path, List<int> bytes) =>
       _client.createMissingFile(path, bytes);

@@ -2919,6 +2919,9 @@ void main() {
     ]) {
       await legacy.execute('DROP TABLE $table');
     }
+    for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
+      await legacy.execute('DROP TABLE $table');
+    }
     await legacy.setVersion(1);
     await legacy.close();
     store = await FilmCatalogStore.open(path);

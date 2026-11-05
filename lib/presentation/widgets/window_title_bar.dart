@@ -25,9 +25,11 @@ class WindowTitleBar extends StatefulWidget {
     super.key,
     this.detailScrollProgress,
     this.onCloseRequested,
+    this.taskLocked = false,
   });
 
   final double? detailScrollProgress;
+  final bool taskLocked;
   final Future<void> Function()? onCloseRequested;
 
   /// 标题栏高度，与 Windows 11 系统标题栏高度一致。
@@ -160,16 +162,20 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                 dismissible: false,
                 color: tokens.enabled ? Colors.transparent : Colors.black54,
               ),
-              const Center(
+              Center(
                 child: SPDialog(
-                  title: AppText('正在关闭 StreamPath'),
+                  title: const AppText('正在关闭 StreamPath'),
                   content: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      AppText('正在停止播放控制、等待后台任务结束并释放连接，请稍候。'),
-                      SizedBox(height: 20),
-                      LinearProgressIndicator(),
+                      AppText(
+                        widget.taskLocked
+                            ? '正在保存任务进度并关闭'
+                            : '正在停止播放控制、等待后台任务结束并释放连接，请稍候。',
+                      ),
+                      const SizedBox(height: 20),
+                      const LinearProgressIndicator(),
                     ],
                   ),
                 ),
@@ -247,6 +253,16 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   }
 
   bool _handleFullscreenKey(KeyEvent event) {
+    if (widget.taskLocked && event is! KeyUpEvent) {
+      final key = event.logicalKey;
+      return !(key == LogicalKeyboardKey.tab ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.space ||
+          key == LogicalKeyboardKey.altLeft ||
+          key == LogicalKeyboardKey.altRight ||
+          (key == LogicalKeyboardKey.f4 &&
+              HardwareKeyboard.instance.isAltPressed));
+    }
     if (event is! KeyDownEvent) return false;
     if (event.logicalKey == LogicalKeyboardKey.f11 ||
         (_fullscreen && event.logicalKey == LogicalKeyboardKey.escape)) {
@@ -318,14 +334,16 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                         : _WindowControlIconType.fullscreen,
                     iconKey: WindowTitleBar.fullscreenIconKey,
                     tooltip: context.l10n.text(_fullscreen ? '退出全屏' : '全屏'),
-                    onPressed: _toggleFullscreen,
+                    onPressed: widget.taskLocked ? null : _toggleFullscreen,
                   ),
                   _WindowButton(
                     key: WindowTitleBar.minimizeButtonKey,
                     icon: _WindowControlIconType.minimize,
                     iconKey: WindowTitleBar.minimizeIconKey,
                     tooltip: context.l10n.text('最小化'),
-                    onPressed: () => _invoke('minimize'),
+                    onPressed: widget.taskLocked
+                        ? null
+                        : () => _invoke('minimize'),
                   ),
                   _WindowButton(
                     key: WindowTitleBar.maximizeButtonKey,
@@ -340,7 +358,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
                           ? '还原'
                           : '最大化',
                     ),
-                    onPressed: _toggleMaximize,
+                    onPressed: widget.taskLocked ? null : _toggleMaximize,
                   ),
                   _WindowButton(
                     key: WindowTitleBar.closeButtonKey,
@@ -380,7 +398,7 @@ class _WindowButton extends StatefulWidget {
   final _WindowControlIconType icon;
   final Key iconKey;
   final String tooltip;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   /// 关闭按钮使用与 Windows 一致的危险色悬停反馈。
   final bool close;
@@ -413,7 +431,9 @@ class _WindowButtonState extends State<_WindowButton> {
             child: _WindowsCaptionGlyph(
               key: widget.iconKey,
               type: widget.icon,
-              color: widget.close && _hovered
+              color: widget.onPressed == null
+                  ? scheme.onSurface.withValues(alpha: 0.38)
+                  : widget.close && _hovered
                   ? Colors.white
                   : scheme.onSurfaceVariant,
             ),

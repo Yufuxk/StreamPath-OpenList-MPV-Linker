@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -28,6 +29,79 @@ class TmdbMetadataService {
   final Map<String, Future<FilmWork>> _workRequests = {};
   final Map<String, Future<Map<String, dynamic>>> _seasonRequests = {};
   final CancelToken _cancel = CancelToken();
+  bool _fullSpeed = false;
+  bool _fastStopping = false;
+  CancelToken? _fastCancel;
+  int _fastActive = 0;
+  final _fastWaiters = <Completer<void>>[];
+  Future<void> _fastStartTail = Future.value();
+  DateTime? _lastFastStart;
+  final _requests = <String, Future<Map<String, dynamic>>>{};
+
+  void beginFullSpeed() {
+    _fullSpeed = true;
+    _fastStopping = false;
+    _fastCancel = CancelToken();
+    _lastFastStart = null;
+  }
+
+  void stopFullSpeed() {
+    _fastStopping = true;
+    _fastCancel?.cancel();
+    for (final waiter in _fastWaiters) {
+      waiter.complete();
+    }
+    _fastWaiters.clear();
+  }
+
+  void endFullSpeed() {
+    _fullSpeed = false;
+    _fastStopping = false;
+    _fastCancel = null;
+  }
+
+  Future<Map<String, dynamic>> _fastRequest(
+    String endpoint,
+    Map<String, dynamic> query,
+  ) async {
+    while (_fastActive >= 8 && !_fastStopping) {
+      final waiter = Completer<void>();
+      _fastWaiters.add(waiter);
+      await waiter.future;
+    }
+    if (_fastStopping) throw const FilmCatalogException('cancelled');
+    _fastActive++;
+    try {
+      return await _get(endpoint, query);
+    } finally {
+      _fastActive--;
+      if (_fastWaiters.isNotEmpty) _fastWaiters.removeAt(0).complete();
+    }
+  }
+
+  Future<void> _awaitFastStart() async {
+    final start = _fastStartTail.then((_) async {
+      if (_fastStopping) throw const FilmCatalogException('cancelled');
+      if (_lastFastStart != null) {
+        final wait =
+            const Duration(milliseconds: 50) -
+            DateTime.now().difference(_lastFastStart!);
+        if (wait > Duration.zero) await Future<void>.delayed(wait);
+      }
+      if (_fastStopping) throw const FilmCatalogException('cancelled');
+      _lastFastStart = DateTime.now();
+    });
+    _fastStartTail = start.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    await start;
+  }
+
+  bool get busy =>
+      _requests.isNotEmpty ||
+      _workRequests.isNotEmpty ||
+      _seasonRequests.isNotEmpty;
 
   Future<bool> hasToken() async {
     if (!_loadedToken) {
@@ -58,6 +132,7 @@ class TmdbMetadataService {
 
   void close() {
     _cancel.cancel();
+    stopFullSpeed();
     _dio.close(force: true);
   }
 
@@ -65,9 +140,18 @@ class TmdbMetadataService {
     String endpoint,
     Map<String, dynamic> query,
   ) {
-    final task = _tail.then((_) => _get(endpoint, query));
-    _tail = task.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    return task;
+    final key = '$endpoint:${jsonEncode(query)}';
+    return _requests.putIfAbsent(key, () {
+      final task = _fullSpeed
+          ? _fastRequest(endpoint, query)
+          : _tail.then((_) => _get(endpoint, query));
+      if (!_fullSpeed) {
+        _tail = task.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+      }
+      return task.whenComplete(() {
+        _requests.remove(key);
+      });
+    });
   }
 
   Future<Map<String, dynamic>> _get(
@@ -75,18 +159,27 @@ class TmdbMetadataService {
     Map<String, dynamic> query, {
     String? fallbackHost,
   }) async {
-    if (_cancel.isCancelled) throw const FilmCatalogException('cancelled');
+    if (_cancel.isCancelled || _fastStopping) {
+      throw const FilmCatalogException('cancelled');
+    }
     if (_retryAt != null && DateTime.now().isBefore(_retryAt!)) {
       throw const FilmCatalogException('rateLimited');
     }
     if (!await hasToken()) throw const FilmCatalogException('noToken');
     if (_authenticationFailed) throw const FilmCatalogException('invalidToken');
+    if (_fullSpeed) await _awaitFastStart();
+    if (_cancel.isCancelled || _fastStopping) {
+      throw const FilmCatalogException('cancelled');
+    }
+    if (_retryAt != null && DateTime.now().isBefore(_retryAt!)) {
+      throw const FilmCatalogException('rateLimited');
+    }
     final host = fallbackHost ?? _apiHost;
     try {
       final response = await _dio.get<Object>(
         'https://$host/3/$endpoint',
         queryParameters: query,
-        cancelToken: _cancel,
+        cancelToken: _fastCancel ?? _cancel,
         options: Options(
           followRedirects: false,
           maxRedirects: 0,
@@ -130,7 +223,9 @@ class TmdbMetadataService {
       _apiHost = host;
       return data;
     } on DioException catch (error) {
-      if (_cancel.isCancelled) throw const FilmCatalogException('cancelled');
+      if (_cancel.isCancelled || _fastStopping) {
+        throw const FilmCatalogException('cancelled');
+      }
       if (error.error case final FilmCatalogException cause) throw cause;
       if (error.error is HandshakeException) {
         throw const FilmCatalogException('metadataTlsFailed');

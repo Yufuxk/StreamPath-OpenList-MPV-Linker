@@ -10,6 +10,42 @@ import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
+  testWidgets(
+    'task lock disables window controls and fullscreen keys while retaining close',
+    (tester) async {
+      final calls = <String>[];
+      const channel = MethodChannel('streampath/appearance');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call.method);
+            return false;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: const WindowTitleBar(taskLocked: true)),
+        ),
+      );
+      await tester.pump();
+      calls.clear();
+      for (final key in [
+        WindowTitleBar.minimizeButtonKey,
+        WindowTitleBar.maximizeButtonKey,
+        WindowTitleBar.fullscreenButtonKey,
+      ]) {
+        await tester.tap(find.byKey(key));
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      expect(calls, isEmpty);
+      await tester.tap(find.byKey(WindowTitleBar.closeButtonKey));
+      expect(calls, ['close']);
+    },
+  );
+
   testWidgets('退出收尾超过 300ms 显示说明，完成后关闭提示', (tester) async {
     final finished = Completer<void>();
     await tester.pumpWidget(

@@ -587,6 +587,9 @@ void main() {
       await db.execute('DROP TABLE film_playlist_items');
       await db.execute('DROP TABLE film_playlists');
       await db.execute('DROP TABLE film_resource_versions');
+      for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
+        await db.execute('DROP TABLE $table');
+      }
       await db.setVersion(7);
       await db.close();
       store = await FilmCatalogStore.open('${temp.path}/catalog.db');

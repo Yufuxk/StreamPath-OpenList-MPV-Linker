@@ -57,6 +57,7 @@ class FilmCatalogMatcher {
   static final _fractionalEpisodeDescription = RegExp(
     r'^[ ._-]+\d+\.\d+\s*(?:集|话|話|回)(?=$|[ ._+&~–—-])',
   );
+
   /// 番剧三位以上编号视为绝对集号，季号未知时留给人工映射。
   static final _absoluteEpisode = RegExp(
     r'(?:[ ._]+-[ ._]+|\[)(\d{3,4})(?:v\d+)?(?![a-z0-9])',
@@ -287,8 +288,11 @@ class FilmCatalogMatcher {
   Future<FilmScanMetadataSession> scanSession(
     FilmCatalogRoot root, {
     required bool Function() cancelled,
+    bool lazyBindings = false,
   }) async {
-    final bindings = await store.scanBindings(root.id);
+    final bindings = lazyBindings
+        ? <String, FilmScanBinding>{}
+        : await store.scanBindings(root.id);
     final local = await filesFor?.call(root);
     var enabled = false;
     String? credentialError;
@@ -305,6 +309,7 @@ class FilmCatalogMatcher {
         await store.language(),
         cancelled,
       )
+      ..lazyBindings = lazyBindings
       ..error = credentialError
       ..files = local
       ..networkEnabled = enabled
@@ -680,6 +685,10 @@ class FilmScanMetadataSession {
   final bool Function() cancelled;
   final Map<String, FilmScanBinding> _existing;
   final matches = <String, FilmScanMatch>{};
+  final _lookupRequests = <int, Future<FilmWork>>{};
+  final _queryRequests = <(String, int?), Future<FilmWork?>>{};
+  final _titleRequests = <int, Future<List<String>>>{};
+  final _seasonLoads = <(int, int), Future<Map<String, dynamic>?>>{};
   final _queries = <(String, int?), FilmWork?>{};
   final _works = <int, FilmWork>{};
   final _titles = <int, List<String>>{};
@@ -693,6 +702,7 @@ class FilmScanMetadataSession {
   FilmFileMetadata? files;
   int scraped = 0;
   bool staleBindings = false;
+  bool lazyBindings = false;
   bool get paused => _paused;
 
   void releaseCommitted(Iterable<String> keys) {
@@ -756,7 +766,14 @@ class FilmScanMetadataSession {
     if (cause.code != 'metadataNotFound') _paused = true;
   }
 
-  Future<FilmWork> _lookup(int id) async {
+  Future<FilmWork> _lookup(int id) => _lookupRequests.putIfAbsent(
+    id,
+    () => _lookupUnshared(id).whenComplete(() {
+      _lookupRequests.remove(id);
+    }),
+  );
+
+  Future<FilmWork> _lookupUnshared(int id) async {
     if (_works[id] case final work?) return work;
     final cached = await matcher.store.cachedWork(root.type, id);
     return _works[id] =
@@ -768,7 +785,14 @@ class FilmScanMetadataSession {
         : await matcher._details(root.type, id, language);
   }
 
-  Future<FilmWork?> _search(FilmMatchHint hint) async {
+  Future<FilmWork?> _search(FilmMatchHint hint) => _queryRequests.putIfAbsent(
+    (_nameKey(hint.title), hint.year),
+    () => _searchUnshared(hint).whenComplete(() {
+      _queryRequests.remove((_nameKey(hint.title), hint.year));
+    }),
+  );
+
+  Future<FilmWork?> _searchUnshared(FilmMatchHint hint) async {
     if (hint.title.isEmpty) return null;
     final key = (_nameKey(hint.title), hint.year);
     if (_queries.containsKey(key)) return _queries[key];
@@ -869,8 +893,15 @@ class FilmScanMetadataSession {
       final scores = <(int, double)>[];
       for (final candidate in eligible.values) {
         if (cancelled()) return null;
-        final titles = _titles[candidate.tmdbId] ??= await matcher.tmdb
-            .matchingTitles(root.type, candidate.tmdbId);
+        final titles = _titles[candidate.tmdbId] ??= await _titleRequests
+            .putIfAbsent(
+              candidate.tmdbId,
+              () => matcher.tmdb
+                  .matchingTitles(root.type, candidate.tmdbId)
+                  .whenComplete(() {
+                    _titleRequests.remove(candidate.tmdbId);
+                  }),
+            );
         final score = [candidate.title, candidate.originalTitle, ...titles]
             .expand(
               (title) =>
@@ -923,8 +954,19 @@ class FilmScanMetadataSession {
   Future<void> prepare(
     List<FilmScanEntry> entries, {
     Map<int, FilmWork?>? workCache,
+    bool deferLocalFallback = false,
   }) async {
     if (!enabled || _paused) return;
+    if (lazyBindings && entries.isNotEmpty) {
+      _existing.addAll(
+        await matcher.store.scanBindings(
+          root.id,
+          paths: entries
+              .map((entry) => filmPathKey(entry.path, root.sourceKind))
+              .toList(),
+        ),
+      );
+    }
     final works = workCache ?? <int, FilmWork?>{};
     for (final entry in entries) {
       if (cancelled() || _paused) return;
@@ -985,7 +1027,12 @@ class FilmScanMetadataSession {
                 !FilmCatalogMatcher.genericContainerTitle(container.title)) {
               try {
                 work = await _search(
-                  FilmMatchHint(container.title, container.year, const {}, null),
+                  FilmMatchHint(
+                    container.title,
+                    container.year,
+                    const {},
+                    null,
+                  ),
                 );
               } on FilmCatalogException catch (cause) {
                 // 容器只是补充依据，数据类错误退回文件名检索；其余错误继续上报。
@@ -1030,6 +1077,7 @@ class FilmScanMetadataSession {
         _paused = false;
       }
       if (work == null && files != null && !cancelled()) {
+        if (deferLocalFallback) continue;
         local = await files!.load(entry, language);
         if (local != null) {
           work = local.work;
@@ -1057,15 +1105,23 @@ class FilmScanMetadataSession {
         try {
           final seasonKey = (work.tmdbId, number);
           if (!_seasons.containsKey(seasonKey)) {
-            _seasons[seasonKey] =
-                (work.id == 0
-                    ? null
-                    : await matcher.store.season(
-                        work.id,
-                        number,
-                        language: language,
-                      )) ??
-                await matcher.tmdb.season(work.tmdbId, number, language);
+            _seasons[seasonKey] = await _seasonLoads.putIfAbsent(
+              seasonKey,
+              () async {
+                try {
+                  return (work!.id == 0
+                          ? null
+                          : await matcher.store.season(
+                              work.id,
+                              number,
+                              language: language,
+                            )) ??
+                      await matcher.tmdb.season(work.tmdbId, number, language);
+                } finally {
+                  _seasonLoads.remove(seasonKey);
+                }
+              },
+            );
           }
           metadata = _seasons[seasonKey];
         } on FilmCatalogException catch (cause) {

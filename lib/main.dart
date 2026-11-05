@@ -39,6 +39,7 @@ import 'presentation/theme/app_theme.dart';
 import 'presentation/theme/appearance_controller.dart';
 import 'presentation/theme/film_shader_warm_up.dart';
 import 'presentation/widgets/window_title_bar.dart';
+import 'presentation/widgets/film_fast_task_ui.dart';
 import 'presentation/widgets/app_background.dart';
 import 'presentation/widgets/startup_overlay.dart';
 
@@ -361,7 +362,7 @@ class StreamPathApp extends StatelessWidget {
                 ),
               ),
             ),
-            home: child,
+            home: FilmFastRecoveryHost(app: appState, child: child!),
           );
         },
         child: autoConnect ? const AutoConnectGate() : const AppShellPage(),
@@ -388,6 +389,7 @@ class StreamPathApp extends StatelessWidget {
               listenable: Listenable.merge([
                 app.filmDetailChrome,
                 app.filmLibraryActive,
+                app.fullSpeedExclusive,
               ]),
               child: content,
               builder: (context, child) {
@@ -404,14 +406,27 @@ class StreamPathApp extends StatelessWidget {
                             top: immersive ? WindowTitleBar.height : 0,
                           ),
                         ),
-                        child: child!,
+                        child: ExcludeFocus(
+                          excluding: app.fullSpeedExclusive.value,
+                          child: AbsorbPointer(
+                            absorbing: app.fullSpeedExclusive.value,
+                            child: child!,
+                          ),
+                        ),
                       ),
                     ),
+                    if (app.fullSpeedExclusive.value)
+                      Positioned.fill(
+                        child: FilmFastTaskProgress(
+                          catalog: app.getFilmCatalog(),
+                        ),
+                      ),
                     Positioned(
                       top: 0,
                       left: 0,
                       right: 0,
                       child: WindowTitleBar(
+                        taskLocked: app.fullSpeedExclusive.value,
                         detailScrollProgress: immersive ? progress ?? 0 : null,
                         onCloseRequested: () async {
                           if (updates?.status == AppUpdateStatus.installing) {

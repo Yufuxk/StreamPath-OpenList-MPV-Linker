@@ -33,10 +33,14 @@ class FilmFileMetadata {
   final MediaDirectorySource source;
   final FilmCatalogRoot root;
   final bool localMode, canWrite;
+  Future<List<MediaDirectoryEntry>> Function(String)? directoryReader;
+  Future<Uint8List> Function(String, int)? byteReader;
   final _directories = <String, List<MediaDirectoryEntry>>{};
   Future<List<MediaDirectoryEntry>> _list(String path) async {
     if (_directories[path] case final rows?) return rows;
-    final rows = await source.fetchDirectory(path, forceRefresh: true);
+    final rows =
+        await (directoryReader?.call(path) ??
+            source.fetchDirectory(path, forceRefresh: true));
     _directories[path] = rows;
     if (_directories.length > 128) _directories.remove(_directories.keys.first);
     return rows;
@@ -61,6 +65,7 @@ class FilmFileMetadata {
 
   Future<Uint8List> read(String path, int limit) async {
     validateFilmPath(path);
+    if (byteReader != null) return byteReader!(path, limit);
     if (source is NativeStorageSource) {
       return (source as NativeStorageSource).readFile(path, maxBytes: limit);
     }

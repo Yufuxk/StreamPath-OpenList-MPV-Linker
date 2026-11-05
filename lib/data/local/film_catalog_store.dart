@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/film_catalog_item.dart';
+import '../models/film_fast_task.dart';
 import '../models/film_directory_exclusions.dart';
 import '../models/media_source.dart';
 import '../models/film_home_section.dart';
@@ -26,6 +27,7 @@ part 'film_catalog_servers.dart';
 part 'film_catalog_portability.dart';
 part 'film_catalog_playlists.dart';
 part 'film_catalog_versions.dart';
+part 'film_catalog_fast_tasks.dart';
 
 /// 永久影视目录；远端操作始终在写事务外完成。
 class FilmCatalogStore extends ChangeNotifier {
@@ -323,11 +325,11 @@ class FilmCatalogStore extends ChangeNotifier {
         .openDatabase(
           path,
           options: OpenDatabaseOptions(
-            version: 9,
+            version: 10,
             onConfigure: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
               final version = await db.getVersion();
-              if (version > 0 && version < 9 && path != inMemoryDatabasePath) {
+              if (version > 0 && version < 10 && path != inMemoryDatabasePath) {
                 final backup =
                     '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
                 await db.execute(
@@ -345,6 +347,9 @@ class FilmCatalogStore extends ChangeNotifier {
               await db.execute(_watchSchema);
               await db.execute(_discWatchSchema);
               await db.execute(_versionSchema);
+              for (final statement in _fastTaskSchema) {
+                await db.execute(statement);
+              }
               for (final statement in _phase5Schema) {
                 await db.execute(statement);
               }
@@ -438,6 +443,11 @@ class FilmCatalogStore extends ChangeNotifier {
                 }
               }
               if (oldVersion < 9) await db.execute(_versionSchema);
+              if (oldVersion < 10) {
+                for (final statement in _fastTaskSchema) {
+                  await db.execute(statement);
+                }
+              }
             },
             onOpen: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
@@ -448,11 +458,22 @@ class FilmCatalogStore extends ChangeNotifier {
           ),
         );
     await db.transaction((txn) async {
-      await txn.update('catalog_roots', {
-        'scan_status': 'failed',
-        'last_error': 'interrupted',
-      }, where: "scan_status = 'running'");
-      await txn.delete('scan_entries');
+      await txn.update(
+        'catalog_roots',
+        {'scan_status': 'failed', 'last_error': 'interrupted'},
+        where:
+            "scan_status = 'running' AND id NOT IN (SELECT root_id FROM fast_task_roots)",
+      );
+      await txn.delete(
+        'scan_entries',
+        where: 'root_id NOT IN (SELECT root_id FROM fast_task_roots)',
+      );
+      await txn.update('fast_tasks', {
+        'status': 'paused',
+      }, where: "status IN ('running','stopping')");
+      await txn.update('fast_task_jobs', {
+        'state': 'pending',
+      }, where: "state='running'");
     });
     final store = FilmCatalogStore._(db);
     store.spoilerProtection =
@@ -595,6 +616,9 @@ class FilmCatalogStore extends ChangeNotifier {
   }
 
   Future<void> removeRoot(int id) async {
+    if (await fastOwnsRoot(id)) {
+      throw const FilmCatalogException('fastTaskPending');
+    }
     await _db.delete('catalog_roots', where: 'id = ?', whereArgs: [id]);
     notifyListeners();
   }
@@ -725,29 +749,38 @@ class FilmCatalogStore extends ChangeNotifier {
     int generation,
     List<FilmScanEntry> entries,
   ) async {
-    await _db.transaction((txn) async {
-      await _checkScan(txn, root.id, generation);
-      final batch = txn.batch();
-      final now = DateTime.now().toUtc().millisecondsSinceEpoch;
-      for (final entry in entries) {
-        validateFilmPath(entry.path);
-        if (!filmPathWithin(
-          filmPathKey(entry.path, root.sourceKind),
-          filmPathKey(root.path, root.sourceKind),
-        )) {
-          throw const FilmCatalogException('invalidPath');
-        }
-        batch.insert('scan_entries', {
-          'root_id': root.id,
-          'generation': generation,
-          'relative_path': entry.path,
-          'path_key': filmPathKey(entry.path, root.sourceKind),
-          'parent_path': entry.parentPath,
-          'name': entry.name,
-          'media_kind': entry.mediaKind,
-        });
-        batch.rawInsert(
-          '''INSERT INTO resources
+    await _db.transaction((txn) => _stage(txn, root, generation, entries));
+    if (entries.isNotEmpty) notifyListeners();
+  }
+
+  Future<void> _stage(
+    DatabaseExecutor txn,
+    FilmCatalogRoot root,
+    int generation,
+    List<FilmScanEntry> entries,
+  ) async {
+    await _checkScan(txn, root.id, generation);
+    final batch = txn.batch();
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    for (final entry in entries) {
+      validateFilmPath(entry.path);
+      if (!filmPathWithin(
+        filmPathKey(entry.path, root.sourceKind),
+        filmPathKey(root.path, root.sourceKind),
+      )) {
+        throw const FilmCatalogException('invalidPath');
+      }
+      batch.insert('scan_entries', {
+        'root_id': root.id,
+        'generation': generation,
+        'relative_path': entry.path,
+        'path_key': filmPathKey(entry.path, root.sourceKind),
+        'parent_path': entry.parentPath,
+        'name': entry.name,
+        'media_kind': entry.mediaKind,
+      });
+      batch.rawInsert(
+        '''INSERT INTO resources
         (root_id, relative_path, path_key, parent_path, name, media_kind,
          last_seen_generation, availability, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?)
@@ -756,21 +789,19 @@ class FilmCatalogStore extends ChangeNotifier {
           name = excluded.name, media_kind = excluded.media_kind,
           last_seen_generation = excluded.last_seen_generation, availability = 'present'
         ''',
-          [
-            root.id,
-            entry.path,
-            filmPathKey(entry.path, root.sourceKind),
-            entry.parentPath,
-            entry.name,
-            entry.mediaKind,
-            generation,
-            now,
-          ],
-        );
-      }
-      await batch.commit(noResult: true);
-    });
-    if (entries.isNotEmpty) notifyListeners();
+        [
+          root.id,
+          entry.path,
+          filmPathKey(entry.path, root.sourceKind),
+          entry.parentPath,
+          entry.name,
+          entry.mediaKind,
+          generation,
+          now,
+        ],
+      );
+    }
+    await batch.commit(noResult: true);
   }
 
   Future<void> commitScan(
@@ -837,151 +868,159 @@ class FilmCatalogStore extends ChangeNotifier {
   /// 刮削资料逐项关联已登记资源，保留请求期间的人工纠错。
   Future<void> applyMetadata(int id, Map<String, FilmScanMatch> matches) async {
     if (matches.isEmpty) return;
-    final prepared = Map<String, FilmScanMatch>.of(matches);
+    final result = await _db.transaction(
+      (txn) => _applyMetadata(txn, id, Map.of(matches)),
+    );
+    if (result.$1) _notifyChange(watch: result.$2);
+  }
+
+  Future<(bool, bool)> _applyMetadata(
+    DatabaseExecutor txn,
+    int id,
+    Map<String, FilmScanMatch> prepared,
+  ) async {
     var changed = false;
     var watchChanged = false;
-    await _db.transaction((txn) async {
-      final roots = await txn.query(
-        'catalog_roots',
-        columns: ['id'],
-        where: 'id = ?',
-        whereArgs: [id],
+    final roots = await txn.query(
+      'catalog_roots',
+      columns: ['id'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (roots.isEmpty) return (false, false);
+    final workIds = <String, int>{};
+    final savedSeasons = <(int, int)>{};
+    for (final entry in prepared.entries) {
+      final match = entry.value;
+      final rows = await txn.query(
+        'resources',
+        where: 'root_id = ? AND path_key = ?',
+        whereArgs: [id, entry.key],
       );
-      if (roots.isEmpty) return;
-      final workIds = <String, int>{};
-      final savedSeasons = <(int, int)>{};
-      for (final entry in prepared.entries) {
-        final match = entry.value;
-        final rows = await txn.query(
-          'resources',
-          where: 'root_id = ? AND path_key = ?',
-          whereArgs: [id, entry.key],
+      final row = rows.firstOrNull;
+      // 请求期间发生的人工纠错优先于本次扫描结果。
+      if (row != null && row['binding_version'] != match.bindingVersion) {
+        continue;
+      }
+      final workKey = match.work.identity;
+      var workId = workIds[workKey];
+      if (workId == null) {
+        final cached = await txn.query(
+          'works',
+          where: 'identity_key = ?',
+          whereArgs: [workKey],
         );
-        final row = rows.firstOrNull;
-        // 请求期间发生的人工纠错优先于本次扫描结果。
-        if (row != null && row['binding_version'] != match.bindingVersion) {
-          continue;
+        final incoming = match.work.toRow();
+        if (cached.isNotEmpty &&
+            ((cached.single['metadata_fetched_at'] as int) >
+                    match.work.fetchedAt ||
+                incoming.entries.every(
+                  (entry) => cached.single[entry.key] == entry.value,
+                ))) {
+          workId = cached.single['id'] as int;
+        } else {
+          workId = await _saveWork(txn, match.work, row: incoming);
+          changed = true;
+          // 文件作品取得统一身份时会同时合并资源与观看状态。
+          watchChanged |= cached.isEmpty || match.work.id != workId;
         }
-        final workKey = match.work.identity;
-        var workId = workIds[workKey];
-        if (workId == null) {
-          final cached = await txn.query(
-            'works',
-            where: 'identity_key = ?',
-            whereArgs: [workKey],
-          );
-          final incoming = match.work.toRow();
-          if (cached.isNotEmpty &&
-              ((cached.single['metadata_fetched_at'] as int) >
-                      match.work.fetchedAt ||
-                  incoming.entries.every(
-                    (entry) => cached.single[entry.key] == entry.value,
-                  ))) {
-            workId = cached.single['id'] as int;
-          } else {
-            workId = await _saveWork(txn, match.work, row: incoming);
-            changed = true;
-            // 文件作品取得统一身份时会同时合并资源与观看状态。
-            watchChanged |= cached.isEmpty || match.work.id != workId;
-          }
-          workIds[workKey] = workId;
-        }
-        if (match.seasonMetadata != null &&
-            (match.origin == 'nfo' ||
-                savedSeasons.add((workId, match.seasonNumber!)))) {
-          var metadata = match.seasonMetadata!;
-          if (match.origin == 'nfo') {
-            final previous = await txn.query(
-              'season_metadata',
-              where: 'work_id=? AND season_number=?',
-              whereArgs: [workId, match.seasonNumber],
-            );
-            final old = previous.isEmpty
-                ? <String, dynamic>{}
-                : jsonDecode(previous.single['metadata_json'] as String)
-                      as Map<String, dynamic>;
-            final episodes = <Object?, Map>{
-              for (final episode
-                  in (old['episodes'] as List? ?? []).whereType<Map>())
-                episode['episode_number']: episode,
-              for (final episode
-                  in (metadata['episodes'] as List? ?? []).whereType<Map>())
-                episode['episode_number']: episode,
-            };
-            metadata = {
-              ...old,
-              ...metadata,
-              'episodes': episodes.values.toList(),
-            };
-          }
+        workIds[workKey] = workId;
+      }
+      if (match.seasonMetadata != null &&
+          (match.origin == 'nfo' ||
+              savedSeasons.add((workId, match.seasonNumber!)))) {
+        var metadata = match.seasonMetadata!;
+        if (match.origin == 'nfo') {
           final previous = await txn.query(
             'season_metadata',
-            columns: ['metadata_json', 'metadata_language'],
             where: 'work_id=? AND season_number=?',
             whereArgs: [workId, match.seasonNumber],
           );
-          if (previous.isEmpty ||
-              previous.single['metadata_language'] != match.work.language ||
-              previous.single['metadata_json'] != jsonEncode(metadata)) {
-            await _saveSeason(
-              txn,
-              workId,
-              match.seasonNumber!,
-              match.work.language,
-              metadata,
-            );
-            changed = true;
-          }
+          final old = previous.isEmpty
+              ? <String, dynamic>{}
+              : jsonDecode(previous.single['metadata_json'] as String)
+                    as Map<String, dynamic>;
+          final episodes = <Object?, Map>{
+            for (final episode
+                in (old['episodes'] as List? ?? []).whereType<Map>())
+              episode['episode_number']: episode,
+            for (final episode
+                in (metadata['episodes'] as List? ?? []).whereType<Map>())
+              episode['episode_number']: episode,
+          };
+          metadata = {
+            ...old,
+            ...metadata,
+            'episodes': episodes.values.toList(),
+          };
         }
-        if (row == null) continue;
-        var version = match.bindingVersion;
-        // 非人工绑定允许被新结果替换；人工作品与人工季集始终保留。
-        final rebind =
-            row['work_id'] != null &&
-            row['work_id'] != workId &&
-            row['binding_origin'] != 'manual' &&
-            row['episode_mapping_origin'] != 'manual';
-        if (row['work_id'] == null || rebind) {
+        final previous = await txn.query(
+          'season_metadata',
+          columns: ['metadata_json', 'metadata_language'],
+          where: 'work_id=? AND season_number=?',
+          whereArgs: [workId, match.seasonNumber],
+        );
+        if (previous.isEmpty ||
+            previous.single['metadata_language'] != match.work.language ||
+            previous.single['metadata_json'] != jsonEncode(metadata)) {
+          await _saveSeason(
+            txn,
+            workId,
+            match.seasonNumber!,
+            match.work.language,
+            metadata,
+          );
+          changed = true;
+        }
+      }
+      if (row == null) continue;
+      var version = match.bindingVersion;
+      // 非人工绑定允许被新结果替换；人工作品与人工季集始终保留。
+      final rebind =
+          row['work_id'] != null &&
+          row['work_id'] != workId &&
+          row['binding_origin'] != 'manual' &&
+          row['episode_mapping_origin'] != 'manual';
+      if (row['work_id'] == null || rebind) {
+        changed = watchChanged = true;
+        await txn.update(
+          'resources',
+          {
+            'work_id': workId,
+            'binding_origin': match.origin,
+            'binding_version': ++version,
+            if (rebind && match.episode == null) ...{
+              'season_number': null,
+              'episode_number': null,
+              'episode_mapping_origin': 'unset',
+            },
+          },
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+      if (match.episode case final episode?) {
+        if (row['episode_mapping_origin'] != 'manual' &&
+            (row['season_number'] != episode.$1 ||
+                row['episode_number'] != episode.$2)) {
           changed = watchChanged = true;
           await txn.update(
             'resources',
             {
-              'work_id': workId,
-              'binding_origin': match.origin,
+              'season_number': episode.$1,
+              'episode_number': episode.$2,
+              'episode_mapping_origin': match.origin == 'nfo'
+                  ? 'nfo'
+                  : 'filename',
               'binding_version': ++version,
-              if (rebind && match.episode == null) ...{
-                'season_number': null,
-                'episode_number': null,
-                'episode_mapping_origin': 'unset',
-              },
             },
             where: 'id = ?',
             whereArgs: [row['id']],
           );
         }
-        if (match.episode case final episode?) {
-          if (row['episode_mapping_origin'] != 'manual' &&
-              (row['season_number'] != episode.$1 ||
-                  row['episode_number'] != episode.$2)) {
-            changed = watchChanged = true;
-            await txn.update(
-              'resources',
-              {
-                'season_number': episode.$1,
-                'episode_number': episode.$2,
-                'episode_mapping_origin': match.origin == 'nfo'
-                    ? 'nfo'
-                    : 'filename',
-                'binding_version': ++version,
-              },
-              where: 'id = ?',
-              whereArgs: [row['id']],
-            );
-          }
-        }
       }
-    });
-    if (changed) _notifyChange(watch: watchChanged);
+    }
+    return (changed, watchChanged);
   }
 
   Future<void> finishScan(
@@ -1012,40 +1051,43 @@ class FilmCatalogStore extends ChangeNotifier {
       JOIN catalog_roots c ON c.id = r.root_id
       LEFT JOIN film_resource_versions v ON v.resource_id = r.id''';
 
-  Future<Map<String, FilmScanBinding>> scanBindings(int rootId) =>
-      _db.transaction((txn) async {
-        final bindings = <String, FilmScanBinding>{};
-        var afterId = 0;
-        while (true) {
-          final rows = await txn.query(
-            'resources',
-            columns: [
-              'id',
-              'path_key',
-              'work_id',
-              'binding_origin',
-              'binding_version',
-              'episode_mapping_origin',
-              'season_number',
-            ],
-            where: 'root_id = ? AND id > ?',
-            whereArgs: [rootId, afterId],
-            orderBy: 'id',
-            limit: 512,
-          );
-          if (rows.isEmpty) return bindings;
-          for (final row in rows) {
-            bindings[row['path_key'] as String] = (
-              workId: row['work_id'] as int?,
-              bindingOrigin: row['binding_origin'] as String,
-              bindingVersion: row['binding_version'] as int,
-              mappingOrigin: row['episode_mapping_origin'] as String,
-              season: row['season_number'] as int?,
-            );
-          }
-          afterId = rows.last['id'] as int;
-        }
-      });
+  Future<Map<String, FilmScanBinding>> scanBindings(
+    int rootId, {
+    List<String>? paths,
+  }) => _db.transaction((txn) async {
+    final bindings = <String, FilmScanBinding>{};
+    var afterId = 0;
+    while (true) {
+      final rows = await txn.query(
+        'resources',
+        columns: [
+          'id',
+          'path_key',
+          'work_id',
+          'binding_origin',
+          'binding_version',
+          'episode_mapping_origin',
+          'season_number',
+        ],
+        where:
+            'root_id = ? AND id > ? ${paths == null ? '' : 'AND path_key IN (${List.filled(paths.length, '?').join(',')})'}',
+        whereArgs: [rootId, afterId, ...?paths],
+        orderBy: 'id',
+        limit: 512,
+      );
+      if (rows.isEmpty) return bindings;
+      for (final row in rows) {
+        bindings[row['path_key'] as String] = (
+          workId: row['work_id'] as int?,
+          bindingOrigin: row['binding_origin'] as String,
+          bindingVersion: row['binding_version'] as int,
+          mappingOrigin: row['episode_mapping_origin'] as String,
+          season: row['season_number'] as int?,
+        );
+      }
+      afterId = rows.last['id'] as int;
+    }
+  });
 
   Future<Set<String>> presentResourcePaths(int rootId) async => {
     for (final row in await _db.query(

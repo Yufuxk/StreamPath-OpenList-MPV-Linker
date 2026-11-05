@@ -7,6 +7,7 @@ import 'package:win32/win32.dart';
 
 import '../../core/errors/app_exception.dart';
 import '../../data/models/local_root_config.dart';
+import '../../data/models/film_catalog_item.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
 import '../repositories/media_directory_source.dart';
@@ -117,7 +118,17 @@ class LocalMediaSource implements MediaDirectorySource {
   /// 建库仅枚举名称和类型，不读取文件内容或逐文件大小、时间。
   Future<List<MediaDirectoryEntry>> fetchCatalogDirectory(
     String relativePath,
-  ) async {
+  ) => _fetchCatalogDirectory(relativePath);
+
+  Future<List<MediaDirectoryEntry>> fetchFastCatalogDirectory(
+    String relativePath,
+    bool Function() cancelled,
+  ) => _fetchCatalogDirectory(relativePath, cancelled: cancelled);
+
+  Future<List<MediaDirectoryEntry>> _fetchCatalogDirectory(
+    String relativePath, {
+    bool Function()? cancelled,
+  }) async {
     if (!root.enabled) throw AppException.config('该本地文件夹已停用');
     final normalized = _normalizeRelativePath(relativePath);
     final directoryPath = await _validatedLexicalPath(
@@ -128,6 +139,9 @@ class LocalMediaSource implements MediaDirectorySource {
     await for (final entity in Directory(
       directoryPath,
     ).list(followLinks: false)) {
+      if (cancelled?.call() == true) {
+        throw const FilmCatalogException('cancelled');
+      }
       if (entity is Link || _isHiddenOrSystem(entity.path)) continue;
       if (Platform.isWindows) {
         final nativePath = entity.path.toNativeUtf16();
