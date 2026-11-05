@@ -71,3 +71,11 @@ install(TARGETS streampath_storage smb2 nfs libcurl_shared RUNTIME DESTINATION "
 install(FILES ${sp_smb2_SOURCE_DIR}/COPYING DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/libsmb2" COMPONENT Runtime)
 install(FILES ${sp_nfs_SOURCE_DIR}/LICENCE-LGPL-2.1.txt ${sp_nfs_SOURCE_DIR}/LICENCE-BSD.txt DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/libnfs" COMPONENT Runtime)
 install(FILES ${sp_curl_SOURCE_DIR}/COPYING DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/libcurl" COMPONENT Runtime)
+
+# 凭据封装不依赖网络存储库。
+add_library(streampath_credentials SHARED credentials.cpp)
+target_compile_features(streampath_credentials PRIVATE cxx_std_17)
+target_compile_definitions(streampath_credentials PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(streampath_credentials PRIVATE /W4 /WX /EHsc /utf-8)
+target_link_libraries(streampath_credentials PRIVATE advapi32)
+install(TARGETS streampath_credentials RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)

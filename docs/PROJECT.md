@@ -740,8 +740,7 @@ ISO 同时只允许一个准备或播放任务。manifest v2 依次写 `bridge-s
 缓存清理；两者明确退出后才同步进度和删除小型会话目录。
 数据库维护和学习数据清理不依赖 ISO 模块。
 
-WebDAV 远程 ISO 支持 Windows x64 未加密 Blu-ray ISO 的原有 Title/MPLS 和可选 WinFsp HDMV 菜单；不实现 DVD ISO、
-AACS、BD+、BD-J 或完整媒体磁盘缓存。本地 ISO/BDMV 的 `bd://menu`
+WebDAV 远程 ISO 支持 Windows x64 未加密 Blu-ray ISO 的原有 Title/MPLS 和可选 WinFsp HDMV 菜单；不实现 AACS、BD+、BD-J 解密。DVD ISO 的标题播放见 5.8；完整媒体离线缓存独立于流式 BlockCache。本地 ISO/BDMV 的 `bd://menu`
 能力由配置的 MPV 提供，完整菜单交互仍需在目标环境验收。界面覆盖四语言。
 自动化与本机受控测试不能替代真实网络和光盘验收。真实未加密 WebDAV Blu-ray ISO 的
 固定五轮前后基线、多 Clip、自动切 Title、音轨、
@@ -772,6 +771,18 @@ Lua 使用最终 Title 顺序或 MPV 明确 MPLS 标签识别节目，身份与�
 识别身份，轨道归属同时核对字幕类型、ID、路径和会话标记。运行中映射更新核对
 session/generation/MPLS 并等待 Lua 回执。该链路不依赖菜单进度共享，不修改 native、Range、WinFsp 或
 用户 MPV 配置。
+
+### 5.8 DVD ISO 标题播放列表
+
+本地与现有网络适配器的未加密 DVD-Video ISO 由同一 ISO Bridge 提供标题播放列表；ISO 准备阶段识别盘种，DVD 不提供蓝光菜单入口。普通 MPV 仅解复用和解码 MPEG-PS，支持不带原生 DVD 功能的构建；不需要 WinFsp、专用 MPV、DVD 菜单或音视频转码。DVD 不加入普通视频扩展名或进度数据库。
+
+固定 `libdvdread 7.1.1`／`libdvdnav 7.0.0` 从本地校验源码归档以 MSVC C11 构建，许可证、归档与构建补丁随包提供。源读取复用 LocalIsoSource／RangeSource、Metadata Cache、BlockCache、If-Range、播放代次和双进程生命周期。标题按 IFO／PGC／Cell 构造固定扇区映射，VOBU 通过 IFO 地址表定位并按需读取 NAV；SCR／PTS／DTS 以 90 kHz 时基和逻辑 Cell 累计时间规范化，随机 Range 的输出字节保持一致。相同物理 Cell 的不同逻辑位置具有各自时间轴。默认第一角度；交错角度、随机／交互 Cell 与非线性跨 PGC 路径明确报告不支持，CSS 加密不解密。不可线性播放的标题在列表中明确提示并跳过，其余标题仍可选择；整盘没有可用标题时结束准备。DVD 位图字幕包随 MPEG-PS 保留，IFO 调色板未单独注入，字幕颜色需要单独验证。
+
+结果包含 `discType`，标题使用 `programmeId`；Blu-ray 五位 MPLS 与旧 manifest／catalog／字幕绑定可继续读取，DVD 使用 `dvd-title-01`～`dvd-title-99`，内部续播身份为 `dvd-title://01` 等，不用于 MPV 启动。目录选择、排序、逐标题续播和影视库状态导入／导出复用原有独立 ISO 状态；本地 DVD 使用 `legacyTitle`，本地 Blu-ray 沿用 `localHdmvMenu`，进度读取按播放模式选择对应服务。
+
+DVD 可重建结构缓存以固定解析器版本、长度和资源版本摘要验证最多 32 个 256 KiB 元数据块，并校验整体 SHA-256；暖缓存仍执行实际 Range 版本探测，损坏或失配时冷解析。Blu-ray 结构缓存格式保持兼容。完整离线缓存命中时从索引的本地 ISO 读取，保留原网络来源及进度身份；本地读取不参与网络吞吐学习。
+
+外挂字幕和字体复用 5.7 的发现、预算、开关、手动绑定和会话脚本，DVD 明确标题命名使用 `片名.TITLE01.chs.ass`；单 ISO 目录允许省略盘名前缀。DVD 绑定使用 version 2，原 version 1 Blu-ray 绑定继续兼容。MPV 0.34 沿用既有字体边界：缺少 `sub-fonts-dir` 时不注入字体目录，但字幕和标题播放仍可用；具备该能力的构建使用独立会话字体目录。
 
 ## 6. 缓存控制系统
 
@@ -1349,11 +1360,11 @@ helper 校验解包文件与清单，快照仅涉及程序产物；安装更新�
     Token、userinfo、查询或签名参数。
 21. 数据库维护必须先通过完整性检查并生成一致性备份；播放器运行期间不得执行，任何入口
     都不得以“修复”为名删除播放进度。
-22. ISO 必须保持独立媒体类型；Bridge 只实现未加密 Blu-ray Title/MPLS 远程流式播放
+22. ISO 必须保持独立媒体类型；Bridge 实现未加密 Blu-ray Title/MPLS 与 DVD Title 流式播放
     和多集业务模型。媒体中心必须使用 ISO 独立分栏，浏览页底栏只复用普通视频的会话配额与
-    展示机制；不得写入视频/音频进度、普通视频字幕或 OpenList 恢复。ISO 外挂字幕使用独立 MPLS 绑定与会话脚本。ISO 顺序和续播只能使用自己的
+    展示机制；不得写入视频/音频进度、普通视频字幕或 OpenList 恢复。ISO 外挂字幕使用独立节目身份（MPLS／DVD Title）绑定与会话脚本。ISO 顺序和续播只能使用自己的
     匿名索引与 watch_later；缓存只能通过 `IsoCacheCoordinator` 复用共享策略与学习核心，
-    不得接入普通媒体执行控制器，也不得把 localhost M2TS 作为学习来源。
+    不得接入普通媒体执行控制器，也不得把 localhost 媒体流作为学习来源。
 23. `iso_temp` 只有在 MPV 与 helper 身份都明确失效后才能自动删除；任一身份未知必须保留。
     不支持 Range 或远端读取失败必须明确结束，不得重试、自动重启或转入完整下载。
 24. 用户配置数据（stream_path_data）必须始终保持固定的标准、格式，防止出现跨版本后用户数据无法互通

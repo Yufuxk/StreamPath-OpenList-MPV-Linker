@@ -149,7 +149,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  test('蓝光字幕文案在三种目标语言中都有覆盖', () {
+  test('光盘字幕文案在三种目标语言中都有覆盖', () {
     for (final translations in [
       englishTranslations,
       japaneseTranslations,
@@ -158,6 +158,14 @@ void main() {
       for (final key in [
         'ISO 外挂字幕',
         '蓝光外挂字幕',
+        'DVD 外挂字幕',
+        '标题 {number}',
+        'DVD 内容已变化，旧绑定暂停应用；请重新确认。',
+        '光盘外挂字幕',
+        '仅支持 Blu-ray 或 DVD ISO 文件',
+        '不支持加密光盘（AACS、BD+、CSS）',
+        '至少选择一个光盘标题',
+        '光盘标题选择结果无效',
         '自动建议按现有规则匹配；手动选择会覆盖建议。',
         '返回标题选择',
         '蓝光内容已变化，旧绑定暂停应用；请重新确认。',

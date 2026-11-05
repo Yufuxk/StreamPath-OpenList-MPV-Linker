@@ -93,7 +93,7 @@ class _PlaybackBarState extends State<PlaybackBar> {
                 _actionSlot(
                   IconButton(
                     icon: const Icon(SPIcons.subtitles),
-                    tooltip: context.l10n.text('蓝光外挂字幕'),
+                    tooltip: context.l10n.text('光盘外挂字幕'),
                     onPressed: widget.deleting ? null : widget.onSubtitles,
                   ),
                 ),

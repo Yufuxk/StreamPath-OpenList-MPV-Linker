@@ -18,6 +18,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +42,7 @@
 #include "iso_structure_cache.h"
 #include "remote_disc_endpoint.h"
 #include "winfsp_disc.h"
+#include "dvd_disc.h"
 
 namespace bridge = streampath::iso_bridge;
 using bridge::ChapterInfo;
@@ -1957,13 +1959,13 @@ class LoopbackHttpServer final {
                      std::vector<TitleInfo> titles, std::string token,
                      BlurayMetrics& bluray_metrics,
                      std::chrono::steady_clock::time_point bridge_started,
-                     bridge::RemoteDiscProvider* remote_disc = nullptr)
+                     bridge::RemoteDiscProvider* remote_disc = nullptr, bridge::DvdDisc* dvd = nullptr)
       : api_(api),
         cache_(cache),
         titles_(std::move(titles)),
         token_(std::move(token)),
         bluray_metrics_(bluray_metrics),
-        bridge_started_(bridge_started), remote_disc_(remote_disc) {}
+        bridge_started_(bridge_started), remote_disc_(remote_disc), dvd_(dvd) {}
 
   ~LoopbackHttpServer() { stop(); }
 
@@ -2108,8 +2110,8 @@ class LoopbackHttpServer final {
                    request_sequence);
       return;
     }
-    const std::string prefix = "/" + token_ + "/title/";
-    constexpr std::string_view kSuffix = ".m2ts";
+    const std::string prefix = "/" + token_ + (dvd_ ? "/dvd/title/" : "/title/");
+    const std::string_view kSuffix = dvd_ ? ".vob" : ".m2ts";
     if (path.size() != prefix.size() + 5U + kSuffix.size() ||
         path.rfind(prefix, 0) != 0 ||
         path.substr(path.size() - kSuffix.size()) != kSuffix) {
@@ -2177,7 +2179,7 @@ class LoopbackHttpServer final {
 
     if (method == "HEAD") {
       static_cast<void>(
-          send_headers(socket.get(), false, 0, title->size - 1, title->size));
+          send_headers(socket.get(), false, 0, title->size - 1, title->size, dvd_ ? "video/mpeg" : "video/mp2t"));
       return;
     }
     if (terminal_failed()) {
@@ -2215,6 +2217,46 @@ class LoopbackHttpServer final {
     bool response_headers_sent = false;
     try {
       if (!playback_current()) return;
+      if (dvd_) {
+        const auto read_ahead = cache_.limit_read_ahead(
+            bridge::playback_read_ahead_blocks(title->size, title->duration_milliseconds));
+        std::array<std::uint8_t, 64 * 1024> bytes{};
+        std::uint64_t offset = start;
+        std::uint64_t remaining = end - start + 1;
+        // 首块成功后再提交响应头，后续读取错误用连接复位明确结束。
+        bool sent = false;
+        while (remaining) {
+          const auto wanted = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, bytes.size()));
+          std::size_t count = 0;
+          {
+            std::unique_lock lock(dvd_mutex_);
+            if (!playback_current()) return;
+            dvd_->bind(cache_, playback_generation, read_ahead);
+            count = dvd_->read(playlist, offset, bytes.data(), wanted);
+          }
+          if (!playback_current()) return;
+          if (count != wanted) throw bridge::DvdError("invalid_disc", "DVD stream read truncated");
+          if (!sent) {
+            if (!send_headers(socket.get(), partial, start, end, title->size, "video/mpeg")) return;
+            response_headers_sent = true;
+            timing.headers_ready_us = elapsed_us();
+            sent = true;
+          }
+          if (!send_all(socket.get(), reinterpret_cast<const char*>(bytes.data()), count)) return;
+          if (!timing_recorded) {
+            timing.first_body_us = elapsed_us();
+            bluray_metrics_.record_media_timing(timing);
+            timing_recorded = true;
+            std::uint64_t expected_ready = 0;
+            first_media_response_ready_us_.compare_exchange_strong(expected_ready,
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - bridge_started_).count()));
+          }
+          offset += count;
+          remaining -= count;
+        }
+        return;
+      }
       auto context = playback_context_.acquire(
           playlist, std::chrono::seconds(30),
           [&playback_current] { return !playback_current(); },
@@ -2353,6 +2395,12 @@ class LoopbackHttpServer final {
         context->invalidate();
         throw;
       }
+    } catch (const bridge::DvdError& error) {
+      if (!playback_current()) return;
+      std::fprintf(stderr, "DVD stream read failed: %s\n", error.what());
+      terminal_failure_.record(playback_generation, error.code);
+      bluray_metrics_.record_media_failure(request_sequence, playback_generation, 0);
+      fail_loopback_response(socket.get(), response_headers_sent);
     } catch (const BridgeException& error) {
       if (!playback_current()) return;
       terminal_failure_.record(playback_generation, error.code());
@@ -2481,6 +2529,8 @@ class LoopbackHttpServer final {
   std::string token_;
   BlurayMetrics& bluray_metrics_;
   const std::chrono::steady_clock::time_point bridge_started_;
+  bridge::DvdDisc* dvd_ = nullptr;
+  std::mutex dvd_mutex_;
   MediaSocketRegistry media_sockets_;
   PersistentContextSlot<LibblurayApi::Disc> playback_context_;
   SocketHandle listener_;
@@ -2872,13 +2922,17 @@ std::string ready_json(std::uint16_t port, std::string_view token,
   }
   output << ",\"port\":" << port << ",\"token\":"
          << bridge::json_escape(token) << ",\"totalBytes\":" << total_size
+         << ",\"discType\":" << bridge::json_escape(!titles.empty() && titles.front().dvd ? "dvd" : "bluray")
          << ",\"titles\":[";
   for (std::size_t index = 0; index < titles.size(); ++index) {
     if (index > 0) output << ',';
     const TitleInfo& title = titles[index];
-    output << "{\"titleIndex\":" << title.title_index << ",\"mplsId\":\""
-           << std::setw(5) << std::setfill('0') << title.playlist
-           << "\",\"durationMs\":" << title.duration_milliseconds
+    std::ostringstream programme;
+    if (title.dvd) programme << "dvd-title-" << std::setw(2) << std::setfill('0') << title.playlist;
+    else programme << std::setw(5) << std::setfill('0') << title.playlist;
+    output << "{\"titleIndex\":" << title.title_index
+           << (title.dvd ? ",\"programmeId\":" : ",\"mplsId\":") << bridge::json_escape(programme.str())
+           << ",\"durationMs\":" << title.duration_milliseconds
            << ",\"size\":" << title.size << ",\"chapters\":[";
     for (std::size_t chapter_index = 0; chapter_index < title.chapters.size();
          ++chapter_index) {
@@ -3122,6 +3176,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       return 1;
     }
     std::vector<TitleInfo> titles;
+    std::unique_ptr<bridge::DvdDisc> dvd;
     bool should_write_structure_cache = false;
     try {
       auto cached_titles =
@@ -3129,7 +3184,36 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
               ? bridge::load_structure_cache(structure_path,
                                              *structure_identity)
               : std::nullopt;
-      if (remote_menu) {
+      const bool detect_only = json_boolean(*open, "detectOnly").value_or(false);
+      if (detect_only && cached_titles.has_value()) {
+        if (!write_frame(pipe.get(), "{\"type\":\"ready\",\"version\":1,\"port\":1,\"token\":\"" + random_token() +
+            "\",\"totalBytes\":" + std::to_string(source->size()) + ",\"titles\":[],\"discType\":\"bluray\"}")) return 0;
+        static_cast<void>(read_frame(pipe.get()));
+        return 0;
+      }
+      if (!bdmv && !remote_menu && !cached_titles.has_value()) {
+        metadata_cache = std::make_unique<bridge::BlockCache>(source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount);
+        if (structure_identity) {
+          auto warm = bridge::load_dvd_metadata_cache(structure_path, *structure_identity);
+          if (warm) {
+            metadata_cache->restore_handoff(std::move(*warm));
+            bluray_metrics.record_structure_cache_hit();
+          }
+        }
+        dvd = std::make_unique<bridge::DvdDisc>(*metadata_cache);
+        if (detect_only) {
+          const std::string detected = dvd->detected() ? "dvd" : "bluray";
+          if (!write_frame(pipe.get(), "{\"type\":\"ready\",\"version\":1,\"port\":1,\"token\":\"" + random_token() +
+              "\",\"totalBytes\":" + std::to_string(source->size()) + ",\"titles\":[],\"discType\":\"" + detected + "\"}")) return 0;
+          static_cast<void>(read_frame(pipe.get()));
+          return 0;
+        }
+        if (dvd->detected()) titles = dvd->enumerate();
+        else dvd.reset();
+      }
+      if (dvd) {
+        // DVD 的读取映射由 IFO/NAV 构造，不读取旧蓝光结构快照。
+      } else if (remote_menu) {
         metadata_cache = std::make_unique<bridge::BlockCache>(
             source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount);
         api.require_hdmv(*metadata_cache, bluray_metrics);
@@ -3172,6 +3256,8 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     const std::uint64_t metadata_retained_bytes =
         metadata_handoff.retained_bytes;
+    if (dvd && structure_identity) static_cast<void>(bridge::write_dvd_metadata_cache(
+        structure_path, *structure_identity, metadata_handoff));
 
     bridge::BlockCache cache(
         source, bridge::kIsoDemandBlockSize, bridge::kIsoBlockCount,
@@ -3186,6 +3272,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       cache.restore_handoff(std::move(metadata_handoff));
       metadata_cache.reset();
     }
+    if (dvd) dvd->bind(cache, 0, 0);
     const std::string token = random_token();
     std::unique_ptr<bridge::RemoteDiscProvider> remote_disc;
     if (remote_menu && !virtual_disc && !local_menu) {
@@ -3198,7 +3285,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     std::uint16_t port = 0;
     if (!virtual_disc && !local_menu) {
       server = std::make_unique<LoopbackHttpServer>(api, cache, titles, token,
-          bluray_metrics, bridge_started, remote_disc.get());
+          bluray_metrics, bridge_started, remote_disc.get(), dvd.get());
       port = server->start();
     }
     std::unique_ptr<bridge::WinFspDisc> mounted_disc;
@@ -3229,6 +3316,17 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       if (!final_snapshot_written) static_cast<void>(write_snapshot());
     });
     std::string ready = ready_json(port, token, folder_source ? folder_source->files.bytes : source->size(), titles);
+    if (dvd && !dvd->unavailable_titles().empty()) {
+      ready.pop_back();
+      ready += ",\"unavailableDvdTitles\":[";
+      bool first = true;
+      for (const auto id : dvd->unavailable_titles()) {
+        if (!first) ready += ',';
+        ready += std::to_string(id);
+        first = false;
+      }
+      ready += "]}";
+    }
     if (bdmv) {
       std::ostringstream revision;
       if (structure_identity) {
@@ -3366,6 +3464,9 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       }
       throw BridgeException("protocol_error", "The control message type is invalid");
     }
+  } catch (const bridge::DvdError& error) {
+    write_frame(pipe.get(), error_json(error.code, error.what()));
+    return 1;
   } catch (const BridgeException& error) {
     write_frame(pipe.get(), error_json(error.code(), error.what()));
     return 5;

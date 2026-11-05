@@ -16,12 +16,12 @@ import 'providers/system_memory_provider.dart';
 /// ISO Title 的缓存决策输入，不包含 loopback 地址或认证信息。
 class IsoCacheTitleContext {
   const IsoCacheTitleContext({
-    required this.mplsId,
+    required this.programmeId,
     required this.streamSize,
     required this.duration,
   });
 
-  final String mplsId;
+  final String programmeId;
   final int streamSize;
   final Duration duration;
 }
@@ -29,7 +29,7 @@ class IsoCacheTitleContext {
 /// 单个 ISO Title 的 MPV 缓存计划。
 class IsoTitleCachePlan {
   const IsoTitleCachePlan({
-    required this.mplsId,
+    required this.programmeId,
     required this.cacheSecs,
     required this.mpvMaxBytes,
     required this.memoryBudgetBytes,
@@ -40,7 +40,7 @@ class IsoTitleCachePlan {
     required this.prefetchBlocks,
   });
 
-  final String mplsId;
+  final String programmeId;
   final int cacheSecs;
   final int mpvMaxBytes;
   final int memoryBudgetBytes;
@@ -197,7 +197,7 @@ class IsoCacheCoordinator {
         );
         result = const CachePolicyResult(skipped: true);
       }
-      rawPlans[title.mplsId] = (title, result);
+      rawPlans[title.programmeId] = (title, result);
       final intelligence = _intelligence;
       if (intelligence != null) {
         unawaited(
@@ -243,7 +243,7 @@ class IsoCacheCoordinator {
           (title.duration.inMilliseconds / 1000) /
           1000000;
       plans[entry.key] = IsoTitleCachePlan(
-        mplsId: entry.key,
+        programmeId: entry.key,
         cacheSecs: fallback ? _fallbackCacheSecs : result.cacheSecs,
         mpvMaxBytes: mpvMaxBytes,
         memoryBudgetBytes: memoryBudget,
@@ -280,7 +280,7 @@ class IsoCacheCoordinator {
     required String statusFilePath,
     required String metricsFilePath,
     required String ipcPipeName,
-    required List<String> orderedMplsIds,
+    required List<String> orderedProgrammeIds,
     required IsoCacheSessionPlan plan,
   }) {
     unawaited(stopSession(sessionId));
@@ -289,7 +289,7 @@ class IsoCacheCoordinator {
       logicalSourceUrl: logicalSourceUrl,
       statusFilePath: statusFilePath,
       metricsFilePath: metricsFilePath,
-      orderedMplsIds: List<String>.unmodifiable(orderedMplsIds),
+      orderedProgrammeIds: List<String>.unmodifiable(orderedProgrammeIds),
       plan: plan,
       controller: MpvSessionController(pipeName: ipcPipeName),
     );
@@ -341,7 +341,7 @@ class IsoCacheCoordinator {
       final cacheDuration = double.tryParse(lines[15].trim());
       if (playlistPos == null ||
           playlistPos < 0 ||
-          playlistPos >= runtime.orderedMplsIds.length) {
+          playlistPos >= runtime.orderedProgrammeIds.length) {
         return;
       }
       if (runtime.activePlaylistPos != null &&
@@ -365,7 +365,7 @@ class IsoCacheCoordinator {
       if ((cacheDuration == null || cacheDuration <= 0) && !positionAdvanced) {
         return;
       }
-      final mplsId = runtime.orderedMplsIds[playlistPos];
+      final mplsId = runtime.orderedProgrammeIds[playlistPos];
       final titlePlan = runtime.plan.planFor(mplsId);
       await runtime.controller.setProperty(
         'demuxer-max-bytes',
@@ -531,7 +531,7 @@ class _IsoCacheRuntime {
     required this.logicalSourceUrl,
     required this.statusFilePath,
     required this.metricsFilePath,
-    required this.orderedMplsIds,
+    required this.orderedProgrammeIds,
     required this.plan,
     required this.controller,
   });
@@ -540,7 +540,7 @@ class _IsoCacheRuntime {
   final String logicalSourceUrl;
   final String statusFilePath;
   final String metricsFilePath;
-  final List<String> orderedMplsIds;
+  final List<String> orderedProgrammeIds;
   final IsoCacheSessionPlan plan;
   final MpvSessionController controller;
   final List<PlaybackSessionOutcome> outcomes = [];

@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 
-/// 只负责评分；实际节目身份仍由播放器确认的 MPLS 决定。
+/// 只负责评分；实际节目身份仍由播放器确认。
 class IsoSubtitleMatcher {
   static Map<String, dynamic>? describe(
     String path,
@@ -11,7 +11,7 @@ class IsoSubtitleMatcher {
   ) {
     final name = p.posix.basenameWithoutExtension(path).toLowerCase();
     final explicit = RegExp(
-      r'^(.*?)mpls(\d{5})(?:[._ -].*)?$',
+      r'^(.*?)(mpls\d{5}|title(?:0[1-9]|[1-9]\d))(?:[._ -].*)?$',
     ).firstMatch(name);
     final prefixed =
         name == stem ||
@@ -23,8 +23,13 @@ class IsoSubtitleMatcher {
     if (explicit != null) {
       final prefix = explicit[1]!.replaceAll(RegExp(r'[._ -]+$'), '');
       if (prefix != stem && !(prefix.isEmpty && isoCount == 1)) return null;
-      mpls = explicit[2];
-    } else if (name.contains('mpls') || (!prefixed && isoCount != 1)) {
+      final token = explicit[2]!;
+      mpls = token.startsWith('title')
+          ? 'dvd-title-${token.substring(5)}'
+          : token.substring(4);
+    } else if (name.contains('mpls') ||
+        RegExp(r'title\d').hasMatch(name) ||
+        (!prefixed && isoCount != 1)) {
       return null;
     }
     final suffix = prefixed ? name.substring(stem.length) : name;
@@ -51,7 +56,7 @@ class IsoSubtitleMatcher {
         : 0;
     return {
       'path': path,
-      'mpls': mpls,
+      'programmeId': mpls,
       'episode': episode,
       'base':
           language +
@@ -150,7 +155,7 @@ class IsoSubtitleMatcher {
     String? bestPath;
     double bestScore = -double.infinity;
     for (final candidate in candidates) {
-      final explicit = candidate['mpls'];
+      final explicit = candidate['programmeId'];
       if (explicit != null && explicit != id) continue;
       final end = (candidate['duration'] as num?)?.toDouble() ?? 0;
       final tolerance = math.max(120.0, video * 0.1);

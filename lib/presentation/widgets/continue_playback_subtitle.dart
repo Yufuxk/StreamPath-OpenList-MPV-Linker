@@ -7,6 +7,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/audio_playback_history.dart';
 import '../../data/models/media_library_item.dart';
+import '../../data/models/media_source.dart';
 import '../../data/models/playback_history.dart';
 import '../localization/app_localizations.dart';
 import '../state/app_state.dart';
@@ -193,13 +194,14 @@ class _ContinuePlaybackSubtitleState extends State<ContinuePlaybackSubtitle> {
         final target = _target();
         final mode =
             widget.video?.playbackMode ?? widget.disc!.item.playbackMode;
-        final progress = isoKey != null
+        var progress = isoKey != null
             ? await _app.isoPlaybackService?.getLibraryProgressByKey(
                 isoKey,
                 playbackMode: mode,
               )
             : sourceId != null && target != null
-            ? await (sourceId.startsWith('local:')
+            ? await (sourceId.startsWith('local:') &&
+                          mode == PlaybackMode.localHdmvMenu
                       ? _app.localDiscPlaybackService
                       : _app.isoPlaybackService)
                   ?.getLibraryProgress(
@@ -208,6 +210,17 @@ class _ContinuePlaybackSubtitleState extends State<ContinuePlaybackSubtitle> {
                     playbackMode: mode,
                   )
             : null;
+        if (progress == null &&
+            sourceId != null &&
+            sourceId.startsWith('local:') &&
+            target != null &&
+            mode != PlaybackMode.localHdmvMenu) {
+          progress = await _app.localDiscPlaybackService.getLibraryProgress(
+            profileId: sourceId,
+            resolvedUrl: target,
+            playbackMode: mode,
+          );
+        }
         positionMs = progress?.position.inMilliseconds;
         episodeNumber = progress?.episodeNumber ?? episodeNumber;
         episodeCount = progress?.episodeCount ?? episodeCount;

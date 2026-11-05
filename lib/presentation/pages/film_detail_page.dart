@@ -290,18 +290,32 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     if (item.kind == MediaLibraryKind.iso) {
       if (item.playbackMode == PlaybackMode.webdavHdmvMenu) return (null, null);
       final IsoLibraryProgressReader? reader =
-          item.sourceKind == MediaSourceKind.local
+          item.sourceKind == MediaSourceKind.local &&
+              item.playbackMode == PlaybackMode.localHdmvMenu
           ? film
                 ? app.filmLocalDiscPlaybackService
                 : app.localDiscPlaybackService
           : film
           ? app.filmIsoPlaybackService
           : app.isoPlaybackService;
-      final progress = await reader?.getLibraryProgress(
+      var progress = await reader?.getLibraryProgress(
         profileId: item.sourceId,
         resolvedUrl: target,
         playbackMode: item.playbackMode,
       );
+      if (progress == null &&
+          item.sourceKind == MediaSourceKind.local &&
+          item.playbackMode != PlaybackMode.localHdmvMenu) {
+        progress =
+            await (film
+                    ? app.filmLocalDiscPlaybackService
+                    : app.localDiscPlaybackService)
+            .getLibraryProgress(
+                  profileId: item.sourceId,
+                  resolvedUrl: target,
+                  playbackMode: item.playbackMode,
+                );
+      }
       return (
         progress?.position.inMilliseconds,
         progress?.duration?.inMilliseconds,

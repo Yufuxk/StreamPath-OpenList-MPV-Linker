@@ -119,14 +119,14 @@ local function subtitle_path(id)
     local best, best_name, best_score = nil, nil, -math.huge
     for _, candidate in ipairs(candidates) do
         local path=bindings['candidate:'..candidate.path]
-        if path and (not candidate.mpls or candidate.mpls == id) then
+        if path and (not candidate.programmeId or candidate.programmeId == id) then
             local ending=candidate.duration or 0
             local tolerance=math.max(120, video*0.1)
             local delta=math.abs(video-ending)
             local duration_match=video>0 and ending>0 and ending<=video+5 and delta<=tolerance
             local episode_match=episode>0 and candidate.episode==episode
-            if candidate.mpls or duration_match or episode_match then
-                local score=candidate.base + (candidate.mpls and 2000 or 0)
+            if candidate.programmeId or duration_match or episode_match then
+                local score=candidate.base + (candidate.programmeId and 2000 or 0)
                     + (duration_match and 600*(1-delta/tolerance) or 0)
                     + (episode_match and 200 or (candidate.episode and -200 or 0))
                 if score>best_score or (score==best_score and (not best_name or candidate.path<best_name)) then

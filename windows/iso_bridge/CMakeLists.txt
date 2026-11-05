@@ -28,7 +28,12 @@ target_include_directories(streampath_iso_bridge_core PUBLIC
 target_compile_options(streampath_iso_bridge_core PRIVATE /W4 /WX /EHsc /utf-8)
 
 include("winfsp.cmake")
-add_executable(streampath_iso_bridge WIN32 "main.cpp"
+include("dvd.cmake")
+add_executable(streampath_dvd_tests "dvd_disc_tests.cpp" "dvd_disc.cpp")
+target_compile_features(streampath_dvd_tests PRIVATE cxx_std_17)
+target_compile_options(streampath_dvd_tests PRIVATE /W4 /WX /EHsc /utf-8)
+target_link_libraries(streampath_dvd_tests PRIVATE streampath_dvdnav streampath_iso_bridge_core bcrypt.lib)
+add_executable(streampath_iso_bridge WIN32 "main.cpp" "dvd_disc.cpp"
   "disc_files.h" "bdmv_source.inc" "bdmv_callbacks.inc")
 target_compile_features(streampath_iso_bridge PRIVATE cxx_std_17)
 target_compile_options(streampath_iso_bridge PRIVATE /W4 /WX /EHsc /utf-8)
@@ -42,6 +47,7 @@ target_include_directories(streampath_iso_bridge PRIVATE
   "${ISO_BRIDGE_THIRD_PARTY_DIR}/include"
 )
 target_link_libraries(streampath_iso_bridge PRIVATE
+  streampath_dvdnav
   streampath_iso_bridge_core
   streampath_winfsp
   bcrypt.lib
@@ -63,7 +69,7 @@ target_link_libraries(streampath_iso_bridge_tests PRIVATE
   bcrypt.lib
 )
 
-add_executable(streampath_iso_bridge_network_tests "range_reader_tests.cpp"
+add_executable(streampath_iso_bridge_network_tests "range_reader_tests.cpp" "dvd_disc.cpp"
   "remote_mpv_adapter_test_api.c")
 target_compile_features(streampath_iso_bridge_network_tests PRIVATE cxx_std_17)
 target_compile_options(streampath_iso_bridge_network_tests PRIVATE
@@ -80,6 +86,7 @@ target_include_directories(streampath_iso_bridge_network_tests PRIVATE
   "${ISO_BRIDGE_THIRD_PARTY_DIR}/include"
 )
 target_link_libraries(streampath_iso_bridge_network_tests PRIVATE
+  streampath_dvdnav
   streampath_iso_bridge_core
   streampath_winfsp
   bcrypt.lib

@@ -38,6 +38,7 @@ struct TitleInfo {
   std::uint64_t size = 0;
   std::vector<ChapterInfo> chapters;
   std::vector<M2tsClipTimeline> clips;
+  bool dvd = false;
 };
 
 struct StructureCacheIdentity {
@@ -61,5 +62,10 @@ std::optional<std::vector<TitleInfo>> load_structure_cache(
 bool write_structure_cache(const std::filesystem::path& path,
                            const StructureCacheIdentity& identity,
                            const std::vector<TitleInfo>& titles) noexcept;
+
+std::optional<BlockCacheHandoff> load_dvd_metadata_cache(
+    const std::filesystem::path& path, const StructureCacheIdentity& identity) noexcept;
+bool write_dvd_metadata_cache(const std::filesystem::path& path,
+    const StructureCacheIdentity& identity, const BlockCacheHandoff& blocks) noexcept;
 
 }  // namespace streampath::iso_bridge

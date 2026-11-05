@@ -43,6 +43,8 @@ final _helperIdentity = PlayerProcessIdentity(
 );
 
 class _FakeIsoHandle implements IsoAccessHandle {
+  @override
+  List<int> get unavailableDvdTitles => const [];
   _FakeIsoHandle(this.sessionDirectory, {this.beforeCleanup});
 
   @override
@@ -56,7 +58,7 @@ class _FakeIsoHandle implements IsoAccessHandle {
   List<IsoBridgeTitle> get titles => const [
     IsoBridgeTitle(
       titleIndex: 0,
-      mplsId: '00001',
+      programmeId: '00001',
       duration: Duration(minutes: 24),
       streamSize: 1000,
       chapters: [
@@ -69,7 +71,7 @@ class _FakeIsoHandle implements IsoAccessHandle {
     ),
     IsoBridgeTitle(
       titleIndex: 1,
-      mplsId: '00002',
+      programmeId: '00002',
       duration: Duration(minutes: 23),
       streamSize: 900,
       chapters: [],
@@ -123,6 +125,33 @@ class _FakeRemoteHandle extends _FakeIsoHandle
   );
   @override
   List<IsoBridgeTitle> get titles => const [];
+}
+
+class _FakeDvdHandle extends _FakeIsoHandle {
+  _FakeDvdHandle(super.sessionDirectory);
+  @override
+  List<int> get unavailableDvdTitles => const [3];
+  @override
+  List<IsoBridgeTitle> get titles => const [
+    IsoBridgeTitle(
+      titleIndex: 0,
+      programmeId: 'dvd-title-01',
+      duration: Duration(minutes: 20),
+      streamSize: 1000,
+      chapters: [],
+    ),
+    IsoBridgeTitle(
+      titleIndex: 1,
+      programmeId: 'dvd-title-02',
+      duration: Duration(minutes: 21),
+      streamSize: 1000,
+      chapters: [],
+    ),
+  ];
+  @override
+  Uri playbackUri(String id) => Uri.parse(
+    'http://127.0.0.1:49152/token/dvd/title/${id.substring(10)}.vob',
+  );
 }
 
 class _CachedDiscService extends WebDAVService {
@@ -349,6 +378,60 @@ void main() {
     await service.terminateSession(result.sessionDirectoryPath);
     service.dispose();
   });
+  test('DVD 标题选择顺序、独立续播和便携状态使用节目身份', () async {
+    final provider = _FakeIsoAccessProvider(handleFactory: _FakeDvdHandle.new);
+    final service = buildService(provider);
+    addTearDown(service.dispose);
+    final launch = (await service.start(
+      webDavService: webDavService,
+      file: isoFile,
+      selectTitles: (request) async {
+        expect(request.selectedProgrammeIds, {'dvd-title-01', 'dvd-title-02'});
+        expect(request.unavailableDvdTitles, [3]);
+        return IsoTitleSelection(
+          orderedTitles: request.titles.reversed.toList(),
+          selectedProgrammeIds: request.selectedProgrammeIds,
+        );
+      },
+    ))!;
+    final playlist = await File(
+      p.join(launch.sessionDirectoryPath, 'iso-playlist.m3u8'),
+    ).readAsString();
+    expect(playlist, contains('Title 02'));
+    expect(playlist, isNot(contains('.mpls')));
+    await File(
+      p.join(launch.sessionDirectoryPath, 'iso-progress.jsonl'),
+    ).writeAsString(
+      '${jsonEncode({'outcome': 'position', 'playlist_pos': 0, 'position': 123.5, 'duration': 1260.0})}\n',
+    );
+    alive.updateAll((_, _) => false);
+    await service.sessionSnapshot(launch.sessionDirectoryPath);
+    final portable = await service.portableState(
+      profileId: webDavService.sourceId,
+      resolvedUrl: webDavService.persistentUrl(isoFile.href),
+      playbackMode: launch.playbackMode,
+    );
+    expect(portable['selection']['order'], ['dvd-title-02', 'dvd-title-01']);
+    expect(portable['selection']['lastProgrammeId'], 'dvd-title-02');
+    expect(portable['titles']['dvd-title-02']['position'], 123.5);
+    alive.updateAll((_, _) => true);
+    final resumed = buildService(
+      _FakeIsoAccessProvider(handleFactory: _FakeDvdHandle.new),
+    );
+    addTearDown(resumed.dispose);
+    await resumed.start(
+      webDavService: webDavService,
+      file: isoFile,
+      selectTitles: (request) async {
+        expect(request.lastProgrammeId, 'dvd-title-02');
+        expect(
+          request.resumeByProgrammeId['dvd-title-02']!.position,
+          const Duration(milliseconds: 123500),
+        );
+        return null;
+      },
+    );
+  });
 
   test('BDMV 菜单复用本次能力检查，直接入口仍重新检查', () async {
     final provider = _FakeIsoAccessProvider(handleFactory: _FakeRemoteHandle.new);
@@ -548,12 +631,15 @@ void main() {
     alive[playerIdentity.pid] = true;
     alive[_helperIdentity.pid] = true;
     final titleLaunch = (await service.start(
-      webDavService: webDavService, file: isoFile,
+      webDavService: webDavService,
+      file: isoFile,
       selectTitles: (request) async {
-        expect(request.resumeByMplsId['00002']?.position,
-            const Duration(milliseconds: 123500));
-        expect(request.resumeByMplsId.containsKey('00001'), isFalse);
-        expect(request.lastMplsId, '00002');
+        expect(
+          request.resumeByProgrammeId['00002']?.position,
+          const Duration(milliseconds: 123500),
+        );
+        expect(request.resumeByProgrammeId.containsKey('00001'), isFalse);
+        expect(request.lastProgrammeId, '00002');
         return IsoTitleSelection.all(request.titles);
       },
     ))!;
@@ -846,7 +932,7 @@ void main() {
       file: isoFile,
       selectTitles: (request) async => IsoTitleSelection(
         orderedTitles: [request.titles[1], request.titles[0]],
-        selectedMplsIds: {'00001', '00002'},
+        selectedProgrammeIds: {'00001', '00002'},
       ),
     );
     final session = Directory(launch!.sessionDirectoryPath);
@@ -1077,9 +1163,9 @@ void main() {
       },
     );
     expect(result, isNull);
-    expect(request!.lastMplsId, '00002');
+    expect(request!.lastProgrammeId, '00002');
     expect(
-      request!.resumeByMplsId['00002']!.position,
+      request!.resumeByProgrammeId['00002']!.position,
       const Duration(milliseconds: 123500),
     );
     secondService.dispose();

@@ -1,3 +1,4 @@
+import '../../domain/services/disc_programme.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -155,7 +156,11 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
     final content = _content();
     if (widget.embedded) return content;
     return SPDialog(
-      title: const AppText('蓝光外挂字幕'),
+      title: AppText(
+        _titles.any((t) => isDvdProgramme(t['id'] as String))
+            ? 'DVD 外挂字幕'
+            : '蓝光外挂字幕',
+      ),
       content: SizedBox(width: 680, height: 430, child: content),
       actions: [
         if (widget.session != null)
@@ -182,7 +187,12 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
         if (widget.session != null &&
             (_snapshot == null || _snapshot!['current'] == ''))
           const AppText('当前节目尚不可识别或正在菜单中，自动外挂暂停。'),
-        if (subtitles.changed) const AppText('蓝光内容已变化，旧绑定暂停应用；请重新确认。'),
+        if (subtitles.changed)
+          AppText(
+            _titles.any((title) => isDvdProgramme(title['id'] as String))
+                ? 'DVD 内容已变化，旧绑定暂停应用；请重新确认。'
+                : '蓝光内容已变化，旧绑定暂停应用；请重新确认。',
+          ),
         if (subtitles.issues.isNotEmpty || _snapshot?['status'] == 'failed')
           const AppText('部分字幕或字体资源不可用，视频播放不受影响。'),
         if (!subtitles.writable) const AppText('字幕绑定文件不可用，原文件未覆盖'),
@@ -273,7 +283,14 @@ class _IsoSubtitleDialogState extends State<IsoSubtitleDialog> {
                 Icon(SPIcons.play, size: 20, color: scheme.primary),
                 const SizedBox(width: 4),
               ],
-              Text('$id.mpls', style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                isDvdProgramme(id)
+                    ? context.l10n.format('标题 {number}', {
+                        'number': id.substring(10),
+                      })
+                    : discProgrammeLabel(id),
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
               const Spacer(),
               Text(
                 _duration(seconds),

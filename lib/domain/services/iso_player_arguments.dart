@@ -10,6 +10,8 @@ List<String> filterIsoPlayerArguments(List<String> arguments) {
       continue;
     }
     if (const {
+      '--dvd-device',
+      '--dvd-angle',
       '--bluray-device',
       '--playlist',
       '--playlist-start',
@@ -35,6 +37,10 @@ List<String> filterIsoPlayerArguments(List<String> arguments) {
         value.contains('{url}') ||
         value.contains('{subfile}') ||
         value.contains('{start}') ||
+        lower.startsWith('--dvd-device=') ||
+        lower.startsWith('--dvd-angle=') ||
+        lower.startsWith('dvd://') ||
+        lower.startsWith('dvdnav://') ||
         lower.startsWith('--bluray-device=') ||
         lower.startsWith('--bluray-device ') ||
         lower.startsWith('--playlist=') ||

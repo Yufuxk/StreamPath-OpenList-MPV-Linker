@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <system_error>
@@ -510,6 +511,75 @@ bool write_structure_cache(const std::filesystem::path& path,
   } catch (...) {
     return false;
   }
+}
+
+
+std::optional<BlockCacheHandoff> load_dvd_metadata_cache(
+    const std::filesystem::path& path, const StructureCacheIdentity& identity) noexcept {
+  try {
+    if (!is_valid_structure_cache_path(path) || !valid_identity(identity)) return std::nullopt;
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input || input.tellg() < 100 || input.tellg() > static_cast<std::streamoff>(kMaximumStructureCacheBytes)) return std::nullopt;
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(input.tellg()));
+    input.seekg(0); input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    if (!input || std::memcmp(data.data(), "SPDVDM01", 8) != 0) return std::nullopt;
+    const auto payload = data.size() - kDigestBytes;
+    const auto digest = sha256(data.data(), payload);
+    if (!digest || !std::equal(digest->begin(), digest->end(), data.begin() + payload)) return std::nullopt;
+    std::size_t cursor = 8;
+    const auto integer = [&](std::uint64_t& value) {
+      if (cursor + 8 > payload) return false;
+      value = 0;
+      for (unsigned byte = 0; byte < 8; ++byte) value |= std::uint64_t(data[cursor++]) << (8 * byte);
+      return true;
+    };
+    std::uint64_t version = 0, length = 0, kind = 0, count = 0;
+    if (!integer(version) || version != 0x0007010100070000ULL || !integer(length) || length != identity.content_length ||
+        !integer(kind) || kind != static_cast<unsigned>(identity.validator_kind) || cursor + 32 > payload ||
+        !std::equal(identity.validator_digest.begin(), identity.validator_digest.end(), data.begin() + cursor)) return std::nullopt;
+    cursor += 32;
+    if (!integer(count) || count > 32) return std::nullopt;
+    BlockCacheHandoff result;
+    result.block_size = kIsoDemandBlockSize;
+    for (std::uint64_t item = 0; item < count; ++item) {
+      std::uint64_t index = 0, size = 0;
+      if (!integer(index) || !integer(size) || size != kIsoDemandBlockSize || cursor + size > payload ||
+          index >= identity.content_length / kIsoDemandBlockSize || !result.fetched_block_indices.insert(index).second) return std::nullopt;
+      RetainedBlock block;
+      block.index = index;
+      block.bytes.assign(data.begin() + cursor, data.begin() + cursor + static_cast<std::size_t>(size));
+      result.blocks.push_back(std::move(block));
+      result.retained_bytes += size;
+      cursor += static_cast<std::size_t>(size);
+    }
+    if (cursor != payload) return std::nullopt;
+    return result;
+  } catch (...) { return std::nullopt; }
+}
+
+bool write_dvd_metadata_cache(const std::filesystem::path& path,
+    const StructureCacheIdentity& identity, const BlockCacheHandoff& blocks) noexcept {
+  try {
+    if (!is_valid_structure_cache_path(path) || !valid_identity(identity) || blocks.block_size != kIsoDemandBlockSize) return false;
+    std::vector<std::uint8_t> data{'S','P','D','V','D','M','0','1'};
+    append_unsigned(data, std::uint64_t(0x0007010100070000ULL));
+    append_unsigned(data, identity.content_length);
+    append_unsigned(data, std::uint64_t(identity.validator_kind));
+    append_bytes(data, identity.validator_digest.data(), identity.validator_digest.size());
+    const auto count = std::min<std::size_t>(blocks.blocks.size(), 32);
+    append_unsigned(data, std::uint64_t(count));
+    for (std::size_t item = 0; item < count; ++item) {
+      const auto& block = blocks.blocks[item];
+      if (block.bytes.size() != kIsoDemandBlockSize) return false;
+      append_unsigned(data, block.index);
+      append_unsigned(data, std::uint64_t(block.bytes.size()));
+      append_bytes(data, block.bytes.data(), block.bytes.size());
+    }
+    const auto digest = sha256(data.data(), data.size());
+    if (!digest) return false;
+    append_bytes(data, digest->data(), digest->size());
+    return write_atomic(path, data);
+  } catch (...) { return false; }
 }
 
 }  // namespace streampath::iso_bridge

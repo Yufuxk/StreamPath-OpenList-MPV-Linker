@@ -1,3 +1,4 @@
+import '../../domain/services/disc_programme.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -20,7 +21,7 @@ class IsoSubtitleStore {
     }
     final raw = jsonDecode(await file.readAsString());
     if (raw is! Map ||
-        raw['version'] != 1 ||
+        (raw['version'] != 1 && raw['version'] != 2) ||
         raw['revision'] is! String ||
         raw['bindings'] is! Map) {
       throw const FormatException('Invalid ISO subtitle map');
@@ -28,7 +29,7 @@ class IsoSubtitleStore {
     final bindings = <String, String?>{};
     for (final entry in (raw['bindings'] as Map).entries) {
       if (entry.key is! String ||
-          !RegExp(r'^\d{5}$').hasMatch(entry.key) ||
+          !isDiscProgramme(entry.key) ||
           (entry.value != null &&
               (entry.value is! String || !_validPath(entry.value)))) {
         throw const FormatException('Invalid ISO subtitle binding');
@@ -48,8 +49,7 @@ class IsoSubtitleStore {
     String? path, {
     bool automatic = false,
   }) {
-    if (!RegExp(r'^\d{5}$').hasMatch(id) ||
-        (path != null && !_validPath(path))) {
+    if (!isDiscProgramme(id) || (path != null && !_validPath(path))) {
       throw ArgumentError('Invalid ISO subtitle binding');
     }
     final result = _writes.then((_) async {
@@ -65,7 +65,12 @@ class IsoSubtitleStore {
       final file = _file(key);
       final temporary = File('${file.path}.tmp');
       await temporary.writeAsString(
-        jsonEncode({'version': 1, 'revision': revision, 'bindings': snapshot}),
+        jsonEncode({
+          'version': isDvdProgramme(id) ? 2 : 1,
+          'discType': isDvdProgramme(id) ? 'dvd' : 'bluray',
+          'revision': revision,
+          'bindings': snapshot,
+        }),
         flush: true,
       );
       await temporary.rename(file.path);

@@ -1,3 +1,5 @@
+import '../../domain/services/disc_programme.dart';
+import '../../domain/services/local_iso_service.dart';
 import '../../data/models/film_playlist.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_menu.dart';
@@ -194,7 +196,9 @@ class _IsoTitleSelectionDialog extends StatefulWidget {
 
 class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
   late final List<IsoDiscTitle> _titles = List.of(widget.request.titles);
-  late final Set<String> _selected = Set.of(widget.request.selectedMplsIds);
+  late final Set<String> _selected = Set.of(
+    widget.request.selectedProgrammeIds,
+  );
   bool _showSubtitles = false;
   bool _subtitleSaving = false;
 
@@ -217,7 +221,13 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
   @override
   Widget build(BuildContext context) => SPDialog(
     key: const Key('iso-title-selection-dialog'),
-    title: AppText(_showSubtitles ? '蓝光外挂字幕' : '选择 Blu-ray 标题'),
+    title: AppText(
+      _showSubtitles
+          ? (isDvdProgramme(_titles.first.programmeId) ? 'DVD 外挂字幕' : '蓝光外挂字幕')
+          : (isDvdProgramme(_titles.first.programmeId)
+                ? '选择 DVD 标题'
+                : '选择 Blu-ray 标题'),
+    ),
     content: SizedBox(
       width: 680,
       height: 430,
@@ -227,7 +237,7 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
               titles: _titles
                   .map(
                     (title) => <String, dynamic>{
-                      'id': title.mplsId,
+                      'id': title.programmeId,
                       'duration': title.duration.inMilliseconds / 1000,
                     },
                   )
@@ -246,6 +256,12 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
                 ),
                 const SizedBox(height: 6),
                 const AppText('选择要播放的 Title，并用箭头调整虚拟播放列表顺序。'),
+                if (widget.request.unavailableDvdTitles.isNotEmpty)
+                  AppText(
+                    context.l10n.format('以下 DVD 标题需要暂不支持的导航，已跳过：{titles}', {
+                      'titles': widget.request.unavailableDvdTitles.join(', '),
+                    }),
+                  ),
                 if (widget.menuUnavailableReason != null)
                   AppText(widget.menuUnavailableReason!),
                 const SizedBox(height: 12),
@@ -255,10 +271,17 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
                     itemBuilder: (context, index) {
                       final title = _titles[index];
                       final resume =
-                          widget.request.resumeByMplsId[title.mplsId];
-                      final isLast = widget.request.lastMplsId == title.mplsId;
+                          widget.request.resumeByProgrammeId[title.programmeId];
+                      final isLast =
+                          widget.request.lastProgrammeId == title.programmeId;
+                      final dvdLabel = isDvdProgramme(title.programmeId)
+                          ? context.l10n.format('标题 {number}', {
+                              'number': title.programmeId.substring(10),
+                            })
+                          : null;
                       final details = <String>[
-                        '${title.mplsId}.mpls',
+                        if (dvdLabel == null)
+                          discProgrammeLabel(title.programmeId),
                         _duration(title.duration),
                         if (resume != null)
                           context.l10n.format('上次播放 {position}', {
@@ -267,22 +290,22 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
                         if (isLast) context.l10n.text('上次所在标题'),
                       ];
                       return CheckboxListTile(
-                        key: Key('iso-title-${title.mplsId}'),
-                        value: _selected.contains(title.mplsId),
+                        key: Key('iso-title-${title.programmeId}'),
+                        value: _selected.contains(title.programmeId),
                         onChanged: (selected) => setState(() {
                           if (selected == true) {
-                            _selected.add(title.mplsId);
+                            _selected.add(title.programmeId);
                           } else {
-                            _selected.remove(title.mplsId);
+                            _selected.remove(title.programmeId);
                           }
                         }),
-                        title: Text('Title ${title.titleIndex}'),
+                        title: Text(dvdLabel ?? 'Title ${title.titleIndex}'),
                         subtitle: Text(details.join(' · ')),
                         secondary: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
-                              key: Key('iso-title-up-${title.mplsId}'),
+                              key: Key('iso-title-up-${title.programmeId}'),
                               tooltip: context.l10n.text('上移'),
                               onPressed: index == 0
                                   ? null
@@ -290,7 +313,7 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
                               icon: const Icon(SPIcons.up),
                             ),
                             IconButton(
-                              key: Key('iso-title-down-${title.mplsId}'),
+                              key: Key('iso-title-down-${title.programmeId}'),
                               tooltip: context.l10n.text('下移'),
                               onPressed: index == _titles.length - 1
                                   ? null
@@ -319,7 +342,9 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
         if (widget.subtitles != null)
           TextButton(
             onPressed: () => setState(() => _showSubtitles = true),
-            child: const AppText('蓝光外挂字幕'),
+            child: AppText(
+              isDvdProgramme(_titles.first.programmeId) ? 'DVD 外挂字幕' : '蓝光外挂字幕',
+            ),
           ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -332,7 +357,7 @@ class _IsoTitleSelectionDialogState extends State<_IsoTitleSelectionDialog> {
               : () => Navigator.of(context).pop(
                   IsoTitleSelection(
                     orderedTitles: List<IsoDiscTitle>.unmodifiable(_titles),
-                    selectedMplsIds: Set<String>.unmodifiable(_selected),
+                    selectedProgrammeIds: Set<String>.unmodifiable(_selected),
                   ),
                 ),
           child: const AppText('播放所选标题'),
@@ -350,6 +375,7 @@ class _IsoStreamingDialog extends StatefulWidget {
     required this.webDavService,
     required this.file,
     this.remoteMenu = false,
+    this.discType = DiscType.bluray,
     this.cached = false,
     this.menuUnavailableReason,
     this.subtitles,
@@ -369,6 +395,7 @@ class _IsoStreamingDialog extends StatefulWidget {
   final String? precheckedMenuExecutable;
   final VoidCallback? cancelPreparation;
   final bool remoteMenu;
+  final DiscType discType;
   final bool cached;
   final String? menuUnavailableReason;
   final PlaybackMediaInfo? mediaInfo;
@@ -500,7 +527,10 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
           IsoPlaybackPhase.startingBridge => '正在启动 ISO Bridge…',
           IsoPlaybackPhase.probingStream =>
             widget.cached ? '正在读取本地缓存光盘…' : '正在探测 ISO 流式读取…',
-          IsoPlaybackPhase.parsingTitles => '正在解析 Blu-ray Title/MPLS…',
+          IsoPlaybackPhase.parsingTitles =>
+            widget.discType == DiscType.dvd
+                ? '正在解析 DVD 标题…'
+                : '正在解析 Blu-ray Title/MPLS…',
           IsoPlaybackPhase.selectingTitles => '正在等待标题选择…',
           IsoPlaybackPhase.launching => '正在启动 ISO 播放器…',
           IsoPlaybackPhase.playing => 'ISO 播放器已启动',
@@ -544,6 +574,8 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
                     ? '正在使用完整本地缓存，无需连接原始服务器。'
                     : widget.file is WebDavBdmv
                     ? '仅支持未加密 Blu-ray BDMV；播放期间请保持网络连接。'
+                    : widget.discType == DiscType.dvd
+                    ? '仅支持未加密 DVD ISO；播放期间请保持网络连接。'
                     : '仅支持未加密 Blu-ray ISO；播放期间请保持网络连接。',
               ),
             ],
@@ -1001,7 +1033,7 @@ class BrowserPageState extends State<BrowserPage> {
             value: 'subtitles',
             child: SPMenuItemContent(
               icon: SPIcons.subtitles,
-              child: AppText('蓝光外挂字幕'),
+              child: AppText('光盘外挂字幕'),
             ),
           ),
         if (controls?.onSkipSeason != null)
@@ -1398,7 +1430,15 @@ class BrowserPageState extends State<BrowserPage> {
             ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       final entries = <_LocalDiscContinueEntry>[];
       for (final record in history.where(
-        (record) => !record.continueDismissed && !record.playbackBarDismissed,
+        (record) =>
+            !record.continueDismissed &&
+            !record.playbackBarDismissed &&
+            !_playbackSessions.any(
+              (session) =>
+                  session.history.kind == PlaybackHistoryKind.iso &&
+                  session.history.isoKey != null &&
+                  session.history.sessionId == record.playbackSessionId,
+            ),
       )) {
         final relativePath =
             record.localDiscSession?.relativePath ??
@@ -2232,6 +2272,31 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
     if (!mounted) return;
+    final knownBluray =
+        continueRecord?.item.playbackMode == PlaybackMode.localHdmvMenu &&
+        continueRecord?.localDiscSession != null;
+    if (p.extension(devicePath).toLowerCase() == '.iso' && !knownBluray) {
+      final iso = StorageMediaEntry(
+        name: displayName,
+        href: relativePath,
+        logicalPath: relativePath,
+        kind: MediaSourceKind.local,
+        isDirectory: false,
+        size: (await File(devicePath).stat()).size,
+      );
+      final source = LocalIsoService(_localSource!);
+      final type = await _detectIsoType(source, iso);
+      if (type == null || !mounted) return;
+      if (type == DiscType.dvd) {
+        await _playIsoPrepared(
+          iso,
+          titleOnly: true,
+          discType: DiscType.dvd,
+          sessionId: continueRecord?.playbackSessionId,
+        );
+        return;
+      }
+    }
     final resumeSnapshot = continueRecord?.localDiscSession;
     final resumeEdition =
         resumeSnapshot?.currentEdition ?? continueRecord?.discResumeEdition;
@@ -2383,7 +2448,57 @@ class BrowserPageState extends State<BrowserPage> {
     }
   }
 
+  _IsoPreparationWindow? _isoPreparationWindow;
+
+  void _dismissIsoPreparation() {
+    final window = _isoPreparationWindow;
+    _isoPreparationWindow = null;
+    if (window?.context?.mounted == true) Navigator.of(window!.context!).pop();
+  }
+
+  Future<DiscType?> _detectIsoType(
+    WebDAVService source,
+    WebDavFile file,
+  ) async {
+    final service = _isoPlaybackService;
+    if (service == null) return null;
+    final detected = Completer<DiscType?>();
+    final window = _IsoPreparationWindow();
+    _isoPreparationWindow = window;
+    window.content.value = _DiscTypeProbeDialog(
+      service: service,
+      source: source,
+      file: file,
+      onDetected: (type) {
+        if (type != DiscType.dvd || !mounted) _dismissIsoPreparation();
+        detected.complete(type);
+      },
+    );
+    window.result =
+        showGlassDialog<_IsoDialogResult>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) {
+            window.context = dialogContext;
+            return ValueListenableBuilder<Widget>(
+              valueListenable: window.content,
+              builder: (_, child, _) => child,
+            );
+          },
+        ).whenComplete(() {
+          if (!detected.isCompleted) detected.complete(null);
+          if (identical(_isoPreparationWindow, window)) {
+            _isoPreparationWindow = null;
+          }
+          window.content.dispose();
+        });
+    return detected.future;
+  }
+
   Future<WebDavMediaSourceAdapter> _discSourceForPath(String path) async {
+    if (_localSource != null) {
+      return WebDavMediaSourceAdapter(LocalIsoService(_localSource!));
+    }
     final app = context.read<AppState>();
     if (await app.cachedTarget(_sourceId, path, notifyInvalid: true) != null) {
       return await app.videoCacheSource(_sourceId) as WebDavMediaSourceAdapter;
@@ -2415,203 +2530,217 @@ class BrowserPageState extends State<BrowserPage> {
     WebDavFile file, {
     String? sessionId,
     bool titleOnly = false,
+    DiscType discType = DiscType.bluray,
     DiscStartupTrace? startupTrace,
     Future<RemoteMenuAvailability>? menuAvailability,
   }) async {
-    final trace = startupTrace ?? DiscStartupTrace();
-    final isoService = _isoPlaybackService;
-    if (isoService == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SPNotice(content: AppText('ISO 远程播放测试模块初始化失败，视频和音频播放不受影响')),
-      );
-      return;
-    }
-    final existingSession = sessionId == null ? null : _sessionById(sessionId);
-    if (existingSession != null &&
-        existingSession.history.kind != PlaybackHistoryKind.iso) {
-      return;
-    }
-    if (sessionId == null &&
-        _playbackSessions
-                .where(
-                  (session) =>
-                      (session.history.sourceId ?? _sourceId) == _sourceId,
-                )
-                .length >=
-            _historyStore.maxSessionsPerSource) {
-      await showGlassDialog<void>(
-        context: context,
-        builder: (dialogContext) => SPDialog(
-          title: const AppText('播放位置已占满'),
-          content: Text(
-            context.l10n.format('当前最多同时保留 {count} 个播放会话，请先关闭或删除一个下边栏后再播放。', {
-              'count': _historyStore.maxSessionsPerSource,
-            }),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const AppText('知道了'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-    if (isoService.isBusy) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SPNotice(content: AppText('ISO 远程播放测试模块正在执行其他任务')));
-      return;
-    }
-
-    final path = file is WebDavBdmv
-        ? file.rootPath
-        : file is StorageMediaEntry
-        ? file.logicalPath
-        : SpecialVideoPlaylistCollector.directChildPath(
-            _source,
-            _currentPath,
-            file,
-          )!;
-    final source = await _discSourceForPath(path);
-    if (!mounted) return;
-    final webDavService = source.service;
-    if (file is! WebDavBdmv && webDavService.baseUrl != _service.baseUrl) {
-      file = StorageMediaEntry(
-        name: file.name,
-        href: webDavService.fullUrl(path),
-        isDirectory: false,
-        size: file.size,
-        modified: file.modified,
-        kind: source.descriptor.kind,
-        logicalPath: path,
-      );
-    }
-    final cachedDisc = await webDavService.cachedDiscPath(file);
-    if (!mounted) return;
-    // 分类注入：光盘资源与普通视频共用同一份影视库元数据；未收录或
-    // 关闭「全部注入」以外的查询失败都按无元数据处理。
-    final mediaInfo = await context.read<AppState>().playbackMediaInfo(
-      _sourceId,
-      path,
-    );
-    Stopwatch? startupClock;
-    var remoteMenu = false;
-    RemoteMenuAvailability? availability;
-    String? menuReasonInitial;
-    if (titleOnly) {
-      menuReasonInitial = 'disabled';
-    } else if (cachedDisc != null) {
-      try {
-        await isoService.remoteMenu.requireCapability(local: true);
-        menuReasonInitial = null;
-      } on AppException catch (error) {
-        menuReasonInitial = error.message;
+    try {
+      final trace = startupTrace ?? DiscStartupTrace();
+      final isoService = _isoPlaybackService;
+      if (isoService == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SPNotice(content: AppText('ISO 远程播放测试模块初始化失败，视频和音频播放不受影响')),
+        );
+        return;
       }
-    } else if (menuAvailability != null) {
-      availability = await menuAvailability;
-      menuReasonInitial = availability.reason;
-    } else {
-      menuReasonInitial = await isoService.remoteMenu.unavailableReason();
-    }
-    var menuReason = menuReasonInitial;
-    if (!trace.eventsMs.containsKey('menuCapabilityReady')) {
-      trace.mark('menuCapabilityReady');
-    }
-    if (!mounted) return;
-    while (!titleOnly &&
-        (menuReason == null ||
-            menuReason == RemoteMenuPlaybackService.runtimeMissing)) {
-      final mode = await showGlassDialog<Object>(
-        context: context,
-        builder: (dialogContext) => SPDialog(
-          title: AppText(file.name),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const AppText('请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。'),
-              if (menuReason != null) ...[
-                const SizedBox(height: 12),
-                AppText(menuReason),
-              ],
-              ...[
-                const SizedBox(height: 12),
-                SelectableText(
-                  contextMenuBuilder: buildSPTextSelectionMenu,
-                  'WinFsp - Windows File System Proxy\nCopyright (C) Bill Zissimopoulos\nhttps://github.com/winfsp/winfsp',
-                  style: TextStyle(fontSize: 11),
-                ),
-              ],
+      final existingSession = sessionId == null
+          ? null
+          : _sessionById(sessionId);
+      if (existingSession != null &&
+          existingSession.history.kind != PlaybackHistoryKind.iso) {
+        return;
+      }
+      if (sessionId == null &&
+          _playbackSessions
+                  .where(
+                    (session) =>
+                        (session.history.sourceId ?? _sourceId) == _sourceId,
+                  )
+                  .length >=
+              _historyStore.maxSessionsPerSource) {
+        await showGlassDialog<void>(
+          context: context,
+          builder: (dialogContext) => SPDialog(
+            title: const AppText('播放位置已占满'),
+            content: Text(
+              context.l10n.format('当前最多同时保留 {count} 个播放会话，请先关闭或删除一个下边栏后再播放。', {
+                'count': _historyStore.maxSessionsPerSource,
+              }),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const AppText('知道了'),
+              ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const AppText('取消'),
-            ),
-            OutlinedButton(
-              onPressed: () =>
-                  Navigator.of(dialogContext).pop(PlaybackMode.legacyTitle),
-              child: const AppText('标题/播放列表模式'),
-            ),
-            OutlinedButton(
-              onPressed: menuReason == null
-                  ? () => Navigator.of(
-                      dialogContext,
-                    ).pop(PlaybackMode.webdavHdmvMenu)
-                  : null,
-              child: const AppText('蓝光菜单播放'),
-            ),
-            if (menuReason == RemoteMenuPlaybackService.runtimeMissing)
-              OutlinedButton(
-                onPressed: () => Navigator.of(dialogContext).pop('install'),
-                child: const AppText('安装 WinFsp 运行时'),
-              ),
-          ],
-        ),
-      );
-      if (!mounted || mode == null) return;
-      if (mode == 'install') {
-        try {
-          await isoService.remoteMenu.installRuntime();
-          availability = await isoService.remoteMenu.checkAvailability();
-          menuReason = availability.reason;
-        } on AppException catch (error) {
-          if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SPNotice(content: AppText(error.message)));
-          }
-          return;
-        }
-        if (!mounted) return;
-        continue;
+        );
+        return;
       }
-      startupClock = Stopwatch()..start();
-      trace.mark('modeSelected');
-      remoteMenu = mode == PlaybackMode.webdavHdmvMenu;
-      break;
-    }
-    startupClock ??= Stopwatch()..start();
-    if (!trace.eventsMs.containsKey('modeSelected')) trace.mark('modeSelected');
-    var preparationCancelled = false;
-    trace.mark('subtitleDiscoveryStarted');
-    final subtitlePreparation =
-        _createIsoSubtitles(
-          source,
-          file,
-          cancelled: file is WebDavBdmv ? () => preparationCancelled : null,
-        ).then((value) {
-          trace.mark('subtitleDiscoveryReady');
-          return value;
-        });
-    if (!mounted) return;
-    final result = await showGlassDialog<_IsoDialogResult>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => _IsoStreamingDialog(
+      if (isoService.isBusy) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SPNotice(content: AppText('ISO 远程播放测试模块正在执行其他任务')),
+        );
+        return;
+      }
+
+      final path = file is WebDavBdmv
+          ? file.rootPath
+          : file is StorageMediaEntry
+          ? file.logicalPath
+          : SpecialVideoPlaylistCollector.directChildPath(
+              _source,
+              _currentPath,
+              file,
+            )!;
+      final source = await _discSourceForPath(path);
+      if (!mounted) return;
+      final webDavService = source.service;
+      if (file is! WebDavBdmv && webDavService.baseUrl != _service.baseUrl) {
+        file = StorageMediaEntry(
+          name: file.name,
+          href: webDavService.fullUrl(path),
+          isDirectory: false,
+          size: file.size,
+          modified: file.modified,
+          kind: source.descriptor.kind,
+          logicalPath: path,
+        );
+      }
+      final cachedDisc = await webDavService.cachedDiscPath(file);
+      if (!mounted) return;
+      if (!titleOnly && file is! WebDavBdmv) {
+        final type = await _detectIsoType(webDavService, file);
+        if (type == null || !mounted) return;
+        discType = type;
+        if (type == DiscType.dvd) titleOnly = true;
+      }
+      // 分类注入：光盘资源与普通视频共用同一份影视库元数据；未收录或
+      // 关闭「全部注入」以外的查询失败都按无元数据处理。
+      final mediaInfo = await context.read<AppState>().playbackMediaInfo(
+        _sourceId,
+        path,
+      );
+      Stopwatch? startupClock;
+      var remoteMenu = false;
+      RemoteMenuAvailability? availability;
+      String? menuReasonInitial;
+      if (titleOnly) {
+        menuReasonInitial = 'disabled';
+      } else if (cachedDisc != null) {
+        try {
+          await isoService.remoteMenu.requireCapability(local: true);
+          menuReasonInitial = null;
+        } on AppException catch (error) {
+          menuReasonInitial = error.message;
+        }
+      } else if (menuAvailability != null) {
+        availability = await menuAvailability;
+        menuReasonInitial = availability.reason;
+      } else {
+        menuReasonInitial = await isoService.remoteMenu.unavailableReason();
+      }
+      var menuReason = menuReasonInitial;
+      if (!trace.eventsMs.containsKey('menuCapabilityReady')) {
+        trace.mark('menuCapabilityReady');
+      }
+      if (!mounted) return;
+      while (!titleOnly &&
+          (menuReason == null ||
+              menuReason == RemoteMenuPlaybackService.runtimeMissing)) {
+        final mode = await showGlassDialog<Object>(
+          context: context,
+          builder: (dialogContext) => SPDialog(
+            title: AppText(file.name),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const AppText('请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。'),
+                if (menuReason != null) ...[
+                  const SizedBox(height: 12),
+                  AppText(menuReason),
+                ],
+                ...[
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    contextMenuBuilder: buildSPTextSelectionMenu,
+                    'WinFsp - Windows File System Proxy\nCopyright (C) Bill Zissimopoulos\nhttps://github.com/winfsp/winfsp',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const AppText('取消'),
+              ),
+              OutlinedButton(
+                onPressed: () =>
+                    Navigator.of(dialogContext).pop(PlaybackMode.legacyTitle),
+                child: const AppText('标题/播放列表模式'),
+              ),
+              OutlinedButton(
+                onPressed: menuReason == null
+                    ? () => Navigator.of(
+                        dialogContext,
+                      ).pop(PlaybackMode.webdavHdmvMenu)
+                    : null,
+                child: const AppText('蓝光菜单播放'),
+              ),
+              if (menuReason == RemoteMenuPlaybackService.runtimeMissing)
+                OutlinedButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('install'),
+                  child: const AppText('安装 WinFsp 运行时'),
+                ),
+            ],
+          ),
+        );
+        if (!mounted || mode == null) return;
+        if (mode == 'install') {
+          try {
+            await isoService.remoteMenu.installRuntime();
+            availability = await isoService.remoteMenu.checkAvailability();
+            menuReason = availability.reason;
+          } on AppException catch (error) {
+            if (mounted) {
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SPNotice(content: AppText(error.message)));
+            }
+            return;
+          }
+          if (!mounted) return;
+          continue;
+        }
+        startupClock = Stopwatch()..start();
+        trace.mark('modeSelected');
+        remoteMenu = mode == PlaybackMode.webdavHdmvMenu;
+        break;
+      }
+      startupClock ??= Stopwatch()..start();
+      if (!trace.eventsMs.containsKey('modeSelected')) {
+        trace.mark('modeSelected');
+      }
+      var preparationCancelled = false;
+      trace.mark('subtitleDiscoveryStarted');
+      final subtitlePreparation =
+          (_localSource != null
+                  ? _isoSubtitlesForPath(_localSource!, path)
+                  : _createIsoSubtitles(
+                      source,
+                      file,
+                      cancelled: file is WebDavBdmv
+                          ? () => preparationCancelled
+                          : null,
+                    ))
+              .then((value) {
+                trace.mark('subtitleDiscoveryReady');
+                return value;
+              });
+      if (!mounted) return;
+      final streaming = _IsoStreamingDialog(
         service: isoService,
         startupClock: startupClock,
         startupTrace: trace,
@@ -2624,116 +2753,136 @@ class BrowserPageState extends State<BrowserPage> {
         subtitles: subtitlePreparation,
         remoteMenu: remoteMenu,
         cached: cachedDisc != null,
+        discType: discType,
         menuUnavailableReason: titleOnly ? null : menuReason,
         mediaInfo: mediaInfo,
-      ),
-    );
-    if (result?.launched != true) preparationCancelled = true;
-    if (!mounted || result == null) return;
-    final subtitles = result.launched ? await subtitlePreparation : null;
-    if (!mounted) return;
-    if (result.launched) {
-      if (subtitles != null && subtitles.issues.isNotEmpty) {
-        _showLibraryError('部分字幕或字体资源不可用，视频播放不受影响。');
-      }
-      final launch = result.launchResult!;
-      final resolvedSessionId = sessionId ?? _newSessionId();
-      final now = DateTime.now();
-      final history = PlaybackHistory(
-        sessionId: resolvedSessionId,
-        dirCrumbs: file is WebDavBdmv
-            ? (file.rootPath.isEmpty ? <String>[] : file.rootPath.split('/')
-                ..removeLast())
-            : List<String>.of(_crumbs),
-        fileName: file.name,
-        videoIndex: 0,
-        updatedAt: now,
-        createdAt: existingSession?.history.createdAt ?? now,
-        playlistFileNames: [file.name],
-        playerPid: launch.playerIdentity.pid,
-        playerExecutablePath: launch.playerIdentity.executablePath,
-        playerCreationTime: launch.playerIdentity.creationTime,
-        kind: PlaybackHistoryKind.iso,
-        isoKey: launch.isoKey,
-        playbackMode: launch.playbackMode,
-        isoSessionDirectoryPath: launch.sessionDirectoryPath,
-        sourceId: _sourceId,
       );
-      final session = existingSession ?? PlaybackUiSession(history);
-      session
-        ..history = history
-        ..lastSyncedPos = 0
-        ..paused = false
-        ..launching = false;
-      if (existingSession == null) {
-        _playbackPresenter.addVideoSession(session);
+      final pending = _isoPreparationWindow;
+      _isoPreparationWindow = null;
+      final _IsoDialogResult? result;
+      if (pending != null) {
+        pending.content.value = streaming;
+        result = await pending.result;
+      } else {
+        result = await showGlassDialog<_IsoDialogResult>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => streaming,
+        );
       }
-      final stored = await _historyStore.upsert(history);
-      if (!stored) {
-        await isoService.terminateSession(launch.sessionDirectoryPath);
-        if (mounted) _playbackPresenter.removeVideoSession(session);
+      if (result?.launched != true) preparationCancelled = true;
+      if (!mounted || result == null) return;
+      final subtitles = result.launched ? await subtitlePreparation : null;
+      if (!mounted) return;
+      if (result.launched) {
+        if (subtitles != null && subtitles.issues.isNotEmpty) {
+          _showLibraryError('部分字幕或字体资源不可用，视频播放不受影响。');
+        }
+        final launch = result.launchResult!;
+        final resolvedSessionId = sessionId ?? _newSessionId();
+        final now = DateTime.now();
+        final history = PlaybackHistory(
+          sessionId: resolvedSessionId,
+          dirCrumbs: file is WebDavBdmv
+              ? (file.rootPath.isEmpty ? <String>[] : file.rootPath.split('/')
+                  ..removeLast())
+              : _localSource != null
+              ? (path.split('/')..removeLast())
+              : List<String>.of(_crumbs),
+          fileName: file.name,
+          videoIndex: 0,
+          updatedAt: now,
+          createdAt: existingSession?.history.createdAt ?? now,
+          playlistFileNames: [file.name],
+          playerPid: launch.playerIdentity.pid,
+          playerExecutablePath: launch.playerIdentity.executablePath,
+          playerCreationTime: launch.playerIdentity.creationTime,
+          kind: PlaybackHistoryKind.iso,
+          isoKey: launch.isoKey,
+          playbackMode: launch.playbackMode,
+          isoSessionDirectoryPath: launch.sessionDirectoryPath,
+          sourceId: _sourceId,
+        );
+        final session = existingSession ?? PlaybackUiSession(history);
+        session
+          ..history = history
+          ..lastSyncedPos = 0
+          ..paused = false
+          ..launching = false;
+        if (existingSession == null) {
+          _playbackPresenter.addVideoSession(session);
+        }
+        final stored = await _historyStore.upsert(history);
+        if (!stored) {
+          await isoService.terminateSession(launch.sessionDirectoryPath);
+          if (mounted) _playbackPresenter.removeVideoSession(session);
+          return;
+        }
+        if (!mounted) return;
+        unawaited(
+          _recordPlaybackFile(
+            file,
+            parentPath: file is WebDavBdmv
+                ? (file.rootPath.isEmpty
+                      ? ''
+                      : p.posix
+                            .dirname(file.rootPath)
+                            .replaceFirst(RegExp(r'^\.$'), ''))
+                : _localSource != null
+                ? p.posix.dirname(path).replaceFirst(RegExp(r'^\.$'), '')
+                : _currentPath,
+            playbackSessionId: resolvedSessionId,
+            playbackMode: launch.playbackMode,
+          ),
+        );
+        _refreshPlaybackMonitor();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SPNotice(content: AppText('ISO 播放器已启动，关闭 MPV 后将清理会话文件')),
+        );
         return;
       }
-      if (!mounted) return;
-      unawaited(
-        _recordPlaybackFile(
-          file,
-          parentPath: file is WebDavBdmv
-              ? (file.rootPath.isEmpty
-                    ? ''
-                    : p.posix
-                          .dirname(file.rootPath)
-                          .replaceFirst(RegExp(r'^\.$'), ''))
-              : _currentPath,
-          playbackSessionId: resolvedSessionId,
-          playbackMode: launch.playbackMode,
-        ),
-      );
-      _refreshPlaybackMonitor();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SPNotice(content: AppText('ISO 播放器已启动，关闭 MPV 后将清理会话文件')),
-      );
-      return;
-    }
-    if (result.cancelled) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SPNotice(content: AppText('已取消 ISO 播放')));
-      return;
-    }
-    final errorMessage = result.errorMessage ?? '未知错误';
-    if (remoteMenu) {
-      final returnToTitles = await showGlassDialog<bool>(
-        context: context,
-        builder: (dialogContext) => SPDialog(
-          title: const AppText('蓝光菜单播放失败'),
-          content: AppText(errorMessage),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const AppText('取消'),
-            ),
-            OutlinedButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const AppText('返回选择标题模式'),
-            ),
-          ],
-        ),
-      );
-      if (mounted && returnToTitles == true) {
-        await _playIso(file, sessionId: sessionId, titleOnly: true);
+      if (result.cancelled) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SPNotice(content: AppText('已取消 ISO 播放')));
+        return;
       }
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SPNotice(
-        content: Text(
-          context.l10n.format('ISO 流式播放失败：{message}', {
-            'message': context.l10n.text(errorMessage),
-          }),
+      final errorMessage = result.errorMessage ?? '未知错误';
+      if (remoteMenu) {
+        final returnToTitles = await showGlassDialog<bool>(
+          context: context,
+          builder: (dialogContext) => SPDialog(
+            title: const AppText('蓝光菜单播放失败'),
+            content: AppText(errorMessage),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const AppText('取消'),
+              ),
+              OutlinedButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const AppText('返回选择标题模式'),
+              ),
+            ],
+          ),
+        );
+        if (mounted && returnToTitles == true) {
+          await _playIso(file, sessionId: sessionId, titleOnly: true);
+        }
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SPNotice(
+          content: Text(
+            context.l10n.format('ISO 流式播放失败：{message}', {
+              'message': context.l10n.text(errorMessage),
+            }),
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      _dismissIsoPreparation();
+    }
   }
 
   // ── 视频播放联动（自动切集） ─────────────────────────────────
@@ -2830,7 +2979,7 @@ class BrowserPageState extends State<BrowserPage> {
       final session = await IsoSubtitleSession.restore(subtitles, directory);
       if (!mounted) return;
       if (session == null) {
-        _showLibraryError('此会话未启用蓝光外挂字幕，请重新打开蓝光');
+        _showLibraryError('此会话未启用光盘外挂字幕，请重新打开光盘');
         return;
       }
       await showDialog<void>(
@@ -6248,6 +6397,21 @@ class BrowserPageState extends State<BrowserPage> {
         } else {
           await _playIso(iso, sessionId: history.sessionId);
         }
+      } else if (iso is LocalMediaEntry) {
+        await _playIsoPrepared(
+          StorageMediaEntry(
+            name: iso.name,
+            href: iso.relativePath,
+            logicalPath: iso.relativePath,
+            kind: MediaSourceKind.local,
+            isDirectory: false,
+            size: iso.size,
+            modified: iso.modified,
+          ),
+          sessionId: history.sessionId,
+          titleOnly: true,
+          discType: DiscType.dvd,
+        );
       }
       return;
     }
@@ -7322,4 +7486,109 @@ class BrowserPageState extends State<BrowserPage> {
       ),
     );
   }
+}
+
+class _IsoPreparationWindow {
+  final content = ValueNotifier<Widget>(const SizedBox.shrink());
+  BuildContext? context;
+  late Future<_IsoDialogResult?> result;
+}
+
+class _DiscTypeProbeDialog extends StatefulWidget {
+  const _DiscTypeProbeDialog({
+    required this.service,
+    required this.source,
+    required this.file,
+    required this.onDetected,
+  });
+  final ValueChanged<DiscType> onDetected;
+  final IsoPlaybackService service;
+  final WebDAVService source;
+  final WebDavFile file;
+  @override
+  State<_DiscTypeProbeDialog> createState() => _DiscTypeProbeDialogState();
+}
+
+class _DiscTypeProbeDialogState extends State<_DiscTypeProbeDialog> {
+  bool cancelled = false;
+  String? error;
+  @override
+  void initState() {
+    super.initState();
+    _probe();
+  }
+
+  Future<void> _probe() async {
+    try {
+      final type = await widget.service.detectDiscType(
+        widget.source,
+        widget.file,
+      );
+      if (!mounted) return;
+      if (cancelled) {
+        Navigator.of(context).pop();
+        return;
+      }
+      widget.onDetected(type);
+    } on AppException catch (failure) {
+      if (!mounted) return;
+      if (cancelled) {
+        Navigator.of(context).pop();
+      } else {
+        setState(() => error = failure.message);
+      }
+    } on FileSystemException catch (failure) {
+      if (!mounted) return;
+      if (cancelled) {
+        Navigator.of(context).pop();
+      } else {
+        setState(() => error = failure.message);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SPDialog(
+    key: const Key('iso-streaming-dialog'),
+    title: const AppText('ISO 远程播放系统'),
+    content: SizedBox(
+      width: 420,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AppText(
+            widget.file.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 16),
+          AppText(error ?? '正在识别光盘类型…'),
+          const SizedBox(height: 12),
+          if (error == null) const LinearProgressIndicator(),
+          const SizedBox(height: 12),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () {
+          if (error != null) {
+            Navigator.of(context).pop();
+            return;
+          }
+          if (cancelled) return;
+          setState(() => cancelled = true);
+          widget.service.cancel();
+        },
+        child: AppText(
+          error != null
+              ? '关闭'
+              : cancelled
+              ? '正在取消…'
+              : '取消',
+        ),
+      ),
+    ],
+  );
 }

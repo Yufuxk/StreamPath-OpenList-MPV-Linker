@@ -1,3 +1,4 @@
+import 'disc_programme.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -66,19 +67,19 @@ class IsoDiscChapter {
 class IsoDiscTitle {
   IsoDiscTitle({
     required this.titleIndex,
-    required this.mplsId,
+    required this.programmeId,
     required this.duration,
     required this.streamSize,
     List<IsoDiscChapter> chapters = const [],
   }) : chapters = List<IsoDiscChapter>.unmodifiable(chapters);
 
   final int titleIndex;
-  final String mplsId;
+  final String programmeId;
   final Duration duration;
   final int streamSize;
   final List<IsoDiscChapter> chapters;
 
-  String get resumeId => 'bd://mpls/$mplsId';
+  String get resumeId => discProgrammeResumeId(programmeId);
 }
 
 @immutable
@@ -136,35 +137,37 @@ class IsoTitleSelectionRequest {
   const IsoTitleSelectionRequest({
     required this.discName,
     required this.titles,
-    required this.selectedMplsIds,
-    required this.resumeByMplsId,
-    this.lastMplsId,
+    required this.selectedProgrammeIds,
+    required this.resumeByProgrammeId,
+    this.lastProgrammeId,
+    this.unavailableDvdTitles = const [],
   });
 
   final String discName;
   final List<IsoDiscTitle> titles;
-  final Set<String> selectedMplsIds;
-  final Map<String, IsoTitleResume> resumeByMplsId;
-  final String? lastMplsId;
+  final Set<String> selectedProgrammeIds;
+  final Map<String, IsoTitleResume> resumeByProgrammeId;
+  final String? lastProgrammeId;
+  final List<int> unavailableDvdTitles;
 }
 
 @immutable
 class IsoTitleSelection {
   const IsoTitleSelection({
     required this.orderedTitles,
-    required this.selectedMplsIds,
+    required this.selectedProgrammeIds,
   });
 
   factory IsoTitleSelection.all(List<IsoDiscTitle> titles) => IsoTitleSelection(
     orderedTitles: List<IsoDiscTitle>.unmodifiable(titles),
-    selectedMplsIds: titles.map((title) => title.mplsId).toSet(),
+    selectedProgrammeIds: titles.map((title) => title.programmeId).toSet(),
   );
 
   final List<IsoDiscTitle> orderedTitles;
-  final Set<String> selectedMplsIds;
+  final Set<String> selectedProgrammeIds;
 
   List<IsoDiscTitle> get selectedTitles => orderedTitles
-      .where((title) => selectedMplsIds.contains(title.mplsId))
+      .where((title) => selectedProgrammeIds.contains(title.programmeId))
       .toList(growable: false);
 }
 
@@ -239,7 +242,7 @@ class _IsoRuntime {
   final PlaybackMode playbackMode;
 }
 
-/// WebDAV Blu-ray ISO 无驱动远程流式播放服务。
+/// 本地与网络光盘 ISO 的无驱动标题流式播放服务。
 class IsoPlaybackService implements IsoLibraryProgressReader {
   IsoPlaybackService({
     required StreamPathConfigStore configStore,
@@ -253,9 +256,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     IsoOwnerIdentityLoader? ownerIdentityLoader,
     DateTime Function()? now,
     IsoCacheCoordinator? cacheCoordinator,
+    Future<DiscType> Function(WebDAVService, WebDavFile)? discTypeDetector,
     this.orphanRetention = const Duration(hours: 24),
     this.progressPrefix = '',
-  }) : _accessProvider = accessProvider ?? IsoBridgeAccessProvider(),
+    // ignore: prefer_initializing_formals
+  }) : _discTypeDetector = discTypeDetector,
+       _accessProvider = accessProvider ?? IsoBridgeAccessProvider(),
        _remoteMenuAccess =
            remoteMenuAccessProvider ??
            IsoBridgeAccessProvider(remoteMenu: true),
@@ -300,6 +306,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     final service = IsoPlaybackService(
       configStore: config,
       accessProvider: _accessProvider,
+      discTypeDetector: _discTypeDetector,
       remoteMenuAccessProvider: _remoteMenuAccess,
       processController: _processController,
       configLoader: _configLoader,
@@ -357,6 +364,46 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   static const String structureCacheDirectoryName = 'iso_structure';
 
   final IsoAccessProvider _accessProvider;
+  final Future<DiscType> Function(WebDAVService, WebDavFile)? _discTypeDetector;
+  final IsoBridgeAccessProvider _discDetector = IsoBridgeAccessProvider(
+    discProbe: true,
+  );
+
+  Future<DiscType> detectDiscType(WebDAVService source, WebDavFile file) async {
+    if (_discTypeDetector != null) return _discTypeDetector(source, file);
+    if (_disposed || isBusy) throw AppException.process('光盘播放模块正在执行其他任务');
+    _operationActive = true;
+    _cancelRequested = false;
+    Directory? directory;
+    IsoAccessHandle? handle;
+    try {
+      final root = await _rootDirectory();
+      directory = Directory(
+        p.join(root.path, 'iso_probe_${_now().microsecondsSinceEpoch}'),
+      );
+      handle = await _discDetector.prepare(
+        webDavService: source,
+        file: file,
+        sessionDirectory: directory,
+        structureCachePath: p.join(
+          root.parent.path,
+          structureCacheDirectoryName,
+          '${_buildIsoKey(profileId: source.sourceId, resolvedUrl: source.persistentUrl(file.href))}.cache',
+        ),
+      );
+      return (handle as LoopbackIsoAccessHandle).discType;
+    } on TimeoutException catch (error) {
+      throw AppException.network('ISO Bridge 启动失败', error);
+    } finally {
+      try {
+        await handle?.cleanup();
+        if (directory != null) await _cleanupDirectory(directory);
+      } finally {
+        _operationActive = false;
+      }
+    }
+  }
+
   final PlayerProcessController _processController;
   final IsoPlayerConfigLoader _configLoader;
   final IsoProcessStarter _processStarter;
@@ -460,7 +507,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
     }
     if (!file.isIso && file is! WebDavBdmv) {
-      throw AppException.config('仅支持 Blu-ray ISO 文件');
+      throw AppException.config('仅支持 Blu-ray 或 DVD ISO 文件');
     }
 
     final performanceClock = Stopwatch()..start();
@@ -564,7 +611,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           .map(
             (title) => IsoDiscTitle(
               titleIndex: title.titleIndex,
-              mplsId: title.mplsId,
+              programmeId: title.programmeId,
               duration: title.duration,
               streamSize: title.streamSize,
               chapters: List<IsoDiscChapter>.unmodifiable(
@@ -580,7 +627,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           )
           .toList(growable: false);
       if (probedTitles.isEmpty) {
-        throw AppException.process('没有解析到可播放的 Blu-ray Title/MPLS');
+        throw AppException.process('没有解析到可播放的 Blu-ray 或 DVD 标题');
       }
       if (_cancelRequested) {
         await handle.cleanup();
@@ -603,19 +650,21 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       subtitles?.titleCatalog = probedTitles
           .map(
             (title) => <String, dynamic>{
-              'id': title.mplsId,
+              'id': title.programmeId,
               'duration': title.duration.inMilliseconds / 1000,
             },
           )
           .toList();
       final saved = await catalog.load(isoKey);
       final orderedTitles = _applySavedOrder(probedTitles, saved.order);
-      final availableIds = orderedTitles.map((title) => title.mplsId).toSet();
+      final availableIds = orderedTitles
+          .map((title) => title.programmeId)
+          .toSet();
       final initiallySelected = saved.selected
           .where(availableIds.contains)
           .toSet();
       if (initiallySelected.isEmpty) initiallySelected.addAll(availableIds);
-      final resumeByMplsId = await _loadResumeState(isoKey, orderedTitles);
+      final resumeByProgrammeId = await _loadResumeState(isoKey, orderedTitles);
       onProgress?.call(
         IsoPlaybackProgress(
           phase: IsoPlaybackPhase.selectingTitles,
@@ -625,11 +674,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final request = IsoTitleSelectionRequest(
         discName: file.name,
         titles: List<IsoDiscTitle>.unmodifiable(orderedTitles),
-        selectedMplsIds: Set<String>.unmodifiable(initiallySelected),
-        resumeByMplsId: Map<String, IsoTitleResume>.unmodifiable(
-          resumeByMplsId,
+        selectedProgrammeIds: Set<String>.unmodifiable(initiallySelected),
+        resumeByProgrammeId: Map<String, IsoTitleResume>.unmodifiable(
+          resumeByProgrammeId,
         ),
-        lastMplsId: saved.lastMplsId,
+        lastProgrammeId: saved.lastProgrammeId,
+        unavailableDvdTitles: handle.unavailableDvdTitles,
       );
       final selectionClock = Stopwatch()..start();
       startupTrace?.mark('titleSelectionShown');
@@ -649,14 +699,16 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
       final selectedTitles = validatedSelection.selectedTitles;
       if (selectedTitles.isEmpty) {
-        throw AppException.config('至少选择一个 Blu-ray Title');
+        throw AppException.config('至少选择一个光盘标题');
       }
       await catalog.saveSelection(
         isoKey,
         order: validatedSelection.orderedTitles
-            .map((title) => title.mplsId)
+            .map((title) => title.programmeId)
             .toList(growable: false),
-        selected: validatedSelection.selectedMplsIds.toList(growable: false),
+        selected: validatedSelection.selectedProgrammeIds.toList(
+          growable: false,
+        ),
       );
       IsoCacheSessionPlan? cachePlan;
       final cacheCoordinator = _cacheCoordinator;
@@ -666,7 +718,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           titles: selectedTitles
               .map(
                 (title) => IsoCacheTitleContext(
-                  mplsId: title.mplsId,
+                  programmeId: title.programmeId,
                   streamSize: title.streamSize,
                   duration: title.duration,
                 ),
@@ -715,19 +767,19 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         commandFile,
         performanceEventsFile,
         selectedTitles,
-        resumeByMplsId,
+        resumeByProgrammeId,
       );
       startupTrace?.mark('sessionFilesReady');
       final startIndex = _resolvePlaylistStart(
         selectedTitles,
-        saved.lastMplsId,
-        resumeByMplsId,
+        saved.lastProgrammeId,
+        resumeByProgrammeId,
       );
       final ipcPipeName =
           r'\\.\pipe\streampath_iso_' +
           _buildPipeToken(handle.sessionDirectory.path);
       final startCachePlan = cachePlan?.planFor(
-        selectedTitles[startIndex].mplsId,
+        selectedTitles[startIndex].programmeId,
       );
       final args = buildMpvArgs(
         config: config,
@@ -750,8 +802,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           playlist: selectedTitles
               .map(
                 (title) => {
-                  'id': title.mplsId,
-                  'path': handle!.playbackUri(title.mplsId).toString(),
+                  'id': title.programmeId,
+                  'path': handle!.playbackUri(title.programmeId).toString(),
                   'duration': (title.duration.inMilliseconds / 1000).toString(),
                 },
               )
@@ -836,8 +888,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
             'iso-bridge-metrics.json',
           ),
           ipcPipeName: ipcPipeName,
-          orderedMplsIds: selectedTitles
-              .map((title) => title.mplsId)
+          orderedProgrammeIds: selectedTitles
+              .map((title) => title.programmeId)
               .toList(growable: false),
           plan: cachePlan,
         );
@@ -1159,6 +1211,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       _subtitleCancellation!.complete(null);
     }
     _accessProvider.cancel();
+    _discDetector.cancel();
     _remoteMenuAccess.cancel();
   }
 
@@ -1286,11 +1339,11 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     final directory = await _watchLaterDirectory(key, create: false);
     final index = await const MpvWatchLaterSync().buildIndex(
       directory,
-      selection.order.map((id) => 'bd://mpls/$id'),
+      selection.order.map(discProgrammeResumeId),
     );
     final titles = <String, Map<String, num>>{};
     for (final id in selection.order) {
-      final record = index.recordFor('bd://mpls/$id');
+      final record = index.recordFor(discProgrammeResumeId(id));
       if ((record?.startSeconds ?? 0) > 0) {
         titles[id] = {
           'position': record!.startSeconds!,
@@ -1355,18 +1408,18 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     final directory = await _watchLaterDirectory(key, create: false);
     for (final entry in (state['titles'] as Map).entries) {
       final id = entry.key as String;
-      if (!RegExp(r'^\d{5}$').hasMatch(id)) {
+      if (!isDiscProgramme(id)) {
         throw const FormatException('Invalid Blu-ray title');
       }
       final path = p.join(
         directory.path,
-        MpvWatchLaterSync.md5FileName('bd://mpls/$id'),
+        MpvWatchLaterSync.md5FileName(discProgrammeResumeId(id)),
       );
       if (!await File(path).exists() && !files.containsKey(path)) {
         final position = entry.value['position'] as num;
         final duration = entry.value['duration'] as num?;
         files[path] =
-            '# bd://mpls/$id\nstart=$position\n${duration == null ? '' : 'duration=$duration\n'}';
+            '# ${discProgrammeResumeId(id)}\nstart=$position\n${duration == null ? '' : 'duration=$duration\n'}';
       }
     }
     final menu = state['menu'];
@@ -1944,8 +1997,10 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   ) => titles
       .map(
         (title) => <String, Object?>{
+          'discType': isDvdProgramme(title.programmeId) ? 'dvd' : 'bluray',
           'titleIndex': title.titleIndex,
-          'mplsId': title.mplsId,
+          (isDvdProgramme(title.programmeId) ? 'programmeId' : 'mplsId'):
+              title.programmeId,
           'durationMs': title.duration.inMilliseconds,
           'streamSize': title.streamSize,
           'chapters': title.chapters
@@ -1977,22 +2032,24 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     required IsoTitleSelection selection,
   }) {
     final available = <String, IsoDiscTitle>{
-      for (final title in availableTitles) title.mplsId: title,
+      for (final title in availableTitles) title.programmeId: title,
     };
     final orderedIds = selection.orderedTitles
-        .map((title) => title.mplsId)
+        .map((title) => title.programmeId)
         .toList(growable: false);
     if (orderedIds.length != available.length ||
         orderedIds.toSet().length != available.length ||
         !orderedIds.every(available.containsKey) ||
-        !selection.selectedMplsIds.every(available.containsKey)) {
-      throw AppException.config('Blu-ray Title 选择结果无效');
+        !selection.selectedProgrammeIds.every(available.containsKey)) {
+      throw AppException.config('光盘标题选择结果无效');
     }
     return IsoTitleSelection(
       orderedTitles: List<IsoDiscTitle>.unmodifiable(
         orderedIds.map((id) => available[id]!),
       ),
-      selectedMplsIds: Set<String>.unmodifiable(selection.selectedMplsIds),
+      selectedProgrammeIds: Set<String>.unmodifiable(
+        selection.selectedProgrammeIds,
+      ),
     );
   }
 
@@ -2000,7 +2057,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     required String profileId,
     required String resolvedUrl,
   }) {
-    final uri = Uri.parse(resolvedUrl);
+    final uri = profileId.startsWith('local:') && p.isAbsolute(resolvedUrl)
+        ? Uri.file(p.normalize(resolvedUrl), windows: true)
+        : Uri.parse(resolvedUrl);
     final canonical = uri
         .replace(userInfo: '', query: '', fragment: '')
         .normalizePath()
@@ -2024,14 +2083,16 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     List<String> savedOrder,
   ) {
     final byId = <String, IsoDiscTitle>{
-      for (final title in titles) title.mplsId: title,
+      for (final title in titles) title.programmeId: title,
     };
     final ordered = <IsoDiscTitle>[];
     for (final id in savedOrder) {
       final title = byId.remove(id);
       if (title != null) ordered.add(title);
     }
-    ordered.addAll(titles.where((title) => byId.containsKey(title.mplsId)));
+    ordered.addAll(
+      titles.where((title) => byId.containsKey(title.programmeId)),
+    );
     return ordered;
   }
 
@@ -2049,7 +2110,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final record = index.recordFor(title.resumeId);
       final seconds = record?.startSeconds;
       if (seconds == null || seconds <= 0) continue;
-      result[title.mplsId] = IsoTitleResume(
+      result[title.programmeId] = IsoTitleResume(
         position: Duration(milliseconds: (seconds * 1000).round()),
         duration: record?.durationSeconds == null
             ? null
@@ -2109,30 +2170,30 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     if (activeProgress != null) return activeProgress;
 
     final resumeIds = <String, String>{
-      for (final mplsId in orderedIds) mplsId: 'bd://mpls/$mplsId',
+      for (final mplsId in orderedIds) mplsId: discProgrammeResumeId(mplsId),
     };
     final index = await const MpvWatchLaterSync().buildIndex(
       await _watchLaterDirectory(isoKey, create: false),
       resumeIds.values,
     );
-    String? activeMplsId;
-    final lastMplsId = saved.lastMplsId;
-    final lastPosition = lastMplsId == null
+    String? activeProgrammeId;
+    final lastProgrammeId = saved.lastProgrammeId;
+    final lastPosition = lastProgrammeId == null
         ? null
-        : index.recordFor(resumeIds[lastMplsId] ?? '')?.startSeconds;
-    if (lastMplsId != null && lastPosition != null && lastPosition > 0) {
-      activeMplsId = lastMplsId;
+        : index.recordFor(resumeIds[lastProgrammeId] ?? '')?.startSeconds;
+    if (lastProgrammeId != null && lastPosition != null && lastPosition > 0) {
+      activeProgrammeId = lastProgrammeId;
     } else {
       for (final mplsId in orderedIds) {
         final position = index.recordFor(resumeIds[mplsId]!)?.startSeconds;
         if (position != null && position > 0) {
-          activeMplsId = mplsId;
+          activeProgrammeId = mplsId;
           break;
         }
       }
     }
-    if (activeMplsId == null) return null;
-    final record = index.recordFor(resumeIds[activeMplsId]!);
+    if (activeProgrammeId == null) return null;
+    final record = index.recordFor(resumeIds[activeProgrammeId]!);
     final positionSeconds = record?.startSeconds;
     if (positionSeconds == null || positionSeconds <= 0) return null;
     final durationSeconds = record?.durationSeconds;
@@ -2142,7 +2203,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       return null;
     }
     return IsoLibraryProgress(
-      episodeNumber: orderedIds.indexOf(activeMplsId) + 1,
+      episodeNumber: orderedIds.indexOf(activeProgrammeId) + 1,
       episodeCount: orderedIds.length,
       position: Duration(milliseconds: (positionSeconds * 1000).round()),
       duration: durationSeconds == null || durationSeconds <= 0
@@ -2179,7 +2240,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           positionSeconds / durationSeconds >= 0.99) {
         return null;
       }
-      final mplsId = runtime.titles[playlistPosition].mplsId;
+      final mplsId = runtime.titles[playlistPosition].programmeId;
       final episodeIndex = orderedIds.indexOf(mplsId);
       if (episodeIndex < 0) return null;
       return IsoLibraryProgress(
@@ -2197,17 +2258,17 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
 
   static int _resolvePlaylistStart(
     List<IsoDiscTitle> selectedTitles,
-    String? lastMplsId,
-    Map<String, IsoTitleResume> resumeByMplsId,
+    String? lastProgrammeId,
+    Map<String, IsoTitleResume> resumeByProgrammeId,
   ) {
-    if (lastMplsId != null) {
+    if (lastProgrammeId != null) {
       final index = selectedTitles.indexWhere(
-        (title) => title.mplsId == lastMplsId,
+        (title) => title.programmeId == lastProgrammeId,
       );
       if (index >= 0) return index;
     }
     final resumeIndex = selectedTitles.indexWhere(
-      (title) => resumeByMplsId.containsKey(title.mplsId),
+      (title) => resumeByProgrammeId.containsKey(title.programmeId),
     );
     return resumeIndex < 0 ? 0 : resumeIndex;
   }
@@ -2253,12 +2314,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     for (var index = 0; index < titles.length; index++) {
       final title = titles[index];
       final label = _safeText(
-        '$safeDisc · ${index + 1} · ${title.mplsId}.mpls',
+        '$safeDisc · ${index + 1} · ${discProgrammeLabel(title.programmeId)}',
       );
       lines
         ..add('#EXTINF:${title.duration.inSeconds},$label')
         ..add('#EXTVLCOPT:force-media-title=$label')
-        ..add(playbackUri(title.mplsId).toString());
+        ..add(playbackUri(title.programmeId).toString());
     }
     final file = File(p.join(sessionDirectory.path, 'iso-playlist.m3u8'));
     await file.writeAsString('${lines.join('\n')}\n', flush: true);
@@ -2272,7 +2333,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     File commandFile,
     File performanceEventsFile,
     List<IsoDiscTitle> titles,
-    Map<String, IsoTitleResume> resumeByMplsId,
+    Map<String, IsoTitleResume> resumeByProgrammeId,
   ) async {
     final script = File(p.join(sessionDirectory.path, 'iso-progress.lua'));
     final journalPath = jsonEncode(journalFile.path);
@@ -2284,10 +2345,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       titles
           .map(
             (title) => <String, Object?>{
-              'mplsId': title.mplsId,
-              'resume': resumeByMplsId[title.mplsId] == null
+              'programmeId': title.programmeId,
+              'resume': resumeByProgrammeId[title.programmeId] == null
                   ? null
-                  : resumeByMplsId[title.mplsId]!.position.inMilliseconds /
+                  : resumeByProgrammeId[title.programmeId]!
+                            .position
+                            .inMilliseconds /
                         1000,
               'chapters': title.chapters
                   .map(
@@ -2310,7 +2373,7 @@ local STATUS_TMP = $statusTempPath
 local COMMAND = $commandPath
 local PERFORMANCE_EVENTS = $performanceEventsPath
 local TITLES = utils.parse_json($titleDataLiteral) or {}
-${MpvScripts.mediaInfoSnapshotLua(outputExpression: 'STATUS', pathExpression: 'mp.get_property("path", "")', programmeExpression: '(TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).mplsId', programmeTypeExpression: '"mpls"')}
+${MpvScripts.mediaInfoSnapshotLua(outputExpression: 'STATUS', pathExpression: 'mp.get_property("path", "")', programmeExpression: '(TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).programmeId', programmeTypeExpression: '(string.sub((TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).programmeId or "", 1, 10) == "dvd-title-" and "dvd-title" or "mpls")')}
 local resumed = {}
 local loaded = false
 local recorded = false
@@ -2683,7 +2746,7 @@ end)
         for (final line in lines.reversed) {
           final record = _parseMenuProgress(line);
           final mpls = record?['mplsId'];
-          if (mpls is String && RegExp(r'^\d{5}$').hasMatch(mpls)) {
+          if (mpls is String && isDiscProgramme(mpls)) {
             latest.putIfAbsent(mpls, () => record!);
           }
         }
@@ -2710,7 +2773,7 @@ end)
           final last = latest.values.first;
           final position = (last['position'] as num).toDouble();
           final duration = (last['duration'] as num).toDouble();
-          await (await _catalog()).saveLastMpls(
+          await (await _catalog()).saveLastProgramme(
             sharedKey,
             position == 0 ||
                     last['completed'] == true ||
@@ -2737,7 +2800,7 @@ end)
     if (!await journal.exists()) return;
     final lines = await journal.readAsLines();
     final watchLater = await _watchLaterDirectory(isoKey);
-    String? lastMplsId;
+    String? lastProgrammeId;
     var foundRecord = false;
     for (final line in lines) {
       final record = _IsoJournalRecord.tryParse(line);
@@ -2757,7 +2820,7 @@ end)
           title.resumeId,
         );
         foundRecord = true;
-        lastMplsId = null;
+        lastProgrammeId = null;
         continue;
       }
       if (position == null || position <= 0) continue;
@@ -2768,10 +2831,10 @@ end)
         durationSeconds: record.durationSeconds,
       );
       foundRecord = true;
-      lastMplsId = title.mplsId;
+      lastProgrammeId = title.programmeId;
     }
     if (foundRecord) {
-      await (await _catalog()).saveLastMpls(isoKey, lastMplsId);
+      await (await _catalog()).saveLastProgramme(isoKey, lastProgrammeId);
     }
   }
 
@@ -2848,12 +2911,12 @@ end)
     for (final item in value) {
       if (item is! Map) continue;
       final titleIndex = item['titleIndex'];
-      final mplsId = item['mplsId'];
+      final mplsId = item['programmeId'] ?? item['mplsId'];
       final durationMs = item['durationMs'];
       final streamSize = item['streamSize'];
       if (titleIndex is! num ||
           mplsId is! String ||
-          !RegExp(r'^\d{5}$').hasMatch(mplsId) ||
+          !isDiscProgramme(mplsId) ||
           durationMs is! num ||
           durationMs <= 0 ||
           (streamSize != null && (streamSize is! num || streamSize < 0))) {
@@ -2862,7 +2925,7 @@ end)
       titles.add(
         IsoDiscTitle(
           titleIndex: titleIndex.toInt(),
-          mplsId: mplsId,
+          programmeId: mplsId,
           duration: Duration(milliseconds: durationMs.toInt()),
           streamSize: (streamSize as num?)?.toInt() ?? 0,
           chapters: _chaptersFromManifest(item['chapters']),
@@ -2969,7 +3032,7 @@ class _IsoPerformanceTracker {
   final List<int> _seekRecoveryMs = [];
   final List<Map<String, Object>> _seekSamples = [];
   final List<int> _titleSwitchGapMs = [];
-  List<String> _orderedMplsIds = const [];
+  List<String> _orderedProgrammeIds = const [];
   Map<String, Object>? _cachePlanSummary;
   int _pausedForCacheCount = 0;
   int _pausedForCacheDurationMs = 0;
@@ -3023,13 +3086,13 @@ class _IsoPerformanceTracker {
     required List<IsoDiscTitle> titles,
     required IsoCacheSessionPlan? cachePlan,
   }) {
-    _orderedMplsIds = List<String>.unmodifiable(
-      titles.map((title) => title.mplsId),
+    _orderedProgrammeIds = List<String>.unmodifiable(
+      titles.map((title) => title.programmeId),
     );
     if (cachePlan != null) {
       _cachePlanSummary = <String, Object>{
         'bridgeBytes': cachePlan.bridgeBytes,
-        'titles': _orderedMplsIds
+        'titles': _orderedProgrammeIds
             .map((mplsId) {
               final plan = cachePlan.planFor(mplsId);
               return <String, Object>{
@@ -3263,8 +3326,8 @@ class _IsoPerformanceTracker {
           if (startPosition != null && endPosition != null) {
             final playlist =
                 seek.playlistPosition >= 0 &&
-                    seek.playlistPosition < _orderedMplsIds.length
-                ? _orderedMplsIds[seek.playlistPosition]
+                    seek.playlistPosition < _orderedProgrammeIds.length
+                ? _orderedProgrammeIds[seek.playlistPosition]
                 : seek.playlistPosition.toString();
             _seekSamples.add(<String, Object>{
               'playlist': playlist,
@@ -3599,36 +3662,37 @@ class _IsoCatalogRecord {
   const _IsoCatalogRecord({
     this.order = const [],
     this.selected = const [],
-    this.lastMplsId,
+    this.lastProgrammeId,
   });
 
   final List<String> order;
   final List<String> selected;
-  final String? lastMplsId;
+  final String? lastProgrammeId;
 
   factory _IsoCatalogRecord.fromJson(Object? value) {
     if (value is! Map) return const _IsoCatalogRecord();
     List<String> ids(Object? raw) => raw is List
         ? raw
               .whereType<String>()
-              .where((id) => RegExp(r'^\d{5}$').hasMatch(id))
+              .where((id) => isDiscProgramme(id))
               .toSet()
               .toList(growable: false)
         : const [];
-    final last = value['lastMplsId'];
+    final last = value['lastProgrammeId'] ?? value['lastMplsId'];
     return _IsoCatalogRecord(
       order: ids(value['order']),
       selected: ids(value['selected']),
-      lastMplsId: last is String && RegExp(r'^\d{5}$').hasMatch(last)
-          ? last
-          : null,
+      lastProgrammeId: last is String && isDiscProgramme(last) ? last : null,
     );
   }
 
   Map<String, Object?> toJson(DateTime updatedAt) => <String, Object?>{
+    'discType': order.any(isDvdProgramme) ? 'dvd' : 'bluray',
     'order': order,
     'selected': selected,
-    if (lastMplsId != null) 'lastMplsId': lastMplsId,
+    if (lastProgrammeId != null)
+      (isDvdProgramme(lastProgrammeId!) ? 'lastProgrammeId' : 'lastMplsId'):
+          lastProgrammeId,
     'updatedAt': updatedAt.toUtc().toIso8601String(),
   };
 }
@@ -3654,18 +3718,18 @@ class _IsoCatalogStore {
     all[isoKey] = _IsoCatalogRecord(
       order: List<String>.unmodifiable(order),
       selected: List<String>.unmodifiable(selected),
-      lastMplsId: current.lastMplsId,
+      lastProgrammeId: current.lastProgrammeId,
     );
     await _writeAll(all);
   }
 
-  Future<void> saveLastMpls(String isoKey, String? mplsId) async {
+  Future<void> saveLastProgramme(String isoKey, String? mplsId) async {
     final all = await _readAll();
     final current = all[isoKey] ?? const _IsoCatalogRecord();
     all[isoKey] = _IsoCatalogRecord(
       order: current.order,
       selected: current.selected,
-      lastMplsId: mplsId,
+      lastProgrammeId: mplsId,
     );
     await _writeAll(all);
   }

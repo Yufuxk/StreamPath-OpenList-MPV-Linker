@@ -1,3 +1,4 @@
+import 'disc_programme.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -15,7 +16,9 @@ import 'webdav_service.dart';
 
 String isoBridgePlaybackErrorMessage(String code) => switch (code) {
   'remote_changed' => '远端 ISO 在播放期间发生变化',
-  'invalid_disc' => '没有解析到可播放的 Blu-ray Title/MPLS',
+  'invalid_disc' => '没有解析到可播放的 Blu-ray 或 DVD 标题',
+  'unsupported_dvd_title' => '该 DVD 标题需要暂不支持的交互或交错角度导航',
+  'encrypted_disc' => '不支持加密光盘（AACS、BD+、CSS）',
   'network_error' => 'ISO Bridge 远端读取失败',
   'winfsp_unavailable' => '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单',
   _ => 'ISO Bridge 启动失败',
@@ -38,14 +41,14 @@ class IsoBridgeChapter {
 class IsoBridgeTitle {
   const IsoBridgeTitle({
     required this.titleIndex,
-    required this.mplsId,
+    required this.programmeId,
     required this.duration,
     required this.streamSize,
     required this.chapters,
   });
 
   final int titleIndex;
-  final String mplsId;
+  final String programmeId;
   final Duration duration;
   final int streamSize;
   final List<IsoBridgeChapter> chapters;
@@ -60,6 +63,8 @@ class IsoBridgeReady {
     required this.totalBytes,
     required this.titles,
     this.discPath,
+    this.discType = DiscType.bluray,
+    this.unavailableDvdTitles = const [],
   });
 
   final int port;
@@ -67,6 +72,8 @@ class IsoBridgeReady {
   final int totalBytes;
   final List<IsoBridgeTitle> titles;
   final String? discPath;
+  final DiscType discType;
+  final List<int> unavailableDvdTitles;
 
   factory IsoBridgeReady.fromMessage(
     Map<String, dynamic> message, {
@@ -74,11 +81,17 @@ class IsoBridgeReady {
     bool bdmv = false,
     String? mountedSessionPath,
     String? localDiscPath,
+    bool detectOnly = false,
   }) {
     final port = (message['port'] as num?)?.toInt();
     final token = message['token'];
     final totalBytes = (message['totalBytes'] as num?)?.toInt();
     final rawTitles = message['titles'];
+    final unavailable = message['unavailableDvdTitles'] ?? const <int>[];
+    if (unavailable is! List ||
+        unavailable.any((id) => id is! int || id < 1 || id > 99)) {
+      throw const IsoBridgeProtocolException('Invalid unavailable DVD titles');
+    }
     if (message['type'] != 'ready' ||
         message['version'] != 1 ||
         port == null ||
@@ -90,6 +103,9 @@ class IsoBridgeReady {
         !RegExp(r'^[0-9a-f]{32}$').hasMatch(token) ||
         totalBytes == null ||
         totalBytes <= 0 ||
+        (message['discType'] != null &&
+            message['discType'] != 'dvd' &&
+            message['discType'] != 'bluray') ||
         rawTitles is! List) {
       throw const IsoBridgeProtocolException('ISO Bridge ready 响应无效');
     }
@@ -100,14 +116,15 @@ class IsoBridgeReady {
         throw const IsoBridgeProtocolException('ISO Bridge Title 响应无效');
       }
       final titleIndex = (rawTitle['titleIndex'] as num?)?.toInt();
-      final mplsId = rawTitle['mplsId'];
+      final mplsId = rawTitle['programmeId'] ?? rawTitle['mplsId'];
       final durationMs = (rawTitle['durationMs'] as num?)?.toInt();
       final streamSize = (rawTitle['size'] as num?)?.toInt();
       final rawChapters = rawTitle['chapters'];
       if (titleIndex == null ||
           titleIndex < 0 ||
           mplsId is! String ||
-          !RegExp(r'^\d{5}$').hasMatch(mplsId) ||
+          !isDiscProgramme(mplsId) ||
+          (isDvdProgramme(mplsId) != (message['discType'] == 'dvd')) ||
           !seen.add(mplsId) ||
           durationMs == null ||
           durationMs <= 0 ||
@@ -142,7 +159,7 @@ class IsoBridgeReady {
       titles.add(
         IsoBridgeTitle(
           titleIndex: titleIndex,
-          mplsId: mplsId,
+          programmeId: mplsId,
           duration: Duration(milliseconds: durationMs),
           streamSize: streamSize,
           chapters: List<IsoBridgeChapter>.unmodifiable(chapters),
@@ -174,7 +191,7 @@ class IsoBridgeReady {
     if (localDiscPath != null && message['discPath'] != localDiscPath) {
       throw const IsoBridgeProtocolException('Cached disc path is invalid');
     }
-    if (!remoteMenu && titles.isEmpty) {
+    if (!remoteMenu && !detectOnly && titles.isEmpty) {
       throw const IsoBridgeProtocolException('ISO Bridge 未返回可播放 Title');
     }
     return IsoBridgeReady(
@@ -182,6 +199,8 @@ class IsoBridgeReady {
       token: token,
       totalBytes: totalBytes,
       titles: List<IsoBridgeTitle>.unmodifiable(titles),
+      discType: message['discType'] == 'dvd' ? DiscType.dvd : DiscType.bluray,
+      unavailableDvdTitles: List<int>.unmodifiable(unavailable.cast<int>()),
       discPath: mountedSessionPath == null
           ? null
           : message['discPath'] as String,
@@ -552,6 +571,7 @@ abstract interface class IsoAccessHandle {
   PlayerProcessIdentity get helperIdentity;
   int get totalBytes;
   List<IsoBridgeTitle> get titles;
+  List<int> get unavailableDvdTitles;
 
   Uri playbackUri(String mplsId);
   Future<void> configureCache({
@@ -580,6 +600,8 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
     this.remoteMenu = false,
     this.probeOnly = false,
     this.discPath,
+    this.discType = DiscType.bluray,
+    this.unavailableDvdTitles = const [],
   });
 
   @override
@@ -597,6 +619,9 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
   final bool remoteMenu;
   final bool probeOnly;
   final String? discPath;
+  final DiscType discType;
+  @override
+  final List<int> unavailableDvdTitles;
   bool _attached = false;
   bool _cleaned = false;
 
@@ -612,15 +637,22 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
 
   @override
   Uri playbackUri(String mplsId) {
-    if (!RegExp(r'^\d{5}$').hasMatch(mplsId) ||
-        !titles.any((title) => title.mplsId == mplsId)) {
-      throw AppException.config('Blu-ray Title 选择结果无效');
+    if (!isDiscProgramme(mplsId) ||
+        !titles.any((title) => title.programmeId == mplsId)) {
+      throw AppException.config('光盘标题选择结果无效');
     }
     return Uri(
       scheme: 'http',
       host: '127.0.0.1',
       port: _port,
-      pathSegments: [_token, 'title', '$mplsId.m2ts'],
+      pathSegments: isDvdProgramme(mplsId)
+          ? [
+              _token,
+              'dvd',
+              'title',
+              '${mplsId.substring(10).padLeft(5, '0')}.vob',
+            ]
+          : [_token, 'title', '$mplsId.m2ts'],
     );
   }
 
@@ -704,6 +736,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     IsoBridgeClientConnector? clientConnector,
     this.remoteMenu = false,
     this.mediaProbe = false,
+    this.discProbe = false,
   }) : _processController = processController ?? PlayerProcessController(),
        _helperPathResolver =
            helperPathResolver ?? IsoBridgeAccessProvider._defaultHelperPath,
@@ -716,6 +749,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
   final IsoBridgeClientConnector _clientConnector;
   final bool remoteMenu;
   final bool mediaProbe;
+  final bool discProbe;
   Process? _activeProcess;
   IsoBridgeClient? _activeClient;
   bool _cancelRequested = false;
@@ -733,7 +767,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
       throw AppException.config('ISO Bridge 仅支持 Windows x64');
     }
     if (!file.isIso && file is! WebDavBdmv) {
-      throw AppException.config('仅支持 Blu-ray ISO 文件');
+      throw AppException.config('仅支持 Blu-ray 或 DVD ISO 文件');
     }
     if (_activeProcess != null) {
       throw AppException.process('ISO 远程播放测试模块正在执行其他任务');
@@ -783,6 +817,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         if (remoteMenu) 'transport': 'winfsp',
         'version': 1,
         if (mediaProbe) 'mediaProbe': true,
+        if (discProbe) 'detectOnly': true,
         if (file is WebDavBdmv) 'sourceKind': 'bdmv',
         'localPath': ?cachedDisc,
         'url': webDavService.resolveUrl(file.href),
@@ -816,6 +851,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         bdmv: file is WebDavBdmv,
         mountedSessionPath: remoteMenu ? sessionDirectory.path : null,
         localDiscPath: remoteMenu ? cachedDisc : null,
+        detectOnly: discProbe,
       );
       if (file is WebDavBdmv) {
         final revision = response['structureRevision'];
@@ -840,8 +876,10 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         client: client,
         helperProcess: process,
         remoteMenu: remoteMenu,
-        probeOnly: mediaProbe,
+        probeOnly: mediaProbe || discProbe,
         discPath: ready.discPath,
+        discType: ready.discType,
+        unavailableDvdTitles: ready.unavailableDvdTitles,
       );
       _activeProcess = null;
       _activeClient = null;
@@ -896,13 +934,14 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
       'range_unsupported' ||
       'length_unavailable' => AppException.network('当前 WebDAV 源不支持 ISO 流式随机读取'),
       'remote_changed' => AppException.network('远端 ISO 在播放期间发生变化'),
-      'encrypted_disc' => AppException.config(
-        '暂不支持 AACS 或 BD+ 加密的 Blu-ray ISO',
+      'encrypted_disc' => AppException.config('不支持加密光盘（AACS、BD+、CSS）'),
+      'unsupported_dvd_title' => AppException.config(
+        '该 DVD 标题需要暂不支持的交互或交错角度导航',
       ),
       'libbluray_unavailable' => AppException.config(
         'ISO Bridge 缺少固定版本 libbluray',
       ),
-      'invalid_disc' => AppException.parse('没有解析到可播放的 Blu-ray Title/MPLS'),
+      'invalid_disc' => AppException.parse('没有解析到可播放的 Blu-ray 或 DVD 标题'),
       'network_error' => AppException.network('ISO Bridge 远端读取失败'),
       'bdj_unsupported' => AppException.config('当前阶段仅支持 HDMV 菜单，请返回标题模式'),
       'menu_unknown' => AppException.config('无法确认菜单类型，请返回标题模式'),

@@ -18,6 +18,7 @@ import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/domain/services/iso_access_provider.dart';
+import 'package:streampath/domain/services/disc_programme.dart';
 import 'package:streampath/domain/services/remote_menu_playback_service.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
@@ -53,6 +54,7 @@ final _widgetOwnerIdentity = PlayerProcessIdentity(
 );
 
 class _BlockingIsoProvider implements IsoAccessProvider {
+  bool dvd = false;
   Completer<void> entered = Completer<void>();
   Completer<IsoAccessHandle>? _completed;
   Directory? _sessionDirectory;
@@ -87,7 +89,11 @@ class _BlockingIsoProvider implements IsoAccessProvider {
     if (!entered.isCompleted) entered.complete();
     if (completeImmediately) {
       sessionDirectory.createSync(recursive: true);
-      return remoteMenu ? _WidgetRemoteHandle(sessionDirectory) : _WidgetIsoHandle(sessionDirectory);
+      return dvd
+          ? _WidgetDvdHandle(sessionDirectory)
+          : remoteMenu
+          ? _WidgetRemoteHandle(sessionDirectory)
+          : _WidgetIsoHandle(sessionDirectory);
     }
     return _completed!.future;
   }
@@ -140,6 +146,8 @@ class _WidgetRemoteHandle extends _WidgetIsoHandle implements RemoteDiscAccessHa
 }
 
 class _WidgetIsoHandle implements IsoAccessHandle {
+  @override
+  List<int> get unavailableDvdTitles => const [];
   _WidgetIsoHandle(this.sessionDirectory);
 
   @override
@@ -152,14 +160,14 @@ class _WidgetIsoHandle implements IsoAccessHandle {
   List<IsoBridgeTitle> get titles => const [
     IsoBridgeTitle(
       titleIndex: 0,
-      mplsId: '00001',
+      programmeId: '00001',
       duration: Duration(minutes: 24),
       streamSize: 1000,
       chapters: [],
     ),
     IsoBridgeTitle(
       titleIndex: 1,
-      mplsId: '00002',
+      programmeId: '00002',
       duration: Duration(minutes: 23),
       streamSize: 900,
       chapters: [],
@@ -189,6 +197,22 @@ class _WidgetIsoHandle implements IsoAccessHandle {
   }
 }
 
+class _WidgetDvdHandle extends _WidgetIsoHandle {
+  _WidgetDvdHandle(super.sessionDirectory);
+  @override
+  List<int> get unavailableDvdTitles => const [3];
+  @override
+  List<IsoBridgeTitle> get titles => const [
+    IsoBridgeTitle(
+      titleIndex: 0,
+      programmeId: 'dvd-title-01',
+      duration: Duration(minutes: 20),
+      streamSize: 1000,
+      chapters: [],
+    ),
+  ];
+}
+
 void main() {
   late Directory tempDirectory;
   late HttpServer server;
@@ -199,6 +223,8 @@ void main() {
   late _BlockingIsoProvider isoProvider;
   late Map<int, bool> processAlive;
   bool serveBdmv = false;
+  DiscType detectedType = DiscType.bluray;
+  Completer<DiscType>? discTypeGate;
 
   setUpAll(() {
     sqfliteFfiInit();
@@ -207,6 +233,8 @@ void main() {
 
   setUp(() async {
     serveBdmv = false;
+    detectedType = DiscType.bluray;
+    discTypeGate = null;
     tempDirectory = Directory.systemTemp.createTempSync(
       'browser_iso_playback_',
     );
@@ -229,6 +257,7 @@ void main() {
     isoPlaybackService = IsoPlaybackService(
       configStore: configStore,
       accessProvider: isoProvider,
+      discTypeDetector: (_, _) async => discTypeGate == null ? detectedType : await discTypeGate!.future,
       remoteMenuAccessProvider: isoProvider,
       remoteMenuService: _WidgetMenuService(isoProvider),
       processController: PlayerProcessController(
@@ -379,6 +408,48 @@ void main() {
     expect(find.text('已取消 ISO 播放'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+  testWidgets('识别光盘时可从同一进度窗口取消', (tester) async {
+    discTypeGate = Completer<DiscType>();
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('正在识别光盘类型…'));
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    discTypeGate!.complete(DiscType.dvd);
+    await settleBrowser(tester);
+    expect(find.byKey(const Key('iso-streaming-dialog')), findsNothing);
+    expect(find.byKey(const Key('iso-title-selection-dialog')), findsNothing);
+  });
+
+  testWidgets('DVD 识别后直接进入标题列表，提示不可用标题并可取消', (tester) async {
+    discTypeGate = Completer<DiscType>();
+    detectedType = DiscType.dvd;
+    isoProvider
+      ..dvd = true
+      ..completeImmediately = true
+      ..remoteMenu = true;
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('正在识别光盘类型…'));
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('仅支持未加密 DVD ISO'), findsNothing);
+    final preparationRoute = ModalRoute.of(tester.element(find.byKey(const Key('iso-streaming-dialog'))));
+    discTypeGate!.complete(DiscType.dvd);
+    await waitForWidget(
+      tester,
+      find.byKey(const Key('iso-title-selection-dialog')),
+    );
+    expect(ModalRoute.of(tester.element(find.byKey(const Key('iso-streaming-dialog'), skipOffstage: false))), same(preparationRoute));
+    expect(find.text('选择 DVD 标题'), findsOneWidget);
+    expect(find.text('标题 01'), findsOneWidget);
+    expect(find.text('蓝光菜单播放'), findsNothing);
+    expect(find.textContaining('已跳过：3'), findsOneWidget);
+    expect(find.byKey(const Key('iso-title-dvd-title-01')), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, '取消播放'));
+    await settleBrowser(tester);
+    expect(isoPlaybackService.isBusy, isFalse);
   });
 
   testWidgets('宿主已挂载后新完成的自选目录 ISO 缓存仍从本地起播', (tester) async {

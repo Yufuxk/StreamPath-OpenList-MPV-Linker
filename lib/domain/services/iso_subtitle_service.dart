@@ -19,6 +19,7 @@ import 'mpv_session_controller.dart';
 import 'webdav_font_matcher.dart';
 import 'webdav_font_localizer.dart';
 import 'webdav_media_source_adapter.dart';
+import 'disc_programme.dart';
 
 class IsoSubtitleCandidate {
   const IsoSubtitleCandidate(this.path, this.entry);
@@ -27,7 +28,7 @@ class IsoSubtitleCandidate {
   String get name => p.posix.basename(path);
 }
 
-/// 单个来源、单张蓝光的资源与用户选择，不持有播放器进度。
+/// 单个来源、单张光盘的资源与用户选择，不持有播放器进度。
 class IsoSubtitleContext {
   IsoSubtitleContext({
     required this.source,
@@ -47,7 +48,7 @@ class IsoSubtitleContext {
   final List<String> issues = [];
   final Map<String, String?> bindings = {};
   final Map<String, String> suggestions = {};
-  // 自动候选在播放器确认实际 MPLS 后评分，不写入持久绑定。
+  // 自动候选在播放器确认实际节目后评分，不写入持久绑定。
   final List<Map<String, dynamic>> automaticCandidates = [];
   final Map<String, List<int>> _subtitleBytes = {};
   List<Map<String, dynamic>> titleCatalog = const [];
@@ -304,7 +305,7 @@ class IsoSubtitleContext {
         }
       }
       for (final rule in automaticCandidates) {
-        final id = rule['mpls'] as String?;
+        final id = rule['programmeId'] as String?;
         if (id != null) {
           suggestions[id] = IsoSubtitleMatcher.best(
             id,
@@ -384,7 +385,7 @@ class IsoSubtitleContext {
       IsoSubtitleMatcher.best(id, titles, automaticCandidates);
 
   Future<void> bind(String id, String? path, {bool automatic = false}) async {
-    if (!writable || !RegExp(r'^\d{5}$').hasMatch(id)) {
+    if (!writable || !isDiscProgramme(id)) {
       throw const FormatException('ISO subtitle map unavailable');
     }
     if (path != null && !candidates.any((c) => c.path == path)) {

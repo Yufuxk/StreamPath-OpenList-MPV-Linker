@@ -2,6 +2,30 @@
 // 动态内容在运行时先进行完整匹配，再回退为原始文本。
 
 const Map<String, String> englishTranslations = <String, String>{
+  '正在识别光盘类型…': 'Detecting disc type…',
+  'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'The DVD has changed. Previous bindings are suspended; please confirm them again.',
+  '不支持加密光盘（AACS、BD+、CSS）': 'Encrypted discs (AACS, BD+, CSS) are not supported',
+  '光盘标题选择结果无效': 'The disc title selection is invalid',
+  '仅支持 Blu-ray 或 DVD ISO 文件': 'Only Blu-ray or DVD ISO files are supported',
+  '至少选择一个光盘标题': 'Select at least one disc title',
+  '标题 {number}': 'Title {number}',
+  '正在解析 DVD 标题…': 'Parsing DVD titles…',
+  '以下 DVD 标题需要暂不支持的导航，已跳过：{titles}':
+      'These DVD titles require unsupported navigation and were skipped: {titles}',
+  '光盘外挂字幕': 'Disc external subtitles',
+  '此会话未启用光盘外挂字幕，请重新打开光盘':
+      'External subtitles are disabled for this session. Reopen the disc.',
+  '仅支持未加密 DVD ISO；播放期间请保持网络连接。':
+      'Only unencrypted DVD ISO images are supported. Keep the network connected during playback.',
+  'DVD 外挂字幕': 'DVD external subtitles',
+  '选择 DVD 标题': 'Select DVD titles',
+  '识别光盘类型': 'Detecting disc type',
+  '光盘播放模块正在执行其他任务': 'The disc playback module is busy',
+  '没有解析到可播放的 Blu-ray 或 DVD 标题': 'No playable Blu-ray or DVD title was found',
+  '该 DVD 标题需要暂不支持的交互或交错角度导航':
+      'This DVD title requires unsupported interactive or interleaved angle navigation',
+  '不支持 CSS 加密 DVD': 'CSS encrypted DVDs are not supported',
+
   '强调色': 'Accent color',
   '蓝色': 'Blue',
   '青色': 'Cyan',
@@ -1057,6 +1081,28 @@ const Map<String, String> englishTranslations = <String, String>{
 };
 
 const Map<String, String> japaneseTranslations = <String, String>{
+  '正在识别光盘类型…': 'ディスク形式を識別中…',
+  'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'DVD が変更されています。以前の割り当ては適用されません。再確認してください。',
+  '不支持加密光盘（AACS、BD+、CSS）': '暗号化ディスク（AACS、BD+、CSS）には対応していません',
+  '光盘标题选择结果无效': 'ディスクタイトルの選択が無効です',
+  '仅支持 Blu-ray 或 DVD ISO 文件': 'Blu-ray または DVD ISO ファイルのみ対応しています',
+  '至少选择一个光盘标题': 'ディスクタイトルを 1 つ以上選択してください',
+  '标题 {number}': 'タイトル {number}',
+  '正在解析 DVD 标题…': 'DVD タイトルを解析中…',
+  '以下 DVD 标题需要暂不支持的导航，已跳过：{titles}':
+      '未対応のナビゲーションが必要なため、次の DVD タイトルを除外しました：{titles}',
+  '光盘外挂字幕': 'ディスク外部字幕',
+  '此会话未启用光盘外挂字幕，请重新打开光盘': 'このセッションの外部字幕は無効です。ディスクを開き直してください。',
+  '仅支持未加密 DVD ISO；播放期间请保持网络连接。':
+      '暗号化されていない DVD ISO のみ対応しています。再生中はネットワーク接続を維持してください。',
+  'DVD 外挂字幕': 'DVD 外部字幕',
+  '选择 DVD 标题': 'DVD タイトルを選択',
+  '识别光盘类型': 'ディスク形式を識別中',
+  '光盘播放模块正在执行其他任务': 'ディスク再生モジュールは使用中です',
+  '没有解析到可播放的 Blu-ray 或 DVD 标题': '再生可能な Blu-ray または DVD タイトルがありません',
+  '该 DVD 标题需要暂不支持的交互或交错角度导航': 'この DVD タイトルには未対応の対話操作またはインターリーブアングル処理が必要です',
+  '不支持 CSS 加密 DVD': 'CSS 暗号化 DVD には対応していません',
+
   '强调色': 'アクセントカラー',
   '蓝色': 'ブルー',
   '青色': 'シアン',
@@ -1967,6 +2013,26 @@ const Map<String, String> japaneseTranslations = <String, String>{
 };
 
 const Map<String, String> traditionalChineseTranslations = <String, String>{
+  '正在识别光盘类型…': '正在識別光碟類型…',
+  'DVD 内容已变化，旧绑定暂停应用；请重新确认。': 'DVD 內容已變更，舊綁定暫停套用；請重新確認。',
+  '不支持加密光盘（AACS、BD+、CSS）': '不支援加密光碟（AACS、BD+、CSS）',
+  '光盘标题选择结果无效': '光碟標題選擇結果無效',
+  '仅支持 Blu-ray 或 DVD ISO 文件': '僅支援 Blu-ray 或 DVD ISO 檔案',
+  '至少选择一个光盘标题': '請至少選擇一個光碟標題',
+  '标题 {number}': '標題 {number}',
+  '正在解析 DVD 标题…': '正在解析 DVD 標題…',
+  '以下 DVD 标题需要暂不支持的导航，已跳过：{titles}': '以下 DVD 標題需要尚未支援的導覽，已略過：{titles}',
+  '光盘外挂字幕': '光碟外掛字幕',
+  '此会话未启用光盘外挂字幕，请重新打开光盘': '此工作階段未啟用光碟外掛字幕，請重新開啟光碟',
+  '仅支持未加密 DVD ISO；播放期间请保持网络连接。': '僅支援未加密 DVD ISO；播放期間請保持網路連線。',
+  'DVD 外挂字幕': 'DVD 外掛字幕',
+  '选择 DVD 标题': '選擇 DVD 標題',
+  '识别光盘类型': '識別光碟類型',
+  '光盘播放模块正在执行其他任务': '光碟播放模組正在執行其他工作',
+  '没有解析到可播放的 Blu-ray 或 DVD 标题': '未解析到可播放的 Blu-ray 或 DVD 標題',
+  '该 DVD 标题需要暂不支持的交互或交错角度导航': '此 DVD 標題需要尚未支援的互動或交錯角度導覽',
+  '不支持 CSS 加密 DVD': '不支援 CSS 加密 DVD',
+
   '强调色': '強調色',
   '蓝色': '藍色',
   '青色': '青色',

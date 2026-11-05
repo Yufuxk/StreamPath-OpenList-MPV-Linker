@@ -622,10 +622,22 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     final url = _progressUrlFor(record);
     if (url == null) return null;
     try {
-      final reader = record.item.sourceId.startsWith('local:')
+      final reader =
+          record.item.sourceId.startsWith('local:') &&
+              record.item.playbackMode == PlaybackMode.localHdmvMenu
           ? widget.localIsoProgressService ?? service
           : service;
-      return await reader.getLibraryProgress(
+      final progress = await reader.getLibraryProgress(
+        profileId: record.item.sourceId,
+        resolvedUrl: url,
+        playbackMode: record.item.playbackMode,
+      );
+      if (progress != null ||
+          !record.item.sourceId.startsWith('local:') ||
+          identical(reader, widget.localIsoProgressService)) {
+        return progress;
+      }
+      return widget.localIsoProgressService?.getLibraryProgress(
         profileId: record.item.sourceId,
         resolvedUrl: url,
         playbackMode: record.item.playbackMode,

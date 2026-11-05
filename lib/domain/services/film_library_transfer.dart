@@ -1,3 +1,4 @@
+import 'disc_programme.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -386,19 +387,20 @@ class FilmLibraryTransfer {
                   selection = row['state']['selection'] as Map;
               for (final field in ['order', 'selected']) {
                 if (!(selection[field] as List).every(
-                  (id) => id is String && RegExp(r'^\d{5}$').hasMatch(id),
+                  (id) => id is String && isDiscProgramme(id),
                 )) {
                   throw const FilmCatalogException('invalidImport');
                 }
               }
-              if (selection['lastMplsId'] != null &&
-                  !RegExp(
-                    r'^\d{5}$',
-                  ).hasMatch(selection['lastMplsId'] as String)) {
+              final lastProgramme =
+                  selection['lastProgrammeId'] ?? selection['lastMplsId'];
+              if (lastProgramme != null &&
+                  (lastProgramme is! String ||
+                      !isDiscProgramme(lastProgramme))) {
                 throw const FilmCatalogException('invalidImport');
               }
               for (final entry in (state['titles'] as Map).entries) {
-                if (!RegExp(r'^\d{5}$').hasMatch(entry.key as String)) {
+                if (!isDiscProgramme(entry.key as String)) {
                   throw const FilmCatalogException('invalidImport');
                 }
                 final position = entry.value['position'],

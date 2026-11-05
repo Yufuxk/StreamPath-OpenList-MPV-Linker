@@ -55,6 +55,19 @@ void main() {
     expect(context.candidates.map((c) => c.path), ['01.ass', 'Subs/02.srt']);
     expect(context.effective, isEmpty);
   });
+  test('DVD TITLE 字幕可以手动绑定、禁用与恢复自动建议', () async {
+    await write('Anime.TITLE01.chs.ass');
+    final context = await discover();
+    context.titleCatalog = [
+      {'id': 'dvd-title-01', 'duration': 1500},
+    ];
+    await context.bind('dvd-title-01', 'Anime.TITLE01.chs.ass');
+    expect(context.effective['dvd-title-01'], 'Anime.TITLE01.chs.ass');
+    await context.bind('dvd-title-01', null);
+    expect(context.effective.containsKey('dvd-title-01'), isFalse);
+    await context.bind('dvd-title-01', null, automatic: true);
+    expect(context.effective['dvd-title-01'], 'Anime.TITLE01.chs.ass');
+  });
   test('本地 BDMV 根目录复用字幕发现与 MPLS 绑定', () async {
     await write('BDMV/index.bdmv');
     await write('BDMV/PLAYLIST/00003.mpls');

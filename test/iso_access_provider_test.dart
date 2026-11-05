@@ -56,7 +56,7 @@ void main() {
 
     expect(ready.port, 49152);
     expect(ready.totalBytes, 100000);
-    expect(ready.titles.single.mplsId, '00001');
+    expect(ready.titles.single.programmeId, '00001');
     expect(ready.titles.single.chapters, hasLength(2));
     expect(ready.titles.single.chapters.last.start, const Duration(minutes: 1));
   });

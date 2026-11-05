@@ -191,12 +191,12 @@ void main() {
       logicalSourceUrl: sourceUrl,
       titles: const [
         IsoCacheTitleContext(
-          mplsId: '00001',
+          programmeId: '00001',
           streamSize: 18 * 1024 * 1024 * 1024,
           duration: Duration(hours: 1),
         ),
         IsoCacheTitleContext(
-          mplsId: '00002',
+          programmeId: '00002',
           streamSize: 2 * 1024 * 1024 * 1024,
           duration: Duration(hours: 1),
         ),
@@ -248,7 +248,7 @@ void main() {
       logicalSourceUrl: 'https://dav.example/media/DISC.iso',
       titles: const [
         IsoCacheTitleContext(
-          mplsId: '00001',
+          programmeId: '00001',
           streamSize: 4 * 1024 * 1024 * 1024,
           duration: Duration(hours: 1),
         ),
