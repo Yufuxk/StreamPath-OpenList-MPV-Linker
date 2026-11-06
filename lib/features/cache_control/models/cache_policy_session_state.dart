@@ -24,10 +24,10 @@ class CachePolicySessionState {
   /// 是否注入了缓存参数（false = 配置关闭/用户手动参数跳过）。
   final bool injected;
 
-  /// 正常策略注入时的完整结果；[injected] 为 true 时非 null。
+  /// 普通策略或 TS 运行态策略的完整结果；tsOnly 分支为 null。
   final CachePolicyResult? result;
 
-  /// 仅注入 TS 防护参数（--demuxer-seekable-cache=no）的直链分支：
+  /// TS 零点起播关闭 cache 并禁用 seekable cache 的分支：
   /// 有注入，但不启动普通缓存监控。
   final bool tsOnly;
 

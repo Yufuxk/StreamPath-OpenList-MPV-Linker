@@ -52,6 +52,7 @@ import '../../data/models/web_dav_file.dart';
 import '../../data/models/media_entry.dart';
 import '../../data/models/playback_media_info.dart';
 import '../../domain/services/external_player_service.dart';
+import '../../domain/services/playback_startup_trace.dart';
 import '../../domain/services/external_audio_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/iso_playback_service.dart';
@@ -4092,6 +4093,7 @@ class BrowserPageState extends State<BrowserPage> {
     var ordered = playbackScope == VideoPlaybackScope.singleItem
         ? rootVideos.where((item) => item.path == targetPath).toList()
         : [...rootVideos, ...scan.items];
+    PlaybackStartupTrace.current?.mark('browserPlaylistCollected');
     report?.call('正在匹配外挂字幕…', null);
     if (!mounted) return;
     if (targetPath == null || !ordered.any((item) => item.path == targetPath)) {
@@ -4272,6 +4274,7 @@ class BrowserPageState extends State<BrowserPage> {
       }
       return;
     }
+    PlaybackStartupTrace.current?.mark('browserMediaResolved');
     final playStart = clickedIndex;
     final seasonLookup =
         filmVersionContext == null &&
@@ -4338,6 +4341,7 @@ class BrowserPageState extends State<BrowserPage> {
         }
       }
     }
+    PlaybackStartupTrace.current?.mark('browserFontsLocated');
     _PreparedSeason? nextSeason;
     report?.call('正在准备播放列表…', null);
     try {

@@ -41,6 +41,7 @@ import '../../domain/services/webdav_media_source_adapter.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../controllers/film_media_probe_controller.dart';
+import '../../domain/services/playback_startup_trace.dart';
 import '../../data/local/navigation_location_store.dart';
 import '../../data/local/global_search_index.dart';
 import '../../core/utils/app_paths.dart';
@@ -1764,7 +1765,13 @@ class AppState extends ChangeNotifier {
         .join('/');
   }
 
-  Future<T> withMediaPlaybackPriority<T>(Future<T> Function() operation) async {
+  Future<T> withMediaPlaybackPriority<T>(Future<T> Function() operation) =>
+      PlaybackStartupTrace.run(() => _withMediaPlaybackPriority(operation));
+
+  Future<T> _withMediaPlaybackPriority<T>(
+    Future<T> Function() operation,
+  ) async {
+    PlaybackStartupTrace.current?.mark('playbackPreparationStart');
     if (fullSpeedExclusive.value) {
       throw const FilmCatalogException('fullSpeedPlaybackBlocked');
     }
@@ -1775,12 +1782,22 @@ class AppState extends ChangeNotifier {
       } on VideoCacheException catch (error) {
         onImplicitVideoError?.call(error.message);
       }
+      PlaybackStartupTrace.current?.mark('offlineDownloadsSuspended');
       final catalog = _filmCatalog;
-      if (catalog == null) return await operation();
+      if (catalog == null) {
+        PlaybackStartupTrace.current?.mark('playbackPriorityAcquired');
+        return await operation();
+      }
       final probe = (await catalog).mediaProbe;
+      PlaybackStartupTrace.current?.mark('filmCatalogReady');
+      Future<T> acquired() {
+        PlaybackStartupTrace.current?.mark('playbackPriorityAcquired');
+        return operation();
+      }
+
       return await (probe == null
-          ? operation()
-          : probe.withPlaybackPriority(operation));
+          ? acquired()
+          : probe.withPlaybackPriority(acquired));
     } finally {
       _downloadPreparation--;
       unawaited(_updateDownloadPlayback());

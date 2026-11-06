@@ -12,6 +12,7 @@ import '../../data/models/film_catalog_item.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../../domain/services/film_probe_access.dart';
 import '../../domain/services/media_info_probe.dart';
+import '../../domain/services/playback_startup_trace.dart';
 
 typedef FilmPlaybackSnapshot = ({
   String sourceId,
@@ -71,6 +72,7 @@ class FilmMediaProbeController extends ChangeNotifier {
     try {
       await Future.wait([_probe.cancel(), _access.cancel()]);
       await _running;
+      PlaybackStartupTrace.current?.mark('backgroundProbeCancelled');
       return await operation();
     } finally {
       _preparing--;

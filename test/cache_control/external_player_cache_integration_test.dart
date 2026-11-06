@@ -151,10 +151,11 @@ void main() {
     double timePos = 5,
     double duration = 1800,
     bool seeking = false,
+    bool pausedForCache = false,
     int restartSerial = 0,
   }) =>
       '$playlistPos\n$url\n0\n$timePos\n$duration\n0\n512000\n0\n'
-      'diag\n0\n0\n0\n1920x1080\n${seeking ? 1 : 0}\n'
+      'diag\n${pausedForCache ? 1 : 0}\n0\n0\n1920x1080\n${seeking ? 1 : 0}\n'
       '$restartSerial\n30.0\n';
 
   group('缓存参数注入集成', () {
@@ -584,13 +585,15 @@ void main() {
       expect(monitor.startedStatusFile, isNull, reason: 'TS 走直链，不监控');
     });
 
-    test('TS 仅出现 time-pos 不判稳，拖动立即启用缓存并等待 restart 后监控', () async {
+    test('TS 等待健康推进且 IPC 确认后才启动监控', () async {
       final monitor = _RecordingMonitor();
       final updates = <Map<String, Object?>>[];
+      final applied = Completer<bool>();
       final (service, _) = await makeService(
         cacheConfig: CachePolicyConfig.defaults(),
         monitorFactory: () => monitor,
         keepAlive: true,
+        keepAliveSeconds: 20,
         cacheIpcUpdater:
             (
               pipeName, {
@@ -603,7 +606,7 @@ void main() {
                 'cacheEnabled': cacheEnabled,
                 'seekableCacheEnabled': seekableCacheEnabled,
               });
-              return true;
+              return applied.future;
             },
       );
       const url = 'http://127.0.0.1:1/dav/seek.m2ts';
@@ -621,19 +624,53 @@ void main() {
         await status.writeAsString(
           statusText(url: url, timePos: 20, seeking: true),
         );
-        await waitUntil(
-          () => updates.any((item) => item['cacheEnabled'] == true),
-          reason: '观察到 seeking=true 后应立即启用 TS 小窗口缓存',
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        expect(monitor.startedStatusFile, isNull);
+        await status.writeAsString(
+          statusText(
+            url: url,
+            timePos: 119,
+            restartSerial: 1,
+            pausedForCache: true,
+          ),
         );
-        expect(monitor.startedStatusFile, isNull, reason: '拖动未完成前不得开始学习采样');
-        expect(
-          updates.last['seekableCacheEnabled'],
-          isFalse,
-          reason: 'TS 运行态仍禁用 seekable cache',
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        await status.writeAsString(
+          statusText(
+            url: url,
+            timePos: 120,
+            restartSerial: 1,
+            pausedForCache: true,
+          ),
         );
-
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        expect(monitor.startedStatusFile, isNull, reason: '缓存暂停不得启动监控');
         await status.writeAsString(
           statusText(url: url, timePos: 120, restartSerial: 1),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        expect(monitor.startedStatusFile, isNull);
+        await status.writeAsString(
+          statusText(url: url, timePos: 121, restartSerial: 1),
+        );
+        await waitUntil(() => updates.isNotEmpty);
+        expect(monitor.startedStatusFile, isNull, reason: 'IPC 未确认不能监控');
+        await status.writeAsString(
+          statusText(url: url, timePos: 200, seeking: true, restartSerial: 1),
+        );
+        applied.complete(true);
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        expect(
+          monitor.startedStatusFile,
+          isNull,
+          reason: '确认期间再次 Seek，旧确认不得启动监控',
+        );
+        await status.writeAsString(
+          statusText(url: url, timePos: 200, restartSerial: 2),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        await status.writeAsString(
+          statusText(url: url, timePos: 201, restartSerial: 2),
         );
         await waitUntil(
           () => monitor.startedStatusFile != null,
@@ -651,6 +688,14 @@ void main() {
         monitorFactory: () => monitor,
         keepAlive: true,
         resumeEnabled: true,
+        cacheIpcUpdater:
+            (
+              pipe, {
+              required demuxerMaxBytes,
+              required cacheSecs,
+              cacheEnabled,
+              seekableCacheEnabled,
+            }) async => true,
       );
       const url = 'http://127.0.0.1:1/dav/resume.ts';
       try {
@@ -670,6 +715,11 @@ void main() {
         await File(
           result.statusFilePath!,
         ).writeAsString(statusText(url: url, timePos: 120, restartSerial: 1));
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+        expect(monitor.startedStatusFile, isNull);
+        await File(
+          result.statusFilePath!,
+        ).writeAsString(statusText(url: url, timePos: 121, restartSerial: 1));
         await waitUntil(
           () => monitor.startedStatusFile != null,
           reason: '非零续播完成后应启动动态监控',
@@ -791,7 +841,6 @@ void main() {
         ),
       );
       final (service, _) = await makeService(cachePolicy: provider);
-      File? statusFile;
       try {
         const sameUrl = 'http://127.0.0.1:1/dav/repeat.mkv';
         final result = await service.launch(
@@ -802,7 +851,6 @@ void main() {
           sessionId: 'session_duplicate',
         );
         final activeStatusFile = File(result.statusFilePath!);
-        statusFile = activeStatusFile;
         final callsBefore = provider.buildCalls;
         await activeStatusFile.writeAsString(
           '1\n$sameUrl\n0\n5.0\n1800\n0\n512000\n0\n'
@@ -813,7 +861,7 @@ void main() {
           reason: '同 URL 重复条目必须用 playlist-pos 区分',
         );
       } finally {
-        if (statusFile?.existsSync() ?? false) await statusFile!.delete();
+        await service.terminateSession('session_duplicate');
       }
     });
 

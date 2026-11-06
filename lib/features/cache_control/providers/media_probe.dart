@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import '../../../domain/services/playback_startup_trace.dart';
+
 /// 媒体探测结果。
 class MediaProbeResult {
   const MediaProbeResult({
@@ -172,6 +174,9 @@ class HttpMediaProbe implements MediaProbe {
     String? range,
   }) async {
     if (timeout <= Duration.zero) throw TimeoutException('探测超时');
+    final trace = PlaybackStartupTrace.current;
+    final watch = trace == null ? null : (Stopwatch()..start());
+    trace?.mark('probeRequestStarted', {'method': method, 'range': range});
     final deadline = DateTime.now().add(timeout);
     final request = await client.openUrl(method, uri).timeout(timeout)
       ..followRedirects = false
@@ -182,7 +187,16 @@ class HttpMediaProbe implements MediaProbe {
     if (range != null) request.headers.set(HttpHeaders.rangeHeader, range);
     final remaining = deadline.difference(DateTime.now());
     if (remaining <= Duration.zero) throw TimeoutException('探测超时');
-    return request.close().timeout(remaining);
+    final response = await request.close().timeout(remaining);
+    trace?.mark('probeResponseHeaders', {
+      'method': method,
+      'range': range,
+      'status': response.statusCode,
+      'headersElapsedUs': watch!.elapsedMicroseconds,
+      'advertisedContentLength': response.contentLength,
+      'bodyBytesAvailable': false,
+    });
+    return response;
   }
 
   static Uri? _redirectTarget(HttpClientResponse response, Uri current) {

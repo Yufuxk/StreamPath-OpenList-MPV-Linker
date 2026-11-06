@@ -28,6 +28,7 @@ import 'mpv_playback_progress_sync.dart';
 import 'mpv_idle_completion_marker.dart';
 import 'mpv_session_controller.dart';
 import 'mpv_scripts.dart';
+import 'playback_startup_trace.dart';
 import 'mpv_watch_later_sync.dart';
 import 'openlist_process_restart_service.dart';
 import 'openlist_recovery_service.dart';
@@ -359,6 +360,11 @@ class _PlaybackRecoveryState {
 
 class _CacheIpcState {
   int revision = 0;
+  int? appliedGeneration;
+  int? appliedCacheSecs;
+  (int, int?)? monitoredRestart;
+  bool? appliedCacheEnabled;
+  bool? appliedSeekableCacheEnabled;
   int? demuxerMaxBytes;
   int? cacheSecs;
   bool? cacheEnabled;
@@ -780,6 +786,8 @@ class ExternalPlayerService {
     if (playlistStart < 0 || playlistStart >= entries.length) {
       playlistStart = 0;
     }
+    final trace = PlaybackStartupTrace.current;
+    trace?.mark('externalPlayerPreparationStart');
     final config = launchContext.player;
     // 分类注入：仅在关闭「全部注入」时查询影片元数据。查询与后续准备
     // 并行，构建参数前才等待结果，不额外增加起播等待。
@@ -914,6 +922,7 @@ class ExternalPlayerService {
         : null;
     if (nextPlaylistPath != null) artifactPaths.add(nextPlaylistPath);
     await ensureOwned();
+    trace?.mark('playlistPrepared', {'entries': entries.length});
     final userArgs = config.argsFor(await mediaInfo);
     final args = listMode
         ? _buildListArgs(
@@ -1064,6 +1073,7 @@ class ExternalPlayerService {
           args.add('--script=$fontScript');
         }
       }
+      trace?.mark('fontsPrepared');
       // 自动字幕由 StreamPath 严格按同目录候选注入；关闭 mpv 自身的
       // 模糊搜索，避免 mpv.conf/sub-file-paths 从字幕备份目录载入字幕。
       if (subtitleInjectionEnabled) {
@@ -1138,6 +1148,7 @@ class ExternalPlayerService {
         artifactPaths.add(subtitleScript);
         args.add('--script=$subtitleScript');
       }
+      trace?.mark('subtitlesPrepared');
       // 多集标题兜底脚本（与字幕脚本独立，始终注入）。
       if (listMode && !seasonTransition && !implicit) {
         final titlesScript = await MpvScripts.ensureTitles(
@@ -1336,6 +1347,24 @@ class ExternalPlayerService {
       }
     }
 
+    trace?.mark('cachePolicyReady', {
+      'injected': cacheSession?.injected ?? false,
+      'tsOnly': cacheSession?.tsOnly ?? false,
+      'tsRuntime': cacheSession?.tsRuntime ?? false,
+      'local': launchContext.isLocal,
+    });
+    if (isMpv && trace != null) {
+      try {
+        final diagnostic = await MpvScripts.ensureStartupTrace(
+          trace.mpvOutput,
+          trace.base,
+          sessionId: trace.id,
+        );
+        args.add('--script=$diagnostic');
+      } on FileSystemException {
+        trace.mark('mpvTraceUnavailable');
+      }
+    }
     // ── 4. 启动进程 ───────────────────────────────────────────
     onPreparationStage?.call('正在启动播放器…');
     await ensureOwned();
@@ -1344,6 +1373,9 @@ class ExternalPlayerService {
       // detached 模式：子进程独立运行、正常弹出播放器窗口。
       // 注意：detached 拿不到 exitCode，退出检测改由 tasklist
       // 轮询探活完成（见 _watchExitAndSync）。
+      trace?.mark('processStartRequested', {
+        'args': PlaybackStartupTrace.redactArgs(args),
+      });
       process = await Process.start(
         config.executable,
         args,
@@ -1376,6 +1408,7 @@ class ExternalPlayerService {
       }
       throw AppException.process('播放器启动失败：${e.message}（请检查可执行文件与系统 PATH）', e);
     }
+    trace?.mark('processCreated', {'pid': process.pid});
     final processIdentity = await _processController.capture(process.pid);
     if (!_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
       final termination = await _terminateCapturedProcess(
@@ -1639,7 +1672,9 @@ class ExternalPlayerService {
     // 每集时长上报一次（去重，切集后新集重新上报）。
     final reportedDurationGenerations = <int>{};
     final tsRuntimeEnabledGenerations = <int>{};
-    final tsMonitorStartedGenerations = <int>{};
+    final cacheTargetReachedGenerations = <int>{};
+    final tsMonitorRequestedRestarts = <(int, int?)>{};
+    (int, int?, double)? previousTsSample;
     // 持续轮询直到播放器退出：每轮**先读状态文件**（播放器退出前的
     // 最后数据仍处理），再检查进程存活——避免进程快速退出时漏掉
     // 已写入的状态（同时使测试不依赖进程存活时长）。
@@ -1712,9 +1747,36 @@ class ExternalPlayerService {
         final restartSerial = lines.length > 14
             ? int.tryParse(lines[14].trim())
             : null;
-        // TS 起播只依据当前曲目的 seek/restart 事件转换状态。非零续播
-        // 已从启动阶段启用小窗口；零点起播仍在首次 restart 前保持直链。
+        // 连续健康采样确认当前曲目已推进，restart 本身不代表缓存暂停结束。
         final currentGeneration = runtime.trackGeneration;
+        final healthy =
+            seeking == false &&
+            lines.length > 9 &&
+            lines[9].trim() == '0' &&
+            lines[2].trim() == '0' &&
+            restartSerial != null &&
+            restartSerial > 0 &&
+            timePos != null &&
+            timePos >= 0;
+        final previous = previousTsSample;
+        final advancing =
+            healthy &&
+            previous != null &&
+            previous.$1 == currentGeneration &&
+            previous.$2 == restartSerial &&
+            timePos >= previous.$3 + 0.25;
+        previousTsSample = healthy
+            ? (currentGeneration, restartSerial, timePos)
+            : null;
+        final ipcState = _cacheIpcStates[sessionId];
+        if (isTsContainerUrl(lastTrackUrl) &&
+            seeking == true &&
+            ipcState != null &&
+            ipcState.monitoredRestart != null) {
+          policy.stopMonitor(sessionId);
+          ipcState.monitoredRestart = null;
+          tsMonitorRequestedRestarts.remove((currentGeneration, restartSerial));
+        }
         if (isTsContainerUrl(lastTrackUrl) &&
             currentState?.tsOnly == true &&
             (seeking == true || (restartSerial != null && restartSerial > 0)) &&
@@ -1726,24 +1788,20 @@ class ExternalPlayerService {
             file.path,
             userArgs: userArgs,
             generation: currentGeneration,
-            startMonitor: seeking != true,
+            startMonitor: false,
           );
-          if (enabled) {
-            tsRuntimeEnabledGenerations.add(currentGeneration);
-            if (seeking != true) {
-              tsMonitorStartedGenerations.add(currentGeneration);
-            }
-          }
+          if (enabled) tsRuntimeEnabledGenerations.add(currentGeneration);
         }
-        final refreshedState = policy.sessionState(sessionId);
         if (isTsContainerUrl(lastTrackUrl) &&
-            refreshedState?.tsRuntime == true &&
-            restartSerial != null &&
-            restartSerial > 0 &&
-            seeking == false &&
-            timePos != null &&
-            timePos >= 0 &&
-            tsMonitorStartedGenerations.add(currentGeneration)) {
+            advancing &&
+            policy.sessionState(sessionId)?.tsRuntime == true &&
+            tsMonitorRequestedRestarts.add((
+              currentGeneration,
+              restartSerial,
+            ))) {
+          PlaybackStartupTrace.current?.mark('tsPlaybackAdvancing', {
+            'generation': currentGeneration,
+          });
           _applyPolicyState(
             runtime,
             lastTrackUrl,
@@ -1751,14 +1809,32 @@ class ExternalPlayerService {
             file.path,
             generation: currentGeneration,
             seekableCacheEnabled: false,
+            expectedRestartSerial: restartSerial,
           );
-          tsRuntimeEnabledGenerations.add(currentGeneration);
+        }
+        final target = _cacheIpcStates[sessionId]?.appliedCacheSecs;
+        final forward = lines.length > 15 ? double.tryParse(lines[15]) : null;
+        if (target != null &&
+            forward != null &&
+            forward >= target &&
+            _cacheIpcStates[sessionId]?.appliedGeneration ==
+                currentGeneration &&
+            cacheTargetReachedGenerations.add(currentGeneration)) {
+          PlaybackStartupTrace.current?.mark('cacheTargetReached', {
+            'generation': currentGeneration,
+            'forwardSec': forward,
+            'targetSec': target,
+          });
         }
         // ── 当前集时长上报（mpv 打开 mkv/mp4 即写入） ──
         final duration = lines.length > 4 ? double.tryParse(lines[4]) : null;
         if (duration != null &&
             duration > 0 &&
             policy.sessionState(sessionId)?.shouldMonitor == true &&
+            (!isTsContainerUrl(lastTrackUrl) ||
+                (advancing &&
+                    _cacheIpcStates[sessionId]?.monitoredRestart ==
+                        (runtime.trackGeneration, restartSerial))) &&
             file.lastModifiedSync().isAfter(launchCutoff) &&
             reportedDurationGenerations.add(runtime.trackGeneration)) {
           final resolution = lines.length > 12 && lines[12].trim().isNotEmpty
@@ -1871,6 +1947,7 @@ class ExternalPlayerService {
     required List<String> userArgs,
     required int generation,
     bool startMonitor = true,
+    int? expectedRestartSerial,
   }) async {
     try {
       await policy.buildCacheArgs(
@@ -1889,6 +1966,7 @@ class ExternalPlayerService {
         generation: generation,
         seekableCacheEnabled: false,
         startMonitor: startMonitor,
+        expectedRestartSerial: expectedRestartSerial,
       );
       return policy.sessionState(runtime.sessionId)?.shouldMonitor == true;
     } catch (_) {
@@ -1904,9 +1982,16 @@ class ExternalPlayerService {
     required int generation,
     required bool seekableCacheEnabled,
     bool startMonitor = true,
+    int? expectedRestartSerial,
   }) {
     if (!_isRuntimeCurrent(runtime, generation)) return;
     final state = policy.sessionState(runtime.sessionId);
+    PlaybackStartupTrace.current?.mark('cachePolicyTransition', {
+      'generation': generation,
+      'tsOnly': state?.tsOnly,
+      'tsRuntime': state?.tsRuntime,
+      'shouldMonitor': state?.shouldMonitor,
+    });
     if (state?.tsOnly == true) {
       policy.stopMonitor(runtime.sessionId);
       _queueCacheUpdate(
@@ -1923,6 +2008,48 @@ class ExternalPlayerService {
       policy.stopMonitor(runtime.sessionId);
       return;
     }
+    Future<void> monitorAfterApplied() async {
+      if (!startMonitor) return;
+      if (isTsContainerUrl(track)) {
+        final latest = await File(statusFilePath).readAsLines();
+        if (!_isRuntimeCurrent(runtime, generation) ||
+            latest.length <= 14 ||
+            latest[13].trim() != '0' ||
+            latest[9].trim() != '0' ||
+            latest[2].trim() != '0' ||
+            (expectedRestartSerial != null &&
+                int.tryParse(latest[14]) != expectedRestartSerial)) {
+          return;
+        }
+      }
+      policy.startMonitor(
+        sessionId: runtime.sessionId,
+        url: track,
+        statusFilePath: statusFilePath,
+        initialDemuxerMaxBytes: result.demuxerMaxBytes,
+        initialCacheSecs: result.cacheSecs,
+        fileSizeBytes: result.fileSizeBytes,
+        bitrateMbps: result.bitrateMbps,
+        memoryBudgetBytes: result.memoryBudgetBytes,
+        minCacheSecs: result.minCacheSecs,
+        maxCacheSecs: result.maxCacheSecs,
+        fullCache: result.fullCache,
+        onAdjustment: (adjustment) => _handleCacheAdjustment(
+          runtime.sessionId,
+          adjustment,
+          runtime: runtime,
+          generation: generation,
+        ),
+        onWarning: (message) => _handleCacheWarning(runtime.sessionId, message),
+      );
+      if (isTsContainerUrl(track)) {
+        _cacheIpcStates[runtime.sessionId]?.monitoredRestart = (
+          generation,
+          expectedRestartSerial,
+        );
+      }
+    }
+
     _queueCacheUpdate(
       runtime,
       generation: generation,
@@ -1931,28 +2058,9 @@ class ExternalPlayerService {
       seekableCacheEnabled: seekableCacheEnabled,
       demuxerMaxBytes: result.demuxerMaxBytes,
       cacheSecs: result.cacheSecs,
+      onApplied: isTsContainerUrl(track) ? monitorAfterApplied : null,
     );
-    if (!startMonitor) return;
-    policy.startMonitor(
-      sessionId: runtime.sessionId,
-      url: track,
-      statusFilePath: statusFilePath,
-      initialDemuxerMaxBytes: result.demuxerMaxBytes,
-      initialCacheSecs: result.cacheSecs,
-      fileSizeBytes: result.fileSizeBytes,
-      bitrateMbps: result.bitrateMbps,
-      memoryBudgetBytes: result.memoryBudgetBytes,
-      minCacheSecs: result.minCacheSecs,
-      maxCacheSecs: result.maxCacheSecs,
-      fullCache: result.fullCache,
-      onAdjustment: (adjustment) => _handleCacheAdjustment(
-        runtime.sessionId,
-        adjustment,
-        runtime: runtime,
-        generation: generation,
-      ),
-      onWarning: (message) => _handleCacheWarning(runtime.sessionId, message),
-    );
+    if (!isTsContainerUrl(track)) monitorAfterApplied();
   }
 
   /// 日志用 URL 脱敏：仅保留 `scheme://host[:port]/path`（签名 token
@@ -2056,6 +2164,7 @@ class ExternalPlayerService {
     bool? cacheEnabled,
     bool? seekableCacheEnabled,
     bool reset = false,
+    Future<void> Function()? onApplied,
   }) {
     if (!_isRuntimeCurrent(runtime, generation) ||
         !runtime.isMpv ||
@@ -2101,14 +2210,44 @@ class ExternalPlayerService {
                 );
                 return;
               }
+              PlaybackStartupTrace.current?.mark('cacheIpcSent', {
+                'generation': generation,
+                'revision': revision,
+                'attempt': attempt + 1,
+              });
               final ok = await _runIpcUpdate(
                 runtime.ipcPipeName!,
                 demuxerMaxBytes: state.demuxerMaxBytes,
                 cacheSecs: state.cacheSecs,
-                cacheEnabled: state.cacheEnabled,
-                seekableCacheEnabled: state.seekableCacheEnabled,
+                cacheEnabled:
+                    state.appliedGeneration == generation &&
+                        state.appliedCacheEnabled == state.cacheEnabled
+                    ? null
+                    : state.cacheEnabled,
+                seekableCacheEnabled:
+                    state.appliedGeneration == generation &&
+                        state.appliedSeekableCacheEnabled ==
+                            state.seekableCacheEnabled
+                    ? null
+                    : state.seekableCacheEnabled,
               );
-              if (ok) {
+              PlaybackStartupTrace.current?.mark('cacheIpcResult', {
+                'generation': generation,
+                'revision': revision,
+                'attempt': attempt + 1,
+                'applied': ok,
+                'cacheEnabled': state.cacheEnabled,
+                'cacheSecs': state.cacheSecs,
+                'demuxerMaxBytes': state.demuxerMaxBytes,
+              });
+              if (ok &&
+                  _isRuntimeCurrent(runtime, generation) &&
+                  state.revision == revision) {
+                state.appliedGeneration = generation;
+                state.appliedCacheSecs = state.cacheSecs;
+                state.appliedCacheEnabled = state.cacheEnabled;
+                state.appliedSeekableCacheEnabled = state.seekableCacheEnabled;
+                await onApplied?.call();
                 _logCache(
                   'IPC cache update applied: session=${runtime.sessionId} | '
                   '${_cacheIpcSummary(state)}',
@@ -2165,9 +2304,6 @@ class ExternalPlayerService {
       );
       if (!connected) return false;
       try {
-        if (cacheEnabled != null) {
-          await controller.setProperty('cache', cacheEnabled ? 'yes' : 'no');
-        }
         if (seekableCacheEnabled != null) {
           await controller.setProperty(
             'demuxer-seekable-cache',
@@ -2179,6 +2315,9 @@ class ExternalPlayerService {
         }
         if (cacheSecs != null) {
           await controller.setProperty('cache-secs', cacheSecs);
+        }
+        if (cacheEnabled != null) {
+          await controller.setProperty('cache', cacheEnabled ? 'yes' : 'no');
         }
         return true;
       } finally {

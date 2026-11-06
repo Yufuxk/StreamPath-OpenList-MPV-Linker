@@ -320,8 +320,8 @@ class CachePolicyEngine {
       maxCacheSecs: 120,
       healthScore: health,
       layers: const [
-        'TS runtime phase: lightweight sequential read-ahead after playback started',
-        'TS seekable cache disabled: no startup duration scan or cache seek',
+        'TS runtime policy: lightweight sequential read-ahead target',
+        'TS seekable cache disabled: source probing remains controlled by libavformat',
       ],
       args: [
         '--cache=yes',

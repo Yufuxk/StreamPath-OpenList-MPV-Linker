@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import '../../data/models/app_language.dart';
 import '../../data/models/media_entry.dart';
 import '../../data/models/subtitle_item.dart';
+import 'playback_startup_lua.dart';
 
 /// mpv 注入文件生成器。
 ///
@@ -16,6 +17,16 @@ import '../../data/models/subtitle_item.dart';
 ///
 /// 所有文件写入 [base] 目录，返回文件路径供播放器启动参数引用。
 class MpvScripts {
+  static Future<String> ensureStartupTrace(
+    String output,
+    Directory base, {
+    required String sessionId,
+  }) => _write(
+    base,
+    _sessionFileName('startup-trace', 'lua', sessionId),
+    'local SP_TRACE_OUTPUT = ${_luaQuote(output)}\n$playbackStartupLua',
+  );
+
   /// 普通视频、菜单与 MPLS 共用已解析轨道快照，不产生媒体读取。
   static String mediaInfoSnapshotLua({
     required String outputExpression,

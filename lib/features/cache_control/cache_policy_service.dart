@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../../domain/services/playback_startup_trace.dart';
+
 import 'engine/bitrate_estimator.dart';
 import 'engine/cache_policy_engine.dart';
 import 'intelligence/cache_intelligence_service.dart';
@@ -252,10 +254,9 @@ class CachePolicyService implements CachePolicyProvider {
     return false;
   }
 
-  /// TS 类容器（m2ts/ts）：时长信息分布在数据流中，duration 探测需
-  /// 读取大量数据（甚至整个文件）。跳过 HEAD/ffprobe 探测并注入
-  /// `--demuxer-seekable-cache=no`（禁止 lavf 对缓存 seek 探测 duration，
-  /// 打开时间回到直链水平；实测直链 5s vs 注入大缓存上限后 18s）。
+  /// TS/M2TS 起播跳过大小探测；零点起播关闭额外缓存，首次 restart
+  /// 或 seeking 后由集成层启用有界预读。seekable-cache 仅控制包缓存
+  /// 内寻址，不阻止 libavformat 为探测或时长估算读取源文件。
   @override
   Future<List<String>> buildCacheArgs({
     required String sessionId,
@@ -307,16 +308,11 @@ class CachePolicyService implements CachePolicyProvider {
           );
           _sessionStates[sessionId] = state;
           _recordSessionState(state);
-          _log(
-            'TS runtime cache enabled after stable playback: ${result.args.join(' ')}',
-          );
+          _log('TS runtime cache policy prepared: ${result.args.join(' ')}');
           return result.args;
         }
-        // TS 容器：完全不注入缓存参数（等同直链环境，起播最快）。
-        // 注入缓存目标（--cache-secs）会让 mpv 全力预取整个文件，
-        // 与打开读取竞争服务器连接，实测起播被拖慢 7s（直链 5s →
-        // 注入后 12s）；仅保留 seekable cache 禁用和运行态恢复水位。
-        // cache=no 时 pause 参数不生效，不会破坏零点快速起播。
+        // 关闭 cache 模式时仍保留 mpv 的基础 demuxer 预读。
+        // 初始缓冲是否等待还取决于 demuxer 预读状态，不能仅由 cache 开关推断。
         const tsArgs = [
           '--cache=no',
           '--demuxer-seekable-cache=no',
@@ -553,6 +549,9 @@ class CachePolicyService implements CachePolicyProvider {
     String? resolution,
   }) {
     if (!durationSec.isFinite || durationSec <= 0) return;
+    PlaybackStartupTrace.current?.mark('durationRecorded', {
+      'durationSec': durationSec,
+    });
     final expectedState = _sessionStates[sessionId];
     // 手动参数、配置关闭和 TS 启动直链分支不得触发自动策略回写。
     // 对象身份还能防止同 sessionId、同 URL 快速重启形成 ABA。
@@ -753,6 +752,10 @@ class CachePolicyService implements CachePolicyProvider {
         '${updated.bitrateMbps != null && updated.bitrateMbps! > 0 ? '${updated.bitrateMbps!.toStringAsFixed(1)}Mbps | ' : ''}'
         '${_formatTargetSummary(updated)} | policy ready for IPC',
       );
+      PlaybackStartupTrace.current?.mark('durationPolicyReady', {
+        'cacheSecs': updated.cacheSecs,
+        'demuxerMaxBytes': updated.demuxerMaxBytes,
+      });
       onPolicyReady?.call(sessionId, url, updated);
     } catch (_) {
       // 增强层：上报失败静默，不影响播放。
