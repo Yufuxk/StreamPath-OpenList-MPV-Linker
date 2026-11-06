@@ -381,7 +381,8 @@ class TmdbMetadataService {
               : chooseLogo == null
               ? choices.firstOrNull?.path
               : null,
-          if (chooseLogo != null) 'logo_selection_version': 1,
+          if (chooseLogo != null)
+            'logo_selection_version': logoSelectionVersion,
           'logo_candidates': [
             for (final logo in logos)
               {

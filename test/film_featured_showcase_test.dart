@@ -821,6 +821,54 @@ void main() {
     },
   );
 
+  for (final scraped in [null, '/unavailable-original.png']) {
+    testWidgets(
+      'showcase honors and refreshes manual logo with scraped $scraped',
+      (tester) async {
+        await prepare(tester);
+        final works = catalog.sectionWorks['daily']!;
+        final work = works.first;
+        work.metadata['logo_path'] = scraped;
+        await tester.runAsync(() async {
+          for (final path in ['/manual-a.png', '/manual-b.png']) {
+            await File(
+              '${catalog.images.directory.path}/${FilmCatalogImageCache.cacheKey(path, 'original')}.img',
+            ).writeAsBytes(await imageFile.readAsBytes());
+          }
+          await catalog.store.setLogoOverride(work.id, '/manual-a.png');
+        });
+        // 固定成员列表，避免控制器重新查询掩盖橱窗自身的刷新行为。
+        await tester.pumpWidget(frame(showcase(works: works)));
+        await settle(tester);
+        String? logoPath() => tester
+            .widget<FilmArtwork>(find.byKey(const Key('featured-logo')))
+            .path;
+        expect(logoPath(), '/manual-a.png');
+        await tester.runAsync(
+          () => catalog.store.setLogoOverride(work.id, '/manual-b.png'),
+        );
+        await settle(tester);
+        expect(logoPath(), '/manual-b.png');
+        await tester.tap(poster(works[1].id));
+        await settle(tester);
+        expect(find.byKey(const Key('featured-logo')), findsNothing);
+        await tester.tap(poster(work.id));
+        await settle(tester);
+        expect(logoPath(), '/manual-b.png');
+        await tester.runAsync(
+          () => catalog.store.setLogoOverride(work.id, null),
+        );
+        await settle(tester);
+        if (scraped == null) {
+          expect(find.byKey(const Key('featured-logo')), findsNothing);
+        } else {
+          expect(logoPath(), scraped);
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'showcase displays the original clearlogo and falls back to its title',
     (tester) async {

@@ -254,7 +254,8 @@ class FilmCatalogMatcher {
           ? null
           : (candidates) async {
               if (previous != null &&
-                  cached?.metadata['logo_selection_version'] == 1 &&
+                  cached?.metadata['logo_selection_version'] ==
+                      logoSelectionVersion &&
                   candidates.any((c) => c.path == previous)) {
                 return previous;
               }

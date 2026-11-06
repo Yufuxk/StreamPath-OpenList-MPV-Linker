@@ -1991,7 +1991,7 @@ void main() {
     );
     expect(calls, 1);
     expect(work.metadata['logo_path'], isNull);
-    expect(work.metadata['logo_selection_version'], 1);
+    expect(work.metadata['logo_selection_version'], 2);
   });
 
   test('已验证 Logo 持久化后刷新资料不再下载或换图', () async {
@@ -2020,7 +2020,7 @@ void main() {
         originalTitle: 'Existing',
         overview: '',
         language: 'zh-CN',
-        metadata: const {'logo_path': '/current.png'},
+        metadata: const {'logo_path': '/current.png', 'logo_selection_version': 1},
       ),
     );
     final reads = <String>[];
@@ -2054,7 +2054,7 @@ void main() {
         FilmMediaType.movie,
         1,
       ))!.metadata['logo_selection_version'],
-      1,
+      2,
     );
   });
 
@@ -2155,7 +2155,7 @@ void main() {
     expect(catalog.scrapeError, isNull);
     final work = (await store.works(type: null)).single;
     expect(work.metadata['logo_path'], '/first.png');
-    expect(work.metadata['logo_selection_version'], 1);
+    expect(work.metadata['logo_selection_version'], 2);
     expect(await images.cached('/first.png', 'original'), isNotNull);
     expect(adapter.requests.map((r) => r.uri.path), [
       '/t/p/original/first.png',

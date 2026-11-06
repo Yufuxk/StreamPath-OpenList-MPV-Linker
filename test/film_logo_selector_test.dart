@@ -29,6 +29,35 @@ img.Image _stripes(
 }
 
 void main() {
+  for (final size in [maxLogoBytes, maxLogoBytes + 1]) {
+    test(
+      'automatic logo selection enforces 10 MiB boundary at $size bytes',
+      () async {
+        final png = _png(_solid(255, 255, 255));
+        final padded = Uint8List(size)..setRange(0, png.length, png);
+        final chosen = await selectBestLogo(
+          const [
+            LogoChoice('/large.png', 800, 0),
+            LogoChoice('/small.png', 800, 1),
+          ],
+          preferredPath: '/large.png',
+          read: (path) async => path == '/large.png' ? padded : png,
+        );
+        expect(chosen, size == maxLogoBytes ? '/large.png' : '/small.png');
+      },
+    );
+  }
+  test('all oversized logos leave the automatic logo empty', () async {
+    final png = _png(_solid(255, 255, 255));
+    final padded = Uint8List(maxLogoBytes + 1)..setRange(0, png.length, png);
+    expect(
+      await selectBestLogo(const [
+        LogoChoice('/large.png', 800, 0),
+      ], read: (_) async => padded),
+      isNull,
+    );
+  });
+
   test('light colorful logo outranks white and black variants', () {
     final black = analyzeLogoColor(_png(_solid(0, 0, 0)));
     final white = analyzeLogoColor(_png(_solid(255, 255, 255)));

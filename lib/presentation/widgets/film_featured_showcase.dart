@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 
+import '../../data/local/film_catalog_store.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_collection.dart';
 import '../controllers/film_catalog_controller.dart';
@@ -69,6 +70,8 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
   bool _collectionBackdropLoading = false;
   int _backgroundGeneration = 0;
   bool _backdropReady = false;
+  (FilmCatalogController, int)? _logoSelection;
+  Future<String?>? _logoOverride;
 
   Color _foreground(BuildContext context) =>
       _backdropReady && _visibleBackdrop?.path != null
@@ -97,10 +100,24 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
   void initState() {
     super.initState();
     _section = widget.initialSection;
+    widget.catalog.store.addListener(_invalidateLogo);
   }
 
   @override
+  void didUpdateWidget(FilmFeaturedShowcase oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.catalog != widget.catalog) {
+      oldWidget.catalog.store.removeListener(_invalidateLogo);
+      widget.catalog.store.addListener(_invalidateLogo);
+      _logoSelection = null;
+    }
+  }
+
+  void _invalidateLogo() => setState(() => _logoSelection = null);
+
+  @override
   void dispose() {
+    widget.catalog.store.removeListener(_invalidateLogo);
     _scroll.dispose();
     _railScroll.dispose();
     _railFocus.dispose();
@@ -462,6 +479,13 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
       ),
     );
     final logo = work?.metadata['logo_path'] as String?;
+    final logoSelection = work == null ? null : (widget.catalog, work.id);
+    if (_logoSelection != logoSelection) {
+      _logoSelection = logoSelection;
+      _logoOverride = work == null
+          ? null
+          : widget.catalog.store.logoOverride(work.id);
+    }
     return Align(
       alignment: Alignment.bottomCenter,
       child: ConstrainedBox(
@@ -476,22 +500,42 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (logo != null && logo.isNotEmpty)
-                Center(
-                  child: FilmArtwork(
-                    key: const Key('featured-logo'),
-                    cache: widget.catalog.images,
-                    path: logo,
-                    target: 'original',
-                    transparent: true,
-                    logoAutoCenter: true,
-                    logoGlyphSize: widget.catalog.store.featuredLogoAdaptiveSize
-                        ? titleSize * 1.6
-                        : null,
-                    width: 420,
-                    height: 220,
-                    placeholder: Center(child: title),
-                  ),
+              if (work != null)
+                FutureBuilder<String?>(
+                  key: ValueKey(logoSelection),
+                  future: _logoOverride,
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                      Error.throwWithStackTrace(
+                        snapshot.error!,
+                        snapshot.stackTrace!,
+                      );
+                    }
+                    if (snapshot.connectionState != ConnectionState.done &&
+                        !snapshot.hasData) {
+                      if (logo == null || logo.isEmpty) return title;
+                      return const SizedBox(width: 420, height: 220);
+                    }
+                    final path = snapshot.data ?? logo;
+                    if (path == null || path.isEmpty) return title;
+                    return Center(
+                      child: FilmArtwork(
+                        key: const Key('featured-logo'),
+                        cache: widget.catalog.images,
+                        path: path,
+                        target: 'original',
+                        transparent: true,
+                        logoAutoCenter: true,
+                        logoGlyphSize:
+                            widget.catalog.store.featuredLogoAdaptiveSize
+                            ? titleSize * 1.6
+                            : null,
+                        width: 420,
+                        height: 220,
+                        placeholder: Center(child: title),
+                      ),
+                    );
+                  },
                 )
               else
                 title,

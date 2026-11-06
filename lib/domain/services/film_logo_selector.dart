@@ -3,6 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
+const maxLogoBytes = 10 * 1024 * 1024;
+const logoSelectionVersion = 2;
+
 /// Logo 色彩评分：Hasler-Süsstrunk 色彩丰富度 + HSV 明度/饱和度分布。
 class LogoColorScore {
   const LogoColorScore({
@@ -114,7 +117,9 @@ Future<String?> selectBestLogo(
           .where((c) => visited.add(c.path))
           .take(6)) {
     try {
-      final score = await compute(analyzeLogoColor, await read(candidate.path));
+      final bytes = await read(candidate.path);
+      if (bytes.length > maxLogoBytes) continue;
+      final score = await compute(analyzeLogoColor, bytes);
       if (candidate.width >= 500 &&
           score.meanValue >= .35 &&
           score.heavyShare <= .6) {
