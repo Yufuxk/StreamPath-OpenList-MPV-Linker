@@ -427,6 +427,10 @@ abstract final class AppTheme {
               ),
             ),
       ),
+      listTileTheme: const ListTileThemeData(
+        shape: RoundedRectangleBorder(borderRadius: controlRadius),
+        contentPadding: EdgeInsets.symmetric(horizontal: 12),
+      ),
       switchTheme: SwitchThemeData(
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         splashRadius: 0,

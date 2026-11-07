@@ -1,3 +1,7 @@
+# 使用解包时间，避免依赖更新后沿用归档中的旧时间戳。
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
 include(FetchContent)
 set(DVD_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dvd")
 FetchContent_Declare(dvdread_src
@@ -6,14 +10,7 @@ FetchContent_Declare(dvdread_src
 FetchContent_Declare(dvdnav_src
   URL "${DVD_VENDOR}/libdvdnav-7.0.0.tar.xz"
   URL_HASH SHA256=a2a18f5ad36d133c74bf9106b6445806fa253b09141a46392550394b647b221e)
-FetchContent_GetProperties(dvdread_src)
-if(NOT dvdread_src_POPULATED)
-  FetchContent_Populate(dvdread_src)
-endif()
-FetchContent_GetProperties(dvdnav_src)
-if(NOT dvdnav_src_POPULATED)
-  FetchContent_Populate(dvdnav_src)
-endif()
+FetchContent_MakeAvailable(dvdread_src dvdnav_src)
 set(DVDREAD_VERSION_MAJOR 7)
 set(DVDREAD_VERSION_MINOR 1)
 set(DVDREAD_VERSION_MICRO 1)
@@ -33,6 +30,10 @@ file(READ "${dvdnav_src_SOURCE_DIR}/src/dvdnav_internal.h" nav_internal)
 string(REPLACE "#define printerrf(str)" "#define printerrf(...)" nav_internal "${nav_internal}")
 string(REPLACE "MAX_ERR_LEN, str);" "MAX_ERR_LEN, __VA_ARGS__);" nav_internal "${nav_internal}")
 file(WRITE "${dvdnav_src_SOURCE_DIR}/src/dvdnav_internal.h" "${nav_internal}")
+# 无效域违反 VM 不变量，Release 同样明确终止，避免缺少返回值。
+file(READ "${dvdnav_src_SOURCE_DIR}/src/vm/vmget.c" nav_get)
+string(REPLACE "assert(0);" "abort();" nav_get "${nav_get}")
+file(WRITE "${dvdnav_src_SOURCE_DIR}/src/vm/vmget.c" "${nav_get}")
 file(READ "${dvdnav_src_SOURCE_DIR}/src/read_cache.c" nav_cache)
 string(REPLACE "#  define dprintf(fmt, str)" "#  define dprintf(...)" nav_cache "${nav_cache}")
 file(WRITE "${dvdnav_src_SOURCE_DIR}/src/read_cache.c" "${nav_cache}")
@@ -116,6 +117,11 @@ target_include_directories(streampath_dvdnav PUBLIC "${dvdnav_src_SOURCE_DIR}/sr
 target_compile_definitions(streampath_dvdnav PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
 target_compile_features(streampath_dvdnav PRIVATE c_std_11)
 target_compile_options(streampath_dvdnav PRIVATE /FIwinsock2.h /FIinttypes.h /Zc:preprocessor)
+# 仅收敛固定上游 C 依赖的类型转换提示，项目自身仍保留严格警告。
+foreach(dvd_target IN ITEMS streampath_dvdread streampath_dvdnav)
+  target_compile_options(${dvd_target} PRIVATE /utf-8 /wd4018 /wd4244 /wd4267)
+endforeach()
+target_compile_options(streampath_dvdread PRIVATE /FIio.h)
 target_link_libraries(streampath_dvdnav PUBLIC streampath_dvdread)
 install(DIRECTORY "${DVD_VENDOR}/" DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/dvd" COMPONENT Runtime)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dvd.cmake" DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/dvd" COMPONENT Runtime)

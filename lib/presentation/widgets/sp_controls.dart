@@ -156,7 +156,7 @@ class SPTile extends StatelessWidget {
     this.onSecondaryTapDown,
     this.selected = false,
     this.selectedColor,
-    this.borderRadius = BorderRadius.zero,
+    this.borderRadius = AppTheme.controlRadius,
   });
 
   final Widget child;

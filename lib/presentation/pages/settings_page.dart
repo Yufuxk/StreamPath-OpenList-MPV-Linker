@@ -1533,7 +1533,6 @@ class SettingsPageState extends State<SettingsPage> {
                 children: [
                   SPToggleTile(
                     key: const Key('openlist-recovery-switch'),
-                    contentPadding: EdgeInsets.zero,
                     title: const AppText('启用播放失败自动恢复'),
                     subtitle: AppText(
                       _openListStorageRecoveryUnavailable
@@ -1725,7 +1724,6 @@ class SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 12),
                   SPToggleTile(
                     key: const Key('openlist-index-auto-update-switch'),
-                    contentPadding: EdgeInsets.zero,
                     title: const AppText('定时更新全部索引'),
                     subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
                     value: _openListIndexAutoUpdateEnabled,
@@ -2036,7 +2034,6 @@ class SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 12),
               SPToggleTile(
                 key: const Key('arg-injection-all'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('全部注入'),
                 subtitle: const AppText('每次播放都注入启动参数；关闭后改为按分类注入'),
                 value: _draft.argInjectionAllEnabled,
@@ -2045,7 +2042,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('arg-injection-anime'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('动漫注入'),
                 subtitle: const AppText('影片元数据包含动画类型时注入'),
                 value: _draft.argInjectionAnimeEnabled,
@@ -2057,7 +2053,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('arg-injection-movie'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('电影注入'),
                 subtitle: const AppText('影片元数据为电影时注入'),
                 value: _draft.argInjectionMovieEnabled,
@@ -2069,7 +2064,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('arg-injection-series'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('剧集注入'),
                 subtitle: const AppText('影片元数据为剧集时注入'),
                 value: _draft.argInjectionSeriesEnabled,
@@ -2157,7 +2151,6 @@ class SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 12),
               SPToggleTile(
                 key: const Key('video-playlist-simple-naming'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('播放列表简洁命名'),
                 subtitle: const AppText('按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名'),
                 value: _draft.videoPlaylistSimpleNaming,
@@ -2166,7 +2159,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('video-playlist-insert-decimal-episodes'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('按小数集号插入番外篇'),
                 subtitle: const AppText('仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期'),
                 value: _draft.videoPlaylistInsertDecimalEpisodes,
@@ -2179,7 +2171,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('external-audio-injection'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('自动加载 WebDAV 外挂音轨'),
                 subtitle: const AppText('流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV'),
                 value: _draft.externalAudioInjectionEnabled,
@@ -2188,7 +2179,6 @@ class SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               SPToggleTile(
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('自动注入匹配的外挂字幕、外挂字体与 LRC'),
                 subtitle: const AppText('匹配同级字幕和歌词，并加载同级已识别字体目录中的直属字体'),
                 value: _subtitleInjectionEnabled,
@@ -2196,7 +2186,6 @@ class SettingsPageState extends State<SettingsPage> {
                     setState(() => _subtitleInjectionEnabled = value),
               ),
               SPToggleTile(
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('自动选择已注入的外挂字幕与 LRC'),
                 subtitle: const AppText('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
                 value: _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
@@ -2238,7 +2227,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('auto-season-transition'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('自动切季'),
                 subtitle: const AppText('当前季播放列表结束后接续同级目录中的下一季'),
                 value: _draft.autoSeasonTransitionEnabled,
@@ -2247,7 +2235,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('allow-season-gap'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('允许跳过缺失季'),
                 subtitle: const AppText('找不到相邻下一季时，接续最小的更高季数'),
                 value: _draft.allowSeasonGap,
@@ -2257,7 +2244,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('special-child-folders'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('扫描视频文件夹内的特典目录'),
                 subtitle: const AppText('扫描正片目录内的特典子目录（SPs、PVs 等）'),
                 value: _draft.scanSpecialChildFolders,
@@ -2266,7 +2252,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('special-sibling-folders'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('扫描与视频文件夹同级的特典目录'),
                 subtitle: const AppText('扫描与正片目录并列的特典文件夹'),
                 value: _draft.scanSpecialSiblingFolders,
@@ -2274,7 +2259,6 @@ class SettingsPageState extends State<SettingsPage> {
                     setState(() => _draft.scanSpecialSiblingFolders = value),
               ),
               SPToggleTile(
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('特典字体串用'),
                 subtitle: const AppText('当前视频没有同目录字体时，使用播放列表根目录的字体'),
                 value: _draft.sharePlaylistFonts,
@@ -2285,7 +2269,6 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               SPToggleTile(
                 key: const Key('webdav-font-cache'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('缓存 WebDAV 外挂字体'),
                 subtitle: const AppText('保留续播媒体所需字体，重播时直接使用已下载文件'),
                 value: _draft.webDavFontCacheEnabled,
@@ -2295,7 +2278,6 @@ class SettingsPageState extends State<SettingsPage> {
                           setState(() => _draft.webDavFontCacheEnabled = value),
               ),
               SPToggleTile(
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('自动续播'),
                 subtitle: const AppText('视频或音频存在播放进度时从上次位置继续'),
                 value: _resumeEnabled,
@@ -2339,7 +2321,6 @@ class SettingsPageState extends State<SettingsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SPToggleTile(
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('MPV 动态歌词'),
                 subtitle: const AppText(
                   '在 MPV 窗口中滚动显示音频歌词；逐字时间戳用于高亮，译文和罗马音按文件顺序显示',
@@ -2793,7 +2774,6 @@ class SettingsPageState extends State<SettingsPage> {
         children: [
           SPToggleTile(
             key: const Key('cache-enabled-switch'),
-            contentPadding: EdgeInsets.zero,
             title: const AppText('启用自动缓存策略'),
             subtitle: const AppText('关闭后不向播放器注入自动缓存参数'),
             value: _cacheEnabled,
@@ -2918,7 +2898,6 @@ class SettingsPageState extends State<SettingsPage> {
           ),
           SPToggleTile(
             key: const Key('cache-override-user-args-switch'),
-            contentPadding: EdgeInsets.zero,
             title: const AppText('覆盖播放器模板中的手工缓存参数'),
             subtitle: const AppText('建议保持关闭；开启后自动策略的优先级高于手工参数'),
             value: _overrideUserCacheArgs,
@@ -3070,7 +3049,6 @@ class SettingsPageState extends State<SettingsPage> {
         children: [
           SPToggleTile(
             key: const Key('cache-intelligence-enabled-switch'),
-            contentPadding: EdgeInsets.zero,
             title: const AppText('启用本地智能层'),
             subtitle: const AppText('仅使用本机聚合数据，不上传媒体地址或播放记录'),
             value: _intelligenceEnabled,
@@ -3078,7 +3056,6 @@ class SettingsPageState extends State<SettingsPage> {
           ),
           SPToggleTile(
             key: const Key('cache-intelligence-apply-switch'),
-            contentPadding: EdgeInsets.zero,
             title: const AppText('应用智能优化'),
             subtitle: AppText(
               _applyIntelligence ? '建议会在安全边界内修正缓存目标' : '影子模式：只学习和记录建议，不改变原策略',
@@ -3094,7 +3071,6 @@ class SettingsPageState extends State<SettingsPage> {
               child: AppText('智能修正不会突破内存预算；样本不足时仍使用原策略。'),
             ),
           SPToggleTile(
-            contentPadding: EdgeInsets.zero,
             title: const AppText('历史码率预测'),
             subtitle: const AppText('按历史实测码率修正缓存目标'),
             value: _bitratePredictionEnabled,
@@ -3103,7 +3079,6 @@ class SettingsPageState extends State<SettingsPage> {
                 : (value) => setState(() => _bitratePredictionEnabled = value),
           ),
           SPToggleTile(
-            contentPadding: EdgeInsets.zero,
             title: const AppText('不同存储类型优化'),
             subtitle: const AppText('为本地、WebDAV 与 SMB 分别调整缓存参数'),
             value: _storageOptimizationEnabled,
@@ -3113,7 +3088,6 @@ class SettingsPageState extends State<SettingsPage> {
                       setState(() => _storageOptimizationEnabled = value),
           ),
           SPToggleTile(
-            contentPadding: EdgeInsets.zero,
             title: const AppText('用户缓存习惯学习'),
             subtitle: const AppText('记录本机缓存命中情况用于后续建议'),
             value: _habitLearningEnabled,
@@ -3645,7 +3619,6 @@ class SettingsPageState extends State<SettingsPage> {
             children: [
               SPToggleTile(
                 key: const Key('hidden-extensions-enabled-switch'),
-                contentPadding: EdgeInsets.zero,
                 title: const AppText('启用隐藏文件后缀'),
                 subtitle: const AppText('关闭后停止过滤，但保留并允许编辑下方后缀内容'),
                 value: _hiddenExtensionsEnabled,

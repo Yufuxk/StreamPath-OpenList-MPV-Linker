@@ -66,7 +66,6 @@ class _FilmSectionSettingsState extends State<FilmSectionSettings> {
         final section = (_sections ?? catalog.homeSections)[i];
         return ListTile(
           key: ValueKey(section.id),
-          contentPadding: EdgeInsets.zero,
           leading: Checkbox(
             value: section.enabled,
             onChanged: (value) {

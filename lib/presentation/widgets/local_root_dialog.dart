@@ -150,7 +150,6 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
             ),
             const SizedBox(height: 4),
             SPToggleTile(
-              contentPadding: EdgeInsets.zero,
               title: const AppText('启用此本地文件夹'),
               value: _enabled,
               onChanged: (value) => setState(() => _enabled = value),

@@ -858,12 +858,14 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       color: entry.id == _selected
           ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
           : Colors.transparent,
-      child: InkWell(
+      borderRadius: AppTheme.controlRadius,
+      clipBehavior: Clip.antiAlias,
+      child: SPTile(
         onTap: () => setState(() => _selected = entry.id),
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 72),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Row(
               children: [
                 Expanded(

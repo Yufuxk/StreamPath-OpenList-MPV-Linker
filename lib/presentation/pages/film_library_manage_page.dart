@@ -736,7 +736,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                             ? constraints.maxWidth - 236
                                             : constraints.maxWidth,
                                         child: SPToggleTile(
-                                          contentPadding: EdgeInsets.zero,
                                           title: const AppText('自动扫描'),
                                           subtitle: const AppText(
                                             '按设定间隔扫描已启用的影视目录',
@@ -802,7 +801,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               ),
                               const SizedBox(height: 12),
                               SPToggleTile(
-                                contentPadding: EdgeInsets.zero,
                                 title: const AppText('防剧透'),
                                 subtitle: const AppText('隐藏未看剧集的简介与封面'),
                                 value: _spoilers,
@@ -815,7 +813,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                               ),
                               SPToggleTile(
                                 key: const Key('film-poster-content-count'),
-                                contentPadding: EdgeInsets.zero,
                                 title: const AppText('显示季数／影片数'),
                                 subtitle: const AppText(
                                   '在封面年份后显示库内剧集季数或电影资源数（含 ISO、BDMV）',
@@ -832,7 +829,6 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                                 key: const Key(
                                   'film-featured-logo-adaptive-size',
                                 ),
-                                contentPadding: EdgeInsets.zero,
                                 title: const AppText('自适应Logo大小'),
                                 subtitle: const AppText(
                                   '在每日精选与合集橱窗中按徽标内容自动缩放；关闭时按原始比例显示',
@@ -1340,7 +1336,6 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                     const LinearProgressIndicator()
                   else if (_settingsLoaded) ...[
                     ListTile(
-                      contentPadding: EdgeInsets.zero,
                       title: const AppText('参与定时扫描'),
                       leading: Checkbox(
                         value: _scheduledScan,
@@ -1358,7 +1353,6 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                     if (_source!.kind == MediaSourceKind.local ||
                         _source!.kind == MediaSourceKind.webdav) ...[
                       ListTile(
-                        contentPadding: EdgeInsets.zero,
                         title: const AppText('本地元数据模式'),
                         leading: Checkbox(
                           value: _localMetadata,
@@ -1374,7 +1368,6 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                               ),
                       ),
                       ListTile(
-                        contentPadding: EdgeInsets.zero,
                         title: const AppText('允许写回缺少的 NFO 和图片'),
                         leading: Checkbox(
                           value: _writeBack,
@@ -1387,7 +1380,6 @@ class _AddFilmRootDialogState extends State<_AddFilmRootDialog> {
                             : () => setState(() => _writeBack = !_writeBack),
                       ),
                       ListTile(
-                        contentPadding: EdgeInsets.zero,
                         title: const AppText('只读来源'),
                         leading: Checkbox(
                           value: _readOnly,
