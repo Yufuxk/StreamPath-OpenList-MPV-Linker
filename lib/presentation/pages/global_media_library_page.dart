@@ -135,7 +135,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
         item,
         allowLogicalPath: widget.filmCatalog != null,
       ),
-      onVideoPlaybackRecordsChanged: app.scheduleWebDavFontCachePrune,
+      onVideoPlaybackRecordsChanged: app.schedulePlaybackArtifactPrune,
       onItemSelected: widget.onOpenItem,
       sourceFilter: SizedBox(
         key: const Key('media-library-source-filter'),

@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:streampath/core/errors/app_exception.dart';
+import 'package:streampath/data/models/media_directory_entry.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
@@ -21,6 +23,7 @@ import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/features/video_cache/video_cache_models.dart';
 import 'package:streampath/features/video_cache/video_cache_service.dart';
 import 'package:streampath/features/video_cache/video_cache_source.dart';
+import 'package:streampath/domain/repositories/media_directory_source.dart';
 
 Map<String, dynamic> _noSpace(String _) => {
   'available': 0,
@@ -155,6 +158,37 @@ class _PlannerDirectory extends WebDAVService {
       isDirectory: false,
     ),
   ];
+}
+
+class _FakeRemoteDirectory implements MediaDirectorySource {
+  _FakeRemoteDirectory(this.descriptor, this.entries);
+
+  @override
+  final MediaSourceDescriptor descriptor;
+  List<MediaDirectoryEntry> entries;
+  Object? failure;
+  final List<String> fetches = [];
+
+  @override
+  Future<List<MediaDirectoryEntry>> fetchDirectory(
+    String relativePath, {
+    bool forceRefresh = false,
+  }) async {
+    fetches.add(relativePath);
+    final error = failure;
+    if (error != null) throw error;
+    return entries;
+  }
+
+  @override
+  List<MediaDirectoryEntry>? cachedDirectory(String relativePath) => null;
+
+  @override
+  Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async =>
+      WebDavMediaOpenTarget(entry.entryKey);
+
+  @override
+  bool get supportsRemoteSearch => true;
 }
 
 void main() {
@@ -421,6 +455,124 @@ void main() {
     await service.delete('bundle-a');
     expect(await File(hit.path).exists(), isFalse);
   });
+  test('离线缓存缺字幕和字体时只读快照，不访问远程来源', () async {
+    final service = await open();
+    final selection = await plan(service);
+    await service.enqueue([selection]);
+    await service.setPlaybackSuspended(false);
+    await _until(() => service.complete(selection.bundle));
+    final hit = (await service.lookup(
+      'source-a',
+      'show/video.mkv',
+      identity: 'account-a',
+    ))!;
+    final requests = source.offsets.length;
+    final offline = VideoCacheSource(
+      service,
+      const MediaSourceDescriptor(
+        sourceId: 'source-a',
+        kind: MediaSourceKind.webdav,
+        displayName: 'test',
+      ),
+      identity: 'account-a',
+      baseUrl: source.base,
+      persistent: (path) => 'https://nas.invalid/$path',
+      remote: () async =>
+          throw StateError('Offline cache must not resolve remote source'),
+    );
+    final preparer = VideoEntryPreparer(
+      source: offline,
+      config: const PlayerConfig(
+        name: 'mpv',
+        executable: 'mpv',
+        sharePlaylistFonts: true,
+      ),
+      subtitleMatcher: const SubtitleMatcher(),
+      fontMatcher: const WebDavFontMatcher(),
+      titles: const {},
+      cached: (path) async => (await service.lookup(
+        'source-a',
+        path,
+        identity: 'account-a',
+      ))?.prepared(),
+    );
+
+    await preparer.prepareSharedFonts('show', startPath: 'show/video.mkv');
+    final prepared = await preparer.prepare(
+      const VideoQueueVersion(path: 'show/video.mkv', name: 'video.mkv'),
+    );
+
+    expect(prepared.entry.url, hit.path);
+    expect(prepared.entry.progressTarget, 'https://nas.invalid/show/video.mkv');
+    expect(prepared.entry.subtitle, isNull);
+    expect(prepared.localFontDirectory, isNull);
+    expect(source.offsets.length, requests);
+  });
+
+  test('缓存目录快照支持显式刷新，来源不可用时回退快照', () async {
+    final service = await open();
+    final selection = await plan(service);
+    await service.enqueue([selection]);
+    await service.setPlaybackSuspended(false);
+    await _until(() => service.complete(selection.bundle));
+    final remote = _FakeRemoteDirectory(
+      const MediaSourceDescriptor(
+        sourceId: 'source-a',
+        kind: MediaSourceKind.webdav,
+        displayName: 'test',
+      ),
+      [
+        const WebDavFile(
+          name: 'video.mkv',
+          href: 'https://nas.invalid/show/video.mkv',
+          isDirectory: false,
+        ),
+      ],
+    );
+    final cachedSource = VideoCacheSource(
+      service,
+      const MediaSourceDescriptor(
+        sourceId: 'source-a',
+        kind: MediaSourceKind.webdav,
+        displayName: 'test',
+      ),
+      identity: 'account-a',
+      baseUrl: source.base,
+      persistent: (path) => 'https://nas.invalid/$path',
+      remote: () async => remote,
+    );
+
+    final snapshot = await cachedSource.service.fetchDirectory('show');
+    expect(snapshot.map((entry) => entry.name), ['video.mkv']);
+    expect(remote.fetches, isEmpty);
+
+    remote.entries = const [
+      WebDavFile(
+        name: 'video.mkv',
+        href: 'https://nas.invalid/show/video.mkv',
+        isDirectory: false,
+      ),
+      WebDavFile(
+        name: 'video.srt',
+        href: 'https://nas.invalid/show/video.srt',
+        isDirectory: false,
+      ),
+    ];
+    final refreshed = await cachedSource.service.fetchDirectory(
+      'show',
+      forceRefresh: true,
+    );
+    expect(refreshed.map((entry) => entry.name), ['video.mkv', 'video.srt']);
+    expect(remote.fetches, ['show']);
+
+    remote.failure = const NetworkException('offline');
+    final fallback = await cachedSource.service.fetchDirectory(
+      'show',
+      forceRefresh: true,
+    );
+    expect(fallback.map((entry) => entry.name), ['video.mkv']);
+  });
+
   test('ISO 自选目录保存到索引，切换默认目录并重启后仍可离线命中', () async {
     var service = await open();
     final selected = await Directory(p.join(root.path, 'selected')).create();

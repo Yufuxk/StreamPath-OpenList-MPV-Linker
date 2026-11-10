@@ -12,11 +12,13 @@ import 'package:streampath/data/models/playback_media_info.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/subtitle_item.dart';
+import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/domain/services/webdav_font_cache.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
+import 'package:streampath/domain/services/webdav_subtitle_localizer.dart';
 
 class _SharedProbeController extends PlayerProcessController {
   final probeStarted = Completer<void>();
@@ -106,6 +108,7 @@ void main() {
     PlayerProcessController? processController,
     bool useDefaultWatchLaterDirectory = false,
     WebDavFontCache? fontCache,
+    WebDavSubtitleLocalizer? subtitleLocalizer,
   }) async {
     final dir = Directory.systemTemp.createTempSync('sp_launch_');
     var resolvedExecutable = executable;
@@ -143,6 +146,7 @@ void main() {
             : Directory('${dir.path}${Platform.pathSeparator}wl'),
         processController: processController,
         fontCache: fontCache,
+        subtitleLocalizer: subtitleLocalizer,
       ),
       dir,
     );
@@ -153,7 +157,11 @@ void main() {
       subtitleInjectionEnabled: false,
       autoSeasonTransitionEnabled: true,
     );
-    addTearDown(() => dir.delete(recursive: true));
+    addTearDown(() async {
+      try {
+        await dir.delete(recursive: true);
+      } catch (_) {}
+    });
     const entry = MediaEntry(
       url: 'http://h/dav/01.mkv',
       externalAudioTracks: [
@@ -214,7 +222,11 @@ void main() {
         externalAudioInjectionEnabled: mode != 'disabled',
         executable: mode == 'other' ? exe : 'mpv',
       );
-      addTearDown(() => dir.delete(recursive: true));
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
       final result = mode == 'local'
           ? await service.launchLocal(entries: const [entry], sourceId: 'local')
           : await service.launch(entries: const [entry]);
@@ -735,6 +747,299 @@ void main() {
         scriptArgOf(result.args)!,
       ).readAsString();
       expect(subtitleScript, contains('http://guest:@h/dav/01.srt'));
+    });
+
+    test('无凭据来源将同源字幕取回本地，退出后清理会话文件', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_localize_',
+      );
+      addTearDown(() async {
+        if (await subtitleRoot.exists()) {
+          await subtitleRoot.delete(recursive: true);
+        }
+      });
+      final (service, dir) = await makeService(
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      final bytes = [0xef, 0xbb, 0xbf, ...'[Script Info]\n'.codeUnits];
+      var loads = 0;
+
+      final result = await service.launch(
+        entries: [MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub)],
+        sessionId: 'localized-subtitle',
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return bytes;
+        },
+      );
+
+      expect(loads, 1);
+      final script = await File(scriptArgOf(result.args)!).readAsString();
+      final localPath = result.artifactPaths.firstWhere(
+        (path) => path.endsWith('.srt'),
+      );
+      expect(script, contains(localPath.replaceAll('\\', '\\\\')));
+      expect(script, isNot(contains('http://h/dav/01.srt')));
+      expect(await File(localPath).readAsBytes(), bytes);
+
+      await service.waitForExitSync('localized-subtitle');
+      service.releaseSession('localized-subtitle');
+      for (var i = 0; i < 100 && File(localPath).existsSync(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(File(localPath).existsSync(), isFalse);
+    });
+
+    test('可嵌入凭据时不重复下载同源字幕', () async {
+      final (service, dir) = await makeService();
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+
+      final result = await service.launch(
+        entries: [MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub)],
+        username: 'guest',
+        password: '',
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return const [1];
+        },
+      );
+
+      expect(loads, 0);
+      final script = await File(scriptArgOf(result.args)!).readAsString();
+      expect(script, contains('http://guest:@h/dav/01.srt'));
+    });
+
+    test('自动注入关闭时不下载字幕且不生成字幕脚本', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_disabled_',
+      );
+      addTearDown(() => subtitleRoot.delete(recursive: true));
+      final (service, dir) = await makeService(
+        subtitleInjectionEnabled: false,
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+
+      final result = await service.launch(
+        entries: [MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub)],
+        sessionId: 'disabled-subtitle',
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return const [1];
+        },
+      );
+
+      expect(loads, 0);
+      expect(scriptArgOf(result.args), isNull);
+      expect(subtitleRoot.listSync().whereType<File>(), isEmpty);
+    });
+
+    test('播放器启动失败会清理已下载的字幕文件', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_failure_',
+      );
+      addTearDown(() async {
+        if (await subtitleRoot.exists()) {
+          try {
+            await subtitleRoot.delete(recursive: true);
+          } catch (_) {}
+        }
+      });
+      final (service, dir) = await makeService(
+        executable: p.join(
+          Directory.systemTemp.path,
+          'missing-mpv-subtitle-${DateTime.now().microsecondsSinceEpoch}.exe',
+        ),
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+
+      await expectLater(
+        service.launch(
+          entries: [MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub)],
+          sessionId: 'failed-subtitle',
+          webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+            loads++;
+            return const [1, 2, 3];
+          },
+        ),
+        throwsA(isA<Exception>()),
+      );
+
+      expect(loads, 1);
+      expect(
+        subtitleRoot.existsSync()
+            ? subtitleRoot.listSync(recursive: true).whereType<File>()
+            : const <File>[],
+        isEmpty,
+      );
+    });
+
+    test('多集播放列表按集使用各自的本地字幕副本', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_playlist_',
+      );
+      addTearDown(() => subtitleRoot.delete(recursive: true));
+      final (service, dir) = await makeService(
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+
+      final result = await service.launch(
+        entries: [
+          MediaEntry(url: 'http://h/dav/01.mp4', subtitle: sub),
+          MediaEntry(url: 'http://h/dav/02.mp4', subtitle: subZh),
+        ],
+        sessionId: 'localized-playlist',
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return [loads];
+        },
+      );
+
+      expect(loads, 2);
+      final script = await File(scriptArgOf(result.args)!).readAsString();
+      final localPaths = result.artifactPaths
+          .where((path) => path.endsWith('.srt'))
+          .toList();
+      expect(localPaths, hasLength(2));
+      for (final path in localPaths) {
+        expect(script, contains(path.replaceAll('\\', '\\\\')));
+      }
+      expect(script, isNot(contains('http://h/dav/01.srt')));
+      expect(script, isNot(contains('http://h/dav/02.chs.srt')));
+    });
+
+    test('隐式播放首集与自动切季字幕走同一本地化流程', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_season_',
+      );
+      addTearDown(() => subtitleRoot.delete(recursive: true));
+      final (service, dir) = await makeService(
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+      final plan = ImplicitVideoPlan(
+        items: [
+          VideoQueueItem(
+            versions: const [VideoQueueVersion(path: '01.mp4', name: '01.mp4')],
+          ),
+        ],
+        index: 0,
+        prepare: (version) async => const PreparedVideoItem(
+          entry: MediaEntry(url: 'http://h/dav/01.mp4'),
+        ),
+        activated: (index, version) async {},
+      );
+
+      final result = await service.launch(
+        entries: [
+          MediaEntry(
+            url: 'http://h/dav/01.mp4',
+            catalogPath: '01.mp4',
+            subtitle: sub,
+          ),
+        ],
+        sessionId: 'localized-implicit',
+        implicitPlan: plan,
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return [loads];
+        },
+      );
+
+      expect(loads, 1);
+      final current = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) =>
+                p.basename(path).startsWith('streampath-season-resources-') &&
+                p.basename(path).contains('_current'),
+          );
+      final localPath = result.artifactPaths.firstWhere(
+        (path) => path.endsWith('.srt'),
+      );
+      expect(
+        await File(current).readAsString(),
+        contains(localPath.replaceAll('\\', '\\\\')),
+      );
+    });
+
+    test('自动切季的下一季字幕使用本地副本', () async {
+      final subtitleRoot = await Directory.systemTemp.createTemp(
+        'sp_sub_next_season_',
+      );
+      addTearDown(() => subtitleRoot.delete(recursive: true));
+      final (service, dir) = await makeService(
+        autoSeasonTransitionEnabled: true,
+        subtitleLocalizer: WebDavSubtitleLocalizer(directory: subtitleRoot),
+      );
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
+      var loads = 0;
+
+      final result = await service.launch(
+        entries: const [MediaEntry(url: 'http://h/dav/01.mp4')],
+        sessionId: 'localized-next-season',
+        nextSeason: const SeasonPlaybackEntries(
+          entries: [MediaEntry(url: 'http://h/dav/02.mp4', subtitle: subZh)],
+        ),
+        webDavFontLoader: (url, {required maxBytes, required timeout}) async {
+          loads++;
+          return [loads];
+        },
+      );
+
+      expect(loads, 1);
+      final next = result.args
+          .where((arg) => arg.startsWith('--script='))
+          .map((arg) => arg.substring('--script='.length))
+          .firstWhere(
+            (path) =>
+                p.basename(path).startsWith('streampath-season-resources-') &&
+                p.basename(path).contains('_next'),
+          );
+      final localPath = result.artifactPaths.firstWhere(
+        (path) => path.endsWith('.srt'),
+      );
+      expect(
+        await File(next).readAsString(),
+        contains(localPath.replaceAll('\\', '\\\\')),
+      );
     });
 
     test('自动注入和自动选择开启时以 select 模式加入匹配字幕', () async {
@@ -1769,7 +2074,11 @@ void main() {
     test('全部注入开启时不查询元数据，附加参数照常注入', () async {
       var calls = 0;
       final (service, dir) = await makeService(args: categoryArgs);
-      addTearDown(() => dir.delete(recursive: true));
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
       service.mediaInfoResolver = (sourceId, path) async {
         calls++;
         return const PlaybackMediaInfo(isSeries: false, isAnime: false);
@@ -1790,7 +2099,11 @@ void main() {
         argInjectionAllEnabled: false,
         argInjectionAnimeEnabled: true,
       );
-      addTearDown(() => dir.delete(recursive: true));
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
       final lookups = <String>[];
       service.mediaInfoResolver = (sourceId, path) async {
         lookups.add('$sourceId|$path');
@@ -1814,7 +2127,11 @@ void main() {
         argInjectionAllEnabled: false,
         argInjectionAnimeEnabled: true,
       );
-      addTearDown(() => dir.delete(recursive: true));
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
       service.mediaInfoResolver = (sourceId, path) async =>
           const PlaybackMediaInfo(isSeries: false, isAnime: false);
       final result = await service.launch(
@@ -1834,7 +2151,11 @@ void main() {
           argInjectionAllEnabled: false,
           argInjectionAnimeEnabled: true,
         );
-        addTearDown(() => dir.delete(recursive: true));
+        addTearDown(() async {
+          try {
+            await dir.delete(recursive: true);
+          } catch (_) {}
+        });
         service.mediaInfoResolver = (sourceId, path) async => null;
         final result = await service.launch(
           entries: [
@@ -1854,7 +2175,11 @@ void main() {
         argInjectionAnimeEnabled: true,
         autoSeasonTransitionEnabled: true,
       );
-      addTearDown(() => dir.delete(recursive: true));
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      });
       service.mediaInfoResolver = (sourceId, path) async =>
           const PlaybackMediaInfo(isSeries: true, isAnime: true);
       final result = await service.launch(

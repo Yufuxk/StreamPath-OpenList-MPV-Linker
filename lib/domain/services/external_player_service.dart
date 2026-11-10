@@ -14,6 +14,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/subtitle_item.dart';
 import '../../data/models/playback_media_entry.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/openlist_recovery_config.dart';
@@ -37,6 +38,7 @@ import 'session_progress_sync_coordinator.dart';
 import 'webdav_font_localizer.dart';
 import 'webdav_font_cache.dart';
 import 'webdav_font_matcher.dart';
+import 'webdav_subtitle_localizer.dart';
 
 /// 测试或平台适配可注入的 mpv 缓存属性更新器。
 typedef MpvCacheIpcUpdater =
@@ -338,6 +340,9 @@ class _PlayerSessionRuntime {
   WebDavFontBytesLoader? webDavFontLoader;
   WebDavFontFileLoader? webDavFontFileLoader;
   final List<String> artifactPaths;
+
+  /// 本次播放会话按 URL 复用的字幕本地化结果（失败结果同样缓存）。
+  final Map<String, Future<SubtitleItem?>> subtitleLocalizations = {};
   String? seasonPlanFilePath;
   String? seasonMarkerFilePath;
   String? currentSeasonPlaylistPath;
@@ -405,12 +410,15 @@ class ExternalPlayerService {
     PlayerProcessController? processController,
     WebDavFontLocalizer? fontLocalizer,
     WebDavFontCache? fontCache,
+    WebDavSubtitleLocalizer? subtitleLocalizer,
   }) : _configStore = configStore, // ignore: prefer_initializing_formals
        _cacheLogger = cacheLogger ?? _defaultCacheLogger,
        _linkRecoveryProvider =
            linkRecoveryProvider ?? OpenListRecoveryService(),
        _serverRestarter = serverRestarter ?? OpenListProcessRestartService(),
        _processController = processController ?? PlayerProcessController(),
+       _subtitleLocalizer =
+           subtitleLocalizer ?? const WebDavSubtitleLocalizer(),
        _fontLocalizer = fontLocalizer ?? const WebDavFontLocalizer() {
     _fontCache = fontCache ?? WebDavFontCache(localizer: _fontLocalizer);
   }
@@ -462,12 +470,17 @@ class ExternalPlayerService {
   final PlaybackServerRestarter _serverRestarter;
   final PlayerProcessController _processController;
   final WebDavFontLocalizer _fontLocalizer;
+  final WebDavSubtitleLocalizer _subtitleLocalizer;
   late final WebDavFontCache _fontCache;
 
   Future<void> pruneWebDavFontCache(
     Future<Set<String>> Function() loadActiveSessionKeys, {
     Set<String> preservedPaths = const {},
   }) => _fontCache.prune(loadActiveSessionKeys, preservedPaths: preservedPaths);
+
+  Future<void> pruneWebDavSubtitleCache(
+    Future<Set<String>> Function() loadActiveSessionIds,
+  ) => _subtitleLocalizer.prune(loadActiveSessionIds);
 
   /// 缓存系统集成层诊断日志；默认输出到 flutter run 控制台。
   final void Function(String message) _cacheLogger;
@@ -867,6 +880,38 @@ class ExternalPlayerService {
         seasonTransition && nextSeason != null && nextSeason.entries.isNotEmpty;
     final listMode =
         isMpv && (implicit || entries.length > 1 || seasonTransition);
+    // 缓存来源的 WebDAV 客户端不带来源凭据，同源字幕必须先取回本地；
+    // 可直接嵌入凭据的来源继续由 MPV 直接加载。
+    final subtitleLocalizations = <String, Future<SubtitleItem?>>{};
+    if (isMpv &&
+        subtitleInjectionEnabled &&
+        webDavFontLoader != null &&
+        !launchContext.isLocal &&
+        (username == null || username.isEmpty)) {
+      entries = await _subtitleLocalizer.localizeEntries(
+        entries: entries,
+        serverUrl: launchContext.serverUrl,
+        sessionToken: artifactSessionId,
+        loader: webDavFontLoader,
+        cache: subtitleLocalizations,
+        registerArtifact: artifactPaths.add,
+      );
+      if (hasNextSeason) {
+        nextSeason = SeasonPlaybackEntries(
+          entries: await _subtitleLocalizer.localizeEntries(
+            entries: nextSeason.entries,
+            serverUrl: launchContext.serverUrl,
+            sessionToken: artifactSessionId,
+            loader: webDavFontLoader,
+            cache: subtitleLocalizations,
+            registerArtifact: artifactPaths.add,
+          ),
+          localFontDirectories: nextSeason.localFontDirectories,
+          webDavFontsByEntry: nextSeason.webDavFontsByEntry,
+        );
+      }
+      await ensureOwned();
+    }
     // 每次启动使用唯一 named pipe，作为会话身份与未来 IPC 扩展入口。
     final pipeToken = launchEpoch;
     final ipcPipe = isMpv ? '${r'\\.\pipe\mpvsocket_'}$pipeToken' : null;
@@ -914,7 +959,7 @@ class ExternalPlayerService {
     }
     final nextPlaylistPath = hasNextSeason
         ? await MpvScripts.ensurePlaylistM3u(
-            nextSeason.entries,
+            nextSeason!.entries,
             authUrl,
             scriptBase!,
             sessionId: '${artifactSessionId}_next',
@@ -953,7 +998,7 @@ class ExternalPlayerService {
     // 跨来源重定向时移除该凭据，而全局 http-header-fields 会继续转发。
     if (isMpv) {
       final resourceEntries = hasNextSeason
-          ? [...entries, ...nextSeason.entries]
+          ? [...entries, ...nextSeason!.entries]
           : entries;
       List<String?> seasonFontPaths = List.filled(resourceEntries.length, null);
       if (subtitleInjectionEnabled) {
@@ -970,7 +1015,7 @@ class ExternalPlayerService {
         if (hasNextSeason) {
           for (
             var i = 0;
-            i < nextSeason.localFontDirectories.length &&
+            i < nextSeason!.localFontDirectories.length &&
                 i < nextSeason.entries.length;
             i++
           ) {
@@ -980,7 +1025,7 @@ class ExternalPlayerService {
         final sources = <WebDavFontDirectory?>[
           ...(webDavFontsByEntry ??
               List<WebDavFontDirectory?>.filled(entries.length, webDavFonts)),
-          if (hasNextSeason) ...nextSeason.webDavFontsByEntry,
+          if (hasNextSeason) ...nextSeason!.webDavFontsByEntry,
         ];
         final localizedByKey = <String, String>{};
         var remainingFiles = WebDavFontLocalizer.maxFontFiles;
@@ -1176,7 +1221,7 @@ class ExternalPlayerService {
         args.add('--script=$currentResources');
         if (hasNextSeason) {
           final nextResources = await MpvScripts.ensureSeasonResources(
-            nextSeason.entries,
+            nextSeason!.entries,
             seasonFontPaths.sublist(entries.length),
             authUrl,
             nextPlaylistPath!,
@@ -1194,7 +1239,7 @@ class ExternalPlayerService {
           (entries: entries, playlist: playlistPath, id: artifactSessionId),
           if (hasNextSeason)
             (
-              entries: nextSeason.entries,
+              entries: nextSeason!.entries,
               playlist: nextPlaylistPath,
               id: '${artifactSessionId}_next',
             ),
@@ -1481,13 +1526,13 @@ class ExternalPlayerService {
       currentTrackUrl: entries[playlistStart].url,
       currentPlaylistPos: playlistStart,
       entries: (seasonTransition || implicit)
-          ? <MediaEntry>[...entries, if (hasNextSeason) ...nextSeason.entries]
+          ? <MediaEntry>[...entries, if (hasNextSeason) ...nextSeason!.entries]
           : List<MediaEntry>.unmodifiable(entries),
       watchLaterUrls: (seasonTransition || implicit)
           ? <String>[
               ...watchLaterUrls,
               if (hasNextSeason)
-                ...nextSeason.entries.map((entry) => authUrl(entry.url)),
+                ...nextSeason!.entries.map((entry) => authUrl(entry.url)),
             ]
           : List<String>.unmodifiable(watchLaterUrls),
       username: username,
@@ -1503,6 +1548,7 @@ class ExternalPlayerService {
           ? List<String>.of(artifactPaths)
           : List<String>.unmodifiable(artifactPaths),
     );
+    runtime.subtitleLocalizations.addAll(subtitleLocalizations);
     if (seasonTransition || implicit) {
       runtime
         ..seasonPlanFilePath = seasonPlanFilePath
@@ -3310,6 +3356,45 @@ class ExternalPlayerService {
     return fonts;
   }
 
+  /// 缓存来源没有可嵌入的凭据时，按播放会话复用同源字幕本地副本。
+  Future<MediaEntry> _localizeSubtitleEntry(
+    _PlayerSessionRuntime runtime,
+    MediaEntry entry, {
+    String? username,
+    String? serverUrl,
+  }) async {
+    final subtitle = entry.subtitle;
+    final loader = runtime.webDavFontLoader;
+    if (subtitle == null ||
+        loader == null ||
+        (username ?? runtime.username ?? '').isNotEmpty) {
+      return entry;
+    }
+    final localized = await runtime.subtitleLocalizations.putIfAbsent(
+      subtitle.url,
+      () => _subtitleLocalizer.localize(
+        subtitle: subtitle,
+        serverUrl: serverUrl ?? runtime.launchContext?.serverUrl ?? '',
+        sessionToken: runtime.artifactSessionId,
+        loader: loader,
+        registerArtifact: (path) {
+          if (!runtime.artifactPaths.contains(path)) {
+            runtime.artifactPaths.add(path);
+          }
+        },
+      ),
+    );
+    if (localized == null) return entry;
+    return MediaEntry(
+      url: entry.url,
+      progressTarget: entry.progressTarget,
+      title: entry.title,
+      catalogPath: entry.catalogPath,
+      subtitle: localized,
+      externalAudioTracks: entry.externalAudioTracks,
+    );
+  }
+
   Future<void> _calibrateVideoClock(_PlayerSessionRuntime runtime) async {
     if (runtime.ipcPipeName == null) return;
     final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
@@ -3772,18 +3857,24 @@ class ExternalPlayerService {
           !await plan.isCached!(preferred ?? item.versions.first)) {
         return false;
       }
-      final (version, prepared) = await item.prepareVersion(
+      final (version, ready) = await item.prepareVersion(
         plan.prepare,
         preferred: preferred,
         isAvailable: plan.isAvailable,
         cached: plan.prepared,
         excluded: append ? const {} : runtime.queueAttemptedPaths,
       );
+      var prepared = ready;
       if (!append) runtime.queueAttemptedPaths.add(version.path);
       if (!_queueControlEnabled ||
           !identical(_sessions[runtime.sessionId], runtime)) {
         return false;
       }
+      prepared = PreparedVideoItem(
+        entry: await _localizeSubtitleEntry(runtime, prepared.entry),
+        localFontDirectory: prepared.localFontDirectory,
+        remoteFonts: prepared.remoteFonts,
+      );
       plan.prepared[version.path] = prepared;
       final entry = prepared.entry;
       if (entry.progressTarget == null &&
@@ -4073,26 +4164,40 @@ class ExternalPlayerService {
         : url;
     final stage = runtime.seasonStageNumber + 1;
     final stageId = '${runtime.artifactSessionId}_stage$stage';
+    final loader = webDavFontLoader ?? runtime.webDavFontLoader;
+    final fileLoader = webDavFontFileLoader ?? runtime.webDavFontFileLoader;
+    final seasonEntries = loader != null && (user == null || user.isEmpty)
+        ? await _subtitleLocalizer.localizeEntries(
+            entries: season.entries,
+            serverUrl: origin,
+            sessionToken: stageId,
+            loader: loader,
+            cache: runtime.subtitleLocalizations,
+            registerArtifact: (path) {
+              if (!runtime.artifactPaths.contains(path)) {
+                runtime.artifactPaths.add(path);
+              }
+            },
+          )
+        : season.entries;
     final playlist = await MpvScripts.ensurePlaylistM3u(
-      season.entries,
+      seasonEntries,
       authUrl,
       base,
       sessionId: stageId,
     );
     final fontPaths = List<String?>.generate(
-      season.entries.length,
+      seasonEntries.length,
       (index) => index < season.localFontDirectories.length
           ? season.localFontDirectories[index]
           : null,
     );
-    final loader = webDavFontLoader ?? runtime.webDavFontLoader;
-    final fileLoader = webDavFontFileLoader ?? runtime.webDavFontFileLoader;
     final localized = <String, String>{};
     if (loader != null) {
       var remainingFiles = WebDavFontLocalizer.maxFontFiles;
       var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
       final deadline = DateTime.now().add(const Duration(seconds: 30));
-      for (var i = 0; i < season.entries.length; i++) {
+      for (var i = 0; i < seasonEntries.length; i++) {
         if (i >= season.webDavFontsByEntry.length) break;
         final source = season.webDavFontsByEntry[i];
         if (source == null || source.files.isEmpty) continue;
@@ -4134,7 +4239,7 @@ class ExternalPlayerService {
     }
     final config = _configStore.current;
     final resources = await MpvScripts.ensureSeasonResources(
-      season.entries,
+      seasonEntries,
       fontPaths,
       authUrl,
       playlist,
@@ -4154,12 +4259,12 @@ class ExternalPlayerService {
       if ((launchContext?.player.externalAudioInjectionEnabled ??
               runtime.restoredExternalAudioInjectionEnabled ??
               config.externalAudioInjectionEnabled) &&
-          season.entries.any((entry) => entry.externalAudioTracks.isNotEmpty)) {
+          seasonEntries.any((entry) => entry.externalAudioTracks.isNotEmpty)) {
         // Lua 初始化可晚于 loadlist，先固定旧列表身份。
         final currentPlaylist =
             await controller.getProperty('playlist') as List;
         final audioScript = await MpvScripts.ensureExternalAudioTracks(
-          season.entries,
+          seasonEntries,
           authUrl,
           base,
           playlistPath: playlist,
@@ -4183,9 +4288,9 @@ class ExternalPlayerService {
         runtime.currentSeasonPlaylistPath != currentPlaylistPath) {
       return null;
     }
-    runtime.entries.addAll(season.entries);
+    runtime.entries.addAll(seasonEntries);
     runtime.watchLaterUrls.addAll(
-      season.entries.map((entry) => authUrl(entry.url)),
+      seasonEntries.map((entry) => authUrl(entry.url)),
     );
     runtime.seasonStageNumber = stage;
     await _writeSeasonEntries(runtime);

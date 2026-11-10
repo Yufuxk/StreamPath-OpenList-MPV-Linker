@@ -1998,51 +1998,59 @@ class AppState extends ChangeNotifier {
   late final StreamController<String> _cacheWarnings;
   late final StreamController<PlaybackRecoveryEvent> _playbackRecoveryEvents;
 
-  Future<void> pruneWebDavFontCache() => _playerService.pruneWebDavFontCache(
-    () async {
-      final active = <String>{};
-      for (final history in [
-        ...await _playbackHistoryStore.loadAll(),
-        ...await _filmPlaybackHistoryStore.loadAll(),
-      ]) {
-        if (history.kind != PlaybackHistoryKind.video) continue;
-        final sourceId = history.sourceId;
-        if (sourceId == null || sourceId.isEmpty) continue;
-        active.add(WebDavFontCache.sessionKey(sourceId, history.sessionId));
-      }
-      for (final library in [
-        _mediaLibraryStore,
-        _filmMediaLibraryStore,
-      ].whereType<MediaLibraryStore>()) {
-        for (final profile in _configStore.current.profiles) {
-          final records = await library.playbackHistory(
-            profile.profileId,
-            audio: false,
-          );
-          for (final record in records) {
-            if (record.continueDismissed || !record.item.kind.isVideoLane) {
-              continue;
-            }
-            final sessionId = record.playbackSessionId;
-            if (sessionId == null) continue;
-            active.add(
-              WebDavFontCache.sessionKey(record.item.sourceId, sessionId),
-            );
+  /// 清理不再被播放会话或续播记录引用的 WebDAV 字体与临时字幕。
+  Future<void> prunePlaybackArtifacts() async {
+    final histories = <PlaybackHistory>[
+      ...await _playbackHistoryStore.loadAll(),
+      ...await _filmPlaybackHistoryStore.loadAll(),
+    ];
+    final activeFontKeys = <String>{};
+    final activeSessions = <String>{};
+    for (final history in histories) {
+      if (history.kind != PlaybackHistoryKind.video) continue;
+      final sourceId = history.sourceId;
+      if (sourceId == null || sourceId.isEmpty) continue;
+      activeFontKeys.add(
+        WebDavFontCache.sessionKey(sourceId, history.sessionId),
+      );
+      activeSessions.add(history.sessionId);
+    }
+    for (final library in [
+      _mediaLibraryStore,
+      _filmMediaLibraryStore,
+    ].whereType<MediaLibraryStore>()) {
+      for (final profile in _configStore.current.profiles) {
+        final records = await library.playbackHistory(
+          profile.profileId,
+          audio: false,
+        );
+        for (final record in records) {
+          if (record.continueDismissed || !record.item.kind.isVideoLane) {
+            continue;
           }
+          final sessionId = record.playbackSessionId;
+          if (sessionId == null) continue;
+          activeFontKeys.add(
+            WebDavFontCache.sessionKey(record.item.sourceId, sessionId),
+          );
+          activeSessions.add(sessionId);
         }
       }
-      return active;
-    },
-    preservedPaths: {
-      for (final file in videoCache?.files.values ?? const <VideoCacheFile>[])
-        p.join(file.data['root'] as String, 'StreamPathCache'),
-    },
-  );
+    }
+    await _playerService.pruneWebDavFontCache(
+      () async => activeFontKeys,
+      preservedPaths: {
+        for (final file in videoCache?.files.values ?? const <VideoCacheFile>[])
+          p.join(file.data['root'] as String, 'StreamPathCache'),
+      },
+    );
+    await _playerService.pruneWebDavSubtitleCache(() async => activeSessions);
+  }
 
-  void scheduleWebDavFontCachePrune() {
+  void schedulePlaybackArtifactPrune() {
     unawaited(
-      pruneWebDavFontCache().catchError((Object error) {
-        debugPrint('WebDAV font cache prune failed: $error');
+      prunePlaybackArtifacts().catchError((Object error) {
+        debugPrint('Playback artifact prune failed: $error');
       }),
     );
   }

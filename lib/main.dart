@@ -251,7 +251,7 @@ Future<void> main() async {
     print('Navigation location restore failed: $error');
   }
   await appState.restoreVideoCache();
-  appState.scheduleWebDavFontCachePrune();
+  appState.schedulePlaybackArtifactPrune();
   appState.startFilmScanSchedule();
 
   // 地址与用户名完整时直接尝试自动连接，密码允许为空。

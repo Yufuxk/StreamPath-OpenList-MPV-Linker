@@ -1,5 +1,7 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
+import '../../core/errors/app_exception.dart';
+import '../../data/models/film_catalog_item.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/web_dav_file.dart';
@@ -126,11 +128,20 @@ class _CachedWebDav extends WebDAVService {
     bool forceRefresh = false,
   }) async {
     final cached = snapshot(path);
-    if (cached != null) return cached;
-    return (await (await remote()).fetchDirectory(
-      path,
-      forceRefresh: forceRefresh,
-    )).cast<WebDavFile>();
+    if (cached != null && !forceRefresh) return cached;
+    try {
+      return (await (await remote()).fetchDirectory(
+        path,
+        forceRefresh: forceRefresh,
+      )).cast<WebDavFile>();
+    } on AppException {
+      // 远程来源不可用时保留已有离线快照。
+      if (cached != null) return cached;
+      rethrow;
+    } on FilmCatalogException {
+      if (cached != null) return cached;
+      rethrow;
+    }
   }
 
   @override

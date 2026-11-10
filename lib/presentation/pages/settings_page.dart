@@ -988,7 +988,7 @@ class SettingsPageState extends State<SettingsPage> {
       }
       if (target == _MediaLibraryCleanupTarget.continuePlayback ||
           target == _MediaLibraryCleanupTarget.recentPlayback) {
-        appState.scheduleWebDavFontCachePrune();
+        appState.schedulePlaybackArtifactPrune();
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context)
