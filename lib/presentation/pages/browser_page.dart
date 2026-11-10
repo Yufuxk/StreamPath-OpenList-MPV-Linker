@@ -3035,6 +3035,104 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  /// 首集准备结果缺少字幕时按父目录补查，缓存条目同样适用。
+  Future<PreparedVideoItem> _withResolvedSubtitle(
+    PreparedVideoItem prepared,
+    VideoQueueVersion version,
+  ) async {
+    final parent = p.posix
+        .dirname(version.path)
+        .replaceFirst(RegExp(r'^\.$'), '');
+    try {
+      final siblings = await _source.fetchDirectory(parent);
+      final video = siblings
+          .where(
+            (entry) =>
+                entry.name == version.name &&
+                SpecialVideoPlaylistCollector.directChildPath(
+                      _source,
+                      parent,
+                      entry,
+                    ) ==
+                    version.path,
+          )
+          .firstOrNull;
+      if (video == null) return prepared;
+      final subtitle = await _resolvedSubtitleFor(video, siblings);
+      if (subtitle == null) return prepared;
+      return PreparedVideoItem(
+        entry: MediaEntry(
+          url: prepared.entry.url,
+          progressTarget: prepared.entry.progressTarget,
+          catalogPath: prepared.entry.catalogPath,
+          title: prepared.entry.title,
+          subtitle: subtitle,
+          externalAudioTracks: prepared.entry.externalAudioTracks,
+        ),
+        localFontDirectory: prepared.localFontDirectory,
+        remoteFonts: prepared.remoteFonts,
+      );
+    } on AppException {
+      return prepared;
+    } on FileSystemException {
+      return prepared;
+    }
+  }
+
+  /// 将同源 WebDAV 外挂字幕取回本地再交给播放器，避免播放器缺少认证头。
+  Future<PreparedVideoItem> _withLocalizedSubtitle(
+    PreparedVideoItem prepared,
+    String sessionId,
+  ) async {
+    final subtitle = prepared.entry.subtitle;
+    final service = _service;
+    if (subtitle == null || !isSameOrigin(service.baseUrl, subtitle.url)) {
+      return prepared;
+    }
+    final uri = Uri.tryParse(subtitle.url);
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        !AppConstants.subtitleExtensions.contains(p.extension(uri.path))) {
+      return prepared;
+    }
+    try {
+      final bytes = await service.fetchFileBytes(
+        subtitle.url,
+        maxBytes: 16 * 1024 * 1024,
+        timeout: const Duration(seconds: 20),
+      );
+      final base = await AppPaths.cacheDirectory();
+      final directory = Directory(
+        p.join(base.path, 'webdav_subtitles', sessionId),
+      );
+      await directory.create(recursive: true);
+      final name = p.basename(Uri.decodeComponent(uri.path));
+      final file = File(p.join(directory.path, name));
+      await file.writeAsBytes(bytes, flush: true);
+      return PreparedVideoItem(
+        entry: MediaEntry(
+          url: prepared.entry.url,
+          progressTarget: prepared.entry.progressTarget,
+          catalogPath: prepared.entry.catalogPath,
+          title: prepared.entry.title,
+          subtitle: SubtitleItem(
+            name: subtitle.name,
+            url: file.path,
+            language: subtitle.language,
+            score: subtitle.score,
+          ),
+          externalAudioTracks: prepared.entry.externalAudioTracks,
+        ),
+        localFontDirectory: prepared.localFontDirectory,
+        remoteFonts: prepared.remoteFonts,
+      );
+    } on AppException {
+      return prepared;
+    } on FileSystemException {
+      return prepared;
+    }
+  }
+
   Future<WebDavFontDirectory?> _resolvedWebDavFontsFor(
     MediaDirectoryEntry video,
     List<MediaDirectoryEntry> siblings,
@@ -3411,23 +3509,23 @@ class BrowserPageState extends State<BrowserPage> {
     final preparers = <Object, Future<VideoEntryPreparer>>{};
     final sourceId = base.source.descriptor.sourceId;
     return (version) async {
-      final hit = await base.cached?.call(version.path);
-      if (hit != null) return hit;
       final r = await store.resourceAt(sourceId, version.path);
       final parent = p.posix
           .dirname(version.path)
           .replaceFirst(RegExp(r'^\.$'), '');
       final key = r?.workId ?? parent;
       final preparer = await (preparers[key] ??= (() async {
+        final siblings = await base.source.fetchDirectory(parent);
         final value = VideoEntryPreparer(
           source: base.source,
           config: base.config,
           subtitleMatcher: base.subtitleMatcher,
           fontMatcher: base.fontMatcher,
           titles: base.titles,
+          directories: {parent: siblings},
           cached: base.cached,
         );
-        await value.prepareSharedFonts(parent);
+        await value.prepareSharedFonts(parent, siblings: siblings);
         return value;
       })());
       return preparer.prepare(version);
@@ -3931,10 +4029,17 @@ class BrowserPageState extends State<BrowserPage> {
       }
     }
     plan.selected[index] = version;
-    plan.prepared[version.path] = initial;
+    var prepared = initial;
+    if (config.subtitleInjectionEnabled && prepared.entry.subtitle == null) {
+      prepared = await _withResolvedSubtitle(prepared, version);
+    }
+    if (!local && prepared.entry.subtitle != null) {
+      prepared = await _withLocalizedSubtitle(prepared, id);
+    }
+    plan.prepared[version.path] = prepared;
     try {
       final progress = await progressStore.getResumeProgress(
-        initial.entry.progressTarget ?? initial.entry.url,
+        prepared.entry.progressTarget ?? prepared.entry.url,
         profileId: sourceId,
       );
       final resume = progress != null && !progress.isFinishedNearEnd()
@@ -3943,15 +4048,15 @@ class BrowserPageState extends State<BrowserPage> {
       session.statusNotBefore = DateTime.now();
       final result = local
           ? await player.launchLocal(
-              entries: [initial.entry],
+              entries: [prepared.entry],
               sourceId: sourceId,
               sessionId: id,
               resumeSeconds: resume,
-              localFontDirectories: [initial.localFontDirectory],
+              localFontDirectories: [prepared.localFontDirectory],
               implicitPlan: plan,
             )
           : await player.launch(
-              entries: [initial.entry],
+              entries: [prepared.entry],
               sessionId: id,
               resumeSeconds: resume,
               implicitPlan: plan,
@@ -3959,7 +4064,7 @@ class BrowserPageState extends State<BrowserPage> {
               password: service.credentialSnapshot.password,
               webDavSourceUrl: service.baseUrl,
               webDavSourceId: sourceId,
-              webDavFontsByEntry: [initial.remoteFonts],
+              webDavFontsByEntry: [prepared.remoteFonts],
               webDavFontLoader: service.fetchFileBytes,
               webDavFontFileLoader: service.downloadFile,
             );

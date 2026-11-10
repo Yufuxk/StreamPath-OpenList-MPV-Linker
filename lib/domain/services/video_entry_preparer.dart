@@ -61,7 +61,15 @@ class VideoEntryPreparer {
 
   Future<PreparedVideoItem> prepare(VideoQueueVersion version) async {
     final hit = await cached?.call(version.path);
-    if (hit != null) return hit;
+    // 缓存条目可能缺少字幕或字体；仍复用缓存路径，但按目录补齐缺失的附属资源。
+    final needsSubtitle =
+        config.subtitleInjectionEnabled && hit?.entry.subtitle == null;
+    final needsFonts =
+        config.subtitleInjectionEnabled &&
+        hit != null &&
+        hit.localFontDirectory == null &&
+        hit.remoteFonts == null;
+    if (hit != null && !needsSubtitle && !needsFonts) return hit;
     final parent = p.posix
         .dirname(version.path)
         .replaceFirst(RegExp(r'^\.$'), '');
@@ -80,7 +88,26 @@ class VideoEntryPreparer {
                   version.path,
         )
         .firstOrNull;
-    if (video == null) throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
+    if (video == null) {
+      if (hit != null) return hit;
+      throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
+    }
+    final subtitle = await subtitleFor(video, siblings);
+    final fonts = _fonts[parent] ??= await fontsFor(video, siblings);
+    if (hit != null) {
+      return PreparedVideoItem(
+        entry: MediaEntry(
+          url: hit.entry.url,
+          progressTarget: hit.entry.progressTarget,
+          catalogPath: hit.entry.catalogPath ?? version.path,
+          title: hit.entry.title,
+          subtitle: hit.entry.subtitle ?? subtitle,
+          externalAudioTracks: hit.entry.externalAudioTracks,
+        ),
+        localFontDirectory: fonts.localFontDirectory ?? sharedLocalFonts,
+        remoteFonts: fonts.remoteFonts ?? sharedRemoteFonts,
+      );
+    }
     final String url;
     if (video is WebDavFile && video.isStrm) {
       final resolved = await (source as WebDavMediaSourceAdapter).service
@@ -93,8 +120,6 @@ class VideoEntryPreparer {
         LocalMediaOpenTarget(:final path) => path,
       };
     }
-    final subtitle = await subtitleFor(video, siblings);
-    final fonts = _fonts[parent] ??= await fontsFor(video, siblings);
     return PreparedVideoItem(
       entry: MediaEntry(
         url: url,
