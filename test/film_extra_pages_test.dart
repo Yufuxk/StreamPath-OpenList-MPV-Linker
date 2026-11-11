@@ -192,6 +192,7 @@ void main() {
     catalog.store.notifyListeners();
     await settleExtras(tester);
     final filename = find.text(resource.name);
+    expect(find.text('展示封面'), findsNothing);
     final collapsed = tester.getSize(filename);
     expect(tester.widget<Text>(filename).maxLines, 1);
     expect(

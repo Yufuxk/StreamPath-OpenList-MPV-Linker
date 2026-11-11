@@ -2600,6 +2600,7 @@ void main() {
       );
     }))!;
     for (final overview in ['', 'Secret episode overview']) {
+      await tester.runAsync(() => catalog.store.markWatched([resource], false));
       var menuCalls = 0;
       final cardKey = GlobalKey();
       await tester.pumpWidget(
@@ -2670,7 +2671,10 @@ void main() {
         image.dispose();
       });
       expect(find.text('${overview.isEmpty ? 24 : 25} 分钟'), findsOneWidget);
-      expect(find.text('展示封面'), findsOneWidget);
+      expect(
+        find.text('展示封面'),
+        overview.isEmpty ? findsNothing : findsOneWidget,
+      );
       expect(find.text('展示剧透'), findsNothing);
       expect(
         find.byType(ImageFiltered),
@@ -2732,8 +2736,15 @@ void main() {
       await tester.tap(continuationMenu);
       await tester.pump();
       expect(menuCalls, 1);
-      await tester.tap(find.text('展示封面'));
-      await tester.pump();
+      if (overview.isEmpty) {
+        await tester.runAsync(
+          () => catalog.store.markWatched([resource], true),
+        );
+        await settle(tester);
+      } else {
+        await tester.tap(find.text('展示封面'));
+        await tester.pump();
+      }
       expect(find.byType(ImageFiltered), findsNothing);
       expect(find.text('展示封面'), findsNothing);
       expect(tester.getSize(captionContent), captionSize);

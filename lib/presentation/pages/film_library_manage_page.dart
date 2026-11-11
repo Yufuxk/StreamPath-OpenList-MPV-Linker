@@ -716,29 +716,18 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              SPTile(
-                                onTap: _saving
-                                    ? null
-                                    : () => showFilmExtraSettings(
-                                        context,
-                                        c.store,
-                                      ),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const AppText('特典分类管理'),
-                                      Text(
-                                        context.l10n.text(
-                                          '编辑分类名称、识别别名或新增自定义分类',
-                                        ),
-                                        style: Theme.of(
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: SPButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () => showFilmExtraSettings(
                                           context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                    ],
+                                          c.store,
+                                        ),
+                                  icon: Icon(SPIcons.settings),
+                                  label: const Flexible(
+                                    child: AppText('特典分类管理'),
                                   ),
                                 ),
                               ),

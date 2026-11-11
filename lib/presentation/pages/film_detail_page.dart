@@ -2516,7 +2516,7 @@ class FilmEpisodeCard extends StatelessWidget {
                     store: catalog.store,
                     resource: resource,
                     spoilerSensitive: tv,
-                    canReveal: tv && !hasOverview,
+                    canReveal: false,
                     revealLabel: '展示封面',
                     child: ClipRect(
                       child: FilmArtwork(
