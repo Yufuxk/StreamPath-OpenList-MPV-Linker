@@ -131,7 +131,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
 
   void _bind(FilmCatalogStore value) {
     _store = value;
-    value.watchChanges.addListener(_scheduleLoad);
+    value.watchChanges.addListener(_watchChanged);
     _load();
   }
 
@@ -139,7 +139,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   void didUpdateWidget(FilmWatchOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.store != oldWidget.store && widget.store != null) {
-      _store?.watchChanges.removeListener(_scheduleLoad);
+      _store?.watchChanges.removeListener(_watchChanged);
       _revealed = false;
       _resolvedResource = null;
       _state = null;
@@ -187,7 +187,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   void dispose() {
     ++_generation;
     _loadTimer?.cancel();
-    _store?.watchChanges.removeListener(_scheduleLoad);
+    _store?.watchChanges.removeListener(_watchChanged);
     super.dispose();
   }
 
@@ -239,6 +239,27 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
         _scheduleLoad();
       }
     }
+  }
+
+  void _watchChanged() {
+    if (_store?.watchChangeAffects(
+          resource: widget.resource ?? _resolvedResource,
+          workId: widget.workId,
+        ) ==
+        false) {
+      return;
+    }
+    ++_generation;
+    if (_store!.watchChangeResetsReveal(
+      resource: widget.resource ?? _resolvedResource,
+      workId: widget.workId,
+    )) {
+      if (_revealed) setState(() => _revealed = false);
+      if (_reveals?.value.contains(_contentKey) == true) {
+        _reveals!.value = {..._reveals!.value}..remove(_contentKey);
+      }
+    }
+    _scheduleLoad();
   }
 
   void _scheduleLoad() {

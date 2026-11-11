@@ -2672,12 +2672,18 @@ void main() {
       expect(find.text('${overview.isEmpty ? 24 : 25} 分钟'), findsOneWidget);
       expect(find.text('展示封面'), findsOneWidget);
       expect(find.text('展示剧透'), findsNothing);
-      expect(find.byType(ImageFiltered), findsNWidgets(3));
+      expect(
+        find.byType(ImageFiltered),
+        findsNWidgets(overview.isEmpty ? 2 : 3),
+      );
       final caption = find.byWidgetPredicate(
         (widget) => widget is FilmWatchOverlay && widget.softEdges,
       );
-      expect(caption, findsOneWidget);
-      final captionSize = tester.getSize(caption);
+      expect(caption, overview.isEmpty ? findsNothing : findsOneWidget);
+      final captionContent = overview.isEmpty
+          ? find.text(resource.name)
+          : caption;
+      final captionSize = tester.getSize(captionContent);
       for (final element in find.byType(ImageFiltered).evaluate()) {
         final filter = find.byWidget(element.widget);
         final isCaption = find
@@ -2730,7 +2736,7 @@ void main() {
       await tester.pump();
       expect(find.byType(ImageFiltered), findsNothing);
       expect(find.text('展示封面'), findsNothing);
-      expect(tester.getSize(caption), captionSize);
+      expect(tester.getSize(captionContent), captionSize);
     }
   });
 
@@ -2888,7 +2894,7 @@ void main() {
       matching: find.byType(DirectoryScrollView),
     );
     expect(shared, findsOneWidget);
-    final controller = tester.widget<ListView>(list).controller!;
+    final controller = tester.widget<CustomScrollView>(list).controller!;
     final rect = tester.getRect(shared);
     for (final x in [rect.right - 2, rect.left + 400]) {
       final before = controller.offset;

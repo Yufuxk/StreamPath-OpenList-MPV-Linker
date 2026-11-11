@@ -48,6 +48,66 @@ class FilmCatalogStore extends ChangeNotifier {
   bool _notificationPending = false;
   final _watchChanges = ChangeNotifier();
   Listenable get watchChanges => _watchChanges;
+  final _dataChanges = ChangeNotifier();
+  Listenable get dataChanges => _dataChanges;
+  final _presentationChanges = ChangeNotifier();
+  Listenable get presentationChanges => _presentationChanges;
+  bool _presentationPending = false;
+  void _notifyPresentation() {
+    _notifyChange(watch: false, data: false);
+    if (_notificationDepth > 0) {
+      _presentationPending = true;
+    } else {
+      _presentationChanges.notifyListeners();
+    }
+  }
+
+  bool _dataNotificationPending = false;
+  Set<Object>? _pendingWatchKeys = {};
+  Set<Object>? _watchKeys;
+  Set<Object> _pendingRevealResets = {};
+  Set<Object> _revealResets = {};
+  Object _resourceWatchKey(FilmResource r) => r.usesResourceWatch || r.isDisc
+      ? ('resource', r.id, r.workId)
+      : (
+          r.sourceId,
+          r.workId,
+          r.type == FilmMediaType.movie ? -1 : r.season,
+          r.type == FilmMediaType.movie ? -1 : r.episode,
+        );
+
+  /// null 范围代表外部刷新；普通观看写入只影响同来源的逻辑剧集。
+  bool watchChangeAffects({FilmResource? resource, int? workId}) =>
+      _watchKeys == null ||
+      (resource != null
+          ? _watchKeys!.contains(_resourceWatchKey(resource))
+          : workId == null || _watchKeys!.contains(workId));
+
+  bool watchChangeResetsReveal({FilmResource? resource, int? workId}) =>
+      _revealResets.contains(
+        resource == null ? workId : _resourceWatchKey(resource),
+      );
+
+  void _notifyWatchResources(
+    Iterable<FilmResource> resources, {
+    bool resetReveal = false,
+  }) {
+    for (final r in resources) {
+      final keys = [_resourceWatchKey(r), if (r.workId != null) r.workId!];
+      _pendingWatchKeys?.addAll(keys);
+      if (resetReveal) _pendingRevealResets.addAll(keys);
+    }
+    _notifyChange(watch: true, data: false);
+  }
+
+  void _publishWatch() {
+    _watchKeys = _pendingWatchKeys;
+    _pendingWatchKeys = {};
+    _revealResets = _pendingRevealResets;
+    _pendingRevealResets = {};
+    _watchChanges.notifyListeners();
+  }
+
   bool _watchNotificationPending = false;
   Future<T> withBatchedChanges<T>(Future<T> Function() operation) async {
     _notificationDepth++;
@@ -62,7 +122,15 @@ class FilmCatalogStore extends ChangeNotifier {
       }
       if (_watchNotificationPending) {
         _watchNotificationPending = false;
-        _watchChanges.notifyListeners();
+        _publishWatch();
+      }
+      if (_dataNotificationPending) {
+        _dataNotificationPending = false;
+        _dataChanges.notifyListeners();
+      }
+      if (_presentationPending) {
+        _presentationPending = false;
+        _presentationChanges.notifyListeners();
       }
     }
   }
@@ -70,13 +138,16 @@ class FilmCatalogStore extends ChangeNotifier {
   @override
   void notifyListeners() => _notifyChange(watch: true);
 
-  void _notifyChange({required bool watch}) {
+  void _notifyChange({required bool watch, bool data = true}) {
+    if (watch && data) _pendingWatchKeys = null;
     if (_notificationDepth > 0) {
       _notificationPending = true;
       _watchNotificationPending |= watch;
+      _dataNotificationPending |= data;
     } else {
       super.notifyListeners();
-      if (watch) _watchChanges.notifyListeners();
+      if (watch) _publishWatch();
+      if (data) _dataChanges.notifyListeners();
     }
   }
 
@@ -113,25 +184,112 @@ class FilmCatalogStore extends ChangeNotifier {
           );
   }
 
-  Future<FilmWatchState?> resourceWatchState(FilmResource r) async {
-    if (!r.canMarkWatched) return null;
-    if (r.usesResourceWatch) return _extraWatchState(r);
-    if (r.isDisc) {
-      final rows = await _db.query(
-        'film_disc_watch_state',
-        where: 'resource_id=? AND work_id=?',
-        whereArgs: [r.id, r.workId],
-      );
-      return rows.isEmpty ? FilmWatchState.unwatched : _watchState(rows.single);
+  final _watchReads = <FilmResource, List<Completer<FilmWatchState?>>>{};
+  Timer? _watchReadTimer;
+  final _activeWatchReads = <Future<void>>{};
+  void _queueWatchReads() {
+    _watchReadTimer = null;
+    final task = _flushWatchReads();
+    _activeWatchReads.add(task);
+    unawaited(task.then((_) => _activeWatchReads.remove(task)));
+  }
+
+  Future<FilmWatchState?> resourceWatchState(FilmResource r) {
+    if (!r.canMarkWatched) return Future.value(null);
+    final result = Completer<FilmWatchState?>();
+    _watchReads.putIfAbsent(r, () => []).add(result);
+    _watchReadTimer ??= Timer(Duration.zero, _queueWatchReads);
+    return result.future;
+  }
+
+  Future<void> _flushWatchReads() async {
+    final reads = Map.of(_watchReads);
+    _watchReads.clear();
+    try {
+      final states = await _readWatchStates(reads.keys.toList());
+      for (final entry in reads.entries) {
+        for (final result in entry.value) {
+          result.complete(states[_watchReadKey(entry.key)]);
+        }
+      }
+    } catch (error, stack) {
+      for (final results in reads.values) {
+        for (final result in results) {
+          result.completeError(error, stack);
+        }
+      }
     }
-    final (s, e) = _watchNumbers(r);
-    final rows = await _db.query(
-      'film_watch_state',
-      where:
-          'source_id = ? AND work_id = ? AND season_number = ? AND episode_number = ?',
-      whereArgs: [r.sourceId, r.workId, s, e],
-    );
-    return rows.isEmpty ? FilmWatchState.unwatched : _watchState(rows.single);
+  }
+
+  /// 仅合并在途读取，不保存另一份长期观看状态。
+  Future<Map<int, FilmWatchState?>> resourceWatchStates(
+    List<FilmResource> resources,
+  ) async {
+    final states = await _readWatchStates(resources);
+    return {
+      for (final r in resources)
+        r.id: r.canMarkWatched ? states[_watchReadKey(r)] : null,
+    };
+  }
+
+  Object _watchReadKey(FilmResource r) => r.usesResourceWatch
+      ? ('film_resource_watch_state', r.id, r.workId)
+      : r.isDisc
+      ? ('film_disc_watch_state', r.id, r.workId)
+      : _resourceWatchKey(r);
+
+  Future<Map<Object, FilmWatchState>> _readWatchStates(
+    List<FilmResource> resources,
+  ) async {
+    final groups = <String, Map<Object, List<Object?>>>{};
+    for (final r in resources.where((r) => r.canMarkWatched)) {
+      final table = r.usesResourceWatch
+          ? 'film_resource_watch_state'
+          : r.isDisc
+          ? 'film_disc_watch_state'
+          : 'film_watch_state';
+      final List<Object?> args;
+      if (r.usesResourceWatch || r.isDisc) {
+        args = [r.id, r.workId];
+      } else {
+        final (season, episode) = _watchNumbers(r);
+        args = [r.sourceId, r.workId, season, episode];
+      }
+      groups.putIfAbsent(table, () => {})[_watchReadKey(r)] = args;
+    }
+    final states = <Object, FilmWatchState>{};
+    for (final group in groups.entries) {
+      final logical = group.key == 'film_watch_state';
+      final columns = logical
+          ? ['source_id', 'work_id', 'season_number', 'episode_number']
+          : ['resource_id', 'work_id'];
+      final entries = group.value.entries.toList();
+      // 按调用时的绑定快照读取；每批最多 800 个参数。
+      for (var offset = 0; offset < entries.length; offset += 200) {
+        final chunk = entries.skip(offset).take(200).toList();
+        for (final entry in chunk) {
+          states[entry.key] = FilmWatchState.unwatched;
+        }
+        final tuple = '(${List.filled(columns.length, '?').join(',')})';
+        final rows = await _db.rawQuery(
+          'SELECT * FROM ${group.key} WHERE (${columns.join(',')}) '
+          'IN (VALUES ${List.filled(chunk.length, tuple).join(',')})',
+          chunk.expand((entry) => entry.value).toList(),
+        );
+        for (final row in rows) {
+          final key = logical
+              ? (
+                  row['source_id'],
+                  row['work_id'],
+                  row['season_number'],
+                  row['episode_number'],
+                )
+              : (group.key, row['resource_id'], row['work_id']);
+          states[key] = _watchState(row);
+        }
+      }
+    }
+    return states;
   }
 
   Future<DateTime?> manualWatchResetAt(String sourceId, String path) async {
@@ -305,7 +463,7 @@ class FilmCatalogStore extends ChangeNotifier {
     if (previous?.status != current?.status ||
         ((previous?.fraction ?? 0) * 100).floor() !=
             ((current?.fraction ?? 0) * 100).floor()) {
-      notifyListeners();
+      _notifyWatchResources([r]);
     }
   }
 
@@ -353,150 +511,160 @@ class FilmCatalogStore extends ChangeNotifier {
         );
       }
     });
-    notifyListeners();
+    _notifyWatchResources(resources, resetReveal: !watched);
   }
 
   String get path => _db.path;
 
-  static Future<FilmCatalogStore> open(String path) async {
-    final db = await (Platform.isWindows ? databaseFactoryFfi : databaseFactory)
-        .openDatabase(
-          path,
-          options: OpenDatabaseOptions(
-            version: 11,
-            onConfigure: (db) async {
-              await db.execute('PRAGMA foreign_keys = ON');
-              final version = await db.getVersion();
-              if (version > 0 && version < 11 && path != inMemoryDatabasePath) {
-                final backup =
-                    '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
-                await db.execute(
-                  "VACUUM INTO '${backup.replaceAll("'", "''")}'",
-                );
-              }
-              if (version > 0 && version < 7) {
-                await db.execute('PRAGMA foreign_keys = OFF');
-              }
-            },
-            onCreate: (db, _) async {
-              for (final statement in _schema) {
-                await db.execute(statement);
-              }
-              await db.execute(_watchSchema);
-              await db.execute(_discWatchSchema);
-              await db.execute(_versionSchema);
-              for (final statement in _fastTaskSchema) {
-                await db.execute(statement);
-              }
-              for (final statement in _phase5Schema) {
-                await db.execute(statement);
-              }
-              for (final statement in _playlistSchema) {
-                await db.execute(statement);
-              }
-              await _upgradeExtras(db);
-            },
-            onUpgrade: (db, oldVersion, _) async {
-              if (oldVersion < 5) await db.execute(_watchSchema);
-              if (oldVersion == 1) {
-                await db.execute(
-                  'ALTER TABLE resources RENAME TO resources_v1',
-                );
-                await db.execute(
-                  _schema.firstWhere(
-                    (s) => s.startsWith('CREATE TABLE resources '),
-                  ),
-                );
-                await db.execute(
-                  'INSERT INTO resources SELECT * FROM resources_v1',
-                );
-                await db.execute('DROP TABLE resources_v1');
-                for (final statement in _schema.where(
-                  (s) => s.startsWith('CREATE INDEX resources_'),
-                )) {
-                  await db.execute(statement);
-                }
-              }
-              if (oldVersion == 2) {
-                await db.execute(
-                  'ALTER TABLE resources RENAME TO resources_v2',
-                );
-                await db.execute(
-                  _schema.firstWhere(
-                    (s) => s.startsWith('CREATE TABLE resources '),
-                  ),
-                );
-                await db.execute(
-                  'INSERT INTO resources SELECT * FROM resources_v2',
-                );
-                await db.execute('DROP TABLE resources_v2');
-                for (final statement in _schema.where(
-                  (s) => s.startsWith('CREATE INDEX resources_'),
-                )) {
-                  await db.execute(statement);
-                }
-              }
-              if (oldVersion < 3) {
-                await db.execute('DROP TABLE scan_entries');
-                await db.execute(
-                  _schema.firstWhere(
-                    (s) => s.startsWith('CREATE TABLE scan_entries '),
-                  ),
-                );
-                for (final statement in _schema.where(
-                  (s) =>
-                      s.startsWith('CREATE TABLE work_favorites ') ||
-                      s.startsWith('CREATE TABLE resource_probes ') ||
-                      s.startsWith('CREATE TABLE root_covers '),
-                )) {
-                  await db.execute(statement);
-                }
-                await db.execute(
-                  "ALTER TABLE catalog_settings ADD COLUMN probe_mode TEXT NOT NULL DEFAULT 'playback' CHECK(probe_mode IN ('playback','full'))",
-                );
-              }
-              if (oldVersion < 4) {
-                await db.execute(
-                  'ALTER TABLE root_covers RENAME TO root_covers_v3',
-                );
-                await db.execute(
-                  _schema.firstWhere(
-                    (s) => s.startsWith('CREATE TABLE root_covers '),
-                  ),
-                );
-                await db.execute(
-                  'INSERT INTO root_covers (root_id, work_id) SELECT root_id, work_id FROM root_covers_v3',
-                );
-                await db.execute('DROP TABLE root_covers_v3');
-                await db.execute(
-                  _schema.firstWhere(
-                    (s) => s.startsWith('CREATE TABLE catalog_preferences '),
-                  ),
-                );
-              }
-              if (oldVersion < 6) await db.execute(_discWatchSchema);
-              if (oldVersion < 7) await _upgradePhase5(db);
-              if (oldVersion < 8) {
-                for (final statement in _playlistSchema) {
-                  await db.execute(statement);
-                }
-              }
-              if (oldVersion < 9) await db.execute(_versionSchema);
-              if (oldVersion < 10) {
-                for (final statement in _fastTaskSchema) {
-                  await db.execute(statement);
-                }
-              }
-              if (oldVersion < 11) await _upgradeExtras(db);
-            },
-            onOpen: (db) async {
-              await db.execute('PRAGMA foreign_keys = ON');
-              if ((await db.rawQuery('PRAGMA foreign_key_check')).isNotEmpty) {
-                throw const FilmCatalogException('catalogStorageFailed');
-              }
-            },
-          ),
-        );
+  static Future<FilmCatalogStore> open(
+    String path, {
+    DatabaseFactory? factory,
+  }) async {
+    final db =
+        await (factory ??
+                (Platform.isWindows ? databaseFactoryFfi : databaseFactory))
+            .openDatabase(
+              path,
+              options: OpenDatabaseOptions(
+                version: 11,
+                onConfigure: (db) async {
+                  await db.execute('PRAGMA foreign_keys = ON');
+                  final version = await db.getVersion();
+                  if (version > 0 &&
+                      version < 11 &&
+                      path != inMemoryDatabasePath) {
+                    final backup =
+                        '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
+                    await db.execute(
+                      "VACUUM INTO '${backup.replaceAll("'", "''")}'",
+                    );
+                  }
+                  if (version > 0 && version < 7) {
+                    await db.execute('PRAGMA foreign_keys = OFF');
+                  }
+                },
+                onCreate: (db, _) async {
+                  for (final statement in _schema) {
+                    await db.execute(statement);
+                  }
+                  await db.execute(_watchSchema);
+                  await db.execute(_discWatchSchema);
+                  await db.execute(_versionSchema);
+                  for (final statement in _fastTaskSchema) {
+                    await db.execute(statement);
+                  }
+                  for (final statement in _phase5Schema) {
+                    await db.execute(statement);
+                  }
+                  for (final statement in _playlistSchema) {
+                    await db.execute(statement);
+                  }
+                  await _upgradeExtras(db);
+                },
+                onUpgrade: (db, oldVersion, _) async {
+                  if (oldVersion < 5) await db.execute(_watchSchema);
+                  if (oldVersion == 1) {
+                    await db.execute(
+                      'ALTER TABLE resources RENAME TO resources_v1',
+                    );
+                    await db.execute(
+                      _schema.firstWhere(
+                        (s) => s.startsWith('CREATE TABLE resources '),
+                      ),
+                    );
+                    await db.execute(
+                      'INSERT INTO resources SELECT * FROM resources_v1',
+                    );
+                    await db.execute('DROP TABLE resources_v1');
+                    for (final statement in _schema.where(
+                      (s) => s.startsWith('CREATE INDEX resources_'),
+                    )) {
+                      await db.execute(statement);
+                    }
+                  }
+                  if (oldVersion == 2) {
+                    await db.execute(
+                      'ALTER TABLE resources RENAME TO resources_v2',
+                    );
+                    await db.execute(
+                      _schema.firstWhere(
+                        (s) => s.startsWith('CREATE TABLE resources '),
+                      ),
+                    );
+                    await db.execute(
+                      'INSERT INTO resources SELECT * FROM resources_v2',
+                    );
+                    await db.execute('DROP TABLE resources_v2');
+                    for (final statement in _schema.where(
+                      (s) => s.startsWith('CREATE INDEX resources_'),
+                    )) {
+                      await db.execute(statement);
+                    }
+                  }
+                  if (oldVersion < 3) {
+                    await db.execute('DROP TABLE scan_entries');
+                    await db.execute(
+                      _schema.firstWhere(
+                        (s) => s.startsWith('CREATE TABLE scan_entries '),
+                      ),
+                    );
+                    for (final statement in _schema.where(
+                      (s) =>
+                          s.startsWith('CREATE TABLE work_favorites ') ||
+                          s.startsWith('CREATE TABLE resource_probes ') ||
+                          s.startsWith('CREATE TABLE root_covers '),
+                    )) {
+                      await db.execute(statement);
+                    }
+                    await db.execute(
+                      "ALTER TABLE catalog_settings ADD COLUMN probe_mode TEXT NOT NULL DEFAULT 'playback' CHECK(probe_mode IN ('playback','full'))",
+                    );
+                  }
+                  if (oldVersion < 4) {
+                    await db.execute(
+                      'ALTER TABLE root_covers RENAME TO root_covers_v3',
+                    );
+                    await db.execute(
+                      _schema.firstWhere(
+                        (s) => s.startsWith('CREATE TABLE root_covers '),
+                      ),
+                    );
+                    await db.execute(
+                      'INSERT INTO root_covers (root_id, work_id) SELECT root_id, work_id FROM root_covers_v3',
+                    );
+                    await db.execute('DROP TABLE root_covers_v3');
+                    await db.execute(
+                      _schema.firstWhere(
+                        (s) =>
+                            s.startsWith('CREATE TABLE catalog_preferences '),
+                      ),
+                    );
+                  }
+                  if (oldVersion < 6) await db.execute(_discWatchSchema);
+                  if (oldVersion < 7) await _upgradePhase5(db);
+                  if (oldVersion < 8) {
+                    for (final statement in _playlistSchema) {
+                      await db.execute(statement);
+                    }
+                  }
+                  if (oldVersion < 9) await db.execute(_versionSchema);
+                  if (oldVersion < 10) {
+                    for (final statement in _fastTaskSchema) {
+                      await db.execute(statement);
+                    }
+                  }
+                  if (oldVersion < 11) await _upgradeExtras(db);
+                },
+                onOpen: (db) async {
+                  await db.execute('PRAGMA foreign_keys = ON');
+                  if ((await db.rawQuery(
+                    'PRAGMA foreign_key_check',
+                  )).isNotEmpty) {
+                    throw const FilmCatalogException('catalogStorageFailed');
+                  }
+                },
+              ),
+            );
     await db.transaction((txn) async {
       await txn.update(
         'catalog_roots',
@@ -530,8 +698,13 @@ class FilmCatalogStore extends ChangeNotifier {
   Future<void> close() async {
     _closing = true;
     await _extraTask;
+    _watchReadTimer?.cancel();
+    await Future.wait(_activeWatchReads);
+    if (_watchReads.isNotEmpty) await _flushWatchReads();
     await _db.close();
     _watchChanges.dispose();
+    _dataChanges.dispose();
+    _presentationChanges.dispose();
     super.dispose();
   }
 
@@ -1412,7 +1585,7 @@ class FilmCatalogStore extends ChangeNotifier {
         whereArgs: [workId],
       );
     }
-    notifyListeners();
+    _notifyPresentation();
   }
 
   Future<void> clearFavorites(String sourceId) async {
@@ -1420,7 +1593,7 @@ class FilmCatalogStore extends ChangeNotifier {
       'DELETE FROM work_favorites WHERE work_id IN (SELECT r.work_id FROM resources r JOIN catalog_roots c ON c.id = r.root_id WHERE c.source_id = ?)',
       [sourceId],
     );
-    notifyListeners();
+    _notifyPresentation();
   }
 
   Future<FilmWork?> chooseRootCover(
@@ -1740,6 +1913,28 @@ class FilmCatalogStore extends ChangeNotifier {
         : Map<String, dynamic>.from(
             jsonDecode(rows.single['metadata_json'] as String),
           );
+  }
+
+  Future<Map<int, Map<String, dynamic>?>> probes(
+    Iterable<int> resourceIds,
+  ) async {
+    final ids = resourceIds.toSet().toList();
+    final result = <int, Map<String, dynamic>?>{for (final id in ids) id: null};
+    for (var offset = 0; offset < ids.length; offset += 400) {
+      final chunk = ids.skip(offset).take(400).toList();
+      final rows = await _db.query(
+        'resource_probes',
+        columns: ['resource_id', 'metadata_json'],
+        where: 'resource_id IN (${List.filled(chunk.length, '?').join(',')})',
+        whereArgs: chunk,
+      );
+      for (final row in rows) {
+        result[row['resource_id'] as int] = Map<String, dynamic>.from(
+          jsonDecode(row['metadata_json'] as String),
+        );
+      }
+    }
+    return result;
   }
 
   Future<List<FilmResource>> unprobedResources({int limit = 1}) async =>

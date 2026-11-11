@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -130,7 +131,8 @@ void main() {
         const FilmScanEntry(
           path: 'TV/Work/Specials/Work.S00E01.NCOP.strm',
           parentPath: 'TV/Work/Specials',
-          name: 'Work.S00E01.NCOP.strm',
+          name:
+              'Work.S00E01.NCOP.BluRay.1080p.HEVC.FLAC.Japanese.English.Chinese.Special.Long.Filename.strm',
           mediaKind: 'strm',
         ),
       ]);
@@ -186,6 +188,29 @@ void main() {
     await show(null);
     expect(find.text(resource.name), findsOneWidget);
     expect(find.text('1. Work'), findsOneWidget);
+    catalog.store.spoilerProtection = true;
+    catalog.store.notifyListeners();
+    await settleExtras(tester);
+    final filename = find.text(resource.name);
+    final collapsed = tester.getSize(filename);
+    expect(tester.widget<Text>(filename).maxLines, 1);
+    expect(
+      find.descendant(
+        of: find.ancestor(of: filename, matching: find.byType(Padding)).first,
+        matching: find.byType(TextButton),
+      ),
+      findsNothing,
+    );
+    await tester.tap(filename);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Text>(find.text(resource.name)).maxLines, isNull);
+    expect(
+      tester.getSize(find.text(resource.name)).height,
+      greaterThan(collapsed.height * 2),
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Text>(find.text(resource.name)).maxLines, 1);
     await show({'name': 'Official title', 'overview': 'Official overview'});
     expect(find.text('Official overview'), findsOneWidget);
     expect(find.text(resource.name), findsNothing);

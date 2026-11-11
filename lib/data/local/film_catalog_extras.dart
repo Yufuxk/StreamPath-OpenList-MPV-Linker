@@ -257,15 +257,6 @@ extension FilmCatalogExtras on FilmCatalogStore {
     notifyListeners();
   }
 
-  Future<FilmWatchState> _extraWatchState(FilmResource resource) async {
-    final rows = await _db.query(
-      'film_resource_watch_state',
-      where: 'resource_id=? AND work_id=?',
-      whereArgs: [resource.id, resource.workId],
-    );
-    return rows.isEmpty ? FilmWatchState.unwatched : _watchState(rows.single);
-  }
-
   Future<void> _recordExtraProgress(
     FilmResource resource,
     VideoProgressUpdate update,
@@ -289,6 +280,6 @@ extension FilmCatalogExtras on FilmCatalogStore {
         update.recordedAt.millisecondsSinceEpoch,
       ],
     );
-    notifyListeners();
+    _notifyWatchResources([resource]);
   }
 }

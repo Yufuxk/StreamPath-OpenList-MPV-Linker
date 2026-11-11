@@ -83,11 +83,11 @@ class _StreamPathTransitionContentState
 class StreamPathTransitionBuilder extends StatefulWidget {
   const StreamPathTransitionBuilder({
     super.key,
-    required this.listenable,
+    this.listenable,
     required this.builder,
   });
 
-  final Listenable listenable;
+  final Listenable? listenable;
   final WidgetBuilder builder;
 
   @override
@@ -107,21 +107,21 @@ class _StreamPathTransitionBuilderState
   @override
   void initState() {
     super.initState();
-    widget.listenable.addListener(_changed);
+    widget.listenable?.addListener(_changed);
   }
 
   @override
   void didUpdateWidget(StreamPathTransitionBuilder oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.listenable != widget.listenable) {
-      oldWidget.listenable.removeListener(_changed);
-      widget.listenable.addListener(_changed);
+      oldWidget.listenable?.removeListener(_changed);
+      widget.listenable?.addListener(_changed);
     }
   }
 
   @override
   void dispose() {
-    widget.listenable.removeListener(_changed);
+    widget.listenable?.removeListener(_changed);
     super.dispose();
   }
 

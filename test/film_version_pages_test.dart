@@ -211,7 +211,7 @@ void main() {
       reason: 'Multi-version works show the work version selector',
     );
     final pageState = tester.state(find.byType(FilmDetailPage));
-    final list = tester.widget<ListView>(
+    final list = tester.widget<CustomScrollView>(
       find.byKey(const Key('film-detail-scroll')),
     );
     final selector = find.byKey(const Key('film-season-version-selector'));

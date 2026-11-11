@@ -27,7 +27,7 @@ extension FilmCatalogVersions on FilmCatalogStore {
       'key': _versionPreference(identity, sourceScope),
       'value_json': jsonEncode(value.toJson()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
-    _notifyChange(watch: false);
+    _notifyPresentation();
   }
 
   Future<void> assignVersion(List<FilmResource> resources, String name) async {

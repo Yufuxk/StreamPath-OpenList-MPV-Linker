@@ -229,6 +229,7 @@ extension FilmCatalogServerData on FilmCatalogStore {
     String item,
     Map<String, dynamic> userData,
   ) async {
+    final watchKeys = <Object>{};
     final applied = await _db.transaction((txn) async {
       if ((await txn.query(
         'server_sync_pending',
@@ -252,6 +253,17 @@ extension FilmCatalogServerData on FilmCatalogStore {
             row['media_type'] == 'tv' && row['episode_number'] == null) {
           continue;
         }
+        watchKeys.add(row['work_id'] as int);
+        watchKeys.add(
+          row['media_type'] == 'movie' && row['extra_status'] == 'extra'
+              ? ('resource', row['id'], row['work_id'])
+              : (
+                  source,
+                  row['work_id'],
+                  row['media_type'] == 'movie' ? -1 : row['season_number'],
+                  row['media_type'] == 'movie' ? -1 : row['episode_number'],
+                ),
+        );
         if (row['media_type'] == 'movie' && row['extra_status'] == 'extra') {
           await txn.insert(
             'film_resource_watch_state',
@@ -295,7 +307,10 @@ extension FilmCatalogServerData on FilmCatalogStore {
       );
       return true;
     });
-    if (applied) _changed();
+    if (applied) {
+      _pendingWatchKeys?.addAll(watchKeys);
+      _notifyChange(watch: true, data: false);
+    }
     return applied;
   }
 

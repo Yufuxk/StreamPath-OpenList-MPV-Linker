@@ -18,6 +18,7 @@ import 'dart:math' as math;
 import '../widgets/film_segmented_control.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -130,14 +131,25 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   FilmVersionSelection? _versionSelection;
   Future<void> _versionWrites = Future.value();
   final _workVersionField = GlobalKey<FormFieldState<String>>();
-  List<FilmResource> get _visibleResources => _versionSelection == null
-      ? _resources
-      : [
-          ..._versions.selected(_versionSelection!),
-          ..._resources.where(
-            (r) => r.isDisc || r.season == null || r.episode == null,
-          ),
-        ];
+  List<FilmResource>? _visibleSnapshot;
+  FilmVersionSelection? _visibleSelection;
+  FilmVersionIndex? _visibleVersions;
+  List<FilmResource> get _visibleResources {
+    if (_versionSelection == null) return _resources;
+    if (_visibleSnapshot == null ||
+        _visibleSelection != _versionSelection ||
+        _visibleVersions != _versions) {
+      _visibleSelection = _versionSelection;
+      _visibleVersions = _versions;
+      _visibleSnapshot = [
+        ..._versions.selected(_versionSelection!),
+        ..._resources.where(
+          (r) => r.isDisc || r.season == null || r.episode == null,
+        ),
+      ];
+    }
+    return _visibleSnapshot!;
+  }
 
   MediaLibraryItem _versionItem(MediaLibraryItem item) =>
       _versionSelection == null ||
@@ -182,6 +194,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           _versionSelection = next;
           _selected.clear();
         });
+        _scheduleContinue();
       } else {
         _workVersionField.currentState?.didChange(
           _versionSelection?.defaultKey,
@@ -193,7 +206,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     });
   }
 
-  Map<int, Map<String, dynamic>> _seasons = {};
+  Map<(int?, int?), Map> _episodes = {};
   Map<int, Map<String, dynamic>?> _probes = {};
   final Set<int> _selected = {};
   int? _activeSeason;
@@ -214,14 +227,15 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     super.initState();
     _work = widget.initialWork;
     unawaited(_loadLogoOverride());
-    widget.catalog.store.addListener(_load);
+    widget.catalog.store.dataChanges.addListener(_scheduleDetails);
+    widget.catalog.store.presentationChanges.addListener(_loadPreferences);
     final app = context.read<AppState>();
     _playbackStores = [
       app.filmMediaLibraryStore,
       app.mediaLibraryStore,
     ].whereType<MediaLibraryStore>().toList();
     for (final store in _playbackStores) {
-      store.addListener(_load);
+      store.addListener(_scheduleContinue);
     }
   }
 
@@ -245,11 +259,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       reader.removeListener(_progressChanged);
     }
     for (final reader in _isoReaders) {
-      reader.removeLibraryProgressListener(_load);
+      reader.removeLibraryProgressListener(_scheduleContinue);
     }
-    widget.catalog.store.removeListener(_load);
+    widget.catalog.store.dataChanges.removeListener(_scheduleDetails);
+    widget.catalog.store.presentationChanges.removeListener(_loadPreferences);
+    _detailTimer?.cancel();
+    _continueChanges.dispose();
     for (final store in _playbackStores) {
-      store.removeListener(_load);
+      store.removeListener(_scheduleContinue);
     }
     _scroll.dispose();
     _textColors.dispose();
@@ -270,14 +287,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       reader.addListener(_progressChanged);
     }
     for (final reader in _isoReaders) {
-      reader.addLibraryProgressListener(_load);
+      reader.addLibraryProgressListener(_scheduleContinue);
     }
   }
 
   void _progressChanged(PlaybackProgressChange change) {
     if (change.affectsAll ||
         change.profileId == _continueRecord?.item.sourceId) {
-      _load();
+      _scheduleContinue();
     }
   }
 
@@ -477,19 +494,89 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     },
   );
 
-  Future<void> _load() async {
+  int _preferenceGeneration = 0;
+  Future<void> _loadPreferences() async {
+    final generation = ++_preferenceGeneration;
+    final favorite = await widget.catalog.store.isFavorite(widget.workId);
+    final selection = _work == null
+        ? null
+        : await widget.catalog.store.versionSelection(
+            _work!.identity,
+            sourceScope: widget.catalog.sourceId,
+          );
+    if (!mounted || generation != _preferenceGeneration) return;
+    final versionChanged =
+        selection?.defaultKey != _versionSelection?.defaultKey ||
+        !mapEquals(selection?.seasons, _versionSelection?.seasons);
+    if (favorite != _favorite || versionChanged) {
+      setState(() {
+        _favorite = favorite;
+        _versionSelection = selection;
+      });
+      if (versionChanged) _scheduleContinue();
+    }
+  }
+
+  final _continueChanges = ValueNotifier<int>(0);
+  int _continueGeneration = 0;
+  Timer? _detailTimer;
+  Future<void>? _detailLoad;
+  bool _detailsPending = false;
+
+  void _scheduleDetails() {
+    _detailTimer?.cancel();
+    _detailTimer = Timer(Duration.zero, _load);
+  }
+
+  void _scheduleContinue() {
+    unawaited(_load(playbackOnly: true));
+  }
+
+  Future<void> _load({bool playbackOnly = false}) {
+    if (!mounted) return Future.value();
+    if (playbackOnly) {
+      if (_loading) return Future.value();
+      return _readDetails(playbackOnly: true);
+    }
+    if (_detailLoad != null) {
+      _detailsPending = true;
+      ++_generation;
+      return _detailLoad!;
+    }
+    _detailTimer?.cancel();
+    return _detailLoad = _drainDetails();
+  }
+
+  Future<void> _drainDetails() async {
+    try {
+      do {
+        _detailsPending = false;
+        await _readDetails();
+      } while (_detailsPending && mounted);
+    } finally {
+      _detailLoad = null;
+    }
+  }
+
+  Future<void> _readDetails({bool playbackOnly = false}) async {
     if (StreamPathTransitionScope.read(context)) return;
     final app = context.read<AppState>();
-    final generation = ++_generation;
+    final generation = playbackOnly ? _generation : ++_generation;
+    final continueGeneration = ++_continueGeneration;
     await widget.catalog.run(() async {
-      final work = await widget.catalog.store.work(widget.workId);
-      if (mounted && generation == _generation) setState(() => _work = work);
-      final favorite = await widget.catalog.store.isFavorite(widget.workId);
-      final resources = await widget.catalog.store.resources(
-        workId: widget.workId,
-        sourceId: widget.catalog.sourceId,
-        enabledOnly: true,
-      );
+      final work = playbackOnly
+          ? _work
+          : await widget.catalog.store.work(widget.workId);
+      final favorite = playbackOnly
+          ? _favorite
+          : await widget.catalog.store.isFavorite(widget.workId);
+      final resources = playbackOnly
+          ? _resources
+          : await widget.catalog.store.resources(
+              workId: widget.workId,
+              sourceId: widget.catalog.sourceId,
+              enabledOnly: true,
+            );
       if (!mounted) return;
       final records = <MediaLibraryRecord>[];
       MediaLibraryRecord? recentVersionRecord;
@@ -528,10 +615,10 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         }
       }
       records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-      final versions = FilmVersionIndex(resources);
-      FilmVersionSelection? selection;
+      final versions = playbackOnly ? _versions : FilmVersionIndex(resources);
+      FilmVersionSelection? selection = playbackOnly ? _versionSelection : null;
       if (work?.type == FilmMediaType.tv && versions.families.isNotEmpty) {
-        selection = await widget.catalog.store.versionSelection(
+        selection ??= await widget.catalog.store.versionSelection(
           work!.identity,
           sourceScope: widget.catalog.sourceId,
         );
@@ -541,7 +628,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             recentPath: recentVersionRecord?.item.targetPath,
           );
           await widget.catalog.store.saveVersionSelection(
-            work.identity,
+            work!.identity,
             selection,
             sourceScope: widget.catalog.sourceId,
           );
@@ -565,18 +652,34 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       final continueRecord = _completedContinue(record, positionMs, durationMs)
           ? null
           : record;
-      final seasons = <int, Map<String, dynamic>>{};
-      final probes = <int, Map<String, dynamic>?>{};
-      for (final resource in resources) {
-        probes[resource.id] = await widget.catalog.store.probe(resource.id);
+      if (playbackOnly) {
+        if (mounted &&
+            generation == _generation &&
+            continueGeneration == _continueGeneration) {
+          _continueRecord = continueRecord;
+          _continuePositionMs = continueRecord == null ? null : positionMs;
+          _continueDurationMs = continueRecord == null ? null : durationMs;
+          _continueChanges.value++;
+        }
+        return;
       }
+      final episodes = <(int?, int?), Map>{};
+      final probes = await widget.catalog.store.probes(
+        resources.map((r) => r.id),
+      );
       for (final number
           in resources.map((r) => r.season).whereType<int>().toSet()) {
         final metadata = await widget.catalog.store.season(
           widget.workId,
           number,
         );
-        if (metadata != null) seasons[number] = metadata;
+        for (final episode
+            in (metadata?['episodes'] as List? ?? []).whereType<Map>()) {
+          episodes.putIfAbsent((
+            number,
+            episode['episode_number'] as int?,
+          ), () => episode);
+        }
       }
       if (mounted && generation == _generation) {
         setState(() {
@@ -584,11 +687,14 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           _favorite = favorite;
           _resources = resources;
           _versions = versions;
+          _visibleSnapshot = null;
           _versionSelection = selection;
-          _continueRecord = continueRecord;
-          _continuePositionMs = continueRecord == null ? null : positionMs;
-          _continueDurationMs = continueRecord == null ? null : durationMs;
-          _seasons = seasons;
+          if (continueGeneration == _continueGeneration) {
+            _continueRecord = continueRecord;
+            _continuePositionMs = continueRecord == null ? null : positionMs;
+            _continueDurationMs = continueRecord == null ? null : durationMs;
+          }
+          _episodes = episodes;
           _probes = probes;
           final numbers = resources.map((r) => r.season).toSet().toList()
             ..sort((a, b) => (a ?? 9999).compareTo(b ?? 9999));
@@ -698,10 +804,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   Map? _episode(FilmResource resource) =>
-      (_seasons[resource.season]?['episodes'] as List?)
-              ?.where((e) => e['episode_number'] == resource.episode)
-              .firstOrNull
-          as Map?;
+      _episodes[(resource.season, resource.episode)];
 
   Future<void> _playDefault(FilmResource resource) async {
     if (resource.type == FilmMediaType.tv && !resource.isDisc) {
@@ -727,90 +830,159 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     if (mounted) await widget.onOpenItem(selected.playbackItem);
   }
 
-  Widget _cards(
-    List<FilmResource> resources,
-    AppState app,
-    FilmWork work,
-  ) => LayoutBuilder(
-    builder: (context, constraints) {
-      final columns = (constraints.maxWidth / 270).floor().clamp(1, 6);
-      final width = (constraints.maxWidth - 16 * (columns - 1)) / columns;
-      return Wrap(
-        spacing: 16,
-        runSpacing: 16,
-        children: [
-          if (resources.isEmpty && _loading)
-            SizedBox(
-              width: width,
-              child: SkeletonRegion(
-                borderRadius: AppTheme.panelRadius,
-                child: Column(
-                  children: [
-                    const AspectRatio(aspectRatio: 16 / 9),
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: SizedBox(
-                        height: MediaQuery.textScalerOf(context).scale(40),
+  Widget _cards(List<FilmResource> resources, AppState app, FilmWork work) {
+    Object? layoutKey;
+    Widget? sliver;
+    var rowHeights = <double>[];
+    return SliverLayoutBuilder(
+      builder: (context, constraints) {
+        final columns = (constraints.crossAxisExtent / 270).floor().clamp(1, 6);
+        final width =
+            (constraints.crossAxisExtent - 16 * (columns - 1)) / columns;
+        if (resources.isEmpty && _loading) {
+          return SliverToBoxAdapter(
+            child: Align(
+              alignment: AlignmentDirectional.topStart,
+              child: SizedBox(
+                width: width,
+                child: SkeletonRegion(
+                  borderRadius: AppTheme.panelRadius,
+                  child: Column(
+                    children: [
+                      const AspectRatio(aspectRatio: 16 / 9),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: SizedBox(
+                          height: MediaQuery.textScalerOf(context).scale(40),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+        final text = Theme.of(context).textTheme;
+        final nextKey = (
+          constraints.crossAxisExtent,
+          MediaQuery.textScalerOf(context),
+          text.bodySmall!.fontSize,
+          text.titleSmall!.fontSize,
+          text.titleSmall!.height,
+          CardTheme.of(context).margin,
+          Directionality.of(context),
+        );
+        // 滚动约束变化时复用 delegate，保留缓存范围内的卡片。
+        if (layoutKey == nextKey) return sliver!;
+        layoutKey = nextKey;
+        final timedHeight = FilmEpisodeCard._collapsedHeight(
+          context,
+          width,
+          hasTiming: true,
+        );
+        final plainHeight = FilmEpisodeCard._collapsedHeight(
+          context,
+          width,
+          hasTiming: false,
+        );
+        final hasDate = (work.metadata['release_date'] as String? ?? '')
+            .trim()
+            .isNotEmpty;
+        final officialRuntime = (work.metadata['runtime'] as num?)?.toInt();
+        rowHeights = [];
+        for (var start = 0; start < resources.length; start += columns) {
+          var height = 0.0;
+          for (
+            var i = start;
+            i < math.min(resources.length, start + columns);
+            i++
+          ) {
+            final resource = resources[i];
+            final hasTiming =
+                resource.type == FilmMediaType.tv ||
+                hasDate ||
+                (FilmEpisodeCard._runtime(
+                          _probes[resource.id],
+                          null,
+                          resource.isExtra ? null : officialRuntime,
+                        ) ??
+                        0) >
+                    0;
+            height = math.max(height, hasTiming ? timedHeight : plainHeight);
+          }
+          rowHeights.add(height + (start == 0 ? 0 : 16));
+        }
+        return sliver = SliverVariedExtentList.builder(
+          itemCount: rowHeights.length,
+          itemExtentBuilder: (row, dimensions) => rowHeights[row],
+          itemBuilder: (context, row) => Padding(
+            padding: EdgeInsets.only(top: row == 0 ? 0 : 16),
+            child: Wrap(
+              spacing: 16,
+              children: [
+                for (
+                  var i = row * columns;
+                  i < math.min(resources.length, (row + 1) * columns);
+                  i++
+                )
+                  SizedBox(
+                    key: ValueKey(
+                      resources[i].episode != null &&
+                              work.type == FilmMediaType.tv &&
+                              !resources[i].isDisc
+                          ? 'film-episode-slot-${work.id}-${resources[i].season}-${resources[i].episode}'
+                          : 'film-resource-slot-${resources[i].id}',
+                    ),
+                    width: width,
+                    child: SkeletonRegion(
+                      borderRadius: AppTheme.panelRadius,
+                      child: FilmEpisodeCard(
+                        resource: resources[i],
+                        stableEpisodeIdentity: true,
+                        catalog: widget.catalog,
+                        episode: _episode(resources[i]),
+                        probe: _probes[resources[i].id],
+                        state: filmResourceState(app, resources[i]),
+                        displayTitle:
+                            resources[i].isExtra &&
+                                work.type == FilmMediaType.movie
+                            ? resources[i].name
+                            : work.title,
+                        artworkPath: work.backdropPath,
+                        releaseDate: work.metadata['release_date'] as String?,
+                        officialRuntime: resources[i].isExtra
+                            ? null
+                            : (work.metadata['runtime'] as num?)?.toInt(),
+                        key: ValueKey(
+                          work.type == FilmMediaType.tv &&
+                                  resources[i].episode != null &&
+                                  !resources[i].isDisc
+                              ? 'film-episode-${work.id}-${resources[i].season}-${resources[i].episode}'
+                              : 'film-resource-card-${resources[i].id}',
+                        ),
+                        onOpenItem: _openVersionItem,
+                        onChanged: _load,
+                        selected: _selected.contains(resources[i].id),
+                        onSelected: work.type != FilmMediaType.tv
+                            ? null
+                            : (selected) => setState(() {
+                                if (selected) {
+                                  _selected.add(resources[i].id);
+                                } else {
+                                  _selected.remove(resources[i].id);
+                                }
+                              }),
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ),
-          for (var i = 0; i < resources.length; i++)
-            SizedBox(
-              key: ValueKey(
-                resources[i].episode != null &&
-                        work.type == FilmMediaType.tv &&
-                        !resources[i].isDisc
-                    ? 'film-episode-slot-${work.id}-${resources[i].season}-${resources[i].episode}'
-                    : 'film-resource-slot-${resources[i].id}',
-              ),
-              width: width,
-              child: SkeletonRegion(
-                borderRadius: AppTheme.panelRadius,
-                child: FilmEpisodeCard(
-                  resource: resources[i],
-                  stableEpisodeIdentity: true,
-                  catalog: widget.catalog,
-                  episode: _episode(resources[i]),
-                  probe: _probes[resources[i].id],
-                  state: filmResourceState(app, resources[i]),
-                  displayTitle:
-                      resources[i].isExtra && work.type == FilmMediaType.movie
-                      ? resources[i].name
-                      : work.title,
-                  artworkPath: work.backdropPath,
-                  releaseDate: work.metadata['release_date'] as String?,
-                  officialRuntime: resources[i].isExtra
-                      ? null
-                      : (work.metadata['runtime'] as num?)?.toInt(),
-                  key: ValueKey(
-                    work.type == FilmMediaType.tv &&
-                            resources[i].episode != null &&
-                            !resources[i].isDisc
-                        ? 'film-episode-${work.id}-${resources[i].season}-${resources[i].episode}'
-                        : 'film-resource-card-${resources[i].id}',
                   ),
-                  onOpenItem: _openVersionItem,
-                  onChanged: _load,
-                  selected: _selected.contains(resources[i].id),
-                  onSelected: work.type != FilmMediaType.tv
-                      ? null
-                      : (selected) => setState(() {
-                          if (selected) {
-                            _selected.add(resources[i].id);
-                          } else {
-                            _selected.remove(resources[i].id);
-                          }
-                        }),
-                ),
-              ),
+              ],
             ),
-        ],
-      );
-    },
-  );
+          ),
+        );
+      },
+    );
+  }
 
   Widget _extraHeader(List<FilmResource> resources, {String? title}) =>
       SizedBox(
@@ -841,36 +1013,44 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       ? resources
       : resources.where((r) => filmExtraFilterKey(r) == _extraFilter).toList();
 
-  Widget _movieSections(AppState app, FilmWork work) {
+  List<Widget> _movieSections(AppState app, FilmWork work) {
     final main = _resources.where((r) => r.isMovieMain).toList();
     final extras = _resources.where((r) => r.isExtra).toList();
     final unknown = _resources
         .where((r) => !r.isExtra && !r.isMovieMain)
         .toList();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (main.isEmpty && !_loading) const AppText('请选择资源播放，或将正片标记为非特典'),
-        if (main.isNotEmpty || _loading) ...[
-          AppText('正片与版本', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
-          _cards(main, app, work),
-        ],
-        if (extras.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          _extraHeader(extras, title: '特典映像'),
-          const SizedBox(height: 12),
-          _cards(_filteredExtras(extras), app, work),
-        ],
-        if (unknown.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          AppText('待确认资源', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          const SizedBox(height: 12),
-          _cards(unknown, app, work),
-        ],
+    return [
+      if (main.isEmpty && !_loading)
+        const SliverToBoxAdapter(child: AppText('请选择资源播放，或将正片标记为非特典')),
+      if (main.isNotEmpty || _loading) ...[
+        SliverToBoxAdapter(
+          child: AppText(
+            '正片与版本',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+        ),
+        SliverToBoxAdapter(child: const SizedBox(height: 12)),
+        _cards(main, app, work),
       ],
-    );
+      if (extras.isNotEmpty) ...[
+        SliverToBoxAdapter(child: const SizedBox(height: 24)),
+        SliverToBoxAdapter(child: _extraHeader(extras, title: '特典映像')),
+        SliverToBoxAdapter(child: const SizedBox(height: 12)),
+        _cards(_filteredExtras(extras), app, work),
+      ],
+      if (unknown.isNotEmpty) ...[
+        SliverToBoxAdapter(child: const SizedBox(height: 24)),
+        SliverToBoxAdapter(
+          child: AppText(
+            '待确认资源',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+        ),
+        SliverToBoxAdapter(child: const SizedBox(height: 8)),
+        SliverToBoxAdapter(child: const SizedBox(height: 12)),
+        _cards(unknown, app, work),
+      ],
+    ];
   }
 
   Widget _seasonSelector(FilmWork work, List<int?> numbers) => LayoutBuilder(
@@ -1301,7 +1481,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   );
   Widget _buildPage(BuildContext context) {
     final c = widget.catalog;
-    final app = context.watch<AppState>();
+    final app = context.read<AppState>();
+    context.select<AppState, List<String>>(
+      (value) => [
+        for (final resource in _resources) filmResourceState(value, resource),
+      ],
+    );
     final work =
         _work ??
         (_loading
@@ -1346,7 +1531,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       ready: !_loading,
       enabled: !moving,
       child: StreamPathTransitionBuilder(
-        listenable: c,
         builder: (context) => Scaffold(
           backgroundColor: poster == null ? null : Colors.transparent,
           body: Stack(
@@ -1378,343 +1562,428 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                             ),
                           DirectoryScrollView(
                             controller: _scroll,
-                            builder: (scrollController) => ListView(
+                            builder: (scrollController) => CustomScrollView(
                               key: const Key('film-detail-scroll'),
                               controller: scrollController,
-                              padding: EdgeInsets.fromLTRB(
-                                24,
-                                topInset + 68,
-                                24,
-                                32,
-                              ),
-                              children: [
-                                Wrap(
-                                  spacing: 24,
-                                  runSpacing: 16,
-                                  children: [
-                                    GestureDetector(
-                                      onSecondaryTapDown: (details) =>
-                                          _posterMenu(details.globalPosition),
-                                      child: ClipRRect(
-                                        borderRadius: BorderRadius.circular(8),
-                                        child: Builder(
-                                          builder: (_) {
-                                            final artwork = FilmWatchOverlay(
-                                              rootId: widget.catalog.rootId,
-                                              store: c.store,
-                                              workId: work.id,
-                                              child: FilmArtwork(
-                                                key: const Key(
-                                                  'film-detail-poster',
-                                                ),
-                                                cache: c.images,
-                                                path: work.posterPath,
-                                                fallbackPath: work.posterPath,
-                                                target: 'w500',
-                                                width: 180,
-                                                provider: moving && _loading
-                                                    ? poster?.provider
-                                                    : null,
-                                                fallbackProvider:
-                                                    posterFallback,
-                                                showCachedImmediately:
-                                                    poster != null,
-                                              ),
-                                            );
-                                            return poster == null
-                                                ? artwork
-                                                : FilmSharedPoster(
-                                                    anchor: poster,
-                                                    child: FilmConnectedReveal(
-                                                      part: FilmConnectedPart
-                                                          .poster,
-                                                      child: artwork,
-                                                    ),
-                                                  );
-                                          },
-                                        ),
-                                      ),
-                                    ),
-                                    FilmConnectedReveal(
-                                      child: ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxWidth: 700,
-                                        ),
-                                        child: FilmAdaptiveForeground(
-                                          controller: _textColors,
-                                          textKeys: [
-                                            _titleTextKey,
-                                            _originalTitleTextKey,
-                                            _metadataTextKey,
-                                            _overviewTextKey,
-                                          ],
-                                          scrollController: _scroll,
-                                          builder: (context, foreground) => Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-logo',
-                                                ),
-                                                child: GestureDetector(
-                                                  behavior:
-                                                      HitTestBehavior.opaque,
-                                                  onSecondaryTapDown:
-                                                      (details) => _logoMenu(
-                                                        details.globalPosition,
-                                                      ),
-                                                  child: FilmArtwork(
-                                                    cache: c.images,
-                                                    path:
-                                                        moving && poster != null
-                                                        ? null
-                                                        : _logoOverride ??
-                                                              work.metadata['logo_path']
-                                                                  as String?,
-                                                    target: 'original',
-                                                    transparent: true,
-                                                    logoInkTint: true,
-                                                    logoPadding: 3,
-                                                    borderRadius: 0,
-                                                    width: 500,
-                                                    height: 108,
-                                                    placeholder: Align(
-                                                      alignment:
-                                                          Alignment.centerLeft,
-                                                      child: Text(
-                                                        key: _titleTextKey,
-                                                        work.title,
-                                                        style: theme
-                                                            .textTheme
-                                                            .headlineMedium
-                                                            ?.copyWith(
-                                                              color: foreground,
-                                                            ),
-                                                      ),
-                                                    ),
+                              slivers: [
+                                SliverPadding(
+                                  padding: EdgeInsets.fromLTRB(
+                                    24,
+                                    topInset + 68,
+                                    24,
+                                    32,
+                                  ),
+                                  sliver: SliverMainAxisGroup(
+                                    slivers: [
+                                      SliverToBoxAdapter(
+                                        child: Wrap(
+                                          spacing: 24,
+                                          runSpacing: 16,
+                                          children: [
+                                            GestureDetector(
+                                              onSecondaryTapDown: (details) =>
+                                                  _posterMenu(
+                                                    details.globalPosition,
                                                   ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 8),
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-original-title',
-                                                ),
-                                                child: SizedBox(
-                                                  width: initialSkeleton
-                                                      ? 240
-                                                      : null,
-                                                  child: Text(
-                                                    key: _originalTitleTextKey,
-                                                    work.originalTitle,
-                                                    style: theme
-                                                        .textTheme
-                                                        .titleMedium
-                                                        ?.copyWith(
-                                                          color: foreground,
-                                                          fontWeight:
-                                                              FontWeight.w400,
+                                              child: ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                                child: Builder(
+                                                  builder: (_) {
+                                                    final artwork = FilmWatchOverlay(
+                                                      rootId:
+                                                          widget.catalog.rootId,
+                                                      store: c.store,
+                                                      workId: work.id,
+                                                      child: FilmArtwork(
+                                                        key: const Key(
+                                                          'film-detail-poster',
                                                         ),
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 14),
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-metadata',
-                                                ),
-                                                child: SizedBox(
-                                                  width: initialSkeleton
-                                                      ? 300
-                                                      : null,
-                                                  height: initialSkeleton
-                                                      ? 28
-                                                      : null,
-                                                  child: KeyedSubtree(
-                                                    key: _metadataTextKey,
-                                                    child: _metadata(
-                                                      work,
-                                                      brief,
-                                                      foreground,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 16),
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-actions',
-                                                ),
-                                                child: Wrap(
-                                                  spacing: 12,
-                                                  runSpacing: 8,
-                                                  children: [
-                                                    if (playable != null ||
-                                                        _loading)
-                                                      FilmDetailPlayButton(
-                                                        onPressed:
-                                                            playable == null
-                                                            ? null
-                                                            : () =>
-                                                                  _playDefault(
-                                                                    playable,
-                                                                  ),
+                                                        cache: c.images,
+                                                        path: work.posterPath,
+                                                        fallbackPath:
+                                                            work.posterPath,
+                                                        target: 'w500',
+                                                        width: 180,
+                                                        provider:
+                                                            moving && _loading
+                                                            ? poster?.provider
+                                                            : null,
+                                                        fallbackProvider:
+                                                            posterFallback,
+                                                        showCachedImmediately:
+                                                            poster != null,
                                                       ),
-                                                    Opacity(
-                                                      opacity: _loading ? 0 : 1,
-                                                      child: FilmDetailActionButton(
-                                                        onPressed: _loading
-                                                            ? null
-                                                            : () => c.run(
-                                                                () => c.store
-                                                                    .setFavorite(
-                                                                      work.id,
-                                                                      !_favorite,
+                                                    );
+                                                    return poster == null
+                                                        ? artwork
+                                                        : FilmSharedPoster(
+                                                            anchor: poster,
+                                                            child: FilmConnectedReveal(
+                                                              part:
+                                                                  FilmConnectedPart
+                                                                      .poster,
+                                                              child: artwork,
+                                                            ),
+                                                          );
+                                                  },
+                                                ),
+                                              ),
+                                            ),
+                                            FilmConnectedReveal(
+                                              child: ConstrainedBox(
+                                                constraints:
+                                                    const BoxConstraints(
+                                                      maxWidth: 700,
+                                                    ),
+                                                child: FilmAdaptiveForeground(
+                                                  controller: _textColors,
+                                                  textKeys: [
+                                                    _titleTextKey,
+                                                    _originalTitleTextKey,
+                                                    _metadataTextKey,
+                                                    _overviewTextKey,
+                                                  ],
+                                                  scrollController: _scroll,
+                                                  builder: (context, foreground) => Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      SkeletonRegion(
+                                                        key: const Key(
+                                                          'film-skeleton-logo',
+                                                        ),
+                                                        child: GestureDetector(
+                                                          behavior:
+                                                              HitTestBehavior
+                                                                  .opaque,
+                                                          onSecondaryTapDown:
+                                                              (
+                                                                details,
+                                                              ) => _logoMenu(
+                                                                details
+                                                                    .globalPosition,
+                                                              ),
+                                                          child: FilmArtwork(
+                                                            cache: c.images,
+                                                            path:
+                                                                moving &&
+                                                                    poster !=
+                                                                        null
+                                                                ? null
+                                                                : _logoOverride ??
+                                                                      work.metadata['logo_path']
+                                                                          as String?,
+                                                            target: 'original',
+                                                            transparent: true,
+                                                            logoInkTint: true,
+                                                            logoPadding: 3,
+                                                            borderRadius: 0,
+                                                            width: 500,
+                                                            height: 108,
+                                                            placeholder: Align(
+                                                              alignment: Alignment
+                                                                  .centerLeft,
+                                                              child: Text(
+                                                                key:
+                                                                    _titleTextKey,
+                                                                work.title,
+                                                                style: theme
+                                                                    .textTheme
+                                                                    .headlineMedium
+                                                                    ?.copyWith(
+                                                                      color:
+                                                                          foreground,
                                                                     ),
                                                               ),
-                                                        icon: Icon(
-                                                          _favorite
-                                                              ? SPIcons
-                                                                    .favoriteFill
-                                                              : SPIcons
-                                                                    .favorite,
-                                                        ),
-                                                        label: AppText(
-                                                          _favorite
-                                                              ? '取消收藏'
-                                                              : '收藏',
+                                                            ),
+                                                          ),
                                                         ),
                                                       ),
-                                                    ),
-                                                    if (_versionSelection !=
-                                                            null &&
-                                                        _versions
-                                                                .families
-                                                                .length >
-                                                            1)
-                                                      _workVersionSelector(),
-                                                  ],
-                                                ),
-                                              ),
-                                              const SizedBox(height: 16),
-                                              SkeletonRegion(
-                                                key: const Key(
-                                                  'film-skeleton-overview',
-                                                ),
-                                                child: SizedBox(
-                                                  width: initialSkeleton
-                                                      ? 700
-                                                      : null,
-                                                  height: initialSkeleton
-                                                      ? MediaQuery.textScalerOf(
-                                                                  context,
-                                                                ).scale(
-                                                                  theme
-                                                                          .textTheme
-                                                                          .bodyMedium!
-                                                                          .fontSize! *
-                                                                      1.55,
-                                                                ) *
-                                                                4 +
-                                                            48
-                                                      : null,
-                                                  child: work.overview.isEmpty
-                                                      ? AppText(
-                                                          '暂无简介',
-                                                          style: TextStyle(
-                                                            color: foreground,
-                                                          ),
-                                                        )
-                                                      : _overview(
-                                                          work,
-                                                          c,
-                                                          foreground,
+                                                      const SizedBox(height: 8),
+                                                      SkeletonRegion(
+                                                        key: const Key(
+                                                          'film-skeleton-original-title',
                                                         ),
+                                                        child: SizedBox(
+                                                          width: initialSkeleton
+                                                              ? 240
+                                                              : null,
+                                                          child: Text(
+                                                            key:
+                                                                _originalTitleTextKey,
+                                                            work.originalTitle,
+                                                            style: theme
+                                                                .textTheme
+                                                                .titleMedium
+                                                                ?.copyWith(
+                                                                  color:
+                                                                      foreground,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w400,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      const SizedBox(
+                                                        height: 14,
+                                                      ),
+                                                      SkeletonRegion(
+                                                        key: const Key(
+                                                          'film-skeleton-metadata',
+                                                        ),
+                                                        child: SizedBox(
+                                                          width: initialSkeleton
+                                                              ? 300
+                                                              : null,
+                                                          height:
+                                                              initialSkeleton
+                                                              ? 28
+                                                              : null,
+                                                          child: KeyedSubtree(
+                                                            key:
+                                                                _metadataTextKey,
+                                                            child: _metadata(
+                                                              work,
+                                                              brief,
+                                                              foreground,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      const SizedBox(
+                                                        height: 16,
+                                                      ),
+                                                      SkeletonRegion(
+                                                        key: const Key(
+                                                          'film-skeleton-actions',
+                                                        ),
+                                                        child: Wrap(
+                                                          spacing: 12,
+                                                          runSpacing: 8,
+                                                          children: [
+                                                            if (playable !=
+                                                                    null ||
+                                                                _loading)
+                                                              FilmDetailPlayButton(
+                                                                onPressed:
+                                                                    playable ==
+                                                                        null
+                                                                    ? null
+                                                                    : () => _playDefault(
+                                                                        playable,
+                                                                      ),
+                                                              ),
+                                                            Opacity(
+                                                              opacity: _loading
+                                                                  ? 0
+                                                                  : 1,
+                                                              child: FilmDetailActionButton(
+                                                                onPressed:
+                                                                    _loading
+                                                                    ? null
+                                                                    : () => c.run(
+                                                                        () => c.store.setFavorite(
+                                                                          work.id,
+                                                                          !_favorite,
+                                                                        ),
+                                                                      ),
+                                                                icon: Icon(
+                                                                  _favorite
+                                                                      ? SPIcons
+                                                                            .favoriteFill
+                                                                      : SPIcons
+                                                                            .favorite,
+                                                                ),
+                                                                label: AppText(
+                                                                  _favorite
+                                                                      ? '取消收藏'
+                                                                      : '收藏',
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            if (_versionSelection !=
+                                                                    null &&
+                                                                _versions
+                                                                        .families
+                                                                        .length >
+                                                                    1)
+                                                              _workVersionSelector(),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                      const SizedBox(
+                                                        height: 16,
+                                                      ),
+                                                      SkeletonRegion(
+                                                        key: const Key(
+                                                          'film-skeleton-overview',
+                                                        ),
+                                                        child: SizedBox(
+                                                          width: initialSkeleton
+                                                              ? 700
+                                                              : null,
+                                                          height:
+                                                              initialSkeleton
+                                                              ? MediaQuery.textScalerOf(
+                                                                          context,
+                                                                        ).scale(
+                                                                          theme.textTheme.bodyMedium!.fontSize! *
+                                                                              1.55,
+                                                                        ) *
+                                                                        4 +
+                                                                    48
+                                                              : null,
+                                                          child:
+                                                              work
+                                                                  .overview
+                                                                  .isEmpty
+                                                              ? AppText(
+                                                                  '暂无简介',
+                                                                  style: TextStyle(
+                                                                    color:
+                                                                        foreground,
+                                                                  ),
+                                                                )
+                                                              : _overview(
+                                                                  work,
+                                                                  c,
+                                                                  foreground,
+                                                                ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                FilmConnectedReveal(
-                                  part: FilmConnectedPart.secondary,
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const SizedBox(height: 28),
-                                      _playEntry(app, work),
-                                      _credits(work, c),
-                                      if (work.type == FilmMediaType.tv)
-                                        _seasonSelector(work, numbers),
-                                      const SizedBox(height: 12),
-                                      if (work.type == FilmMediaType.tv &&
-                                          _versionSelection != null &&
-                                          !_visibleResources.any(
-                                            (r) => r.season == _activeSeason,
-                                          ))
-                                        const AppText('所选版本在本季没有可用剧集'),
-                                      if (_selected.isNotEmpty)
-                                        Wrap(
-                                          spacing: 12,
-                                          children: [
-                                            TextButton(
-                                              onPressed: () async {
-                                                await showFilmEpisodeMapping(
-                                                  context,
-                                                  c,
-                                                  _resources
-                                                      .where(
-                                                        (r) => _selected
-                                                            .contains(r.id),
-                                                      )
-                                                      .toList(),
-                                                );
-                                                await _load();
-                                              },
-                                              child: const AppText('映射选中文件的季集'),
-                                            ),
-                                            TextButton(
-                                              onPressed: () =>
-                                                  setState(_selected.clear),
-                                              child: const AppText('取消选择'),
                                             ),
                                           ],
                                         ),
-                                      if (work.type == FilmMediaType.tv) ...[
-                                        if (_activeSeason == 0) ...[
-                                          _extraHeader(
-                                            _visibleResources
-                                                .where((r) => r.season == 0)
-                                                .toList(),
-                                          ),
-                                          const SizedBox(height: 12),
-                                        ],
-                                        _cards(
-                                          _activeSeason == 0
-                                              ? _filteredExtras(
-                                                  _visibleResources
-                                                      .where(
-                                                        (r) => r.season == 0,
+                                      ),
+                                      FilmConnectedReveal(
+                                        sliver: true,
+                                        part: FilmConnectedPart.secondary,
+                                        child: SliverMainAxisGroup(
+                                          slivers: [
+                                            SliverToBoxAdapter(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const SizedBox(height: 28),
+                                                  ValueListenableBuilder<int>(
+                                                    valueListenable:
+                                                        _continueChanges,
+                                                    builder:
+                                                        (context, _, child) =>
+                                                            _playEntry(
+                                                              app,
+                                                              work,
+                                                            ),
+                                                  ),
+                                                  _credits(work, c),
+                                                  if (work.type ==
+                                                      FilmMediaType.tv)
+                                                    _seasonSelector(
+                                                      work,
+                                                      numbers,
+                                                    ),
+                                                  const SizedBox(height: 12),
+                                                  if (work.type ==
+                                                          FilmMediaType.tv &&
+                                                      _versionSelection !=
+                                                          null &&
+                                                      !_visibleResources.any(
+                                                        (r) =>
+                                                            r.season ==
+                                                            _activeSeason,
+                                                      ))
+                                                    const AppText(
+                                                      '所选版本在本季没有可用剧集',
+                                                    ),
+                                                  if (_selected.isNotEmpty)
+                                                    Wrap(
+                                                      spacing: 12,
+                                                      children: [
+                                                        TextButton(
+                                                          onPressed: () async {
+                                                            await showFilmEpisodeMapping(
+                                                              context,
+                                                              c,
+                                                              _resources
+                                                                  .where(
+                                                                    (
+                                                                      r,
+                                                                    ) => _selected
+                                                                        .contains(
+                                                                          r.id,
+                                                                        ),
+                                                                  )
+                                                                  .toList(),
+                                                            );
+                                                            await _load();
+                                                          },
+                                                          child: const AppText(
+                                                            '映射选中文件的季集',
+                                                          ),
+                                                        ),
+                                                        TextButton(
+                                                          onPressed: () =>
+                                                              setState(
+                                                                _selected.clear,
+                                                              ),
+                                                          child: const AppText(
+                                                            '取消选择',
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                            if (work.type ==
+                                                FilmMediaType.tv) ...[
+                                              if (_activeSeason == 0) ...[
+                                                SliverToBoxAdapter(
+                                                  child: _extraHeader(
+                                                    _visibleResources
+                                                        .where(
+                                                          (r) => r.season == 0,
+                                                        )
+                                                        .toList(),
+                                                  ),
+                                                ),
+                                                const SliverToBoxAdapter(
+                                                  child: SizedBox(height: 12),
+                                                ),
+                                              ],
+                                              _cards(
+                                                _activeSeason == 0
+                                                    ? _filteredExtras(
+                                                        _visibleResources
+                                                            .where(
+                                                              (r) =>
+                                                                  r.season == 0,
+                                                            )
+                                                            .toList(),
                                                       )
-                                                      .toList(),
-                                                )
-                                              : _visibleResources
-                                                    .where(
-                                                      (r) =>
-                                                          r.season ==
-                                                          _activeSeason,
-                                                    )
-                                                    .toList(),
-                                          app,
-                                          work,
+                                                    : _visibleResources
+                                                          .where(
+                                                            (r) =>
+                                                                r.season ==
+                                                                _activeSeason,
+                                                          )
+                                                          .toList(),
+                                                app,
+                                                work,
+                                              ),
+                                            ] else
+                                              ..._movieSections(app, work),
+                                          ],
                                         ),
-                                      ] else
-                                        _movieSections(app, work),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -1783,9 +2052,61 @@ class FilmEpisodeCard extends StatelessWidget {
   final Future<void> Function() onChanged;
   final bool selected;
   final void Function(bool)? onSelected;
+
+  static double _lineHeight(BuildContext context) =>
+      MediaQuery.textScalerOf(
+        context,
+      ).scale(Theme.of(context).textTheme.bodySmall!.fontSize!) *
+      1.5;
+  static double _titleHeight(BuildContext context) => math.max(
+    32.0,
+    MediaQuery.textScalerOf(
+          context,
+        ).scale(Theme.of(context).textTheme.titleSmall!.fontSize!) *
+        (Theme.of(context).textTheme.titleSmall!.height ?? 1.4),
+  );
+
+  /// 收起卡片的固定槽位与正文共用字号计算，滚动跳转无需逐行测量卡片。
+  static double _collapsedHeight(
+    BuildContext context,
+    double width, {
+    required bool hasTiming,
+  }) {
+    final margin = (CardTheme.of(context).margin ?? const EdgeInsets.all(4))
+        .resolve(Directionality.of(context));
+    return margin.vertical +
+        (width - margin.horizontal) * 9 / 16 +
+        24 +
+        _titleHeight(context) +
+        2 +
+        _lineHeight(context) +
+        (hasTiming ? 18 + _lineHeight(context) : 0);
+  }
+
+  static num? _runtime(Map? probe, Map? episode, int? officialRuntime) {
+    final measured = probe?['duration'] is num
+        ? probe!['duration'] as num
+        : null;
+    return measured != null && measured > 0
+        ? (measured / 60).round()
+        : episode?['runtime'] is num
+        ? episode!['runtime'] as num
+        : officialRuntime;
+  }
+
   final bool stableEpisodeIdentity;
 
   Future<void> _menu(BuildContext context, Offset position) async {
+    final keepAlive = KeepAliveHandle();
+    KeepAliveNotification(keepAlive).dispatch(context);
+    try {
+      await _showMenu(context, position);
+    } finally {
+      keepAlive.dispose();
+    }
+  }
+
+  Future<void> _showMenu(BuildContext context, Offset position) async {
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     position = overlay.globalToLocal(position);
@@ -1914,7 +2235,6 @@ class FilmEpisodeCard extends StatelessWidget {
         await markFilmWatch(context, [
           resource,
         ], action == _FilmFileAction.watched);
-        await onChanged();
       case _FilmFileAction.source:
         Map<String, dynamic>? info;
         final loaded = await catalog.run(() async {
@@ -2036,16 +2356,14 @@ class FilmEpisodeCard extends StatelessWidget {
   }) {
     final tv = resource.type == FilmMediaType.tv;
     final title = episode?['name'] as String?;
+    final overview = episode?['overview'] as String? ?? '';
+    final hasOverview = overview.trim().isNotEmpty;
     final still = tv ? (episode?['still_path'] as String?) : null;
     final theme = Theme.of(context);
     final measured = probe?['duration'] is num
         ? probe!['duration'] as num
         : null;
-    final runtime = measured != null && measured > 0
-        ? (measured / 60).round()
-        : episode?['runtime'] is num
-        ? episode!['runtime'] as num
-        : officialRuntime;
+    final runtime = _runtime(probe, episode, officialRuntime);
     final rawDate = tv ? (episode?['air_date'] as String?) : releaseDate;
     final airDate = (rawDate ?? '').trim();
     final runtimeText = runtime != null && runtime > 0
@@ -2068,18 +2386,8 @@ class FilmEpisodeCard extends StatelessWidget {
           {'minutes': runtime},
         ),
     ];
-    final compactLineHeight =
-        MediaQuery.textScalerOf(
-          context,
-        ).scale(theme.textTheme.bodySmall!.fontSize!) *
-        1.5;
-    final titleHeight = math.max(
-      32.0,
-      MediaQuery.textScalerOf(
-            context,
-          ).scale(theme.textTheme.titleSmall!.fontSize!) *
-          (theme.textTheme.titleSmall!.height ?? 1.4),
-    );
+    final compactLineHeight = _lineHeight(context);
+    final titleHeight = _titleHeight(context);
     final badges = [
       if (resource.extraKind != null)
         filmExtraLabel(context, catalog.store, resource.extraKind!),
@@ -2102,6 +2410,32 @@ class FilmEpisodeCard extends StatelessWidget {
         ),
       ),
     );
+
+    final details = expanded
+        ? DirectoryScrollView(
+            builder: (controller) => SingleChildScrollView(
+              controller: controller,
+              child: Text(
+                hasOverview ? overview : resource.name,
+                style: theme.textTheme.bodyMedium?.copyWith(height: 1.6),
+              ),
+            ),
+          )
+        : hasOverview
+        ? SizedBox(
+            height: compactLineHeight,
+            width: double.infinity,
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: Text(
+                overview,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(height: 1.5),
+              ),
+            ),
+          )
+        : filenameLine;
 
     return GestureDetector(
       onSecondaryTapDown: (details) => _menu(context, details.globalPosition),
@@ -2182,7 +2516,8 @@ class FilmEpisodeCard extends StatelessWidget {
                     store: catalog.store,
                     resource: resource,
                     spoilerSensitive: tv,
-                    canReveal: false,
+                    canReveal: tv && !hasOverview,
+                    revealLabel: '展示封面',
                     child: ClipRect(
                       child: FilmArtwork(
                         cache: catalog.images,
@@ -2276,56 +2611,17 @@ class FilmEpisodeCard extends StatelessWidget {
                                       textStyle: theme.textTheme.bodySmall,
                                     ),
                                   ),
-                                  child: FilmWatchOverlay(
-                                    store: catalog.store,
-                                    resource: resource,
-                                    spoilerSensitive: true,
-                                    showStatus: false,
-                                    softEdges: true,
-                                    obscureChild: episode != null,
-                                    revealLabel: '展示封面',
-                                    child: episode == null
-                                        ? filenameLine
-                                        : expanded
-                                        ? DirectoryScrollView(
-                                            builder: (controller) =>
-                                                SingleChildScrollView(
-                                                  controller: controller,
-                                                  child: Text(
-                                                    (episode?['overview']
-                                                                    as String? ??
-                                                                '')
-                                                            .isEmpty
-                                                        ? context.l10n.text(
-                                                            '暂无简介',
-                                                          )
-                                                        : episode!['overview']
-                                                              as String,
-                                                    style: theme
-                                                        .textTheme
-                                                        .bodyMedium
-                                                        ?.copyWith(height: 1.6),
-                                                  ),
-                                                ),
-                                          )
-                                        : SizedBox(
-                                            height: compactLineHeight,
-                                            width: double.infinity,
-                                            child: Align(
-                                              alignment: AlignmentDirectional
-                                                  .centerStart,
-                                              child: Text(
-                                                episode?['overview']
-                                                        as String? ??
-                                                    '',
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: theme.textTheme.bodySmall
-                                                    ?.copyWith(height: 1.5),
-                                              ),
-                                            ),
-                                          ),
-                                  ),
+                                  child: hasOverview
+                                      ? FilmWatchOverlay(
+                                          store: catalog.store,
+                                          resource: resource,
+                                          spoilerSensitive: true,
+                                          showStatus: false,
+                                          softEdges: true,
+                                          revealLabel: '展示封面',
+                                          child: details,
+                                        )
+                                      : details,
                                 ),
                               ),
                             )
@@ -2404,7 +2700,9 @@ class _FilmEpisodeCardSurface extends StatefulWidget {
 }
 
 class _FilmEpisodeCardSurfaceState extends State<_FilmEpisodeCardSurface>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => _open;
   final _portal = OverlayPortalController();
   final _link = LayerLink();
   final _anchorKey = GlobalKey();
@@ -2427,6 +2725,7 @@ class _FilmEpisodeCardSurfaceState extends State<_FilmEpisodeCardSurface>
     _sourceSize =
         (_anchorKey.currentContext!.findRenderObject()! as RenderBox).size;
     setState(() => _open = true);
+    updateKeepAlive();
     _portal.show();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_open || _closing) return;
@@ -2446,6 +2745,7 @@ class _FilmEpisodeCardSurfaceState extends State<_FilmEpisodeCardSurface>
       _open = false;
       _closing = false;
     });
+    updateKeepAlive();
   }
 
   Widget _card() =>
@@ -2458,95 +2758,101 @@ class _FilmEpisodeCardSurfaceState extends State<_FilmEpisodeCardSurface>
   }
 
   @override
-  Widget build(BuildContext context) => CompositedTransformTarget(
-    key: _anchorKey,
-    link: _link,
-    child: OverlayPortal(
-      controller: _portal,
-      overlayChildBuilder: (context) => Positioned.fill(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final overlay =
-                Overlay.of(context).context.findRenderObject()! as RenderBox;
-            final anchor =
-                _anchorKey.currentContext!.findRenderObject()! as RenderBox;
-            final origin = anchor.localToGlobal(Offset.zero, ancestor: overlay);
-            final width = math.min(
-              _sourceSize!.width,
-              constraints.maxWidth - 32,
-            );
-            final left = origin.dx.clamp(
-              16.0,
-              math.max(16.0, constraints.maxWidth - width - 16),
-            );
-            final minTop = 16 + AppTheme.posterHoverLift;
-            final top = origin.dy.clamp(
-              minTop,
-              math.max(
+  Widget build(BuildContext context) {
+    super.build(context);
+    return CompositedTransformTarget(
+      key: _anchorKey,
+      link: _link,
+      child: OverlayPortal(
+        controller: _portal,
+        overlayChildBuilder: (context) => Positioned.fill(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final overlay =
+                  Overlay.of(context).context.findRenderObject()! as RenderBox;
+              final anchor =
+                  _anchorKey.currentContext!.findRenderObject()! as RenderBox;
+              final origin = anchor.localToGlobal(
+                Offset.zero,
+                ancestor: overlay,
+              );
+              final width = math.min(
+                _sourceSize!.width,
+                constraints.maxWidth - 32,
+              );
+              final left = origin.dx.clamp(
+                16.0,
+                math.max(16.0, constraints.maxWidth - width - 16),
+              );
+              final minTop = 16 + AppTheme.posterHoverLift;
+              final top = origin.dy.clamp(
                 minTop,
-                constraints.maxHeight - _sourceSize!.height - 120,
-              ),
-            );
-            return FocusScope(
-              autofocus: true,
-              child: Focus(
-                autofocus: true,
-                onKeyEvent: (_, event) {
-                  if (event is KeyDownEvent &&
-                      event.logicalKey == LogicalKeyboardKey.escape) {
-                    _close();
-                    return KeyEventResult.handled;
-                  }
-                  return KeyEventResult.ignored;
-                },
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _close,
-                      ),
-                    ),
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      width: width,
-                      child: AnimatedBuilder(
-                        animation: _lift,
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxHeight: constraints.maxHeight - top - 16,
-                          ),
-                          child: _card(),
-                        ),
-                        builder: (_, child) {
-                          final progress = Curves.easeOutCubic.transform(
-                            _lift.value,
-                          );
-                          return CompositedTransformFollower(
-                            link: _link,
-                            showWhenUnlinked: false,
-                            offset: Offset(
-                              (left - origin.dx) * progress,
-                              (top - origin.dy - AppTheme.posterHoverLift) *
-                                  progress,
-                            ),
-                            child: child,
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                math.max(
+                  minTop,
+                  constraints.maxHeight - _sourceSize!.height - 120,
                 ),
-              ),
-            );
-          },
+              );
+              return FocusScope(
+                autofocus: true,
+                child: Focus(
+                  autofocus: true,
+                  onKeyEvent: (_, event) {
+                    if (event is KeyDownEvent &&
+                        event.logicalKey == LogicalKeyboardKey.escape) {
+                      _close();
+                      return KeyEventResult.handled;
+                    }
+                    return KeyEventResult.ignored;
+                  },
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _close,
+                        ),
+                      ),
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        width: width,
+                        child: AnimatedBuilder(
+                          animation: _lift,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxHeight: constraints.maxHeight - top - 16,
+                            ),
+                            child: _card(),
+                          ),
+                          builder: (_, child) {
+                            final progress = Curves.easeOutCubic.transform(
+                              _lift.value,
+                            );
+                            return CompositedTransformFollower(
+                              link: _link,
+                              showWhenUnlinked: false,
+                              offset: Offset(
+                                (left - origin.dx) * progress,
+                                (top - origin.dy - AppTheme.posterHoverLift) *
+                                    progress,
+                              ),
+                              child: child,
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
         ),
+        child: _open ? SizedBox.fromSize(size: _sourceSize) : _card(),
       ),
-      child: _open ? SizedBox.fromSize(size: _sourceSize) : _card(),
-    ),
-  );
+    );
+  }
 }
 
 class FilmResourceTile extends StatelessWidget {

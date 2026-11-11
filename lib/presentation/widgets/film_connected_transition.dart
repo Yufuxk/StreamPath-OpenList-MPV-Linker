@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show RenderIndexedStack, RenderImage, RenderOpacity;
+    show
+        RenderIndexedStack,
+        RenderImage,
+        RenderOpacity,
+        RenderProxySliver,
+        SliverHitTestResult;
 
 import 'transition_content.dart';
 import 'directory_scroll_view.dart';
@@ -376,9 +381,11 @@ class FilmConnectedReveal extends StatelessWidget {
     super.key,
     required this.child,
     this.part = FilmConnectedPart.primary,
+    this.sliver = false,
   });
   final Widget child;
   final FilmConnectedPart part;
+  final bool sliver;
 
   @override
   Widget build(BuildContext context) {
@@ -401,10 +408,15 @@ class FilmConnectedReveal extends StatelessWidget {
         : AnimatedBuilder(
             animation: progress,
             child: child,
-            builder: (_, child) => Transform.translate(
-              offset: Offset(0, 8 * (1 - progress.value)),
-              child: child,
-            ),
+            builder: (_, child) => sliver
+                ? _FilmSliverTranslate(
+                    dy: 8 * (1 - progress.value),
+                    child: child!,
+                  )
+                : Transform.translate(
+                    offset: Offset(0, 8 * (1 - progress.value)),
+                    child: child,
+                  ),
           );
     if (stage == FilmConnectedPart.secondary) {
       content = TweenAnimationBuilder<double>(
@@ -412,9 +424,60 @@ class FilmConnectedReveal extends StatelessWidget {
         duration: const Duration(milliseconds: 140),
         curve: Curves.easeOutCubic,
         child: content,
-        builder: (_, opacity, child) => Opacity(opacity: opacity, child: child),
+        builder: (_, opacity, child) => sliver
+            ? SliverOpacity(opacity: opacity, sliver: child!)
+            : Opacity(opacity: opacity, child: child),
       );
     }
-    return FadeTransition(opacity: progress, child: content);
+    return sliver
+        ? SliverFadeTransition(opacity: progress, sliver: content)
+        : FadeTransition(opacity: progress, child: content);
   }
+}
+
+/// 纵向详情 Sliver 沿用正文的绘制位移，不改变滚动布局尺寸。
+class _FilmSliverTranslate extends SingleChildRenderObjectWidget {
+  const _FilmSliverTranslate({required this.dy, required super.child});
+  final double dy;
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderFilmSliverTranslate(dy);
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderFilmSliverTranslate renderObject,
+  ) {
+    renderObject.dy = dy;
+  }
+}
+
+class _RenderFilmSliverTranslate extends RenderProxySliver {
+  _RenderFilmSliverTranslate(this._dy);
+  double _dy;
+  set dy(double value) {
+    if (_dy == value) return;
+    _dy = value;
+    markNeedsPaint();
+    markNeedsSemanticsUpdate();
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) =>
+      super.paint(context, offset + Offset(0, _dy));
+  @override
+  void applyPaintTransform(RenderObject child, Matrix4 transform) {
+    super.applyPaintTransform(child, transform);
+    transform.translateByDouble(0, _dy, 0, 1);
+  }
+
+  @override
+  bool hitTestChildren(
+    SliverHitTestResult result, {
+    required double mainAxisPosition,
+    required double crossAxisPosition,
+  }) => child!.hitTest(
+    result,
+    mainAxisPosition: mainAxisPosition - _dy,
+    crossAxisPosition: crossAxisPosition,
+  );
 }

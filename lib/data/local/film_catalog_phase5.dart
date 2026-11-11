@@ -236,7 +236,15 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
     if (key == 'featured_logo_adaptive_size') {
       featuredLogoAdaptiveSize = value == true;
     }
-    _changed();
+    if (key == 'spoiler_protection') {
+      _pendingWatchKeys = null;
+      _notifyChange(watch: true, data: false);
+    } else if (key == 'show_poster_content_count' ||
+        key == 'featured_logo_adaptive_size') {
+      _notifyChange(watch: false, data: false);
+    } else {
+      _changed();
+    }
   }
 
   /// 用户为该作品手工选择的 Logo；换源或重新刮削后继续使用。
