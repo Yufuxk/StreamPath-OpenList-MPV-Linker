@@ -32,6 +32,7 @@ import '../widgets/sp_icons.dart';
 import '../widgets/sp_notice.dart';
 import '../widgets/film_artwork_picker.dart';
 import '../widgets/film_section_settings.dart';
+import '../widgets/film_extra_controls.dart';
 import '../widgets/film_transfer_dialog.dart';
 import '../widgets/sp_controls.dart';
 import '../widgets/clipboard_history_menu.dart';
@@ -715,6 +716,32 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              SPTile(
+                                onTap: _saving
+                                    ? null
+                                    : () => showFilmExtraSettings(
+                                        context,
+                                        c.store,
+                                      ),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const AppText('特典分类管理'),
+                                      Text(
+                                        context.l10n.text(
+                                          '编辑分类名称、识别别名或新增自定义分类',
+                                        ),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                               const SizedBox(height: 12),
                               LayoutBuilder(
                                 builder: (context, constraints) {

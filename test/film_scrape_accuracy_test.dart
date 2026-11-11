@@ -461,9 +461,12 @@ void main() {
       );
     });
 
-    test('特典目录内无季集标记的媒体按 S00 顺序编号且保持稳定', () async {
+    test('特典视频按 S00 顺序编号且排除 CD 和 SCAN 目录', () async {
       await stage([
         entry('TV/Show/Season 01', 'Show.S01E01.mkv'),
+        entry('TV/Show/0.《Specials》/《SPs》', 'Clip #1.strm'),
+        entry('TV/Show/0.《Specials》/《SPs》', 'Clip #2.strm'),
+        entry('TV/Show/0.《Specials》/《PVs》', 'Clip #3.strm'),
         entry('TV/Show/0.《Specials》/《CDs》', 'Drama #1.strm'),
         entry('TV/Show/0.《Specials》/《CDs》', 'Drama #2.strm'),
         entry('TV/Show/0.《Specials》/《SCANs》', 'cover.strm'),
@@ -483,9 +486,14 @@ void main() {
       };
       final first = mapping();
       expect(first['Show.S01E01.mkv'], (null, null));
-      expect(first['Drama #1.strm'], (0, 1));
-      expect(first['Drama #2.strm'], (0, 2));
-      expect(first['cover.strm'], (0, 3));
+      expect(first['Drama #1.strm'], isNull);
+      expect(first['Drama #2.strm'], isNull);
+      expect(first['cover.strm'], isNull);
+      expect(first.values.where((v) => v.$1 == 0).map((v) => v.$2).toSet(), {
+        1,
+        2,
+        3,
+      });
       // 已编号的特典不再变化。
       expect(await matcher.assignExtras(root.id), 0);
     });
@@ -515,8 +523,8 @@ void main() {
       );
       final matcher = FilmCatalogMatcher(store, tmdb);
       final match = await prepare(matcher, entry(parent, name));
-      expect(match?.work.tmdbId, 42509);
-      expect(tmdb.queries, isNot(contains('Drama')));
+      expect(match, isNull);
+      expect(tmdb.queries, isEmpty);
     });
   });
 }

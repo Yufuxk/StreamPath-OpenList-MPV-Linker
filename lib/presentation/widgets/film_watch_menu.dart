@@ -21,6 +21,9 @@ Future<void> showFilmWatchMenu(
   FilmPlaylistScope? playlistScope,
   String? title,
 }) async {
+  resources = resources
+      .where((r) => r.type != FilmMediaType.movie || r.isMovieMain)
+      .toList();
   final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
   final local = overlay.globalToLocal(position);
   final action = await showSPMenu<String>(

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'helpers/pump_until.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
@@ -743,6 +744,15 @@ void main() {
                   findsNothing,
                 );
                 final task = find.byKey(const Key('video-cache-task-ui'));
+                await pumpUntil(
+                  tester,
+                  () => find
+                      .descendant(of: task, matching: find.byType(FilmArtwork))
+                      .evaluate()
+                      .isNotEmpty,
+                  reason:
+                      'Cache poster metadata must be ready before checking artwork',
+                );
                 final floatingPoster = tester.widget<FilmArtwork>(
                   find.descendant(of: task, matching: find.byType(FilmArtwork)),
                 );
@@ -859,15 +869,19 @@ void main() {
                       .value,
                   closeTo(2 / 3, .001),
                 );
-                final poster = tester.widget<FilmArtwork>(
-                  find.byType(FilmArtwork).first,
+                final managedPoster = find.descendant(
+                  of: find.byKey(const Key('video-cache-task-ui')),
+                  matching: find.byType(FilmArtwork),
                 );
+                await pumpUntil(
+                  tester,
+                  () => managedPoster.evaluate().isNotEmpty,
+                  reason: 'Managed cache poster metadata must be ready',
+                );
+                final poster = tester.widget<FilmArtwork>(managedPoster);
                 expect(poster.path, '/fixture.png');
                 expect(poster.target, 'w92');
-                expect(
-                  tester.getSize(find.byType(FilmArtwork).first),
-                  const Size(44, 66),
-                );
+                expect(tester.getSize(managedPoster), const Size(44, 66));
                 expect(
                   find.byKey(const Key('video-cache-cancel-ui')),
                   findsNothing,

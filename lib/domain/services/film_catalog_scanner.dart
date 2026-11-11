@@ -11,6 +11,7 @@ import '../../data/models/media_source.dart';
 import '../repositories/media_directory_source.dart';
 import 'local_media_source.dart';
 import 'special_video_playlist_collector.dart';
+import 'film_extra_classifier.dart';
 import 'webdav_media_source_adapter.dart';
 
 class FilmScanProgress {
@@ -130,6 +131,7 @@ class FilmCatalogScanner {
       if (entry.isSelfEntry) continue;
       if (entry.isDirectory &&
           (excludedDirectory(entry.name) ||
+              FilmExtraClassifier.excludedDirectory(entry.name) ||
               exclusions.excludesName(entry.name))) {
         continue;
       }
@@ -198,7 +200,10 @@ class FilmCatalogScanner {
       while (queue.isNotEmpty) {
         _checkCancelled();
         final path = queue.removeFirst();
-        if (exclusions.excludesPath(path)) continue;
+        if (exclusions.excludesPath(path) ||
+            FilmExtraClassifier.excludedPath(path)) {
+          continue;
+        }
         if (!visited.add(filmPathKey(path, root.sourceKind))) continue;
         report?.call(FilmScanProgress(root.id, directories, files, path));
         if (source.descriptor.kind != MediaSourceKind.local &&

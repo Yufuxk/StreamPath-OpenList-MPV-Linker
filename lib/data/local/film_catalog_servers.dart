@@ -238,7 +238,7 @@ extension FilmCatalogServerData on FilmCatalogStore {
         return false;
       }
       final rows = await txn.rawQuery(
-        '''SELECT r.work_id,r.season_number,r.episode_number,c.media_type FROM resources r
+        '''SELECT r.*,c.media_type FROM resources r
         JOIN catalog_roots c ON c.id=r.root_id JOIN server_items s ON s.resource_id=r.id WHERE s.source_id=? AND s.item_id=?''',
         [source, item],
       );
@@ -250,6 +250,20 @@ extension FilmCatalogServerData on FilmCatalogStore {
       for (final row in rows) {
         if (row['work_id'] == null ||
             row['media_type'] == 'tv' && row['episode_number'] == null) {
+          continue;
+        }
+        if (row['media_type'] == 'movie' && row['extra_status'] == 'extra') {
+          await txn.insert(
+            'film_resource_watch_state',
+            {
+              'resource_id': row['id'],
+              'work_id': row['work_id'],
+              'watched': watched ? 1 : 0,
+              'position_ms': watched ? 0 : position,
+              'observed_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
           continue;
         }
         final key = (
@@ -370,6 +384,30 @@ extension FilmCatalogServerData on FilmCatalogStore {
           whereArgs: [root.id, entry.path],
         );
         final resource = rows.single;
+        if (resource['extra_origin'] != 'manual') {
+          final originalPath = versions[i]['Path'] as String?;
+          final originalName = originalPath
+              ?.replaceAll('\\', '/')
+              .split('/')
+              .last;
+          if (originalName != null && originalName.isNotEmpty) {
+            final extra = FilmExtraClassifier(
+              extraRules,
+            ).classify(name: originalName, path: originalName, rootPath: '');
+            await txn.update(
+              'resources',
+              {
+                ..._extraValues(extra, extraRules.classificationVersion),
+                'extra_evidence_json': jsonEncode({
+                  ...extra.evidence,
+                  'source_name': originalName.split('?').first,
+                }),
+              },
+              where: 'id=?',
+              whereArgs: [resource['id']],
+            );
+          }
+        }
         if (resource['binding_origin'] != 'manual') {
           await txn.update(
             'resources',

@@ -59,6 +59,7 @@ class FilmWatchOverlay extends StatefulWidget {
     this.canReveal = true,
     this.revealBelow = false,
     this.softEdges = false,
+    this.obscureChild = true,
     this.revealLabel = '展示剧透',
     this.footer,
     this.hoverSurface = false,
@@ -72,6 +73,9 @@ class FilmWatchOverlay extends StatefulWidget {
 
   /// 简介在原槽位中使用柔和渐隐与圆角，不影响揭示按钮位置。
   final bool softEdges;
+
+  /// 文件名保持清晰，同时保留共享封面的揭示动作。
+  final bool obscureChild;
   final String revealLabel;
   final Widget? footer;
 
@@ -279,7 +283,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       // 状态确认前保留简介尺寸，避免露出剧透或临时揭示按钮。
       artwork = Opacity(opacity: 0, child: ExcludeSemantics(child: artwork));
     }
-    if (blocked) {
+    if (blocked && widget.obscureChild) {
       final softBlur = widget.revealBelow || widget.softEdges;
       artwork = ImageFiltered(
         imageFilter: ui.ImageFilter.blur(

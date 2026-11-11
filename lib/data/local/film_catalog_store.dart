@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -12,6 +13,9 @@ import '../models/media_source.dart';
 import '../models/film_home_section.dart';
 import '../models/media_library_item.dart';
 import '../models/film_watch_state.dart';
+import '../models/film_extra.dart';
+import '../../domain/services/film_extra_classifier.dart';
+import '../../core/utils/video_filename_parser.dart';
 import '../models/video_queue.dart';
 import '../models/film_collection.dart';
 import '../models/media_connection.dart';
@@ -28,11 +32,16 @@ part 'film_catalog_portability.dart';
 part 'film_catalog_playlists.dart';
 part 'film_catalog_versions.dart';
 part 'film_catalog_fast_tasks.dart';
+part 'film_catalog_extras.dart';
 
 /// 永久影视目录；远端操作始终在写事务外完成。
 class FilmCatalogStore extends ChangeNotifier {
   FilmCatalogStore._(this._db);
   final Database _db;
+  FilmExtraRules extraRules = const FilmExtraRules();
+  Future<void>? _extraTask;
+  bool _closing = false;
+  String? extraError;
   // 同一来源的分类封面在本次运行中保持选择，重启后重新随机。
   final _categoryCovers = <(String?, String), (int, String)>{};
   int _notificationDepth = 0;
@@ -106,6 +115,7 @@ class FilmCatalogStore extends ChangeNotifier {
 
   Future<FilmWatchState?> resourceWatchState(FilmResource r) async {
     if (!r.canMarkWatched) return null;
+    if (r.usesResourceWatch) return _extraWatchState(r);
     if (r.isDisc) {
       final rows = await _db.query(
         'film_disc_watch_state',
@@ -128,6 +138,16 @@ class FilmCatalogStore extends ChangeNotifier {
     final resource = await resourceAt(sourceId, path);
     if (resource == null || !resource.canMarkWatched || resource.isDisc) {
       return null;
+    }
+    if (resource.usesResourceWatch) {
+      final rows = await _db.query(
+        'film_resource_watch_state',
+        columns: ['manual_at'],
+        where: 'resource_id=? AND work_id=?',
+        whereArgs: [resource.id, resource.workId],
+      );
+      final time = rows.isEmpty ? 0 : rows.single['manual_at'] as int;
+      return time == 0 ? null : DateTime.fromMillisecondsSinceEpoch(time);
     }
     final (season, episode) = _watchNumbers(resource);
     final rows = await _db.query(
@@ -197,6 +217,9 @@ class FilmCatalogStore extends ChangeNotifier {
     WHERE r.work_id IN (${List.filled(ids.length, '?').join(',')})
       AND $_rootEnabledSql
       AND r.media_kind IN ('video','strm','iso','bdmv')
+      AND (w.media_type<>'movie' OR (r.extra_status<>'extra' AND
+        (r.extra_status='non_extra' OR r.media_kind IN ('iso','bdmv') OR r.binding_origin IN ('search','nfo','server') OR
+          r.binding_origin='explicit' AND (lower(r.name) LIKE '%{tmdb-%' OR lower(r.name) LIKE '%[tmdb-%' OR lower(r.name) LIKE '%[tmdbid-%'))))
       AND (r.media_kind IN ('iso','bdmv') OR w.media_type='movie' OR r.season_number IS NOT NULL AND r.episode_number IS NOT NULL)
       ${rootId == null ? '' : 'AND r.root_id=?'} ${sourceId == null ? '' : 'AND c.source_id=?'}
       ${sourceIds == null
@@ -250,6 +273,7 @@ class FilmCatalogStore extends ChangeNotifier {
   Future<void> recordVideoProgress(VideoProgressUpdate update) async {
     final r = await resourceAt(update.sourceId, update.path);
     if (r == null || !r.canMarkWatched || r.isDisc) return;
+    if (r.usesResourceWatch) return _recordExtraProgress(r, update);
     final (s, e) = _watchNumbers(r);
     final time = update.recordedAt.millisecondsSinceEpoch;
     final watched =
@@ -295,6 +319,20 @@ class FilmCatalogStore extends ChangeNotifier {
     await _db.transaction((txn) async {
       final keys = <(String, int, int, int)>{};
       for (final r in resources.where((r) => r.canMarkWatched)) {
+        if (r.usesResourceWatch) {
+          await txn.insert(
+            'film_resource_watch_state',
+            {
+              'resource_id': r.id,
+              'work_id': r.workId,
+              'watched': watched ? 1 : 0,
+              'manual_at': now,
+              'observed_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          continue;
+        }
         if (r.isDisc) {
           await txn.insert('film_disc_watch_state', {
             'resource_id': r.id,
@@ -325,11 +363,11 @@ class FilmCatalogStore extends ChangeNotifier {
         .openDatabase(
           path,
           options: OpenDatabaseOptions(
-            version: 10,
+            version: 11,
             onConfigure: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
               final version = await db.getVersion();
-              if (version > 0 && version < 10 && path != inMemoryDatabasePath) {
+              if (version > 0 && version < 11 && path != inMemoryDatabasePath) {
                 final backup =
                     '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
                 await db.execute(
@@ -356,6 +394,7 @@ class FilmCatalogStore extends ChangeNotifier {
               for (final statement in _playlistSchema) {
                 await db.execute(statement);
               }
+              await _upgradeExtras(db);
             },
             onUpgrade: (db, oldVersion, _) async {
               if (oldVersion < 5) await db.execute(_watchSchema);
@@ -448,6 +487,7 @@ class FilmCatalogStore extends ChangeNotifier {
                   await db.execute(statement);
                 }
               }
+              if (oldVersion < 11) await _upgradeExtras(db);
             },
             onOpen: (db) async {
               await db.execute('PRAGMA foreign_keys = ON');
@@ -482,10 +522,14 @@ class FilmCatalogStore extends ChangeNotifier {
         await store.preference('show_poster_content_count') == true;
     store.featuredLogoAdaptiveSize =
         await store.preference('featured_logo_adaptive_size') == true;
+    await store._loadExtraRules();
+    store.startExtraBackfill();
     return store;
   }
 
   Future<void> close() async {
+    _closing = true;
+    await _extraTask;
     await _db.close();
     _watchChanges.dispose();
     super.dispose();
@@ -762,6 +806,7 @@ class FilmCatalogStore extends ChangeNotifier {
     await _checkScan(txn, root.id, generation);
     final batch = txn.batch();
     final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final classifier = FilmExtraClassifier(extraRules);
     for (final entry in entries) {
       validateFilmPath(entry.path);
       if (!filmPathWithin(
@@ -782,12 +827,21 @@ class FilmCatalogStore extends ChangeNotifier {
       batch.rawInsert(
         '''INSERT INTO resources
         (root_id, relative_path, path_key, parent_path, name, media_kind,
-         last_seen_generation, availability, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?)
+         last_seen_generation, availability, created_at,
+         extra_kind,extra_origin,extra_status,extra_rule_version,extra_evidence_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?, ?, ?, ?, ?, ?)
         ON CONFLICT(root_id, path_key) DO UPDATE SET
           relative_path = excluded.relative_path, parent_path = excluded.parent_path,
           name = excluded.name, media_kind = excluded.media_kind,
-          last_seen_generation = excluded.last_seen_generation, availability = 'present'
+          last_seen_generation = excluded.last_seen_generation, availability = 'present',
+          extra_kind=CASE WHEN resources.extra_origin='manual' THEN resources.extra_kind ELSE excluded.extra_kind END,
+          extra_origin=CASE WHEN resources.extra_origin='manual' THEN resources.extra_origin ELSE excluded.extra_origin END,
+          extra_status=CASE WHEN resources.extra_origin='manual' OR resources.extra_status='non_extra' AND excluded.extra_status='unknown' THEN resources.extra_status ELSE excluded.extra_status END,
+          extra_rule_version=CASE WHEN resources.extra_origin='manual' THEN resources.extra_rule_version ELSE excluded.extra_rule_version END,
+          extra_evidence_json=CASE WHEN resources.extra_origin='manual' THEN resources.extra_evidence_json
+            WHEN json_extract(resources.extra_evidence_json,'\$.directory') IS NOT NULL
+            THEN json_set(excluded.extra_evidence_json,'\$.directory',json_extract(resources.extra_evidence_json,'\$.directory'))
+            ELSE excluded.extra_evidence_json END
         ''',
         [
           root.id,
@@ -798,6 +852,17 @@ class FilmCatalogStore extends ChangeNotifier {
           entry.mediaKind,
           generation,
           now,
+          ..._extraValues(
+            root.sourceKind.isMediaServer
+                ? const FilmExtraClassification()
+                : classifier.classify(
+                    name: entry.name,
+                    path: entry.path,
+                    rootPath: root.path,
+                    mediaKind: entry.mediaKind,
+                  ),
+            extraRules.classificationVersion,
+          ).values,
         ],
       );
     }
@@ -989,6 +1054,10 @@ class FilmCatalogStore extends ChangeNotifier {
             'work_id': workId,
             'binding_origin': match.origin,
             'binding_version': ++version,
+            if (rebind &&
+                row['extra_origin'] != 'manual' &&
+                row['extra_status'] == 'non_extra')
+              'extra_status': 'unknown',
             if (rebind && match.episode == null) ...{
               'season_number': null,
               'episode_number': null,
@@ -1019,6 +1088,7 @@ class FilmCatalogStore extends ChangeNotifier {
           );
         }
       }
+      await _confirmMovieMain(txn, row, match.work);
     }
     return (changed, watchChanged);
   }
@@ -1166,12 +1236,17 @@ class FilmCatalogStore extends ChangeNotifier {
         if (limit != null) ...[limit, offset],
       ],
     );
-    return rows.map(FilmResource.fromRow).toList();
+    return (await _classifyExtraRows(rows))
+        .map(FilmResource.fromRow)
+        .where((r) => !FilmExtraClassifier.excludedPath(r.parentPath))
+        .toList();
   }
 
   Future<FilmResource?> resource(int id) async {
     final rows = await _db.rawQuery('$_resourceSelect WHERE r.id = ?', [id]);
-    return rows.isEmpty ? null : FilmResource.fromRow(rows.single);
+    return rows.isEmpty
+        ? null
+        : FilmResource.fromRow((await _classifyExtraRows(rows)).single);
   }
 
   Future<int> pendingCount({String? sourceId, int? rootId}) async =>
@@ -1543,7 +1618,7 @@ class FilmCatalogStore extends ChangeNotifier {
         (start + 200).clamp(0, records.length),
       );
       final rows = await _db.rawQuery(
-        'SELECT c.source_id, r.path_key, w.title FROM resources r JOIN catalog_roots c ON c.id = r.root_id JOIN works w ON w.id = r.work_id WHERE ${List.filled(batch.length, '(c.source_id = ? AND r.path_key = ?)').join(' OR ')}',
+        "SELECT c.source_id, r.path_key, CASE WHEN w.media_type='movie' AND r.extra_status='extra' THEN r.name ELSE w.title END AS title FROM resources r JOIN catalog_roots c ON c.id = r.root_id JOIN works w ON w.id = r.work_id WHERE ${List.filled(batch.length, '(c.source_id = ? AND r.path_key = ?)').join(' OR ')}",
         [
           for (final record in batch) ...[
             record.item.sourceId,
@@ -1572,7 +1647,9 @@ class FilmCatalogStore extends ChangeNotifier {
       '$_resourceSelect WHERE c.source_id = ? AND r.path_key = ?',
       [sourceId, sourceId.startsWith('local:') ? path.toLowerCase() : path],
     );
-    return rows.isEmpty ? null : FilmResource.fromRow(rows.first);
+    return rows.isEmpty
+        ? null
+        : FilmResource.fromRow((await _classifyExtraRows(rows)).first);
   }
 
   /// 读取分类注入所需的影片元数据；资源未关联作品时返回 null。
@@ -1839,10 +1916,19 @@ class FilmCatalogStore extends ChangeNotifier {
             'season_number': null,
             'episode_number': null,
             'episode_mapping_origin': 'unset',
+            if (resource.extraOrigin != 'manual' &&
+                resource.extraStatus == 'non_extra')
+              'extra_status': 'unknown',
           },
           where: 'id = ?',
           whereArgs: [resource.id],
         );
+        final saved = (await txn.query(
+          'resources',
+          where: 'id=?',
+          whereArgs: [resource.id],
+        )).single;
+        await _confirmMovieMain(txn, saved, work);
       }
       if (directoryPath != null) {
         final first = snapshots.first;

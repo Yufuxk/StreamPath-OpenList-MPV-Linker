@@ -1,3 +1,4 @@
+import 'support/legacy_film_catalog.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -201,6 +202,7 @@ void main() {
     for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
       await legacy.execute('DROP TABLE $table');
     }
+    await restoreVersion10Fixture(legacy);
     await legacy.setVersion(9);
     await legacy.close();
     await f.open();

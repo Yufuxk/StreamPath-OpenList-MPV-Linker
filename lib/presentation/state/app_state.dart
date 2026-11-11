@@ -823,7 +823,7 @@ class AppState extends ChangeNotifier {
     final episodes = <(String, int), Set<(int?, int?)>>{};
     for (final r in selected) {
       if (!r.canMarkWatched) continue;
-      if (r.isDisc) {
+      if (r.isDisc || r.usesResourceWatch) {
         selectedDiscs[r.id] = r;
       } else {
         episodes.putIfAbsent((r.sourceId, r.workId!), () => {}).add((
@@ -844,6 +844,7 @@ class AppState extends ChangeNotifier {
           (v) =>
               v.canMarkWatched &&
               !v.isDisc &&
+              !v.usesResourceWatch &&
               (v.type == FilmMediaType.movie ||
                   group.value.contains((v.season, v.episode))),
         ),

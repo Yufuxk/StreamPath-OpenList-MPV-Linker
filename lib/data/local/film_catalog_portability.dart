@@ -9,6 +9,7 @@ const _portableTables = [
   'work_favorites',
   'film_watch_state',
   'film_disc_watch_state',
+  'film_resource_watch_state',
   'root_covers',
   'catalog_preferences',
   'film_collections',
@@ -74,36 +75,57 @@ extension FilmCatalogPortability on FilmCatalogStore {
   Future<void> backupTo(String path) =>
       _db.execute("VACUUM INTO '${path.replaceAll("'", "''")}'");
   Future<void> restoreBackup(String path) async {
-    await _db.execute(
-      "ATTACH DATABASE '${path.replaceAll("'", "''")}' AS recovery",
+    await waitForExtraBackfill();
+    // 先在副本上升级，原备份保持不变。
+    final copy = File(
+      '$path.restore-${DateTime.now().microsecondsSinceEpoch}.tmp',
     );
+    await File(path).copy(copy.path);
     try {
-      await _db.transaction((txn) async {
-        final tables = [
-          ..._portableTables,
-          'resource_probes',
-          'work_people',
-          'server_items',
-          'server_sync_pending',
-          'film_playlists',
-          'film_playlist_items',
-          'film_playlist_scopes',
-        ];
-        for (final table in tables.reversed) {
-          await txn.delete(table);
-        }
-        for (final table in tables) {
-          await txn.execute('INSERT INTO $table SELECT * FROM recovery.$table');
-        }
-      });
+      final upgraded = await FilmCatalogStore.open(copy.path);
+      try {
+        await upgraded.waitForExtraBackfill();
+      } finally {
+        await upgraded.close();
+      }
+      await _db.execute(
+        "ATTACH DATABASE '${copy.path.replaceAll("'", "''")}' AS recovery",
+      );
+      try {
+        await _db.transaction((txn) async {
+          final tables = [
+            ..._portableTables,
+            'film_resource_versions',
+            'resource_probes',
+            'work_people',
+            'server_items',
+            'server_sync_pending',
+            'film_playlists',
+            'film_playlist_items',
+            'film_playlist_scopes',
+          ];
+          for (final table in tables.reversed) {
+            await txn.delete(table);
+          }
+          for (final table in tables) {
+            await txn.execute(
+              'INSERT INTO $table SELECT * FROM recovery.$table',
+            );
+          }
+        });
+      } finally {
+        await _db.execute('DETACH DATABASE recovery');
+      }
     } finally {
-      await _db.execute('DETACH DATABASE recovery');
+      await copy.delete();
     }
     spoilerProtection = await preference('spoiler_protection') == true;
     showPosterContentCount =
         await preference('show_poster_content_count') == true;
     featuredLogoAdaptiveSize =
         await preference('featured_logo_adaptive_size') == true;
+    await _loadExtraRules();
+    startExtraBackfill();
     _changed();
   }
 
@@ -138,6 +160,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
                     'spoiler_protection',
                     'show_poster_content_count',
                     'featured_logo_adaptive_size',
+                    'extra_rules',
                   ].contains(row['key']),
                 )
                 .toList();
@@ -159,7 +182,46 @@ extension FilmCatalogPortability on FilmCatalogStore {
         (data[table] as List? ?? []).map(
           (row) => Map<String, Object?>.from(row as Map),
         );
+    var mergedRules = extraRules;
+    if (categories.contains('metadata')) {
+      final incoming = rows(
+        'catalog_preferences',
+      ).where((r) => r['key'] == 'extra_rules').firstOrNull;
+      if (incoming != null) {
+        final imported = FilmExtraRules.fromJson(
+          jsonDecode(incoming['value_json'] as String) as Map<String, dynamic>,
+        );
+        final types = [
+          if (await preference('extra_rules') == null) ...[
+            ...imported.types,
+            ...extraRules.types.where(
+              (t) => !imported.types.any((incoming) => incoming.id == t.id),
+            ),
+          ] else ...[
+            ...extraRules.types,
+            ...imported.types.where(
+              (t) => t.custom && !extraRules.types.any((own) => own.id == t.id),
+            ),
+          ],
+        ];
+        try {
+          FilmExtraClassifier.validateRules(types);
+        } on FormatException {
+          throw const FilmCatalogException('invalidImport');
+        }
+        mergedRules = FilmExtraRules(
+          revision: extraRules.revision + 1,
+          types: types,
+        );
+      }
+    }
     await _db.transaction((txn) async {
+      if (mergedRules != extraRules) {
+        await txn.insert('catalog_preferences', {
+          'key': 'extra_rules',
+          'value_json': jsonEncode(mergedRules.toJson()),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
       final roots = {for (final row in rows('catalog_roots')) row['id']: row};
       final rootIds = <Object?, int>{};
       final currentRoots = await txn.query('catalog_roots');
@@ -209,13 +271,13 @@ extension FilmCatalogPortability on FilmCatalogStore {
         final candidates = await txn.query(
           'works',
           where:
-              'media_type=? AND (identity_key=? OR ((title=? COLLATE NOCASE OR original_title=? COLLATE NOCASE) AND year IS ?))',
+              'media_type=? AND (identity_key=? OR ((title=? COLLATE NOCASE OR original_title=? COLLATE NOCASE) AND year IS ${work.year == null ? 'NULL' : '?'}))',
           whereArgs: [
             work.type.name,
             work.identity,
             work.title,
             work.originalTitle,
-            work.year,
+            if (work.year != null) work.year,
           ],
         );
         final valid = candidates
@@ -309,6 +371,21 @@ extension FilmCatalogPortability on FilmCatalogStore {
               'episode_mapping_origin': row['episode_mapping_origin'],
             });
           }
+          if (current['extra_origin'] != 'manual' &&
+              row['extra_origin'] == 'manual' &&
+              (row['extra_kind'] == null ||
+                  mergedRules.types.any((t) => t.id == row['extra_kind']))) {
+            values.addAll({
+              for (final field in [
+                'extra_kind',
+                'extra_origin',
+                'extra_status',
+                'extra_rule_version',
+                'extra_evidence_json',
+              ])
+                field: row[field],
+            });
+          }
           if (values.isNotEmpty) {
             await txn.update(
               'resources',
@@ -341,6 +418,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
         'work_favorites',
         'film_watch_state',
         'film_disc_watch_state',
+        'film_resource_watch_state',
       ]) {
         if (!categories.contains(
           table == 'work_favorites' ? 'favorites' : 'playback',
@@ -355,7 +433,11 @@ extension FilmCatalogPortability on FilmCatalogStore {
               : sources[row['source_id']];
           if (row['source_id'] != null && source == null) continue;
           final resource = resourceIds[row['resource_id']];
-          if (table == 'film_disc_watch_state' && resource == null) continue;
+          if ((table == 'film_disc_watch_state' ||
+                  table == 'film_resource_watch_state') &&
+              resource == null) {
+            continue;
+          }
           await txn.insert(table, {
             ...row,
             'work_id': work,
@@ -412,6 +494,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
           );
         }
         for (final row in rows('catalog_preferences')) {
+          if (row['key'] == 'extra_rules') continue;
           await txn.insert(
             'catalog_preferences',
             row,
@@ -424,6 +507,8 @@ extension FilmCatalogPortability on FilmCatalogStore {
         await preference('show_poster_content_count') == true;
     featuredLogoAdaptiveSize =
         await preference('featured_logo_adaptive_size') == true;
+    extraRules = mergedRules;
+    startExtraBackfill();
     _changed();
     return result;
   }

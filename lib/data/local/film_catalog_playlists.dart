@@ -20,7 +20,8 @@ String _playlistId() =>
     '${DateTime.now().microsecondsSinceEpoch}:${Random.secure().nextInt(1 << 32)}';
 String _playlistTarget(FilmResource r) =>
     r.workId != null &&
-        (r.type == FilmMediaType.movie || r.season != null && r.episode != null)
+        (r.isMovieMain ||
+            r.type == FilmMediaType.tv && r.season != null && r.episode != null)
     ? 'work:${r.workId}:${r.season ?? -1}:${r.episode ?? -1}'
     : 'path:${r.pathKey}';
 
@@ -138,13 +139,20 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
     DatabaseExecutor db,
     String source, {
     int? workId,
-  }) async => (await db.rawQuery(
-    '''${FilmCatalogStore._resourceSelect} WHERE c.source_id=? AND ${FilmCatalogStore._rootEnabledSql}
+  }) async =>
+      (await _classifyExtraRows(
+            await db.rawQuery(
+              '''${FilmCatalogStore._resourceSelect} WHERE c.source_id=? AND ${FilmCatalogStore._rootEnabledSql}
       ${workId == null ? '' : 'AND r.work_id=?'}
       AND r.availability='present' AND r.media_kind IN ('video','strm')
       ORDER BY r.relative_path,r.id''',
-    [source, ?workId],
-  )).map(FilmResource.fromRow).toList();
+              [source, ?workId],
+            ),
+            executor: db,
+          ))
+          .map(FilmResource.fromRow)
+          .where((r) => !FilmExtraClassifier.excludedPath(r.parentPath))
+          .toList();
 
   Future<List<List<FilmResource>>> _playlistGroups(
     DatabaseExecutor db,
@@ -172,7 +180,11 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
       workId: scope.workId,
     );
     final filtered = resources
-        .where((r) => scope.season == null || r.season == scope.season)
+        .where(
+          (r) =>
+              (scope.season == null || r.season == scope.season) &&
+              (r.type != FilmMediaType.movie || r.isMovieMain),
+        )
         .toList();
     if (filtered.isEmpty) return [];
     if (filtered.first.type == FilmMediaType.movie) return [filtered];
@@ -577,7 +589,8 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
                   : entry.workId != null &&
                         r.workId == entry.workId &&
                         r.season == entry.season &&
-                        r.episode == entry.episode,
+                        r.episode == entry.episode &&
+                        (r.type != FilmMediaType.movie || r.isMovieMain),
             )
             .toList();
         if (entry.serverItemId != null) {

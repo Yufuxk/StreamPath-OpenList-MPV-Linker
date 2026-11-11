@@ -1,3 +1,4 @@
+import 'support/legacy_film_catalog.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
@@ -61,12 +62,13 @@ void main() {
       for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
         await legacy.execute('DROP TABLE $table');
       }
+      await restoreVersion10Fixture(legacy);
       await legacy.setVersion(8);
       await legacy.close();
       store = await FilmCatalogStore.open(path);
       expect(await store.preference('fixture'), isTrue);
       final db = await databaseFactoryFfi.openDatabase(path);
-      expect(await db.getVersion(), 10);
+      expect(await db.getVersion(), 11);
       expect(await db.query('film_resource_versions'), isEmpty);
       expect(
         dir.listSync().where((e) => e.path.contains('.before-v9-')),

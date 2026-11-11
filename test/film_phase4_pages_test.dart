@@ -202,6 +202,9 @@ void main() {
           },
         ),
       );
+      for (final resource in await c.store.resources()) {
+        await c.store.setExtraType(resource, null);
+      }
       resources = await c.store.resources();
       await c.store.saveProbe(resources.first.id, {
         'duration': 7200,

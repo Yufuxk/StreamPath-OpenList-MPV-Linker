@@ -141,6 +141,10 @@ void main() {
             metadata: const {'presentation_version': 3},
           ),
         );
+        await catalog.store.setExtraType(
+          (await catalog.store.resource(resources[i].id))!,
+          null,
+        );
         for (final (path, target) in [
           ('/poster$i.png', 'w342'),
           ('/poster$i.png', 'w500'),

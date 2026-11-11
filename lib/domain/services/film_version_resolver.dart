@@ -64,6 +64,15 @@ String filmVersionKey(
         break;
       }
     }
+    if (seasonIndex < 0 && sourcePath == null) {
+      final directory =
+          (jsonDecode(resource.extraEvidence) as Map)['directory'] as String?;
+      if (directory != null &&
+          path.startsWith('$directory/') &&
+          filmPathWithin(directory, resource.rootPath)) {
+        seasonIndex = directory.split('/').length - 1;
+      }
+    }
   } else {
     for (var i = parts.length - 2; i >= rootDepth; i--) {
       if (SeasonVideoPlaylistCollector.seasonFromFolder(parts[i]) ==

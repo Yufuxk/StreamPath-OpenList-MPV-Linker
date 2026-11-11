@@ -155,6 +155,28 @@ Future<void> _mergeWork(DatabaseExecutor db, int oldId, int newId) async {
       ],
     );
   }
+  for (final row in await db.query(
+    'film_resource_watch_state',
+    where: 'work_id=?',
+    whereArgs: [oldId],
+  )) {
+    await db.rawInsert(
+      '''INSERT INTO film_resource_watch_state
+      (resource_id,work_id,watched,position_ms,duration_ms,observed_at,manual_at) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(resource_id,work_id) DO UPDATE SET watched=excluded.watched,position_ms=excluded.position_ms,
+      duration_ms=excluded.duration_ms,observed_at=excluded.observed_at,manual_at=MAX(film_resource_watch_state.manual_at,excluded.manual_at)
+      WHERE MAX(excluded.manual_at,excluded.observed_at)>MAX(film_resource_watch_state.manual_at,film_resource_watch_state.observed_at)''',
+      [
+        row['resource_id'],
+        newId,
+        row['watched'],
+        row['position_ms'],
+        row['duration_ms'],
+        row['observed_at'],
+        row['manual_at'],
+      ],
+    );
+  }
   for (final table in ['resources', 'series_bindings', 'root_covers']) {
     await db.update(
       table,

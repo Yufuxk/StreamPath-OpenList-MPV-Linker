@@ -71,7 +71,9 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
         .firstOrNull;
     return {
       'resource': resource,
-      'title': work?.title ?? item.name,
+      'title': resource?.usesResourceWatch == true
+          ? item.name
+          : work?.title ?? item.name,
       'path': widget.poster
           ? work?.posterPath
           : episode?['still_path'] ?? work?.backdropPath ?? work?.posterPath,

@@ -1,7 +1,22 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+/// 移除 v11 字段，构造真实旧库而非仅降低版本号。
+Future<void> restoreVersion10Fixture(Database db) async {
+  await db.execute('DROP TABLE film_resource_watch_state');
+  for (final field in [
+    'extra_kind',
+    'extra_origin',
+    'extra_status',
+    'extra_rule_version',
+    'extra_evidence_json',
+  ]) {
+    await db.execute('ALTER TABLE resources DROP COLUMN $field');
+  }
+}
+
 /// 旧版本迁移夹具使用 v6 的作品约束，且不包含第五阶段表。
 Future<void> restoreVersion6Fixture(Database db) async {
+  await restoreVersion10Fixture(db);
   await db.execute('PRAGMA foreign_keys=OFF');
   for (final table in [
     'fast_task_jobs',

@@ -1,3 +1,4 @@
+import 'support/legacy_film_catalog.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -230,6 +231,50 @@ void main() {
     await store.commitScan(root.id, generation, cancelled: () => false);
   }
 
+  test('电影特典复用作品容器身份，不以 PV 文件名检索独立作品', () async {
+    final root = await addRoot();
+    const path = 'Movies/Work 88 (2020)/Extras/PV01.mkv';
+    await inventory(root, [path]);
+    final adapter = _ApiAdapter(
+      (options) async => options.path.contains('/search/')
+          ? {
+              'results': [_details(FilmMediaType.movie, 88)],
+            }
+          : _details(FilmMediaType.movie, 88),
+    );
+    final tmdb = TmdbMetadataService(
+      credentials: _MemoryToken(),
+      dio: Dio()..httpClientAdapter = adapter,
+    );
+    addTearDown(tmdb.close);
+    final session = await FilmCatalogMatcher(
+      store,
+      tmdb,
+    ).scanSession(root, cancelled: () => false);
+    await session.prepare([
+      const FilmScanEntry(
+        path: path,
+        parentPath: 'Movies/Work 88 (2020)/Extras',
+        name: 'PV01.mkv',
+        mediaKind: 'video',
+      ),
+    ]);
+    expect(session.matches.values.single.work.tmdbId, 88);
+    expect(
+      adapter.requests
+          .where((r) => r.path.contains('/search/'))
+          .map((r) => r.queryParameters['query']),
+      everyElement(isNot(contains('PV'))),
+    );
+    await store.applyMetadata(root.id, session.matches);
+    final extra = (await store.resources()).single;
+    expect(
+      (extra.extraKind, extra.bindingOrigin, extra.season, extra.episode),
+      ('pv', 'folder', null, null),
+    );
+    expect(extra.isMovieMain, isFalse);
+  });
+
   test('影视库统计按条目计数、整剧去重、光盘归电影并排除停用与缺失资源', () async {
     var stats = await store.statistics();
     expect(
@@ -443,20 +488,20 @@ void main() {
     final resources = await store.resources(rootId: root.id);
     FilmResource at(String path) =>
         resources.firstWhere((resource) => resource.path == path);
-    await store.bind([
-      at('Anime/a.mkv'),
-      at('Anime/disc.iso'),
-    ], FilmWork(
-      type: FilmMediaType.movie,
-      tmdbId: 9001,
-      title: 'Anime Movie',
-      originalTitle: 'Anime Movie',
-      overview: '',
-      language: 'zh-CN',
-      metadata: const {
-        'genres': ['动画', '奇幻'],
-      },
-    ));
+    await store.bind(
+      [at('Anime/a.mkv'), at('Anime/disc.iso')],
+      FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 9001,
+        title: 'Anime Movie',
+        originalTitle: 'Anime Movie',
+        overview: '',
+        language: 'zh-CN',
+        metadata: const {
+          'genres': ['动画', '奇幻'],
+        },
+      ),
+    );
 
     final tvRoot = await addRoot(
       source: 'anime',
@@ -464,19 +509,22 @@ void main() {
       type: FilmMediaType.tv,
     );
     await inventory(tvRoot, ['AnimeTv/b.mkv']);
-    await store.bind([(await store.resources(rootId: tvRoot.id)).single], FilmWork(
-      type: FilmMediaType.tv,
-      tmdbId: 9002,
-      title: 'Live Drama',
-      originalTitle: 'Live Drama',
-      overview: '',
-      language: 'zh-CN',
-      metadata: const {
-        'genres': [
-          {'name': 'Drama'},
-        ],
-      },
-    ));
+    await store.bind(
+      [(await store.resources(rootId: tvRoot.id)).single],
+      FilmWork(
+        type: FilmMediaType.tv,
+        tmdbId: 9002,
+        title: 'Live Drama',
+        originalTitle: 'Live Drama',
+        overview: '',
+        language: 'zh-CN',
+        metadata: const {
+          'genres': [
+            {'name': 'Drama'},
+          ],
+        },
+      ),
+    );
 
     final anime = await store.playbackMediaInfoAt('anime', 'Anime/a.mkv');
     expect(anime?.isAnime, isTrue);
@@ -501,17 +549,20 @@ void main() {
       kind: MediaSourceKind.local,
     );
     await inventory(localRoot, ['Disc/M.iso']);
-    await store.bind([(await store.resources(rootId: localRoot.id)).single], FilmWork(
-      type: FilmMediaType.movie,
-      tmdbId: 9003,
-      title: 'Local Disc',
-      originalTitle: 'Local Disc',
-      overview: '',
-      language: 'zh-CN',
-      metadata: const {
-        'genres': ['Animation'],
-      },
-    ));
+    await store.bind(
+      [(await store.resources(rootId: localRoot.id)).single],
+      FilmWork(
+        type: FilmMediaType.movie,
+        tmdbId: 9003,
+        title: 'Local Disc',
+        originalTitle: 'Local Disc',
+        overview: '',
+        language: 'zh-CN',
+        metadata: const {
+          'genres': ['Animation'],
+        },
+      ),
+    );
     expect(
       (await store.playbackMediaInfoAt('local:7', 'disc/M.ISO'))?.isAnime,
       isTrue,
@@ -2020,7 +2071,10 @@ void main() {
         originalTitle: 'Existing',
         overview: '',
         language: 'zh-CN',
-        metadata: const {'logo_path': '/current.png', 'logo_selection_version': 1},
+        metadata: const {
+          'logo_path': '/current.png',
+          'logo_selection_version': 1,
+        },
       ),
     );
     final reads = <String>[];
@@ -2922,6 +2976,7 @@ void main() {
     for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
       await legacy.execute('DROP TABLE $table');
     }
+    await restoreVersion10Fixture(legacy);
     await legacy.setVersion(1);
     await legacy.close();
     store = await FilmCatalogStore.open(path);

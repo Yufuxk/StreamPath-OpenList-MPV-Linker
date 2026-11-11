@@ -170,6 +170,9 @@ void main() {
         }
       }
       final works = await catalog.store.works(type: null);
+      for (final resource in await catalog.store.resources()) {
+        await catalog.store.setExtraType(resource, null);
+      }
       for (var i = 0; i < 2; i++) {
         final id = await catalog.store.createCollection('Collection $i');
         await catalog.store.addCollectionMember(id, works[i].id);

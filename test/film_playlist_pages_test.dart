@@ -116,6 +116,11 @@ _fixture({TmdbMetadataService? metadata}) async {
         year: 2024,
       ),
     );
+    if (type == FilmMediaType.movie) {
+      for (final resource in await store.resources(rootId: root.id)) {
+        await store.setExtraType(resource, null);
+      }
+    }
     if (type == FilmMediaType.tv) {
       final rows = await store.resources(rootId: root.id);
       await store.mapEpisodes({rows[0]: (1, 1), rows[1]: (1, 2)});

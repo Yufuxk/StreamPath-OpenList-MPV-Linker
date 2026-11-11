@@ -493,6 +493,7 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _changed() {
+    if (store.extraError != null) error = store.extraError;
     if (fullSpeedActive) {
       _refreshPending = true;
       return;

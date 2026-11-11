@@ -3658,6 +3658,7 @@ class BrowserPageState extends State<BrowserPage> {
         !cachedStart &&
         scope == VideoPlaybackScope.directory &&
         config.autoSeasonTransitionEnabled &&
+        mapped?.type != FilmMediaType.movie &&
         !(mapped?.type == FilmMediaType.tv &&
             mapped?.season != null &&
             mapped?.episode != null)) {
@@ -4067,6 +4068,13 @@ class BrowserPageState extends State<BrowserPage> {
                 video,
               ));
     final config = appState.configStore.current;
+    final movieResource = targetPath == null || !widget.playbackOnly
+        ? null
+        : await (await appState.getFilmCatalogStore()).resourceAt(
+            _sourceId,
+            targetPath,
+          );
+    final moviePlayback = movieResource?.type == FilmMediaType.movie;
     final cachedStart =
         targetPath != null &&
         await appState.cachedTarget(
@@ -4077,6 +4085,7 @@ class BrowserPageState extends State<BrowserPage> {
             null;
     final scan =
         playbackScope == VideoPlaybackScope.singleItem ||
+            moviePlayback ||
             cachedStart ||
             filmVersionContext != null
         ? const SpecialVideoScanResult([], false)
@@ -4091,6 +4100,16 @@ class BrowserPageState extends State<BrowserPage> {
     var ordered = playbackScope == VideoPlaybackScope.singleItem
         ? rootVideos.where((item) => item.path == targetPath).toList()
         : [...rootVideos, ...scan.items];
+    if (moviePlayback) {
+      final allowed = movieResource!.isMovieMain
+          ? (await (await appState.getFilmCatalogStore()).resources(
+              workId: movieResource.workId,
+              sourceId: _sourceId,
+              enabledOnly: true,
+            )).where((r) => r.isMovieMain).map((r) => r.path).toSet()
+          : {targetPath};
+      ordered = ordered.where((item) => allowed.contains(item.path)).toList();
+    }
     PlaybackStartupTrace.current?.mark('browserPlaylistCollected');
     report?.call('正在匹配外挂字幕…', null);
     if (!mounted) return;
@@ -4276,6 +4295,7 @@ class BrowserPageState extends State<BrowserPage> {
     final playStart = clickedIndex;
     final seasonLookup =
         filmVersionContext == null &&
+            !moviePlayback &&
             !cachedStart &&
             playbackScope == VideoPlaybackScope.directory &&
             config.autoSeasonTransitionEnabled &&

@@ -1,4 +1,4 @@
-﻿import '../widgets/transition_content.dart';
+import '../widgets/transition_content.dart';
 import '../widgets/film_connected_transition.dart';
 import '../widgets/cinematic_states.dart';
 import '../widgets/skeleton_scope.dart';
@@ -13,6 +13,7 @@ import '../widgets/directory_scroll_view.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/film_watch_menu.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import '../widgets/film_segmented_control.dart';
 
@@ -23,6 +24,7 @@ import 'package:provider/provider.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_version.dart';
 import '../../domain/services/film_version_resolver.dart';
+import '../widgets/film_extra_controls.dart';
 import '../../domain/services/film_catalog_image_cache.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_notice.dart';
@@ -78,7 +80,9 @@ FilmResource? recommendedFilmResource(
   final available = resources
       .where((r) => filmResourceState(app, r) == '可用')
       .toList();
-  if (work.type == FilmMediaType.movie) return available.firstOrNull;
+  if (work.type == FilmMediaType.movie) {
+    return available.where((r) => r.isMovieMain).firstOrNull;
+  }
   final episodes = available
       .where((r) => (r.season ?? 0) > 0 && r.episode != null)
       .toList();
@@ -121,6 +125,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   FilmWork? _work;
   String? _logoOverride;
   List<FilmResource> _resources = [];
+  String? _extraFilter;
   FilmVersionIndex _versions = FilmVersionIndex([]);
   FilmVersionSelection? _versionSelection;
   Future<void> _versionWrites = Future.value();
@@ -310,7 +315,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             await (film
                     ? app.filmLocalDiscPlaybackService
                     : app.localDiscPlaybackService)
-            .getLibraryProgress(
+                .getLibraryProgress(
                   profileId: item.sourceId,
                   resolvedUrl: target,
                   playbackMode: item.playbackMode,
@@ -489,7 +494,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       final records = <MediaLibraryRecord>[];
       MediaLibraryRecord? recentVersionRecord;
       final filmRecords = <MediaLibraryRecord>{};
-      final paths = {for (final r in resources) '${r.sourceId}\u0000${r.path}'};
+      final paths = {
+        for (final r in resources.where(
+          (r) => work?.type != FilmMediaType.movie || r.isMovieMain,
+        ))
+          '${r.sourceId}\u0000${r.path}',
+      };
       for (final library in _playbackStores) {
         for (final source in resources.map((r) => r.sourceId).toSet()) {
           for (final iso in [false, true]) {
@@ -706,6 +716,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           r.workId == resource.workId &&
           r.season == resource.season &&
           r.episode == resource.episode &&
+          (resource.type != FilmMediaType.movie || r.isMovieMain) &&
           r.availability == 'present',
     )) {
       if (await app.cachedTarget(version.sourceId, version.path) != null) {
@@ -765,10 +776,15 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                   episode: _episode(resources[i]),
                   probe: _probes[resources[i].id],
                   state: filmResourceState(app, resources[i]),
-                  displayTitle: work.title,
+                  displayTitle:
+                      resources[i].isExtra && work.type == FilmMediaType.movie
+                      ? resources[i].name
+                      : work.title,
                   artworkPath: work.backdropPath,
                   releaseDate: work.metadata['release_date'] as String?,
-                  officialRuntime: (work.metadata['runtime'] as num?)?.toInt(),
+                  officialRuntime: resources[i].isExtra
+                      ? null
+                      : (work.metadata['runtime'] as num?)?.toInt(),
                   key: ValueKey(
                     work.type == FilmMediaType.tv &&
                             resources[i].episode != null &&
@@ -795,6 +811,67 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       );
     },
   );
+
+  Widget _extraHeader(List<FilmResource> resources, {String? title}) =>
+      SizedBox(
+        width: double.infinity,
+        child: Wrap(
+          spacing: 16,
+          runSpacing: 12,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          alignment: title == null
+              ? WrapAlignment.end
+              : WrapAlignment.spaceBetween,
+          children: [
+            if (title != null)
+              AppText(title, style: Theme.of(context).textTheme.titleLarge),
+            FilmExtraFilter(
+              store: widget.catalog.store,
+              resources: resources,
+              selected: _extraFilter,
+              onChanged: (value) => setState(() => _extraFilter = value),
+            ),
+          ],
+        ),
+      );
+
+  List<FilmResource> _filteredExtras(List<FilmResource> resources) =>
+      _extraFilter == null ||
+          !resources.any((r) => filmExtraFilterKey(r) == _extraFilter)
+      ? resources
+      : resources.where((r) => filmExtraFilterKey(r) == _extraFilter).toList();
+
+  Widget _movieSections(AppState app, FilmWork work) {
+    final main = _resources.where((r) => r.isMovieMain).toList();
+    final extras = _resources.where((r) => r.isExtra).toList();
+    final unknown = _resources
+        .where((r) => !r.isExtra && !r.isMovieMain)
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (main.isEmpty && !_loading) const AppText('请选择资源播放，或将正片标记为非特典'),
+        if (main.isNotEmpty || _loading) ...[
+          AppText('正片与版本', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 12),
+          _cards(main, app, work),
+        ],
+        if (extras.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          _extraHeader(extras, title: '特典映像'),
+          const SizedBox(height: 12),
+          _cards(_filteredExtras(extras), app, work),
+        ],
+        if (unknown.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          AppText('待确认资源', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          const SizedBox(height: 12),
+          _cards(unknown, app, work),
+        ],
+      ],
+    );
+  }
 
   Widget _seasonSelector(FilmWork work, List<int?> numbers) => LayoutBuilder(
     builder: (context, constraints) {
@@ -1573,14 +1650,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                       _playEntry(app, work),
                                       _credits(work, c),
                                       if (work.type == FilmMediaType.tv)
-                                        _seasonSelector(work, numbers)
-                                      else
-                                        SkeletonRegion(
-                                          child: AppText(
-                                            '关联资源',
-                                            style: theme.textTheme.titleLarge,
-                                          ),
-                                        ),
+                                        _seasonSelector(work, numbers),
                                       const SizedBox(height: 12),
                                       if (work.type == FilmMediaType.tv &&
                                           _versionSelection != null &&
@@ -1615,19 +1685,36 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                             ),
                                           ],
                                         ),
-                                      _cards(
-                                        work.type == FilmMediaType.tv
-                                            ? _visibleResources
-                                                  .where(
-                                                    (r) =>
-                                                        r.season ==
-                                                        _activeSeason,
-                                                  )
-                                                  .toList()
-                                            : _resources,
-                                        app,
-                                        work,
-                                      ),
+                                      if (work.type == FilmMediaType.tv) ...[
+                                        if (_activeSeason == 0) ...[
+                                          _extraHeader(
+                                            _visibleResources
+                                                .where((r) => r.season == 0)
+                                                .toList(),
+                                          ),
+                                          const SizedBox(height: 12),
+                                        ],
+                                        _cards(
+                                          _activeSeason == 0
+                                              ? _filteredExtras(
+                                                  _visibleResources
+                                                      .where(
+                                                        (r) => r.season == 0,
+                                                      )
+                                                      .toList(),
+                                                )
+                                              : _visibleResources
+                                                    .where(
+                                                      (r) =>
+                                                          r.season ==
+                                                          _activeSeason,
+                                                    )
+                                                    .toList(),
+                                          app,
+                                          work,
+                                        ),
+                                      ] else
+                                        _movieSections(app, work),
                                     ],
                                   ),
                                 ),
@@ -1654,6 +1741,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
 }
 
 enum _FilmFileAction {
+  extraType,
   cache,
   playlist,
   addPlaylist,
@@ -1712,6 +1800,14 @@ class FilmEpisodeCard extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       items: [
+        if (!resource.isDisc)
+          const PopupMenuItem(
+            value: _FilmFileAction.extraType,
+            child: SPMenuItemContent(
+              icon: SPIcons.settings,
+              child: AppText('修改特典类型'),
+            ),
+          ),
         PopupMenuItem(
           value: _FilmFileAction.cache,
           enabled:
@@ -1853,6 +1949,34 @@ class FilmEpisodeCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 12),
                       AppText(state),
+                      if (resource.extraKind != null)
+                        Text(
+                          filmExtraLabel(
+                            context,
+                            catalog.store,
+                            resource.extraKind!,
+                          ),
+                        ),
+                      Text(
+                        context.l10n.text(switch (resource.extraOrigin) {
+                          'manual' => '人工分类',
+                          'filename' => '文件名识别',
+                          'folder' => '目录识别',
+                          _ => '尚未分类',
+                        }),
+                      ),
+                      if (resource.extraEvidence != '{}')
+                        SelectableText(
+                          context.l10n.format('识别依据：{keywords}', {
+                            'keywords':
+                                ((jsonDecode(resource.extraEvidence)
+                                                as Map)['keywords']
+                                            as List? ??
+                                        [])
+                                    .join(' · '),
+                          }),
+                          contextMenuBuilder: buildSPTextSelectionMenu,
+                        ),
                       const Divider(height: 24),
                       FilmTechnicalInfo(info: info),
                     ],
@@ -1876,6 +2000,11 @@ class FilmEpisodeCard extends StatelessWidget {
         await onChanged();
       case _FilmFileAction.match:
         await showFilmMatchDialog(context, catalog, resource);
+        await onChanged();
+      case _FilmFileAction.extraType:
+        await catalog.run(
+          () => showFilmExtraPicker(context, catalog.store, resource),
+        );
         await onChanged();
       case _FilmFileAction.mapping:
         await showFilmEpisodeMapping(context, catalog, [resource]);
@@ -1952,9 +2081,27 @@ class FilmEpisodeCard extends StatelessWidget {
           (theme.textTheme.titleSmall!.height ?? 1.4),
     );
     final badges = [
+      if (resource.extraKind != null)
+        filmExtraLabel(context, catalog.store, resource.extraKind!),
       if (state != '可用') context.l10n.text(state),
       ...filmTechnicalTags(probe),
     ];
+    final filenameLine = Tooltip(
+      message: resource.name,
+      child: SizedBox(
+        height: compactLineHeight,
+        width: double.infinity,
+        child: Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: Text(
+            resource.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(height: 1.5),
+          ),
+        ),
+      ),
+    );
 
     return GestureDetector(
       onSecondaryTapDown: (details) => _menu(context, details.globalPosition),
@@ -2135,8 +2282,11 @@ class FilmEpisodeCard extends StatelessWidget {
                                     spoilerSensitive: true,
                                     showStatus: false,
                                     softEdges: true,
+                                    obscureChild: episode != null,
                                     revealLabel: '展示封面',
-                                    child: expanded
+                                    child: episode == null
+                                        ? filenameLine
+                                        : expanded
                                         ? DirectoryScrollView(
                                             builder: (controller) =>
                                                 SingleChildScrollView(
@@ -2182,23 +2332,7 @@ class FilmEpisodeCard extends StatelessWidget {
                           else
                             Padding(
                               padding: const EdgeInsets.only(top: 2),
-                              child: Tooltip(
-                                message: resource.name,
-                                child: SizedBox(
-                                  height: compactLineHeight,
-                                  width: double.infinity,
-                                  child: Align(
-                                    alignment: AlignmentDirectional.centerStart,
-                                    child: Text(
-                                      resource.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: theme.textTheme.bodySmall
-                                          ?.copyWith(height: 1.5),
-                                    ),
-                                  ),
-                                ),
-                              ),
+                              child: filenameLine,
                             ),
                           if (tv || timing.isNotEmpty)
                             Padding(

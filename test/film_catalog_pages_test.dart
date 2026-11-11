@@ -1,3 +1,4 @@
+import 'package:streampath/presentation/widgets/film_extra_controls.dart';
 import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
 import 'package:streampath/data/models/video_queue.dart';
@@ -745,6 +746,13 @@ void main() {
     expect(find.text('1. 特别篇第一集'), findsOneWidget);
     expect(find.text('41. 剧集作品'), findsOneWidget);
     expect(
+      tester.getRect(find.byType(FilmExtraFilter)).right,
+      closeTo(
+        tester.getRect(find.byKey(const Key('film-detail-scroll'))).right - 24,
+        1,
+      ),
+    );
+    expect(
       find.descendant(
         of: find.byKey(const Key('film-season-selector')),
         matching: find.byKey(const ValueKey<int?>(null)),
@@ -768,7 +776,7 @@ void main() {
     );
     expect(genericArtwork.path, '/backdrop.jpg');
     expect(genericArtwork.target, 'w780');
-    expect(find.text('Show.S00E41.INFO.mkv'), findsNothing);
+    expect(find.text('Show.S00E41.INFO.mkv'), findsOneWidget);
     expect(find.text('Show.S00E01.mkv'), findsNothing);
     expect(find.text('调整季集'), findsNothing);
     expect(find.byKey(const Key('film-detail-backdrop')), findsOneWidget);

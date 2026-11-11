@@ -174,7 +174,12 @@ class FilmResource {
       episode = row['episode_number'] as int?,
       versionKey = row['version_key'] as String?,
       versionName = row['version_name'] as String?,
-      mappingOrigin = row['episode_mapping_origin'] as String;
+      mappingOrigin = row['episode_mapping_origin'] as String,
+      extraKind = row['extra_kind'] as String?,
+      extraOrigin = row['extra_origin'] as String? ?? 'unset',
+      extraStatus = row['extra_status'] as String? ?? 'unknown',
+      extraEvidence = row['extra_evidence_json'] as String? ?? '{}',
+      extraVersion = row['extra_rule_version'] as int? ?? 0;
 
   final int id, rootId, bindingVersion;
   final String sourceId, rootPath, rootName, path, pathKey, parentPath, name;
@@ -183,6 +188,24 @@ class FilmResource {
   final FilmMediaType type;
   final int? workId, season, episode;
   final String? versionKey, versionName;
+  final String? extraKind;
+  final String extraOrigin, extraStatus, extraEvidence;
+  final int extraVersion;
+  bool get isExtra => extraStatus == 'extra';
+  bool get isMovieMain =>
+      type == FilmMediaType.movie &&
+      !isExtra &&
+      (extraStatus == 'non_extra' ||
+          isDisc ||
+          workId != null &&
+              (['search', 'nfo', 'server'].contains(bindingOrigin) ||
+                  bindingOrigin == 'explicit' &&
+                      RegExp(
+                        r'[\[{]tmdb(?:id)?-\d+[\]}]',
+                        caseSensitive: false,
+                      ).hasMatch(name)));
+  bool get usesResourceWatch =>
+      type == FilmMediaType.movie && !isDisc && !isMovieMain;
 
   bool get isDisc => mediaKind == 'iso' || mediaKind == 'bdmv';
   bool get canMarkWatched =>

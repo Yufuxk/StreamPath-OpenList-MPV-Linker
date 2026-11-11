@@ -11,6 +11,7 @@ import 'season_video_playlist_collector.dart';
 import 'special_video_playlist_collector.dart';
 import 'tmdb_metadata_service.dart';
 import 'film_file_metadata.dart';
+import 'film_extra_classifier.dart';
 
 class FilmMatchHint {
   const FilmMatchHint(this.title, this.year, this.ids, this.episode);
@@ -574,7 +575,7 @@ class FilmCatalogMatcher {
           resource.workId == null ||
           resource.season != null ||
           resource.mappingOrigin == 'manual' ||
-          !_insideSpecials(resource)) {
+          !(resource.isExtra || _insideSpecials(resource))) {
         continue;
       }
       (pending[resource.workId!] ??= []).add(resource);
@@ -704,6 +705,7 @@ class FilmScanMetadataSession {
   int scraped = 0;
   bool staleBindings = false;
   bool lazyBindings = false;
+  FilmExtraClassifier? _extraClassifier;
   bool get paused => _paused;
 
   void releaseCommitted(Iterable<String> keys) {
@@ -971,6 +973,7 @@ class FilmScanMetadataSession {
     final works = workCache ?? <int, FilmWork?>{};
     for (final entry in entries) {
       if (cancelled() || _paused) return;
+      if (FilmExtraClassifier.excludedPath(entry.parentPath)) continue;
       final key = filmPathKey(entry.path, root.sourceKind);
       final existing = _existing[key];
       // 匹配算法升级后非人工绑定视为可重算；人工绑定与人工季集始终保留。
@@ -982,6 +985,15 @@ class FilmScanMetadataSession {
         entry.parentPath,
         root.path,
         type: root.type,
+      );
+      if (_extraClassifier?.rules != matcher.store.extraRules) {
+        _extraClassifier = FilmExtraClassifier(matcher.store.extraRules);
+      }
+      final extra = _extraClassifier!.classify(
+        name: entry.name,
+        path: entry.path,
+        rootPath: root.path,
+        mediaKind: entry.mediaKind,
       );
       if (hint.conflicting && existing?.bindingOrigin != 'manual') continue;
       FilmWork? work;
@@ -1044,11 +1056,15 @@ class FilmScanMetadataSession {
               }
               if (work != null) origin = 'folder';
             }
-            work ??= await _search(hint);
+            // 通用特典文件名不代表作品，只允许使用可信作品容器。
+            if (!(root.type == FilmMediaType.movie && extra.isExtra)) {
+              work ??= await _search(hint);
+            }
             // 电影的文件名无法确定时，用条目目录名称再检索一次；剧集已先按容器检索。
             if (work == null &&
                 root.type == FilmMediaType.movie &&
                 container != null &&
+                !FilmCatalogMatcher.genericContainerTitle(container.title) &&
                 _nameKey(container.title) != _nameKey(hint.title)) {
               // 电影先带目录年份筛选，目录年份过期时再去掉年份重试。
               work = await _search(
@@ -1059,6 +1075,7 @@ class FilmScanMetadataSession {
                   FilmMatchHint(container.title, null, const {}, null),
                 );
               }
+              if (work != null) origin = 'folder';
             }
           }
         }

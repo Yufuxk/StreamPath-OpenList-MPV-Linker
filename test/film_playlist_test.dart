@@ -1,3 +1,4 @@
+import 'support/legacy_film_catalog.dart';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -590,6 +591,7 @@ void main() {
       for (final table in ['fast_task_jobs', 'fast_task_roots', 'fast_tasks']) {
         await db.execute('DROP TABLE $table');
       }
+      await restoreVersion10Fixture(db);
       await db.setVersion(7);
       await db.close();
       store = await FilmCatalogStore.open('${temp.path}/catalog.db');
