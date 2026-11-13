@@ -23,6 +23,7 @@ import 'film_information_pill.dart';
 import 'film_segmented_control.dart';
 import 'film_shelf.dart';
 import 'film_watch_overlay.dart';
+import 'film_text_styles.dart';
 import 'sp_icons.dart';
 import 'sp_notice.dart';
 
@@ -47,10 +48,7 @@ class FilmFeaturedShowcase extends StatefulWidget {
   final void Function(FilmCollection, Offset)? onCollectionMenu;
 
   /// 极轻微的暗色文字阴影：亮背景上勾出字形边缘，暗背景上几乎不可见。
-  static const textShadows = [
-    Shadow(color: Color(0xCC000000), offset: Offset(0, 1), blurRadius: 3),
-    Shadow(color: Color(0x80000000), offset: Offset(0, 2), blurRadius: 8),
-  ];
+  static const textShadows = FilmTextStyles.shadows;
 
   @override
   State<FilmFeaturedShowcase> createState() => _FilmFeaturedShowcaseState();
@@ -576,7 +574,9 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                 const SizedBox(height: 16),
                 Center(
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 620),
+                    constraints: const BoxConstraints(
+                      maxWidth: FilmTextStyles.overviewMaxWidth,
+                    ),
                     child: FilmSpoilerScope(
                       key: ValueKey<Object>(('featured-overview', identity)),
                       child: FilmWatchOverlay(
@@ -594,12 +594,7 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                           textAlign: TextAlign.center,
                           maxLines: 3,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 15,
-                            height: 1.75,
-                            color: _foreground(context).withValues(alpha: .82),
-                            shadows: FilmFeaturedShowcase.textShadows,
-                          ),
+                          style: FilmTextStyles.overview,
                         ),
                       ),
                     ),

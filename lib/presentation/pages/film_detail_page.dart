@@ -46,6 +46,7 @@ import '../widgets/film_artwork.dart';
 import '../widgets/film_detail_back_button.dart';
 import '../widgets/film_detail_backdrop.dart';
 import '../widgets/film_adaptive_foreground.dart';
+import '../widgets/film_text_styles.dart';
 import '../widgets/film_certification_badge.dart';
 import '../widgets/film_information_pill.dart';
 import '../widgets/film_detail_buttons.dart';
@@ -123,7 +124,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   final _titleTextKey = GlobalKey();
   final _originalTitleTextKey = GlobalKey();
   final _metadataTextKey = GlobalKey();
-  final _overviewTextKey = GlobalKey();
   FilmWork? _work;
   List<FilmResource> _resources = [];
   String? _extraFilter;
@@ -438,62 +438,56 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     );
   }
 
-  Widget _overview(
-    FilmWork work,
-    FilmCatalogController catalog,
-    Color foreground,
-  ) => LayoutBuilder(
-    builder: (context, constraints) {
-      final style = Theme.of(context).textTheme.bodyMedium!.copyWith(
-        height: 1.55,
-        color: foreground,
-        fontWeight: FontWeight.w400,
+  Widget _overview(FilmWork work, FilmCatalogController catalog) =>
+      LayoutBuilder(
+        builder: (context, constraints) {
+          final style = Theme.of(
+            context,
+          ).textTheme.bodyMedium!.merge(FilmTextStyles.overview);
+          final painter = TextPainter(
+            text: TextSpan(text: work.overview, style: style),
+            maxLines: 4,
+            textDirection: Directionality.of(context),
+            textScaler: MediaQuery.textScalerOf(context),
+            locale: Localizations.localeOf(context),
+          )..layout(maxWidth: constraints.maxWidth);
+          final overflows = painter.didExceedMaxLines;
+          painter.dispose();
+          final text = Text(
+            work.overview,
+            maxLines: _expandedOverview ? null : 4,
+            overflow: TextOverflow.clip,
+            style: style,
+          );
+          return FilmWatchOverlay(
+            store: catalog.store,
+            workId: work.id,
+            rootId: catalog.rootId,
+            spoilerSensitive: true,
+            showStatus: false,
+            revealBelow: true,
+            footer: overflows
+                ? TextButton(
+                    onPressed: () =>
+                        setState(() => _expandedOverview = !_expandedOverview),
+                    child: AppText(_expandedOverview ? '收起简介' : '展开简介'),
+                  )
+                : null,
+            child: overflows && !_expandedOverview
+                ? ShaderMask(
+                    blendMode: BlendMode.dstIn,
+                    shaderCallback: (bounds) => const LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.white, Colors.white, Colors.transparent],
+                      stops: [0, .72, 1],
+                    ).createShader(bounds),
+                    child: text,
+                  )
+                : text,
+          );
+        },
       );
-      final painter = TextPainter(
-        text: TextSpan(text: work.overview, style: style),
-        maxLines: 4,
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-        locale: Localizations.localeOf(context),
-      )..layout(maxWidth: constraints.maxWidth);
-      final overflows = painter.didExceedMaxLines;
-      painter.dispose();
-      final text = Text(
-        key: _overviewTextKey,
-        work.overview,
-        maxLines: _expandedOverview ? null : 4,
-        overflow: TextOverflow.clip,
-        style: style,
-      );
-      return FilmWatchOverlay(
-        store: catalog.store,
-        workId: work.id,
-        rootId: catalog.rootId,
-        spoilerSensitive: true,
-        showStatus: false,
-        revealBelow: true,
-        footer: overflows
-            ? TextButton(
-                onPressed: () =>
-                    setState(() => _expandedOverview = !_expandedOverview),
-                child: AppText(_expandedOverview ? '收起简介' : '展开简介'),
-              )
-            : null,
-        child: overflows && !_expandedOverview
-            ? ShaderMask(
-                blendMode: BlendMode.dstIn,
-                shaderCallback: (bounds) => const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.white, Colors.white, Colors.transparent],
-                  stops: [0, .72, 1],
-                ).createShader(bounds),
-                child: text,
-              )
-            : text,
-      );
-    },
-  );
 
   int _preferenceGeneration = 0;
   Future<void> _loadPreferences() async {
@@ -1638,7 +1632,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                     _titleTextKey,
                                                     _originalTitleTextKey,
                                                     _metadataTextKey,
-                                                    _overviewTextKey,
                                                   ],
                                                   scrollController: _scroll,
                                                   builder: (context, foreground) => Column(
@@ -1816,37 +1809,44 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                         key: const Key(
                                                           'film-skeleton-overview',
                                                         ),
-                                                        child: SizedBox(
-                                                          width: initialSkeleton
-                                                              ? 700
-                                                              : null,
-                                                          height:
-                                                              initialSkeleton
-                                                              ? MediaQuery.textScalerOf(
-                                                                          context,
-                                                                        ).scale(
-                                                                          theme.textTheme.bodyMedium!.fontSize! *
-                                                                              1.55,
-                                                                        ) *
-                                                                        4 +
-                                                                    48
-                                                              : null,
-                                                          child:
-                                                              work
-                                                                  .overview
-                                                                  .isEmpty
-                                                              ? AppText(
-                                                                  '暂无简介',
-                                                                  style: TextStyle(
-                                                                    color:
-                                                                        foreground,
+                                                        child: ConstrainedBox(
+                                                          constraints:
+                                                              const BoxConstraints(
+                                                                maxWidth:
+                                                                    FilmTextStyles
+                                                                        .overviewMaxWidth,
+                                                              ),
+                                                          child: SizedBox(
+                                                            width:
+                                                                initialSkeleton
+                                                                ? FilmTextStyles
+                                                                      .overviewMaxWidth
+                                                                : null,
+                                                            height:
+                                                                initialSkeleton
+                                                                ? MediaQuery.textScalerOf(
+                                                                            context,
+                                                                          ).scale(
+                                                                            FilmTextStyles.overview.fontSize! *
+                                                                                FilmTextStyles.overview.height!,
+                                                                          ) *
+                                                                          4 +
+                                                                      48
+                                                                : null,
+                                                            child:
+                                                                work
+                                                                    .overview
+                                                                    .isEmpty
+                                                                ? AppText(
+                                                                    '暂无简介',
+                                                                    style: FilmTextStyles
+                                                                        .overview,
+                                                                  )
+                                                                : _overview(
+                                                                    work,
+                                                                    c,
                                                                   ),
-                                                                )
-                                                              : _overview(
-                                                                  work,
-                                                                  c,
-                                                                  foreground,
-                                                                ),
+                                                          ),
                                                         ),
                                                       ),
                                                     ],
