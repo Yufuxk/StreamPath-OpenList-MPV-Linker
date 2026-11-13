@@ -317,6 +317,14 @@ extension FilmCatalogPortability on FilmCatalogStore {
             final metadata =
                 jsonDecode(current['metadata_json'] as String) as Map;
             final incoming = jsonDecode(row['metadata_json'] as String) as Map;
+            final importedPatch = filmMetadataOverrides(incoming);
+            final ownPatch = filmMetadataOverrides(metadata);
+            final ownSource = metadata.containsKey('_manual')
+                ? filmMetadataSource(Map<String, dynamic>.from(metadata))
+                : filmWorkMetadata(FilmWork.fromRow(current));
+            final importedSource = incoming.containsKey('_manual')
+                ? filmMetadataSource(Map<String, dynamic>.from(incoming))
+                : filmWorkMetadata(work);
             workIds[work.id] = await _saveWork(
               txn,
               FilmWork.fromRow({
@@ -331,7 +339,15 @@ extension FilmCatalogPortability on FilmCatalogStore {
                 ])
                   if (current[field] == null || current[field] == '')
                     field: row[field],
-                'metadata_json': jsonEncode({...incoming, ...metadata}),
+                'metadata_json': jsonEncode({
+                  ...incoming,
+                  ...metadata,
+                  if (importedPatch.isNotEmpty || ownPatch.isNotEmpty)
+                    '_manual': {
+                      'source': {...importedSource, ...ownSource},
+                      'patch': {...importedPatch, ...ownPatch},
+                    },
+                }),
               }),
             );
           }
@@ -355,6 +371,19 @@ extension FilmCatalogPortability on FilmCatalogStore {
           final work = workIds[row['work_id']];
           if (current == null || work == null) continue;
           final values = <String, Object?>{};
+          final incomingOverrides = Map<String, dynamic>.from(
+            jsonDecode(row['metadata_override_json'] as String? ?? '{}') as Map,
+          );
+          final ownOverrides = Map<String, dynamic>.from(
+            jsonDecode(current['metadata_override_json'] as String? ?? '{}')
+                as Map,
+          );
+          if (incomingOverrides.isNotEmpty) {
+            values['metadata_override_json'] = jsonEncode({
+              ...incomingOverrides,
+              ...ownOverrides,
+            });
+          }
           if (current['work_id'] == null) {
             values.addAll({
               'work_id': work,
@@ -397,6 +426,30 @@ extension FilmCatalogPortability on FilmCatalogStore {
         }
         for (final row in rows('season_metadata')) {
           if (workIds[row['work_id']] case final int work) {
+            final existing = await txn.query(
+              'season_metadata',
+              where: 'work_id=? AND season_number=?',
+              whereArgs: [work, row['season_number']],
+            );
+            if (existing.isNotEmpty) {
+              final own = Map<String, dynamic>.from(
+                jsonDecode(existing.single['metadata_json'] as String) as Map,
+              );
+              final incoming = Map<String, dynamic>.from(
+                jsonDecode(row['metadata_json'] as String) as Map,
+              );
+              final combined = _mergeSeasonMetadata(
+                _mergeSeasonMetadata(own, incoming),
+                own,
+              );
+              await txn.update(
+                'season_metadata',
+                {'metadata_json': jsonEncode(combined)},
+                where: 'work_id=? AND season_number=?',
+                whereArgs: [work, row['season_number']],
+              );
+              continue;
+            }
             await txn.insert('season_metadata', {
               ...row,
               'work_id': work,

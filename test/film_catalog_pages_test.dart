@@ -610,9 +610,13 @@ void main() {
         .first;
     await tester.tap(movieCard, buttons: kSecondaryMouseButton);
     await settle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(9));
+    expect(
+      find.byWidgetPredicate((w) => w is PopupMenuItem),
+      findsNWidgets(10),
+    );
     expect(find.text('缓存视频…'), findsOneWidget);
     expect(find.text('收藏'), findsOneWidget);
+    expect(find.text('编辑元数据…'), findsOneWidget);
     expect(find.text('刷新元数据'), findsOneWidget);
     await tester.tap(find.text('收藏'));
     await settle();
@@ -690,8 +694,12 @@ void main() {
     );
     await settle();
     await tester.pumpAndSettle();
+    expect(find.text('编辑元数据…'), findsOneWidget);
     expect(find.text('刷新元数据'), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(9));
+    expect(
+      find.byWidgetPredicate((w) => w is PopupMenuItem),
+      findsNWidgets(10),
+    );
     expect(find.text('标记已看完'), findsOneWidget);
     expect(find.text('标记未观看'), findsOneWidget);
     await tester.tapAt(const Offset(1100, 700));
@@ -730,7 +738,8 @@ void main() {
       buttons: kSecondaryMouseButton,
     );
     await tester.pumpAndSettle();
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(6));
+    expect(find.text('编辑元数据…'), findsOneWidget);
     expect(find.text('季观看状态'), findsNothing);
     expect(find.byType(Dialog), findsNothing);
     await tester.tapAt(const Offset(1100, 700));

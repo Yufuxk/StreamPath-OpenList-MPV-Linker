@@ -40,17 +40,36 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
   @override
   void initState() {
     super.initState();
+    widget.catalog.store.dataChanges.addListener(_changed);
     _metadata = _load();
   }
 
   @override
   void didUpdateWidget(FilmContinueCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.catalog != widget.catalog) {
+      oldWidget.catalog.store.dataChanges.removeListener(_changed);
+      widget.catalog.store.dataChanges.addListener(_changed);
+    }
     if (oldWidget.record.item.stableKey != widget.record.item.stableKey ||
         oldWidget.catalog != widget.catalog ||
         oldWidget.poster != widget.poster) {
       _metadata = _load();
     }
+  }
+
+  void _changed() {
+    if (mounted) {
+      setState(() {
+        _metadata = _load();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.catalog.store.dataChanges.removeListener(_changed);
+    super.dispose();
   }
 
   Future<Map<String, dynamic>> _load() async {
@@ -71,15 +90,21 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
         .firstOrNull;
     return {
       'resource': resource,
-      'title': resource?.usesResourceWatch == true
-          ? item.name
-          : work?.title ?? item.name,
-      'path': widget.poster
-          ? work?.posterPath
-          : episode?['still_path'] ?? work?.backdropPath ?? work?.posterPath,
+      'title':
+          resource?.metadataOverrides['title'] ??
+          (resource?.usesResourceWatch == true
+              ? item.name
+              : work?.title ?? item.name),
+      'path':
+          resource?.metadataOverrides['poster_path'] ??
+          (widget.poster
+              ? work?.posterPath
+              : episode?['still_path'] ??
+                    work?.backdropPath ??
+                    work?.posterPath),
       'season': resource?.season,
       'episode': resource?.episode,
-      'episodeTitle': episode?['name'],
+      'episodeTitle': resource?.metadataOverrides['title'] ?? episode?['name'],
       'spoilerSensitive':
           !widget.poster &&
           resource?.season != null &&

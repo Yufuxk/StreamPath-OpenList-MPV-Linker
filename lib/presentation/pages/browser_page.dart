@@ -15,6 +15,8 @@ import '../../features/video_cache/video_cache_source.dart';
 import '../../domain/services/native_storage_source.dart';
 import '../../domain/services/webdav_bdmv_service.dart';
 import 'dart:async';
+import '../widgets/film_metadata_editor.dart';
+import '../../data/models/film_metadata_edit.dart';
 import '../../data/models/film_version.dart';
 import '../../domain/services/film_version_resolver.dart';
 import '../../domain/services/remote_menu_playback_service.dart';
@@ -1015,6 +1017,14 @@ class BrowserPageState extends State<BrowserPage> {
       items: [
         if (watchResource != null)
           const PopupMenuItem(
+            value: 'metadata',
+            child: SPMenuItemContent(
+              icon: SPIcons.settings,
+              child: AppText('编辑元数据…'),
+            ),
+          ),
+        if (watchResource != null)
+          const PopupMenuItem(
             value: 'cache',
             child: SPMenuItemContent(
               icon: SPIcons.download,
@@ -1071,6 +1081,14 @@ class BrowserPageState extends State<BrowserPage> {
     );
     if (!mounted) return;
     switch (selected) {
+      case 'metadata':
+        final catalog = await context.read<AppState>().getFilmCatalog();
+        if (!mounted) return;
+        await showFilmMetadataEditor(
+          context,
+          catalog,
+          FilmMetadataTarget.resource(watchResource!.id),
+        );
       case 'cache':
         final catalog = await context.read<AppState>().getFilmCatalog();
         if (!mounted) return;

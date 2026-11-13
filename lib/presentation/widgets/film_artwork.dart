@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:ui' as ui;
@@ -308,6 +308,7 @@ class FilmArtwork extends StatefulWidget {
     this.borderRadius = 8,
     this.placeholder,
     this.transparent = false,
+    this.alignment,
     this.logoGlyphSize,
     this.logoAutoCenter = false,
     this.logoInkTint = false,
@@ -329,6 +330,9 @@ class FilmArtwork extends StatefulWidget {
   final double borderRadius;
   final Widget? placeholder;
   final bool transparent;
+
+  /// 图片在自身框内的对齐方式；透明内容默认贴左，留白区域用于放置徽标。
+  final AlignmentGeometry? alignment;
 
   /// 按透明内容居中并估算字形尺度，计算完成前保留空白。
   final double? logoGlyphSize;
@@ -357,7 +361,8 @@ class FilmArtwork extends StatefulWidget {
 
 class _FilmArtworkState extends State<FilmArtwork> {
   Future<File>? _image;
-  void _load() => _image = widget.path == null || widget.provider != null
+  void _load() => _image =
+      widget.path == null || widget.path == '' || widget.provider != null
       ? null
       : widget.cache.get(widget.path!, target: widget.target);
 
@@ -381,7 +386,9 @@ class _FilmArtworkState extends State<FilmArtwork> {
   @override
   Widget build(BuildContext context) {
     final known = widget.cache.knownFile(widget.path, widget.target);
-    final content = widget.provider != null
+    final content = widget.path == ''
+        ? _placeholder(retry: false)
+        : widget.provider != null
         ? _renderImage(widget.provider!, fit: BoxFit.cover)
         : FutureBuilder<File>(
             key: ValueKey((widget.cache, widget.path, widget.target)),
@@ -400,9 +407,11 @@ class _FilmArtworkState extends State<FilmArtwork> {
                   provider,
                   fallback: fallback,
                   fit: widget.transparent ? BoxFit.contain : BoxFit.cover,
-                  alignment: widget.transparent
-                      ? Alignment.centerLeft
-                      : Alignment.center,
+                  alignment:
+                      widget.alignment ??
+                      (widget.transparent
+                          ? Alignment.centerLeft
+                          : Alignment.center),
                 );
               }
               if ((widget.logoGlyphSize != null || widget.logoAutoCenter) &&
@@ -474,7 +483,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
     ImageProvider<Object> provider, {
     ImageProvider<Object>? fallback,
     required BoxFit fit,
-    Alignment alignment = Alignment.center,
+    AlignmentGeometry alignment = Alignment.center,
     FilterQuality filterQuality = FilterQuality.medium,
   }) {
     if (widget.logoGlyphSize != null || widget.logoAutoCenter) {

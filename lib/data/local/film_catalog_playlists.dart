@@ -211,7 +211,12 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
     final rows = r.workId == null
         ? <Map<String, Object?>>[]
         : await db.query('works', where: 'id=?', whereArgs: [r.workId]);
-    if (rows.isEmpty) return {'title': r.name};
+    if (rows.isEmpty) {
+      return {
+        'title': r.metadataOverrides['title'] ?? r.name,
+        'artwork': r.metadataOverrides['poster_path'],
+      };
+    }
     final work = FilmWork.fromRow(rows.single);
     Map? episode;
     if (r.season != null) {
@@ -233,15 +238,25 @@ extension FilmCatalogPlaylists on FilmCatalogStore {
     }
     return {
       'title': work.title,
-      'episodeTitle': episode?['name'],
-      'year': work.year,
-      'artwork': episode?['still_path'] ?? work.backdropPath ?? work.posterPath,
+      'episodeTitle': r.metadataOverrides['title'] ?? episode?['name'],
+      'year': r.metadataOverrides.containsKey('year')
+          ? r.metadataOverrides['year']
+          : work.year,
+      'artwork':
+          r.metadataOverrides['poster_path'] ??
+          episode?['still_path'] ??
+          work.backdropPath ??
+          work.posterPath,
       'artworkTarget': episode?['still_path'] != null
           ? 'w300'
           : work.backdropPath != null
           ? 'w780'
           : 'w342',
-      'episodeArtwork': episode?['still_path'] != null,
+      'episodeArtwork':
+          episode?['still_path'] != null ||
+          r.season != null &&
+              r.episode != null &&
+              (r.metadataOverrides['poster_path'] as String? ?? '').isNotEmpty,
     };
   }
 

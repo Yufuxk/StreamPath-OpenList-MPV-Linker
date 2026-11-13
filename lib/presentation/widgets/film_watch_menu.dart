@@ -1,4 +1,6 @@
 import 'sp_icons.dart';
+import 'film_metadata_editor.dart';
+import '../../data/models/film_metadata_edit.dart';
 import 'video_cache_widgets.dart';
 import 'sp_menu.dart';
 import 'film_playlist_dialog.dart';
@@ -35,6 +37,16 @@ Future<void> showFilmWatchMenu(
       Offset.zero & overlay.size,
     ),
     items: [
+      if (catalog != null &&
+          resources.isNotEmpty &&
+          resources.first.workId != null)
+        const PopupMenuItem(
+          value: 'metadata',
+          child: SPMenuItemContent(
+            icon: SPIcons.settings,
+            child: AppText('编辑元数据…'),
+          ),
+        ),
       if (catalog != null && playlistScope != null)
         const PopupMenuItem(
           value: 'cache',
@@ -82,6 +94,17 @@ Future<void> showFilmWatchMenu(
     ],
   );
   if (action == null || !context.mounted) return;
+  if (action == 'metadata') {
+    final r = resources.first;
+    await showFilmMetadataEditor(
+      context,
+      catalog!,
+      r.season == null
+          ? FilmMetadataTarget.work(r.workId!)
+          : FilmMetadataTarget.season(r.workId!, r.season),
+    );
+    return;
+  }
   if (action == 'cache') {
     await showVideoCacheDialog(context, catalog!, playlistScope!, title: title);
   } else if (action == 'playlist' || action == 'addPlaylist') {

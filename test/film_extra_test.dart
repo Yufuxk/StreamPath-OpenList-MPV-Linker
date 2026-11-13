@@ -367,6 +367,7 @@ void main() {
       await store.close();
       final db = await databaseFactoryFfi.openDatabase(path);
       for (final field in [
+        'metadata_override_json',
         'extra_kind',
         'extra_origin',
         'extra_status',
@@ -387,7 +388,7 @@ void main() {
         path,
         options: OpenDatabaseOptions(singleInstance: false),
       );
-      expect(await verify.getVersion(), 11);
+      expect(await verify.getVersion(), 12);
       expect((await verify.query('resources')), hasLength(2));
       await verify.close();
     });

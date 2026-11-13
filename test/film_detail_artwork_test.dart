@@ -4,6 +4,7 @@ import 'package:streampath/presentation/widgets/skeleton_scope.dart';
 import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/widgets/adaptive_film_backdrop.dart';
 import 'dart:async';
+import 'package:streampath/data/models/film_metadata_edit.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -265,6 +266,73 @@ void main() {
     await tester.tap(find.text('0.mkv'));
     await tester.pump();
     expect(plays, 1);
+  });
+
+  testWidgets('自定义展示时长优先于探测值且不改写探测资料', (tester) async {
+    await prepare(tester, count: 1);
+    var resource = (await tester.runAsync(
+      () => catalog.store.resources(),
+    ))!.single;
+    Widget card({Map? episode}) => frame(
+      Scaffold(
+        body: SizedBox(
+          width: 320,
+          child: FilmEpisodeCard(
+            resource: resource,
+            catalog: catalog,
+            state: '可用',
+            officialRuntime: 12,
+            officialRuntimeCustomized: true,
+            episode: episode,
+            probe: const {'duration': 10380},
+            onOpenItem: (_) async {},
+            onChanged: () async {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpWidget(card());
+    await tester.pumpAndSettle();
+    expect(find.text('12 分钟'), findsOneWidget);
+    await tester.pumpWidget(
+      card(
+        episode: {
+          'runtime': 34,
+          '_manual': {
+            'patch': {'runtime': 34},
+          },
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('34 分钟'), findsOneWidget);
+    await tester.runAsync(() async {
+      await catalog.store.saveMetadata(
+        await catalog.store.metadataSnapshot(
+          FilmMetadataTarget.resource(resource.id),
+        ),
+        {'runtime': 56},
+      );
+      resource = (await catalog.store.resource(resource.id))!;
+    });
+    await tester.pumpWidget(
+      card(
+        episode: {
+          'runtime': 34,
+          '_manual': {
+            'patch': {'runtime': 34},
+          },
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('56 分钟'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilmEpisodeCard>(find.byType(FilmEpisodeCard))
+          .probe!['duration'],
+      10380,
+    );
   });
 
   testWidgets('电影详情关联资源显示片名、真实文件名与上映日期', (tester) async {
@@ -4409,13 +4477,30 @@ void main() {
     expect(find.text('更换 Logo'), findsOneWidget);
     await tester.tap(find.text('更换 Logo'));
     await pumpAsync();
-    expect(find.text('选择 Logo'), findsOneWidget);
-    await tester.tap(find.text('ja · 1200 x 260'));
+    expect(find.text('编辑元数据…'), findsOneWidget);
+    await tester.ensureVisible(find.text('ja · 1200×260'));
+    await tester.pump();
+    await tester.tap(find.text('ja · 1200×260'));
     await pumpAsync();
-    expect(tester.widget<FilmArtwork>(logo).path, second);
+    for (var attempt = 0; attempt < 20; attempt++) {
+      final save = tester.widget<FilledButton>(
+        find
+            .ancestor(of: find.text('保存'), matching: find.byType(FilledButton))
+            .last,
+      );
+      if (save.onPressed != null) break;
+      await pumpAsync();
+    }
+    await tester.tap(find.text('保存').last);
+    await pumpAsync();
+    final chosen = await tester.runAsync(
+      () => catalog.store.logoOverride(work.id),
+    );
+    expect(chosen, startsWith('sp-image:'));
+    expect(tester.widget<FilmArtwork>(logo).path, chosen);
     expect(
       await tester.runAsync(() => catalog.store.logoOverride(work.id)),
-      second,
+      chosen,
     );
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(
@@ -4428,7 +4513,7 @@ void main() {
       ),
     );
     await settle(tester);
-    expect(tester.widget<FilmArtwork>(logo).path, second);
+    expect(tester.widget<FilmArtwork>(logo).path, chosen);
   });
 }
 

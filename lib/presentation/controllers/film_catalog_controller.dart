@@ -1087,6 +1087,12 @@ class _FilmScrapeJob {
 
 /// 错误键只在界面层翻译，不保存底层异常或敏感请求。
 String filmCatalogErrorText(String code) => switch (code) {
+  'metadataTitleRequired' => '标题不能为空',
+  'metadataInvalidNumber' => '年份、评分或时长格式不正确',
+  'metadataInvalidDate' => '日期格式不正确或与年份不一致',
+  'metadataPersonNameRequired' => '人员姓名不能为空',
+  'imageDownloadTimeout' => '图片下载超时',
+  'imageDownloadFailed' => '图片下载失败，请检查网址或网络',
   'versionConflict' => '同一版本不能包含同一集的多个文件，请分别设置版本归属',
   'playlistMissing' => '播放列表已删除',
   'playlistEmpty' => '播放列表为空',

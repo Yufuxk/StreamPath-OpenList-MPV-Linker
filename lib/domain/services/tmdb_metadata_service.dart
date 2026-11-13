@@ -371,6 +371,7 @@ class TmdbMetadataService {
         }
         final work = _parseWork(type, {
           ...data,
+          'images': images,
           if (best != null) 'backdrop_path': best['file_path'],
           'backdrop_width': best?['width'],
           'backdrop_height': best?['height'],
@@ -490,6 +491,36 @@ class TmdbMetadataService {
     }
   }
 
+  /// 图片候选独立于资料刷新，不按当前文字语言裁掉其他图片。
+  Future<Map<String, List<Map<String, dynamic>>>> imageCandidates(
+    FilmMediaType type,
+    int id, {
+    int? season,
+    int? episode,
+  }) async {
+    var route = '${type.name}/$id';
+    if (season != null) route += '/season/$season';
+    if (episode != null) route += '/episode/$episode';
+    final data = await _request('$route/images', {});
+    return {
+      for (final entry in {
+        'poster_path': episode == null ? 'posters' : 'stills',
+        'backdrop_path': 'backdrops',
+        'logo_path': 'logos',
+      }.entries)
+        entry.key: [
+          for (final row in (data[entry.value] as List? ?? []).whereType<Map>())
+            if (row['file_path'] is String)
+              {
+                'path': row['file_path'],
+                'width': row['width'],
+                'height': row['height'],
+                'language': row['iso_639_1'],
+              },
+        ],
+    };
+  }
+
   FilmWork _parseWork(
     FilmMediaType type,
     Map<String, dynamic> data,
@@ -551,6 +582,11 @@ class TmdbMetadataService {
           'belongs_to_collection': data['belongs_to_collection'],
           'logo_path': data['logo_path'],
           'logo_candidates': data['logo_candidates'],
+          'poster_candidates': data['images']?['posters'],
+          'backdrop_candidates': data['images']?['backdrops'],
+          'tagline': data['tagline'],
+          'original_language': data['original_language'],
+          'production_companies': data['production_companies'],
           if (data.containsKey('logo_selection_version'))
             'logo_selection_version': data['logo_selection_version'],
           'credits': data['credits'],

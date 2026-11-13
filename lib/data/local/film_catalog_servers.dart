@@ -68,6 +68,32 @@ FilmWork _serverWork(
     posterPath: _serverImage(config.id, item, 'Primary'),
     backdropPath: _serverImage(config.id, item, 'Backdrop', index: '0'),
     metadata: {
+      'logo_path': _serverImage(config.id, item, 'Logo'),
+      'poster_candidates': [
+        if (_serverImage(config.id, item, 'Primary') case final String image)
+          {'path': image},
+      ],
+      'logo_candidates': [
+        if (_serverImage(config.id, item, 'Logo') case final String image)
+          {'path': image},
+      ],
+      'backdrop_candidates': [
+        for (
+          var i = 0;
+          i < (item['BackdropImageTags'] as List? ?? []).length;
+          i++
+        )
+          {
+            'path': FilmImageReference(
+              'server',
+              config.id,
+              _serverId(item['Id']),
+              type: 'Backdrop',
+              tag: (item['BackdropImageTags'] as List)[i] as String,
+              index: '$i',
+            ).encode(),
+          },
+      ],
       'certification': item['OfficialRating'] as String?,
       'genres': [
         for (final genre in item['Genres'] as List? ?? []) {'name': genre},
@@ -487,13 +513,7 @@ extension FilmCatalogServerData on FilmCatalogStore {
               _serverImage(config.id, item, 'Thumb'),
         });
         data['episodes'] = episodes;
-        await txn.insert('season_metadata', {
-          'work_id': workId,
-          'season_number': season,
-          'metadata_language': metadataLanguage,
-          'metadata_json': jsonEncode(data),
-          'metadata_fetched_at': DateTime.now().millisecondsSinceEpoch,
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
+        await _saveSeason(txn, workId, season, metadataLanguage, data);
       }
     });
     for (var i = 0; i < entries.length; i++) {

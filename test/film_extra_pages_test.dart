@@ -158,8 +158,9 @@ void main() {
         sourceFor: (_) => throw StateError('No media I/O in UI test'),
       );
     });
+    var closed = false;
     addTearDown(() async {
-      await catalog.close();
+      if (!closed) await catalog.close();
       await dir.delete(recursive: true);
     });
     Future<void> show(Map? episode) async {
@@ -217,6 +218,8 @@ void main() {
     expect(find.text(resource.name), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     await settleExtras(tester);
+    await tester.runAsync(catalog.close);
+    closed = true;
   });
   for (final language in AppLanguage.values) {
     testWidgets('分类设置与筛选四语言、窄窗和放大文字 $language', (tester) async {

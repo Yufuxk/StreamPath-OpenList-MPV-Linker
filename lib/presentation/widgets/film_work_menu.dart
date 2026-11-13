@@ -1,4 +1,6 @@
 import 'sp_icons.dart';
+import 'film_metadata_editor.dart';
+import '../../data/models/film_metadata_edit.dart';
 import 'video_cache_widgets.dart';
 import 'sp_menu.dart';
 import 'film_collection_dialog.dart';
@@ -15,6 +17,7 @@ import 'sp_notice.dart';
 import 'film_match_dialog.dart';
 
 enum _WorkAction {
+  metadata,
   cache,
   watched,
   unwatched,
@@ -77,6 +80,13 @@ Future<void> showFilmWorkMenu(
       Offset.zero & overlay.size,
     ),
     items: [
+      const PopupMenuItem(
+        value: _WorkAction.metadata,
+        child: SPMenuItemContent(
+          icon: SPIcons.settings,
+          child: AppText('编辑元数据…'),
+        ),
+      ),
       PopupMenuItem(
         enabled: cacheable,
         value: _WorkAction.cache,
@@ -159,6 +169,14 @@ Future<void> showFilmWorkMenu(
     ],
   );
   if (!context.mounted || action == null) return;
+  if (action == _WorkAction.metadata) {
+    await showFilmMetadataEditor(
+      context,
+      catalog,
+      FilmMetadataTarget.work(work.id),
+    );
+    return;
+  }
   if (action == _WorkAction.cache) {
     await showVideoCacheDialog(
       context,

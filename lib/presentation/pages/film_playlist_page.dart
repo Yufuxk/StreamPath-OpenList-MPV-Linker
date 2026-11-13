@@ -17,6 +17,8 @@ import '../widgets/film_detail_buttons.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/film_playlist_dialog.dart';
 import '../widgets/film_watch_menu.dart';
+import '../widgets/film_metadata_editor.dart';
+import '../../data/models/film_metadata_edit.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_controls.dart';
@@ -286,6 +288,14 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
         Offset.zero & overlay.size,
       ),
       items: [
+        if (entryId != null && resources.length == 1)
+          const PopupMenuItem(
+            value: 'metadata',
+            child: SPMenuItemContent(
+              icon: SPIcons.settings,
+              child: AppText('编辑元数据…'),
+            ),
+          ),
         const PopupMenuItem(
           value: 'cache',
           child: SPMenuItemContent(
@@ -352,7 +362,13 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       await _load();
       return;
     }
-    if (action == 'cache') {
+    if (action == 'metadata') {
+      await showFilmMetadataEditor(
+        context,
+        widget.catalog,
+        FilmMetadataTarget.resource(resources.single.id),
+      );
+    } else if (action == 'cache') {
       await showVideoCacheDialog(
         context,
         widget.catalog,

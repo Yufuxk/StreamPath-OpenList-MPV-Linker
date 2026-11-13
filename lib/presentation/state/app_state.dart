@@ -1609,6 +1609,9 @@ class AppState extends ChangeNotifier {
       images: FilmCatalogImageCache(
         Directory(p.join(cache.path, 'film_artwork')),
         tmdb,
+        managedArtworkDirectory: Directory(
+          p.join((await AppPaths.libraryDirectory()).path, 'imported_artwork'),
+        ),
         readReference: (ref, maxBytes) async {
           if (ref.origin == 'asset') {
             if (!RegExp(

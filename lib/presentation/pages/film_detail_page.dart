@@ -13,6 +13,8 @@ import '../widgets/directory_scroll_view.dart';
 import '../widgets/film_watch_overlay.dart';
 import '../widgets/film_watch_menu.dart';
 import 'dart:async';
+import '../widgets/film_metadata_editor.dart';
+import '../../data/models/film_metadata_edit.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import '../widgets/film_segmented_control.dart';
@@ -26,7 +28,6 @@ import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_version.dart';
 import '../../domain/services/film_version_resolver.dart';
 import '../widgets/film_extra_controls.dart';
-import '../../domain/services/film_catalog_image_cache.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_notice.dart';
 import '../../data/local/media_library_store.dart';
@@ -124,7 +125,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   final _metadataTextKey = GlobalKey();
   final _overviewTextKey = GlobalKey();
   FilmWork? _work;
-  String? _logoOverride;
   List<FilmResource> _resources = [];
   String? _extraFilter;
   FilmVersionIndex _versions = FilmVersionIndex([]);
@@ -226,7 +226,6 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   void initState() {
     super.initState();
     _work = widget.initialWork;
-    unawaited(_loadLogoOverride());
     widget.catalog.store.dataChanges.addListener(_scheduleDetails);
     widget.catalog.store.presentationChanges.addListener(_loadPreferences);
     final app = context.read<AppState>();
@@ -370,7 +369,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
 
   Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
     final score = work.metadata['vote_average'] as num?;
-    final minutes = work.type == FilmMediaType.movie
+    final minutes =
+        work.type == FilmMediaType.movie &&
+            !filmMetadataOverrides(work.metadata).containsKey('runtime')
         ? _resources
               .map((r) => _probes[r.id]?['duration'])
               .whereType<num>()
@@ -664,6 +665,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         return;
       }
       final episodes = <(int?, int?), Map>{};
+      final seasonNames = <int, String>{};
       final probes = await widget.catalog.store.probes(
         resources.map((r) => r.id),
       );
@@ -673,6 +675,11 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           widget.workId,
           number,
         );
+        final manualTitle =
+            ((metadata?['_manual'] as Map?)?['patch'] as Map?)?['title'];
+        if (manualTitle is String && manualTitle.isNotEmpty) {
+          seasonNames[number] = manualTitle;
+        }
         for (final episode
             in (metadata?['episodes'] as List? ?? []).whereType<Map>()) {
           episodes.putIfAbsent((
@@ -695,6 +702,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             _continueDurationMs = continueRecord == null ? null : durationMs;
           }
           _episodes = episodes;
+          _seasonNames
+            ..clear()
+            ..addAll(seasonNames);
           _probes = probes;
           final numbers = resources.map((r) => r.season).toSet().toList()
             ..sort((a, b) => (a ?? 9999).compareTo(b ?? 9999));
@@ -745,36 +755,19 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     onRefresh: _refresh,
   );
 
-  List<Map> get _logoCandidates =>
-      (_work?.metadata['logo_candidates'] as List? ?? [])
-          .whereType<Map>()
-          .where((candidate) => candidate['path'] is String)
-          .toList(growable: false);
-
-  Future<void> _loadLogoOverride() async {
-    final path = await widget.catalog.store.logoOverride(widget.workId);
-    if (!mounted || path == _logoOverride) return;
-    setState(() => _logoOverride = path);
-  }
-
   Future<void> _logoMenu(Offset position) async {
-    if (_logoCandidates.length < 2) return;
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final local = overlay.globalToLocal(position);
     final action = await showSPMenu<String>(
       context: context,
-      color: AppTheme.dropdownMenuColor(Theme.of(context)),
-      shape: RoundedRectangleBorder(
-        borderRadius: AppTheme.dropdownBorderRadius,
-      ),
       position: RelativeRect.fromRect(
         Rect.fromLTWH(local.dx, local.dy, 0, 0),
         Offset.zero & overlay.size,
       ),
       items: const [
         PopupMenuItem(
-          value: 'logo',
+          value: 'metadata',
           child: SPMenuItemContent(
             icon: SPIcons.image,
             child: AppText('更换 Logo'),
@@ -783,28 +776,24 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       ],
     );
     if (action == null || !mounted) return;
-    await _pickLogo();
-  }
-
-  Future<void> _pickLogo() async {
-    final work = _work;
-    if (work == null || _logoCandidates.length < 2) return;
-    final chosen = await showDialog<String>(
-      context: context,
-      builder: (context) => _LogoPickerDialog(
-        cache: widget.catalog.images,
-        candidates: _logoCandidates,
-        current: _logoOverride ?? work.metadata['logo_path'] as String?,
-      ),
+    await showFilmMetadataEditor(
+      context,
+      widget.catalog,
+      FilmMetadataTarget.work(widget.workId),
+      image: 'logo_path',
     );
-    if (chosen == null || !mounted) return;
-    await widget.catalog.store.setLogoOverride(work.id, chosen);
-    if (!mounted) return;
-    setState(() => _logoOverride = chosen);
   }
 
   Map? _episode(FilmResource resource) =>
       _episodes[(resource.season, resource.episode)];
+
+  final _seasonNames = <int, String>{};
+  String _seasonLabel(int? number) => number == null
+      ? context.l10n.text('集号待确认')
+      : _seasonNames[number] ??
+            (number == 0
+                ? context.l10n.text('特别篇')
+                : context.l10n.format('第 {season} 季', {'season': number}));
 
   Future<void> _playDefault(FilmResource resource) async {
     if (resource.type == FilmMediaType.tv && !resource.isDisc) {
@@ -954,6 +943,11 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                         officialRuntime: resources[i].isExtra
                             ? null
                             : (work.metadata['runtime'] as num?)?.toInt(),
+                        officialRuntimeCustomized:
+                            !resources[i].isExtra &&
+                            filmMetadataOverrides(
+                              work.metadata,
+                            ).containsKey('runtime'),
                         key: ValueKey(
                           work.type == FilmMediaType.tv &&
                                   resources[i].episode != null &&
@@ -1119,11 +1113,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                           ButtonSegment<int?>(
                             value: number,
                             label: Text(
-                              '${number == null
-                                  ? context.l10n.text('集号待确认')
-                                  : number == 0
-                                  ? context.l10n.text('特别篇')
-                                  : context.l10n.format('第 {season} 季', {'season': number})} (${_visibleResources.where((r) => r.season == number).length})',
+                              '${_seasonLabel(number)} (${_visibleResources.where((r) => r.season == number).length})',
                             ),
                           ),
                       ],
@@ -1678,9 +1668,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                     poster !=
                                                                         null
                                                                 ? null
-                                                                : _logoOverride ??
-                                                                      work.metadata['logo_path']
-                                                                          as String?,
+                                                                : work.metadata['logo_path']
+                                                                      as String?,
                                                             target: 'original',
                                                             transparent: true,
                                                             logoInkTint: true,
@@ -2016,6 +2005,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
 }
 
 enum _FilmFileAction {
+  metadata,
   extraType,
   cache,
   playlist,
@@ -2043,6 +2033,7 @@ class FilmEpisodeCard extends StatelessWidget {
     this.artworkPath,
     this.releaseDate,
     this.officialRuntime,
+    this.officialRuntimeCustomized = false,
     this.selected = false,
     this.onSelected,
     this.stableEpisodeIdentity = false,
@@ -2054,6 +2045,7 @@ class FilmEpisodeCard extends StatelessWidget {
   final Map<String, dynamic>? probe;
   final String? displayTitle, artworkPath, releaseDate;
   final int? officialRuntime;
+  final bool officialRuntimeCustomized;
   final Future<void> Function(MediaLibraryItem) onOpenItem;
   final Future<void> Function() onChanged;
   final bool selected;
@@ -2089,7 +2081,16 @@ class FilmEpisodeCard extends StatelessWidget {
         (hasTiming ? 18 + _lineHeight(context) : 0);
   }
 
-  static num? _runtime(Map? probe, Map? episode, int? officialRuntime) {
+  static num? _runtime(
+    Map? probe,
+    Map? episode,
+    int? officialRuntime, {
+    bool customized = false,
+  }) {
+    if (filmMetadataOverrides(episode ?? {}).containsKey('runtime')) {
+      return episode?['runtime'] as num?;
+    }
+    if (customized) return officialRuntime;
     final measured = probe?['duration'] is num
         ? probe!['duration'] as num
         : null;
@@ -2127,6 +2128,13 @@ class FilmEpisodeCard extends StatelessWidget {
         Offset.zero & overlay.size,
       ),
       items: [
+        const PopupMenuItem(
+          value: _FilmFileAction.metadata,
+          child: SPMenuItemContent(
+            icon: SPIcons.settings,
+            child: AppText('编辑元数据…'),
+          ),
+        ),
         if (!resource.isDisc)
           const PopupMenuItem(
             value: _FilmFileAction.extraType,
@@ -2220,6 +2228,12 @@ class FilmEpisodeCard extends StatelessWidget {
     );
     if (!context.mounted || action == null) return;
     switch (action) {
+      case _FilmFileAction.metadata:
+        await showFilmMetadataEditor(
+          context,
+          catalog,
+          FilmMetadataTarget.resource(resource.id),
+        );
       case _FilmFileAction.cache:
         await showVideoCacheDialog(
           context,
@@ -2361,16 +2375,32 @@ class FilmEpisodeCard extends StatelessWidget {
     VoidCallback? onBodyTap,
   }) {
     final tv = resource.type == FilmMediaType.tv;
-    final title = episode?['name'] as String?;
-    final overview = episode?['overview'] as String? ?? '';
+    final title =
+        resource.metadataOverrides['title'] as String? ??
+        episode?['name'] as String?;
+    final overview =
+        resource.metadataOverrides['overview'] as String? ??
+        episode?['overview'] as String? ??
+        '';
     final hasOverview = overview.trim().isNotEmpty;
-    final still = tv ? (episode?['still_path'] as String?) : null;
+    final still =
+        resource.metadataOverrides['poster_path'] as String? ??
+        (tv ? (episode?['still_path'] as String?) : null);
     final theme = Theme.of(context);
     final measured = probe?['duration'] is num
         ? probe!['duration'] as num
         : null;
-    final runtime = _runtime(probe, episode, officialRuntime);
-    final rawDate = tv ? (episode?['air_date'] as String?) : releaseDate;
+    final runtime = resource.metadataOverrides.containsKey('runtime')
+        ? resource.metadataOverrides['runtime'] as num?
+        : _runtime(
+            probe,
+            episode,
+            officialRuntime,
+            customized: officialRuntimeCustomized,
+          );
+    final rawDate =
+        resource.metadataOverrides['release_date'] as String? ??
+        (tv ? (episode?['air_date'] as String?) : releaseDate);
     final airDate = (rawDate ?? '').trim();
     final runtimeText = runtime != null && runtime > 0
         ? context.l10n.format('{minutes} 分钟', {'minutes': runtime})
@@ -2386,7 +2416,11 @@ class FilmEpisodeCard extends StatelessWidget {
         }),
       if (runtime != null && runtime > 0)
         context.l10n.format(
-          measured != null && measured > 0
+          measured != null &&
+                  measured > 0 &&
+                  !officialRuntimeCustomized &&
+                  !resource.metadataOverrides.containsKey('runtime') &&
+                  !filmMetadataOverrides(episode ?? {}).containsKey('runtime')
               ? '影片时长：{minutes} 分钟'
               : '官方时长：{minutes} 分钟',
           {'minutes': runtime},
@@ -2569,7 +2603,9 @@ class FilmEpisodeCard extends StatelessWidget {
                                                   {'episode': resource.episode},
                                                 )
                                               : '${resource.episode}. $displayTitle')
-                                        : displayTitle ?? resource.name,
+                                        : title ??
+                                              displayTitle ??
+                                              resource.name,
                                     style: theme.textTheme.titleSmall,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
@@ -3177,128 +3213,6 @@ class _FilmPendingPageState extends State<FilmPendingPage>
                   ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _LogoPickerDialog extends StatelessWidget {
-  const _LogoPickerDialog({
-    required this.cache,
-    required this.candidates,
-    required this.current,
-  });
-  final FilmCatalogImageCache cache;
-  final List<Map> candidates;
-  final String? current;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760, maxHeight: 560),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 8, 4),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      context.l10n.text('选择 Logo'),
-                      style: theme.textTheme.titleMedium,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: GridView.extent(
-                maxCrossAxisExtent: 240,
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                mainAxisSpacing: 12,
-                crossAxisSpacing: 12,
-                childAspectRatio: 1.45,
-                children: [
-                  for (final candidate in candidates) _tile(context, candidate),
-                ],
-              ),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(context.l10n.text('取消')),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _tile(BuildContext context, Map candidate) {
-    final theme = Theme.of(context);
-    final path = candidate['path'] as String;
-    final selected = path == current;
-    final language = candidate['language'] as String?;
-    final width = candidate['width'], height = candidate['height'];
-    final detail = [
-      if (language != null && language.isNotEmpty) language,
-      if (width is int && height is int) '$width x $height',
-    ].join(' · ');
-    return InkWell(
-      onTap: () => Navigator.pop(context, path),
-      borderRadius: BorderRadius.circular(10),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: selected ? theme.colorScheme.primary : theme.dividerColor,
-            width: selected ? 2 : 1,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Column(
-            children: [
-              Expanded(
-                child: Center(
-                  child: FilmArtwork(
-                    cache: cache,
-                    path: path,
-                    target: 'w300',
-                    transparent: true,
-                    borderRadius: 6,
-                    height: 64,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  detail,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: Colors.black54,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

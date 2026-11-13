@@ -179,7 +179,10 @@ class FilmResource {
       extraOrigin = row['extra_origin'] as String? ?? 'unset',
       extraStatus = row['extra_status'] as String? ?? 'unknown',
       extraEvidence = row['extra_evidence_json'] as String? ?? '{}',
-      extraVersion = row['extra_rule_version'] as int? ?? 0;
+      extraVersion = row['extra_rule_version'] as int? ?? 0,
+      metadataOverrides = Map<String, dynamic>.from(
+        jsonDecode(row['metadata_override_json'] as String? ?? '{}') as Map,
+      );
 
   final int id, rootId, bindingVersion;
   final String sourceId, rootPath, rootName, path, pathKey, parentPath, name;
@@ -191,6 +194,7 @@ class FilmResource {
   final String? extraKind;
   final String extraOrigin, extraStatus, extraEvidence;
   final int extraVersion;
+  final Map<String, dynamic> metadataOverrides;
   bool get isExtra => extraStatus == 'extra';
   bool get isMovieMain =>
       type == FilmMediaType.movie &&

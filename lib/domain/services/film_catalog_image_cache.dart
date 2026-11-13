@@ -24,9 +24,14 @@ class FilmCatalogImageCache {
     this.budgetBytes = 512 * 1024 * 1024,
     Future<void> Function(File)? validateImage,
     this.readReference,
+    Directory? managedArtworkDirectory,
   }) : _dio = dio ?? createTmdbDio(),
+       managedArtworkDirectory =
+           managedArtworkDirectory ??
+           Directory(p.join(directory.parent.path, 'imported_artwork')),
        _validateImage = validateImage ?? _decode;
   final Directory directory;
+  final Directory managedArtworkDirectory;
   late final backdropBlurs = FilmBackdropBlurCache(
     Directory(p.join(directory.path, 'derived_backdrops')),
     budgetBytes: budgetBytes ~/ 16,
@@ -223,7 +228,9 @@ class FilmCatalogImageCache {
       final again = await cached(path, target);
       if (again != null) return again;
       if (FilmImageReference.parse(path) case final reference?) {
-        if (readReference == null) {
+        final managed =
+            reference.origin == 'asset' && reference.sourceId == 'app';
+        if (readReference == null && !managed) {
           throw const FilmCatalogException('sourceUnavailable');
         }
         final file = File(
@@ -232,7 +239,23 @@ class FilmCatalogImageCache {
         final partial = File('${file.path}.partial');
         _protected.add(file.path);
         try {
-          final bytes = await readReference!(reference, maxImageBytes);
+          late final Uint8List bytes;
+          if (managed) {
+            if (!RegExp(
+              r'^imported_artwork/[a-f0-9]{64}\.bin$',
+            ).hasMatch(reference.path)) {
+              throw const FilmCatalogException('invalidImage');
+            }
+            final source = File(
+              p.join(managedArtworkDirectory.path, p.basename(reference.path)),
+            );
+            if (await source.length() > maxImageBytes) {
+              throw const FilmCatalogException('imageTooLarge');
+            }
+            bytes = await source.readAsBytes();
+          } else {
+            bytes = await readReference!(reference, maxImageBytes);
+          }
           if (_closed) throw const FilmCatalogException('cancelled');
           if (bytes.length > maxImageBytes) {
             throw const FilmCatalogException('imageTooLarge');

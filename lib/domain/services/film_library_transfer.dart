@@ -179,9 +179,42 @@ class FilmLibraryTransfer {
       if (background != null && background.isNotEmpty) {
         localPaths.add(background);
       }
+      void collectReferences(Object? value) {
+        if (value is Map) {
+          for (final child in value.values) {
+            collectReferences(child);
+          }
+        } else if (value is List) {
+          for (final child in value) {
+            collectReferences(child);
+          }
+        } else if (value is String && value.startsWith('sp-image:')) {
+          refs.add(value);
+        }
+      }
+
+      for (final table in ['works', 'season_metadata', 'resources']) {
+        final field = table == 'resources'
+            ? 'metadata_override_json'
+            : 'metadata_json';
+        for (final row in catalog[table] as List? ?? []) {
+          collectReferences(jsonDecode(row[field] as String? ?? '{}'));
+        }
+      }
       final artwork = <String, String>{};
       for (final path in {...refs, ...localPaths}) {
-        final file = localPaths.contains(path)
+        if (path.isEmpty) continue;
+        final reference = FilmImageReference.parse(path);
+        final managed =
+            reference?.origin == 'asset' && reference?.sourceId == 'app';
+        final file = managed
+            ? File(
+                p.join(
+                  images.managedArtworkDirectory.path,
+                  p.basename(reference!.path),
+                ),
+              )
+            : localPaths.contains(path)
             ? File(path)
             : await images.cached(path, 'original') ??
                   await images.cached(path, 'w780') ??
@@ -712,10 +745,13 @@ class FilmLibraryTransfer {
             row['custom_path'] = null;
           }
         }
-        for (final table in ['works', 'season_metadata']) {
+        for (final table in ['works', 'season_metadata', 'resources']) {
+          final field = table == 'resources'
+              ? 'metadata_override_json'
+              : 'metadata_json';
           for (final row in catalog[table] as List) {
-            row['metadata_json'] = jsonEncode(
-              rewrite(jsonDecode(row['metadata_json'] as String)),
+            row[field] = jsonEncode(
+              rewrite(jsonDecode(row[field] as String? ?? '{}')),
             );
           }
         }

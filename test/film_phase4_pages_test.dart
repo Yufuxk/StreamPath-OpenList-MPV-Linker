@@ -922,7 +922,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(Dialog), findsNothing);
-    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(5));
+    expect(find.byWidgetPredicate((w) => w is PopupMenuItem), findsNWidgets(6));
     await render(tester, 'minimal_season_watch_menu');
     await tester.tap(find.text('标记已看完'));
     await settle(tester);

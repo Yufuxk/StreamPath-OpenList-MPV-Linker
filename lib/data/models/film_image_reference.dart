@@ -35,7 +35,7 @@ class FilmImageReference {
       validateFilmPath(ref.path);
       if (ref.origin == 'server' &&
           (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(ref.path) ||
-              !['Primary', 'Backdrop', 'Thumb'].contains(ref.type) ||
+              !['Primary', 'Backdrop', 'Thumb', 'Logo'].contains(ref.type) ||
               ref.tag == null ||
               ref.index != null && !RegExp(r'^\d+$').hasMatch(ref.index!))) {
         throw const FormatException('Invalid server image');

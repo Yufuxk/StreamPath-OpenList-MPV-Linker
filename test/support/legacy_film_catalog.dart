@@ -1,9 +1,10 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// 移除 v11 字段，构造真实旧库而非仅降低版本号。
+/// 移除 v11/v12 字段，构造真实旧库而非仅降低版本号。
 Future<void> restoreVersion10Fixture(Database db) async {
   await db.execute('DROP TABLE film_resource_watch_state');
   for (final field in [
+    'metadata_override_json',
     'extra_kind',
     'extra_origin',
     'extra_status',

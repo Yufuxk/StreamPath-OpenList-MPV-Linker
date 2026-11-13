@@ -1186,6 +1186,10 @@ UI 首帧前完成。预热仅使用 64×36 固定 RGBA 图和 256×144 离屏�
 
 影视资源列表、作品资源／季计数、待整理计数、分类及来源封面只枚举 `availability = present` 的版本。已由完整成功的全量／范围扫描确认缺失的旧版本不展示；`resource(id)`／原路径查询仍保留缺失记录的身份、人工关联与观看状态，以便文件恢复后重用。作品元数据、收藏、独立播放记录及播放列表中的用户顺序保留，失败／取消及增量扫描继续使用原缺失判定规则，不新增逐文件检查、网络请求或启动扫描。
 
+元数据编辑通过统一弹窗作用于作品、季、单集与资源，编辑目标由 `FilmMetadataTarget` 明确标识。目录库 schema 12 在资源行保存 `metadata_override_json`；作品与季集在资料 JSON 的 `_manual` 内保存 `source` 来源快照及 `patch` 人工字段补丁。缺少补丁键表示沿用来源，空值或空字符串表示明确清空；图片空字符串表示不显示，并阻止图片继承。来源写入后重新合并人工补丁，现有 SQL 查询及人员索引使用有效资料，名称排序使用非空 `sort_title`。作品合并及逻辑导入中，目标已有人工字段优先。编辑不改变作品身份、文件路径、季集映射、观看进度或实际播放时长，也不写回媒体目录和服务端。
+
+`FilmMetadataArtwork` 将选定图片复制到 `library/imported_artwork/<SHA-256>.bin`，以 `FilmImageReference(asset, app, ...)` 引用；人工图片不参与可重建图片缓存淘汰，支持单图最多 10 MiB 的 JPG、PNG、WebP。网址下载不携带媒体来源或 TMDB 凭据，单次处理使用 15 秒 deadline 和取消。共享图片候选采用按需独立查询、缩略图懒加载及语言筛选；来源刷新及图片候选补取不解除人工覆盖。逻辑导入导出携带来源快照、补丁及人工图片，并重映射资料与资源身份；完整数据库恢复保持备份资料。没有现有浏览入口的标签、制作公司等扩展字段保存在资料中。
+
 影片分级保存在作品的 `metadata_json.certification`，缺失时显示 `NR`。TMDB 详情通过同一请求附加电影 `release_dates` 或剧集 `content_ratings`，优先美区、其次原产地、最后按地区码稳定选择；分级的地区码保存在 `certification_country`。NFO 使用 `mpaa`，Jellyfin／Emby 使用 `OfficialRating`。详情使用 `FilmCertificationBadge`；主页 `ratings` 栏目与 `rating:<value>` 筛选复用原分类、来源隔离、作品去重、分页及栏目偏好。已有网络作品在进入详情时通过既有元数据更新入口补充分级，未取得资料时保持 `NR`。
 
 目录管理按原顺序读取当前根目录的启用状态与来源权限；语言、TMDB 凭据、扫描与剧透等全局设置
@@ -1222,7 +1226,7 @@ UI 首帧前完成。预热仅使用 64×36 固定 RGBA 图和 256×144 离屏�
 
 ### 影片特典资源分类
 
-影视目录 schema 11 在 resources 独立保存特典状态、稳定类型、自动／人工来源、规则版本与识别依据。全局规则位于 catalog_preferences.extra_rules；扫描批次分类，旧资源后台回填，人工非特典与人工类别优先，设置保存后重算自动结果。分类仅检查已有名称，SCAN／CD 类目录排除，真实 ISO／BDMV 不参与普通特典判型；媒体服务器仅使用已提供的真实文件名，不从生成 ID 路径推断目录。
+影视目录 schema 12 在 resources 独立保存特典状态、稳定类型、自动／人工来源、规则版本与识别依据。全局规则位于 catalog_preferences.extra_rules；扫描批次分类，旧资源后台回填，人工非特典与人工类别优先，设置保存后重算自动结果。分类仅检查已有名称，SCAN／CD 类目录排除，真实 ISO／BDMV 不参与普通特典判型；媒体服务器仅使用已提供的真实文件名，不从生成 ID 路径推断目录。
 
 电影默认候选仅采用可信正片，特典和未确认文件的观看状态由 film_resource_watch_state 按资源与作品隔离，既有按路径续播记录保持。电视剧类型筛选不改变 S00、TMDB 季集、版本和队列身份。自定义名称及别名使用稳定类别 ID；备份和便携元数据可保存分类规则与人工类别。
 
@@ -1347,6 +1351,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package.ps1
 
 `-OutputDirectory`、`-Version`、`-BuildNumber`、`-ReleaseDate` 可用于非交互调用；安装工具还可传入
 `-Compiler` 指定 `ISCC.exe`。两个入口默认执行静态分析、构建和产物校验，`-SkipAnalyze` 可用于已单独完成分析的开发构建。
+根 `analysis_options.yaml` 将 `build/**` 构建产物排除在静态分析之外，当前源码、正式测试和工具仍接受检查。
 测试由开发者单独执行 `flutter test --no-pub`；构建与打包入口保留 `-SkipTest` 以兼容旧命令，该参数不影响当前流程。
 同一输出目录的两类资产必须使用一致的版本显示、构建号与日期。发布时把资产和生成的
 `StreamPath.release.json` 一起上传同一正式 Release；GitHub tag 使用 `v1.0`、`v1.2.3` 等对应版本。

@@ -68,7 +68,7 @@ void main() {
       store = await FilmCatalogStore.open(path);
       expect(await store.preference('fixture'), isTrue);
       final db = await databaseFactoryFfi.openDatabase(path);
-      expect(await db.getVersion(), 11);
+      expect(await db.getVersion(), 12);
       expect(await db.query('film_resource_versions'), isEmpty);
       expect(
         dir.listSync().where((e) => e.path.contains('.before-v9-')),

@@ -152,7 +152,7 @@ void main() {
       'true',
     );
     expect(await upgraded.query('film_watch_state'), isEmpty);
-    expect(await upgraded.getVersion(), 11);
+    expect(await upgraded.getVersion(), 12);
     expect(
       temp.listSync().where((f) => f.path.contains('.before-v5-')),
       hasLength(1),

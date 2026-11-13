@@ -146,7 +146,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
     }
     final path = widget.path;
     final file = widget.file;
-    if (file == null && path == null) {
+    if (file == null && (path == null || path.isEmpty)) {
       _clearFrames();
       return;
     }

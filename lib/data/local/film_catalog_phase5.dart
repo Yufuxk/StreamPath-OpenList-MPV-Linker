@@ -72,7 +72,10 @@ Future<void> _indexPhase5Work(
     ...?(credits?['crew'] as List?),
   ].whereType<Map>()) {
     final rawId = person['id'];
-    if (rawId == null || person['name'] is! String) continue;
+    if ((rawId == null && person['identity'] == null) ||
+        person['name'] is! String) {
+      continue;
+    }
     final key = person['identity'] as String? ?? 'tmdb:$rawId';
     if (!people.add(key)) continue;
     await db.insert('work_people', {
@@ -110,10 +113,40 @@ Future<void> _indexPhase5Work(
 
 Future<void> _mergeWork(DatabaseExecutor db, int oldId, int newId) async {
   await _mergePlaylistWork(db, oldId, newId);
+  for (final row in await db.query(
+    'season_metadata',
+    where: 'work_id=?',
+    whereArgs: [oldId],
+  )) {
+    final target = await db.query(
+      'season_metadata',
+      where: 'work_id=? AND season_number=?',
+      whereArgs: [newId, row['season_number']],
+    );
+    if (target.isEmpty) {
+      await db.insert('season_metadata', {...row, 'work_id': newId});
+    } else {
+      final own = Map<String, dynamic>.from(
+        jsonDecode(target.single['metadata_json'] as String) as Map,
+      );
+      final old = Map<String, dynamic>.from(
+        jsonDecode(row['metadata_json'] as String) as Map,
+      );
+      await db.update(
+        'season_metadata',
+        {
+          'metadata_json': jsonEncode(
+            _mergeSeasonMetadata(_mergeSeasonMetadata(own, old), own),
+          ),
+        },
+        where: 'work_id=? AND season_number=?',
+        whereArgs: [newId, row['season_number']],
+      );
+    }
+  }
   // 作品取得统一身份时保留资源 ID，并合并个人数据和季集关联。
   for (final table in [
     'work_favorites',
-    'season_metadata',
     'film_disc_watch_state',
     'collection_members',
     'work_people',
@@ -249,10 +282,14 @@ extension FilmCatalogPhase5 on FilmCatalogStore {
 
   /// 用户为该作品手工选择的 Logo；换源或重新刮削后继续使用。
   Future<String?> logoOverride(int workId) async =>
-      await preference('logo_override:$workId') as String?;
+      filmMetadataOverrides((await work(workId))?.metadata ?? {})['logo_path']
+          as String?;
 
-  Future<void> setLogoOverride(int workId, String? path) =>
-      setPreference('logo_override:$workId', path);
+  Future<void> setLogoOverride(int workId, String? path) async => saveMetadata(
+    await metadataSnapshot(FilmMetadataTarget.work(workId)),
+    {'logo_path': ?path},
+    restore: path == null ? {'logo_path'} : {},
+  );
 
   /// 已完成的匹配规则版本，用于决定是否重算非人工绑定。
   /// 仅内部记账，不改变任何展示数据，因此不触发界面刷新。
