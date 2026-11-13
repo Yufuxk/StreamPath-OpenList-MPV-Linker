@@ -123,6 +123,9 @@ class _PlaybackBarState extends State<PlaybackBar> {
                 ),
               _actionSlot(
                 IconButton.filled(
+                  style: IconButton.styleFrom(
+                    foregroundColor: scheme.onPrimary,
+                  ),
                   icon: Icon(widget.icon),
                   tooltip: context.l10n.text(widget.tooltip),
                   onPressed: widget.deleting ? null : widget.onPressed,

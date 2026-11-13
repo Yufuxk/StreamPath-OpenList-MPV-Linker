@@ -11,6 +11,7 @@ import '../../domain/services/webdav_media_source_adapter.dart';
 import '../localization/app_text.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/sp_dialog.dart';
+import '../widgets/sp_back_icon.dart';
 import '../widgets/sp_icons.dart';
 import '../controllers/film_catalog_controller.dart';
 
@@ -100,7 +101,10 @@ class FilmDirectoryDialogState extends State<FilmDirectoryDialog> {
           ),
           if (_path != widget.boundaryPath)
             TextButton.icon(
-              icon: const Icon(SPIcons.completed, size: 18),
+              icon: IconTheme.merge(
+                data: const IconThemeData(size: 18),
+                child: const SPBackIcon(),
+              ),
               onPressed: _loading
                   ? null
                   : () {

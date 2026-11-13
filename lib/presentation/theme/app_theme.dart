@@ -566,11 +566,30 @@ abstract final class AppTheme {
       ),
       tooltipTheme: TooltipThemeData(
         waitDuration: const Duration(milliseconds: 450),
+        constraints: const BoxConstraints(minHeight: 30),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: scheme.inverseSurface,
-          borderRadius: BorderRadius.circular(8),
+          color: glass
+              ? opaqueScheme.surfaceContainerHigh.withValues(
+                  alpha: isDark ? 0.94 : 0.96,
+                )
+              : scheme.surfaceContainerHigh,
+          borderRadius: controlRadius,
+          border: Border.all(color: glassTokens.borderColor),
+          boxShadow: [
+            BoxShadow(
+              color: glassTokens.modalShadowColor,
+              blurRadius: 12,
+              spreadRadius: -4,
+              offset: const Offset(0, 4),
+            ),
+          ],
         ),
-        textStyle: TextStyle(color: scheme.onInverseSurface, fontSize: 12),
+        textStyle: desktopTextTheme.bodySmall?.copyWith(
+          color: scheme.onSurface,
+          fontWeight: FontWeight.w500,
+          height: 1.4,
+        ),
       ),
     );
   }
