@@ -1,5 +1,9 @@
 # 使用 Flutter 官方推荐静态检查规则。
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    - build/**
+
 linter:
   rules: {}
