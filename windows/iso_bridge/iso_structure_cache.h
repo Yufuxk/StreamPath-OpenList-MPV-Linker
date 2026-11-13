@@ -52,6 +52,9 @@ std::optional<StructureCacheIdentity> make_structure_cache_identity(
     std::uint64_t content_length, StructureCacheValidatorKind validator_kind,
     std::wstring_view validator) noexcept;
 
+std::optional<std::array<std::uint8_t, 32>> cache_content_digest(
+    const std::uint8_t* data, std::size_t length) noexcept;
+
 bool is_valid_structure_cache_path(
     const std::filesystem::path& path) noexcept;
 

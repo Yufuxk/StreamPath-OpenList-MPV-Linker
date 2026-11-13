@@ -523,6 +523,8 @@ class AppLocalizations {
       '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单': '請先安裝隨附的 WinFsp 執行環境，再使用遠端藍光選單',
       '安装 WinFsp 运行时': '安裝 WinFsp 執行環境',
       'WinFsp 安装未完成，请重试或使用标题模式': 'WinFsp 安裝未完成，請重試或使用標題模式',
+      '随附的 BD-J Java 运行时缺失或损坏，请重新安装或使用标题模式':
+          '隨附的 BD-J Java 執行環境遺失或損壞，請重新安裝或使用標題模式',
       '当前 MPV 不支持本地蓝光菜单，请选择支持菜单的 MPV': '目前 MPV 不支援本機藍光選單，請選擇支援選單的 MPV',
       '远程蓝光菜单组件已变更，请重新验证能力': '遠端藍光選單元件已變更，請重新驗證能力',
       '当前阶段仅支持 HDMV 菜单，请返回标题模式': '目前階段僅支援 HDMV 選單，請返回標題模式',
@@ -530,8 +532,8 @@ class AppLocalizations {
       '当前组件不支持远程蓝光菜单': '目前元件不支援遠端藍光選單',
       '此光盘的菜单会话已打开，请先关闭现有会话': '此光碟的選單工作階段已開啟，請先關閉現有工作階段',
       '远程蓝光菜单播放器启动失败，请返回标题模式': '遠端藍光選單播放器啟動失敗，請返回標題模式',
-      '请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。':
-          '請選擇 Blu-ray 播放方式。選單模式僅支援 HDMV，失敗時不會自動切換。',
+      '请选择 Blu-ray 播放方式。菜单兼容性取决于 MPV，失败时不会自动切换。':
+          '請選擇 Blu-ray 播放方式。選單相容性取決於 MPV，失敗時不會自動切換。',
       '标题/播放列表模式': '標題／播放清單模式',
       '蓝光菜单播放失败': '藍光選單播放失敗',
       '返回选择标题模式': '返回選擇標題模式',
@@ -851,6 +853,8 @@ class AppLocalizations {
       '安装 WinFsp 运行时': 'WinFsp ランタイムをインストール',
       'WinFsp 安装未完成，请重试或使用标题模式':
           'WinFsp のインストールは完了していません。再試行するかタイトルモードを使用してください',
+      '随附的 BD-J Java 运行时缺失或损坏，请重新安装或使用标题模式':
+          '付属の BD-J Java ランタイムが見つからないか破損しています。再インストールするかタイトルモードを使用してください。',
       '当前 MPV 不支持本地蓝光菜单，请选择支持菜单的 MPV':
           'この MPV はローカル Blu-ray メニューに対応していません。対応する MPV を選択してください',
       '远程蓝光菜单组件已变更，请重新验证能力': 'リモート Blu-ray メニューの構成が変更されました。再検証が必要です',
@@ -859,8 +863,8 @@ class AppLocalizations {
       '当前组件不支持远程蓝光菜单': '現在のコンポーネントはリモート Blu-ray メニューに対応していません',
       '此光盘的菜单会话已打开，请先关闭现有会话': 'このディスクのメニューは既に開いています。先に終了してください',
       '远程蓝光菜单播放器启动失败，请返回标题模式': 'リモート Blu-ray メニュープレーヤーを起動できません。タイトルモードに戻ってください',
-      '请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。':
-          'Blu-ray の再生方式を選択してください。メニューは HDMV のみ対応し、失敗時に自動切替は行いません。',
+      '请选择 Blu-ray 播放方式。菜单兼容性取决于 MPV，失败时不会自动切换。':
+          'Blu-ray の再生方式を選択してください。メニューの互換性は MPV に依存し、失敗時に自動切替は行いません。',
       '标题/播放列表模式': 'タイトル／プレイリストモード',
       '蓝光菜单播放失败': 'Blu-ray メニューの再生に失敗しました',
       '返回选择标题模式': 'タイトルモードの選択に戻る',
@@ -1212,6 +1216,8 @@ class AppLocalizations {
       '安装 WinFsp 运行时': 'Install WinFsp runtime',
       'WinFsp 安装未完成，请重试或使用标题模式':
           'WinFsp installation did not complete. Retry or use title mode.',
+      '随附的 BD-J Java 运行时缺失或损坏，请重新安装或使用标题模式':
+          'The bundled BD-J Java runtime is missing or damaged. Reinstall or use title mode.',
       '当前 MPV 不支持本地蓝光菜单，请选择支持菜单的 MPV':
           'This MPV does not support local Blu-ray menus. Select a menu-capable MPV.',
       '远程蓝光菜单组件已变更，请重新验证能力':
@@ -1226,8 +1232,8 @@ class AppLocalizations {
           'A menu session for this disc is already open. Close it first.',
       '远程蓝光菜单播放器启动失败，请返回标题模式':
           'The remote menu player failed to start. Return to title mode.',
-      '请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。':
-          'Choose a Blu-ray playback mode. Menus support HDMV only; failures do not switch modes automatically.',
+      '请选择 Blu-ray 播放方式。菜单兼容性取决于 MPV，失败时不会自动切换。':
+          'Choose a Blu-ray playback mode. Menu compatibility depends on MPV; failures do not switch modes automatically.',
       '标题/播放列表模式': 'Title / playlist mode',
       '蓝光菜单播放失败': 'Blu-ray menu playback failed',
       '返回选择标题模式': 'Return to title selection',

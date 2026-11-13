@@ -51,10 +51,11 @@ using bridge::TitleInfo;
 namespace {
 
 constexpr int kMaximumRedirects = 5;
+bridge::DiscIoTrace disc_io_trace;
 constexpr DWORD kNetworkTimeoutMilliseconds = 30000;
 constexpr std::size_t kMaximumHttpHeaderBytes = 16U * 1024U;
 constexpr std::uint64_t kMaximumIsoRangeBytes =
-    bridge::kIsoBlockSize * bridge::kPlaybackPrefetchBatchBlocks;
+    32ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kIsoDemandBlockScale = static_cast<std::size_t>(
     bridge::kIsoBlockSize / bridge::kIsoDemandBlockSize);
 constexpr std::size_t kIsoMetadataBlockCount =
@@ -1081,6 +1082,9 @@ class WinHttpRangeSource final : public RemoteSource {
       ScopeExit active_request_finished(
           [this] { active_request_count_.fetch_sub(1); });
       const auto header_started = std::chrono::steady_clock::now();
+      const auto trace_id = disc_io_trace.record("http_start", 0,
+          range_start.value_or(0), range_end && range_start ? *range_end - *range_start + 1 : 0);
+      ScopeExit trace_finished([&] { disc_io_trace.record("http_end", trace_id); });
       const ParsedUrl parsed = parse_url(current);
       InternetHandle connection(
           WinHttpConnect(session_.get(), parsed.host.c_str(), parsed.port, 0));
@@ -1138,6 +1142,7 @@ class WinHttpRangeSource final : public RemoteSource {
           }) == FALSE) {
         throw BridgeException("network_error", "The WebDAV response has no status");
       }
+      disc_io_trace.record("http_headers", trace_id, 0, 0, 0, status);
       if (status >= 300 && status < 400) {
         redirect_count_.fetch_add(1);
         redirected = true;
@@ -1243,6 +1248,7 @@ class WinHttpRangeSource final : public RemoteSource {
               (consume && body_bytes + received > expected)) {
             throw BridgeException("network_error", "The WebDAV response is too large");
           }
+          if (body_bytes == 0) disc_io_trace.record("http_first_body", trace_id, 0, received);
           body_bytes += received;
           if (consume) {
             consume(buffer.data(), received);
@@ -1660,7 +1666,7 @@ class LibblurayApi final {
     return result;
   }
 
-  void require_hdmv(bridge::BlockCache& cache, BlurayMetrics& metrics) const {
+  bool require_menu(bridge::BlockCache& cache, BlurayMetrics& metrics, bool allow_bdj = false, std::string* navigation_type = nullptr) const {
     for (const char* symbol : {"bd_play", "bd_read_ext", "bd_menu_call",
                                "bd_register_overlay_proc", "bd_user_input"}) {
       if (GetProcAddress(module_, symbol) == nullptr) {
@@ -1676,13 +1682,17 @@ class LibblurayApi final {
     if (info->aacs_detected || info->bdplus_detected) {
       throw BridgeException("encrypted_disc", "Encrypted discs are not supported");
     }
-    if (info->bdj_detected || info->num_bdj_titles != 0) {
+    const bool bdj = info->bdj_detected || info->num_bdj_titles != 0;
+    if (navigation_type) *navigation_type = bdj ? (info->num_hdmv_titles != 0 ? "mixed" : "bdj") : "hdmv";
+    if (bdj && !allow_bdj) {
       throw BridgeException("bdj_unsupported", "Only HDMV menus are supported");
     }
+    if (bdj && allow_bdj) return true;
     if (!info->first_play_supported || !info->top_menu_supported ||
         info->num_hdmv_titles == 0 || info->num_unsupported_titles != 0) {
       throw BridgeException("menu_unknown", "No supported HDMV menu entry");
     }
+    return false;
   }
 
   std::unique_ptr<Disc> open_title(bridge::BlockCache& cache,
@@ -2636,9 +2646,11 @@ std::optional<bool> json_boolean(const bridge::JsonObject& object,
   return value == nullptr ? std::nullopt : std::optional<bool>(*value);
 }
 
-std::string error_json(std::string_view code, std::string_view message) {
+std::string error_json(std::string_view code, std::string_view message,
+                       DWORD http_status = 0) {
   return "{\"type\":\"error\",\"code\":" + bridge::json_escape(code) +
-         ",\"message\":" + bridge::json_escape(message) + "}";
+         ",\"message\":" + bridge::json_escape(message) +
+         ",\"httpStatus\":" + std::to_string(http_status) + "}";
 }
 
 void write_network_phase_metrics(
@@ -2724,6 +2736,7 @@ std::string metrics_json(
   const bridge::BlockCacheMetrics cache = caches.aggregate();
   std::ostringstream output;
   output << '{';
+  output << "\"ioTrace\":" << disc_io_trace.json() << ',';
   if (control_message) output << "\"type\":\"metrics\",";
   output << "\"version\":2"
          << ",\"network\":{"
@@ -3069,7 +3082,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     return 4;
   }
   if (!write_frame(pipe.get(), "{\"type\":\"hello\",\"version\":1,\"pid\":" +
-                                   std::to_string(GetCurrentProcessId()) + "}")) {
+                                   std::to_string(GetCurrentProcessId()) + ",\"discMenuVersion\":1}")) {
     return 4;
   }
 
@@ -3106,8 +3119,12 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     if (transport.has_value() && !virtual_disc && !local_menu) {
       throw BridgeException("protocol_error", "Unsupported disc transport");
     }
-    if (remote_menu && json_string(*open, "mode") != "hdmv") {
+    const bool disc_menu = remote_menu && json_string(*open, "mode") == "disc-menu";
+    if (remote_menu && !disc_menu && json_string(*open, "mode") != "hdmv") {
       throw BridgeException("protocol_error", "Expected HDMV disc mode");
+    }
+    if (disc_menu && !virtual_disc && !local_menu) {
+      throw BridgeException("protocol_error", "Disc menu requires the full filesystem transport");
     }
     validate_time_seek_redirect_option(time_seek_redirect);
     const std::filesystem::path metrics_path =
@@ -3157,6 +3174,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
           local_path ? std::filesystem::path(wide_from_utf8(*local_path)) : std::filesystem::path{});
       source = folder_source;
       structure_identity = folder_source->structure_identity();
+      folder_source->configure_metadata_cache(structure_path);
     } else if (local_path) {
       auto local_source = std::make_shared<LocalIsoSource>(std::filesystem::path(wide_from_utf8(*local_path)));
       structure_identity = bridge::make_structure_cache_identity(local_source->size(),
@@ -3177,6 +3195,8 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     }
     std::vector<TitleInfo> titles;
     std::unique_ptr<bridge::DvdDisc> dvd;
+    bool bdj_detected = false;
+    std::string navigation_type;
     bool should_write_structure_cache = false;
     try {
       auto cached_titles =
@@ -3192,7 +3212,8 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
         return 0;
       }
       if (!bdmv && !remote_menu && !cached_titles.has_value()) {
-        metadata_cache = std::make_unique<bridge::BlockCache>(source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount);
+        metadata_cache = std::make_unique<bridge::BlockCache>(source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount,
+            1, bridge::kInitialPlaybackPrefetchBatchBlocks, bridge::kPlaybackPrefetchBatchBlocks, 0, false, bdmv);
         if (structure_identity) {
           auto warm = bridge::load_dvd_metadata_cache(structure_path, *structure_identity);
           if (warm) {
@@ -3222,14 +3243,16 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
         // DVD 的读取映射由 IFO/NAV 构造，不读取旧蓝光结构快照。
       } else if (remote_menu) {
         metadata_cache = std::make_unique<bridge::BlockCache>(
-            source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount);
-        api.require_hdmv(*metadata_cache, bluray_metrics);
+            source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount,
+            1, bridge::kInitialPlaybackPrefetchBatchBlocks, bridge::kPlaybackPrefetchBatchBlocks, 0, false, bdmv);
+        bdj_detected = api.require_menu(*metadata_cache, bluray_metrics, disc_menu, &navigation_type);
       } else if (cached_titles.has_value()) {
         titles = std::move(*cached_titles);
         bluray_metrics.record_structure_cache_hit();
       } else {
         metadata_cache = std::make_unique<bridge::BlockCache>(
-            source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount);
+            source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount,
+            1, bridge::kInitialPlaybackPrefetchBatchBlocks, bridge::kPlaybackPrefetchBatchBlocks, 0, false, bdmv);
         titles = api.enumerate(*metadata_cache, bluray_metrics);
         should_write_structure_cache = structure_identity.has_value();
       }
@@ -3274,7 +3297,10 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
             : 2 * 1024 * 1024 / bridge::kIsoDemandBlockSize,
         bridge::kPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
         remote_menu ? 0 : bridge::kInitialPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
-        !remote_menu || virtual_disc);
+        !remote_menu || virtual_disc, bdmv,
+        !dvd && (!remote_menu || virtual_disc)
+            ? (remote_menu ? 24 : 32) * 1024 * 1024 / bridge::kIsoDemandBlockSize : 0);
+    cache.set_trace(&disc_io_trace);
     if (metadata_cache != nullptr) {
       cache.restore_handoff(std::move(metadata_handoff));
       metadata_cache.reset();
@@ -3358,6 +3384,12 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       } else {
         ready += R"(,"capability":"remote-disc-blocks-v1","mode":"hdmv"})";
       }
+    }
+    if (remote_menu && disc_menu) {
+      const auto mode_at = ready.find("\"mode\":\"hdmv\"");
+      ready.replace(mode_at, 13, "\"mode\":\"disc-menu\"");
+      ready.pop_back();
+      ready += std::string(",\"bdjDetected\":") + (bdj_detected ? "true" : "false") + ",\"navigationType\":" + bridge::json_escape(navigation_type) + "}";
     }
     if (!write_frame(pipe.get(), ready)) {
       return 0;
@@ -3475,8 +3507,12 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     write_frame(pipe.get(), error_json(error.code, error.what()));
     return 1;
   } catch (const BridgeException& error) {
-    write_frame(pipe.get(), error_json(error.code(), error.what()));
+    write_frame(pipe.get(), error_json(error.code(), error.what(), error.http_status()));
     return 5;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "ISO Bridge internal failure: %s\n", error.what());
+    write_frame(pipe.get(), error_json("internal_error", "The ISO Bridge failed"));
+    return 6;
   } catch (...) {
     write_frame(pipe.get(), error_json("internal_error", "The ISO Bridge failed"));
     return 6;
@@ -3487,6 +3523,9 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
 
 #ifndef STREAMPATH_ISO_BRIDGE_TESTING
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+  wchar_t trace_flag[2]{};
+  if (GetEnvironmentVariableW(L"STREAMPATH_DISC_IO_TRACE", trace_flag, 2) == 1 &&
+      trace_flag[0] == L'1') disc_io_trace.enable();
   int count = 0;
   LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
   if (arguments == nullptr) return 2;

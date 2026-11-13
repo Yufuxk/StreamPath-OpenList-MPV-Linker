@@ -20,6 +20,27 @@
 
 namespace streampath::iso_bridge {
 
+// 只记录数值；所有者须在缓存及网络任务退出后再销毁。
+class DiscIoTrace {
+ public:
+  void enable();
+  std::uint64_t record(const char* kind, std::uint64_t id = 0,
+                       std::uint64_t offset = 0, std::uint64_t length = 0,
+                       std::uint64_t generation = 0,
+                       std::uint64_t detail = 0);
+  std::string json() const;
+ private:
+  struct Event {
+    const char* kind;
+    std::uint64_t serial, time_us, id, offset, length, generation, detail;
+  };
+  bool enabled_ = false;
+  std::chrono::steady_clock::time_point began_;
+  mutable std::mutex mutex_;
+  std::vector<Event> events_;
+  std::uint64_t serial_ = 0;
+};
+
 constexpr std::uint64_t kIsoBlockSize = 4ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kIsoDemandBlockSize = 256ULL * 1024ULL;
 constexpr std::uint64_t kIsoMetadataRetainedBytes =
@@ -176,7 +197,9 @@ class BlockCache {
                       std::size_t prefetch_batch_blocks =
                           kPlaybackPrefetchBatchBlocks,
                       std::size_t recovery_prefetch_batch_blocks = 0,
-                      bool stream_prefetch = false);
+                      bool stream_prefetch = false,
+                      bool compact_extents = false,
+                      std::size_t maximum_stream_batch_blocks = 0);
   ~BlockCache();
   BlockCache(const BlockCache&) = delete;
   BlockCache& operator=(const BlockCache&) = delete;
@@ -193,6 +216,12 @@ class BlockCache {
                    std::size_t length, std::size_t read_ahead_blocks = 0,
                    std::uint64_t playback_generation = 0);
   BlockCacheMetrics metrics() const;
+  // 在首次读取前设置，运行期间不更换观测者。
+  void set_trace(DiscIoTrace* trace) { trace_ = trace; }
+  void trace_discontinuity(std::uint64_t offset, std::size_t length,
+                           std::uint64_t generation) {
+    if (trace_) trace_->record("disc_discontinuity", 0, offset, length, generation);
+  }
   std::uint64_t contiguous_cached_bytes(std::uint64_t offset) const;
   const std::shared_ptr<BlockSource>& source() const { return source_; }
   BlockCacheHandoff take_handoff(std::uint64_t maximum_retained_bytes);
@@ -200,6 +229,7 @@ class BlockCache {
 
  private:
   struct Entry {
+    std::uint64_t charge = 0;
     bool loading = true;
     std::vector<std::uint8_t> bytes;
     std::exception_ptr error;
@@ -227,6 +257,8 @@ class BlockCache {
       std::uint64_t bytes, std::chrono::steady_clock::time_point now);
   void touch_locked(std::uint64_t index, const std::shared_ptr<Entry>& entry);
   bool evict_one_locked();
+  bool has_capacity_for(std::uint64_t index, std::size_t count) const;
+  std::uint64_t entry_charge(std::uint64_t index) const;
   // Requires mutex_ held. Inserts a new entry for index; returns nullptr when
   // index is already present (the prefetch selection retries in that case).
   std::shared_ptr<Entry> insert_entry_locked(std::uint64_t index);
@@ -238,6 +270,11 @@ class BlockCache {
   const std::size_t prefetch_batch_blocks_;
   const std::size_t recovery_prefetch_batch_blocks_;
   const bool stream_prefetch_;
+  const bool compact_extents_;
+  const std::size_t maximum_stream_batch_blocks_;
+  std::size_t stable_batch_blocks_;
+  DiscIoTrace* trace_ = nullptr;
+  std::uint64_t reserved_bytes_ = 0;
   std::exception_ptr playback_read_error_;
   std::size_t block_count_;
   bool protect_read_ahead_ = false;

@@ -2657,7 +2657,7 @@ class BrowserPageState extends State<BrowserPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const AppText('请选择 Blu-ray 播放方式。菜单模式仅支持 HDMV，失败时不会自动切换。'),
+                const AppText('请选择 Blu-ray 播放方式。菜单兼容性取决于 MPV，失败时不会自动切换。'),
                 if (menuReason != null) ...[
                   const SizedBox(height: 12),
                   AppText(menuReason),

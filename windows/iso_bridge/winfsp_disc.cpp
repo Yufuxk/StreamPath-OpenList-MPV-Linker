@@ -264,6 +264,7 @@ struct WinFspDisc::Impl {
       {
         std::lock_guard lock(file.mutex);
         const bool discontinuity = offset != file.next || file.sequential == 0;
+        if (discontinuity) state.cache.trace_discontinuity(base + offset, wanted, state.generation);
         if (offset != file.next && file.expanded_read_ahead)
           state.cache.reset_read_ahead();
         if (offset != file.next || file.sequential == 0) {

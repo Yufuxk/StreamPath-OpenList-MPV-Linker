@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'bd_java_runtime.dart';
+
 import 'package:path/path.dart' as p;
 
 import '../../core/errors/app_exception.dart';
@@ -26,7 +28,9 @@ class RemoteMenuPlaybackService {
     required this.configLoader,
     this.languageLoader,
     String? helperExecutable,
-  }) : helperExecutable =
+    BdJavaRuntime? javaRuntime,
+  }) : javaRuntime = javaRuntime ?? BdJavaRuntime(),
+       helperExecutable =
            helperExecutable ??
            p.join(
              p.dirname(Platform.resolvedExecutable),
@@ -36,6 +40,7 @@ class RemoteMenuPlaybackService {
   final Future<PlayerConfig> Function() configLoader;
   final Future<AppLanguage> Function()? languageLoader;
   final String helperExecutable;
+  final BdJavaRuntime javaRuntime;
   static const runtimeMissing = '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单';
 
   Future<String?> unavailableReason() async =>

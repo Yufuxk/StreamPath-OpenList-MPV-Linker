@@ -108,7 +108,7 @@ Dialogue: 0,0:00:00.00,0:58:00.00,Default,,0,0,0,,DVD TEST
           accessProvider: IsoBridgeAccessProvider(
             helperPathResolver: () async => helper!,
           ),
-          processStarter: (executable, args) async {
+          processStarter: (executable, args, {Map<String, String>? environment}) async {
             final process = await Process.start(executable, [
               '--log-file=${p.join(root.path, 'mpv.log').replaceAll(r'\', '/')}',
               ...args,

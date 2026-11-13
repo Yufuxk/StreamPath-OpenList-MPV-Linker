@@ -280,7 +280,7 @@ void main() {
       ),
       configLoader: () async =>
           const PlayerConfig(name: 'MPV', executable: r'C:\Tools\mpv.exe'),
-      processStarter: (_, _) async => _widgetPlayerIdentity.pid,
+      processStarter: (_, _, {Map<String, String>? environment}) async => _widgetPlayerIdentity.pid,
       ownerIdentityLoader: () async => _widgetOwnerIdentity,
       tempRootProvider: () async => Directory(
         p.join(tempDirectory.path, IsoPlaybackService.tempDirectoryName),

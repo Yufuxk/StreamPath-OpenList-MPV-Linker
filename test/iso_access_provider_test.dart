@@ -3,6 +3,38 @@ import 'package:streampath/domain/services/iso_access_provider.dart';
 import 'package:streampath/domain/services/iso_bridge_client.dart';
 
 void main() {
+  test('新菜单模式要求明确 BD-J 检测字段并保持路径约束', () {
+    final response = <String, dynamic>{
+      'type': 'ready',
+      'version': 1,
+      'port': 0,
+      'token': '0123456789abcdef0123456789abcdef',
+      'totalBytes': 2048,
+      'titles': [],
+      'mode': 'disc-menu',
+      'capability': 'winfsp-disc-v1',
+      'discPath': r'C:\session\disc\disc.iso',
+      'bdjDetected': true,
+    };
+    final ready = IsoBridgeReady.fromMessage(
+      response,
+      remoteMenu: true,
+      mountedSessionPath: r'C:\session',
+      menuMode: 'disc-menu',
+    );
+    expect(ready.bdjDetected, isTrue);
+    response.remove('bdjDetected');
+    expect(
+      () => IsoBridgeReady.fromMessage(
+        response,
+        remoteMenu: true,
+        mountedSessionPath: r'C:\session',
+        menuMode: 'disc-menu',
+      ),
+      throwsException,
+    );
+  });
+
   test('缓存蓝光菜单只接受预先解析的本地路径', () {
     const path = r'C:\cache\disc.iso';
     final message = <String, Object>{

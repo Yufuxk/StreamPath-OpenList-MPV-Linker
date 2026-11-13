@@ -619,6 +619,7 @@ void main() {
       'metadata',
       'actions',
       'overview',
+      'movie-heading',
     ]) {
       final region = find.byKey(Key('film-skeleton-$name'));
       final block = find.descendant(
@@ -637,6 +638,17 @@ void main() {
       (w) => w is FilmArtwork && w.transparent,
     );
     final logoState = tester.state(logo);
+    final movieHeading = find.byKey(const Key('film-skeleton-movie-heading'));
+    expect(
+      tester
+          .widget<Opacity>(
+            find
+                .descendant(of: movieHeading, matching: find.byType(Opacity))
+                .first,
+          )
+          .opacity,
+      0,
+    );
     Future<void> capture(String name) async {
       await tester.runAsync(() async {
         final boundary =
@@ -665,6 +677,16 @@ void main() {
     await settle(tester);
     expect(find.byType(CinematicSkeleton), findsNothing);
     expect(tester.state(logo), same(logoState));
+    expect(
+      tester
+          .widget<Opacity>(
+            find
+                .descendant(of: movieHeading, matching: find.byType(Opacity))
+                .first,
+          )
+          .opacity,
+      1,
+    );
     for (final entry in regions.entries) {
       expect(
         tester.getRect(find.byKey(Key('film-skeleton-${entry.key}'))),

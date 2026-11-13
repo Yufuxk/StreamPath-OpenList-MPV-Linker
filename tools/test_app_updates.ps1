@@ -4,12 +4,21 @@ Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $TestRoot = Join-Path $ProjectRoot ('build\update-acceptance-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
-$Helper = Join-Path $PSScriptRoot 'streampath-updater.ps1'
+# 隔离测试互斥身份，避免正在运行的用户应用影响合成更新验收。
+$OriginalHelper = Join-Path $PSScriptRoot 'streampath-updater.ps1'
+$Helper = Join-Path $TestRoot 'streampath-updater.ps1'
+$TestIdentity = 'Local\StreamPath.Test.' + [guid]::NewGuid().ToString('N')
+$HelperText = [IO.File]::ReadAllText($OriginalHelper).Replace('Local\StreamPath.SingleInstance', $TestIdentity + '.App').Replace('Local\StreamPath.Update', $TestIdentity + '.Update')
+[IO.File]::WriteAllText($Helper, $HelperText, [Text.UTF8Encoding]::new($true))
 $Passed = 0
 function Make-Program([string]$Path, [int]$Build) {
     New-Item -ItemType Directory -Path (Join-Path $Path 'data') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $Path 'streampath.exe'), "synthetic-exe-$Build")
     [IO.File]::WriteAllText((Join-Path $Path 'data\app.so'), "synthetic-aot-$Build")
+    if ($Build -ge 2) {
+        New-Item -ItemType Directory -Path (Join-Path $Path 'lib/bdj') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $Path 'lib/bdj/runtime-manifest.json'), 'synthetic-bdj-runtime')
+    }
     Copy-Item -LiteralPath $Helper -Destination $Path
     Write-StreamPathProgramManifest $Path '1.1.0' $Build
 }
@@ -91,6 +100,10 @@ foreach ($Case in @('success', 'committed', 'cancelled', 'digest', 'traversal', 
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $App 'data\app.so'))) $Expected "$Case changed the wrong program."
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $App 'stream_path_data\cache\playback.json'))) 'user-progress' "$Case changed user progress."
     Assert-Equal ([IO.File]::ReadAllText((Join-Path $App 'my-player.exe'))) 'user-player' "$Case changed an unowned executable."
+    $Runtime = Join-Path $App 'lib/bdj/runtime-manifest.json'
+    if ($Case -in @('success', 'committed')) {
+        Assert-Equal ([IO.File]::ReadAllText($Runtime)) 'synthetic-bdj-runtime' "$Case omitted the Java runtime."
+    } elseif (Test-Path -LiteralPath $Runtime) { throw "$Case left new runtime files after rollback." }
     $Passed++
     Write-Host "PASS $Case"
 }

@@ -820,6 +820,14 @@ void test_playback_prefetch_range_size() {
   const auto bytes = source.fetch(0, kMaximumIsoRangeBytes - 1);
   expect_network(bytes.size() == kMaximumIsoRangeBytes,
                  "playback prefetch range accepted");
+  std::size_t streamed = 0;
+  source.fetch_stream(0, kMaximumIsoRangeBytes - 1, {},
+      [&](const std::uint8_t* data, std::size_t length) {
+        expect_network(length <= 64 * 1024 && data != nullptr,
+                       "large range remains incrementally delivered");
+        streamed += length;
+      });
+  expect_network(streamed == kMaximumIsoRangeBytes, "large streaming range complete");
   expect_bridge_error(
       [&] { source.fetch(0, kMaximumIsoRangeBytes); }, "network_error");
 }
@@ -1462,6 +1470,86 @@ void test_bdmv_manifest_cache_invalidation() {
                  "even incomplete manifests never trigger full-disc probing");
 }
 
+void test_bdmv_metadata_demand_reads() {
+  std::atomic<int> active = 0, peak = 0;
+  TestHttpServer server([&](std::size_t, const TestRequest& request) {
+    const auto count = ++active;
+    auto maximum = peak.load();
+    while (maximum < count && !peak.compare_exchange_weak(maximum, count)) {}
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto response = valid_range_response(request);
+    --active;
+    return response;
+  });
+  bridge::DiscFiles files;
+  files.add("BDMV", "", 0, true);
+  files.add("BDMV/PLAYLIST", "", 0, true);
+  files.add("BDMV/STREAM", "", 0, true);
+  for (int i = 0; i < 12; ++i) files.add("BDMV/PLAYLIST/" + std::to_string(i) + ".mpls", server.url("/" + std::to_string(i)), 8, false, "\"v1\"");
+  files.add("BDMV/STREAM/unused.m2ts", server.url("/unused"), 8, false, "\"v1\"");
+  auto source = std::make_shared<BdmvSource>(std::move(files), server.url("/"), "", "");
+  bridge::BlockCache cache(source, bridge::kIsoDemandBlockSize, 4, 1, 2, 4, 0, true, true);
+  std::array<std::uint8_t, 8> bytes{};
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int i = 0; i < 12; ++i) {
+      const auto* file = source->files.find("BDMV/PLAYLIST/" + std::to_string(i) + ".mpls");
+      expect_network(cache.read(file->base, bytes.data(), bytes.size()) == bytes.size(),
+                     "demand metadata reads preserve file bytes");
+      if (pass == 0) expect_network(server.requests().size() == static_cast<std::size_t>(i + 1),
+                                  "reading one playlist does not request unrelated metadata");
+    }
+  }
+  expect_network(server.requests().size() == 12 && peak == 1,
+                 "serial demand reads reuse compact metadata without speculative requests");
+  const auto error = bridge::parse_json_object(error_json("network_error", "The ISO range request failed", 429));
+  expect_network(error && json_integer(*error, "httpStatus") == 429,
+                 "preparation errors retain the HTTP status for diagnostics");
+}
+
+void test_bdmv_persistent_metadata() {
+  std::string version = "\"v1\"";
+  TestHttpServer server([&](std::size_t, const TestRequest& request) { return valid_range_response(request, version); });
+  const auto root = std::filesystem::temp_directory_path() / (L"bdmv-metadata-" + std::to_wstring(GetCurrentProcessId()));
+  const auto path = root / L"iso_structure" / (std::wstring(64, L'a') + L".cache");
+  ScopeExit cleanup([&] { std::filesystem::remove_all(root); });
+  auto files = [&] {
+    bridge::DiscFiles result;
+    result.add("BDMV", "", 0, true);
+    result.add("BDMV/index.bdmv", server.url("/index"), 8, false, version);
+    return result;
+  };
+  for (int mode = 0; mode < 2; ++mode) {
+    auto cache_path = path;
+    cache_path.replace_filename(std::wstring(64, mode == 0 ? L'a' : L'b') + L".cache");
+    const auto requests = server.requests().size();
+    std::vector<std::uint8_t> expected;
+    {
+      BdmvSource first(files(), server.url("/"), "", "");
+      first.configure_metadata_cache(cache_path);
+      expected = first.fetch(0, 7);
+    }
+    BdmvSource warm(files(), server.url("/"), "", "");
+    warm.configure_metadata_cache(cache_path);
+    expect_network(warm.fetch(0, 7) == expected && server.requests().size() == requests + 1,
+                   "title and menu metadata reuse only complete verified content");
+    bool cancelled = false;
+    try { warm.fetch(0, 7, [] { return true; }); } catch (const bridge::FetchCancelled&) { cancelled = true; }
+    expect_network(cancelled, "metadata disk hits retain cancellation");
+    for (const auto& entry : std::filesystem::directory_iterator(cache_path.parent_path() / L"bdmv_metadata")) {
+      if (entry.path().extension() == L".spmeta") { std::ofstream file(entry.path(), std::ios::binary | std::ios::trunc); file << "damaged"; }
+    }
+    BdmvSource corrupt(files(), server.url("/"), "", "");
+    corrupt.configure_metadata_cache(cache_path);
+    expect_network(corrupt.fetch(0, 7) == expected && server.requests().size() == requests + 2,
+                   "corrupt metadata rebuilds from validated Range");
+    version = version == "\"v1\"" ? "\"v2\"" : "\"v1\"";
+    BdmvSource changed(files(), server.url("/"), "", "");
+    changed.configure_metadata_cache(cache_path);
+    expect_network(changed.fetch(0, 7) == expected && server.requests().size() == requests + 3,
+                   "fresh manifest version invalidates cached metadata");
+  }
+}
+
 void test_bdmv_lazy_first_read() {
   std::atomic<bool> changed = false;
   TestHttpServer server([&](std::size_t, const TestRequest& request) {
@@ -1610,6 +1698,8 @@ int main() {
     test_local_cache_sources();
     test_catalog_probe_limits();
     test_bdmv_manifest_cache_invalidation();
+    test_bdmv_metadata_demand_reads();
+    test_bdmv_persistent_metadata();
     test_bdmv_lazy_first_read();
     test_bdmv_lazy_header_failures();
     test_bdmv_callbacks_and_version_identity();

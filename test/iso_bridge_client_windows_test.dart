@@ -2,16 +2,89 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:isolate';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:streampath/domain/services/iso_bridge_client.dart';
+import 'package:streampath/domain/services/iso_access_provider.dart';
+import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:win32/win32.dart';
 
 const int _maximumTestMessageBytes = 1024 * 1024;
 
 void main() {
+  test('标题清理等待 helper 释放会话文件后再删除目录', () async {
+    final root = await Directory.systemTemp.createTemp('iso-helper-exit-');
+    final session = await Directory('${root.path}/session').create();
+    final script = File('${root.path}/helper.ps1');
+    await script.writeAsString(r'''
+param([string]$PipeName, [string]$Session)
+$pipe = [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::InOut, 1)
+$pipe.WaitForConnection()
+$held = [IO.File]::Open((Join-Path $Session 'metrics.json'), [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+    $writer = [IO.BinaryWriter]::new($pipe)
+    $bytes = [Text.Encoding]::UTF8.GetBytes('{"type":"hello"}')
+    $writer.Write([int]$bytes.Length)
+    $writer.Write($bytes)
+    $writer.Flush()
+    $reader = [IO.BinaryReader]::new($pipe)
+    $length = $reader.ReadInt32()
+    $null = $reader.ReadBytes($length)
+    [Threading.Thread]::Sleep(300)
+} finally {
+    $held.Dispose()
+    $pipe.Dispose()
+}
+''');
+    final suffix =
+        'streampath_exit_${GetCurrentProcessId()}_${DateTime.now().microsecondsSinceEpoch}';
+    final process = await Process.start('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      script.path,
+      '-PipeName',
+      suffix,
+      '-Session',
+      session.path,
+    ]);
+    process.stdout.drain<void>();
+    process.stderr.drain<void>();
+    addTearDown(() async {
+      await process.exitCode.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () async {
+          process.kill();
+          return process.exitCode;
+        },
+      );
+      await root.delete(recursive: true);
+    });
+    final client = await IsoBridgeClient.connect(
+      pipeName: '${r'\\.\pipe\'}$suffix',
+      helperPid: process.pid,
+    );
+    await client.receive();
+    final identity = await PlayerProcessController().capture(process.pid);
+    final handle = LoopbackIsoAccessHandle(
+      sessionDirectory: session,
+      helperIdentity: identity!,
+      totalBytes: 2048,
+      titles: [],
+      port: 1,
+      token: '0123456789abcdef0123456789abcdef',
+      client: client,
+      helperProcess: process,
+    );
+    await handle.cleanup();
+    expect(await session.exists(), false);
+    expect(await process.exitCode, 0);
+  });
+
   test('阻塞读取超时可及时取消，不等待服务端返回', () async {
     final pipeName =
         '${r'\\.\pipe\'}streampath_iso_stall_${GetCurrentProcessId()}';
@@ -87,6 +160,37 @@ void main() {
     expect(serverResult['received'], {'type': 'ping', 'version': 1});
     await iterator.cancel();
   });
+  test('批量写入保留 v1 帧和跨 256 KiB 的 Unicode 内容', () async {
+    final name =
+        '${r'\\.\pipe\'}batch_${DateTime.now().microsecondsSinceEpoch}';
+    final events = ReceivePort();
+    final iterator = StreamIterator<dynamic>(events);
+    final messages = [
+      for (var i = 0; i < 1000; i++)
+        {'type': 'disc_file', 'index': i, 'path': List.filled(100, '盘').join()},
+    ];
+    final server = await Isolate.spawn(_pipeServerMain, [
+      name,
+      events.sendPort,
+      messages.length,
+    ]);
+    addTearDown(() {
+      server.kill(priority: Isolate.immediate);
+      events.close();
+    });
+    await iterator.moveNext();
+    final client = await IsoBridgeClient.connect(
+      pipeName: name,
+      helperPid: GetCurrentProcessId(),
+    );
+    await client.receive();
+    await client.sendAll(messages);
+    expect((await client.receive())['attached'], isTrue);
+    await iterator.moveNext();
+    expect((iterator.current as Map)['received'], messages);
+    await client.close();
+    await iterator.cancel();
+  });
 }
 
 void _stalledPipeServer(List<Object> arguments) {
@@ -153,9 +257,15 @@ void _pipeServerMain(List<Object> arguments) {
       'version': 1,
       'pid': GetCurrentProcessId(),
     });
-    final received = _readJsonFrame(handle);
+    final received = <Map<String, dynamic>>[];
+    for (var i = 0; i < (arguments.length > 2 ? arguments[2] as int : 1); i++) {
+      received.add(_readJsonFrame(handle));
+    }
     _writeJsonFrame(handle, {'type': 'ready', 'version': 1, 'attached': true});
-    events.send({'type': 'completed', 'received': received});
+    events.send({
+      'type': 'completed',
+      'received': arguments.length > 2 ? received : received.single,
+    });
   } catch (error, stackTrace) {
     events.send({
       'type': 'error',

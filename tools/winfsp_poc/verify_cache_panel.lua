@@ -1,5 +1,5 @@
 local now, tick, toggle, result = 0, nil, nil, nil
-local events, observers = {}, {}
+local events, observers, trace = {}, {}, {}
 local properties = {['time-pos']=0, ['seeking']=false, ['disc-menu-active']=false}
 local snapshot = {virtualDisc={snapshotSerial=1, readCalls=1, readSequence=1,
     sequenceBytes=0, forwardReady=true, forwardBytes=100*1048576}}
@@ -16,7 +16,10 @@ package.preload['mp'] = function() return {
         result=value
     end,
     add_forced_key_binding=function(key,_,callback) assert(key=='Ctrl+Alt+i'); toggle=callback end,
-    register_event=function(name,callback) events[name]=callback end,
+    register_event=function(name,callback)
+        local previous=events[name]
+        events[name]=function() if previous then previous() end; callback() end
+    end,
     observe_property=function(name,_,callback) observers[name]=callback end,
     add_periodic_timer=function(_,callback) tick=callback end,
 } end
@@ -26,12 +29,13 @@ package.preload['mp.utils'] = function() return {
     parse_json=function()
         if first then
             first=false
-            return {labels=setmetatable({}, {__index=function(_,key) return key end})}
+            return {metrics='metrics', events='events', labels=setmetatable({}, {__index=function(_,key) return key end})}
         end
         return snapshot
     end,
+    format_json=function(record) trace[#trace+1]=record; return '{}' end,
 } end
-io.open = function() return {read=function() return '{}' end, close=function() end} end
+io.open = function() return {read=function() return '{}' end, write=function() end, close=function() end} end
 dofile(assert(arg[1]))
 local function step(seconds, pos, bytes, fresh)
     now=seconds
@@ -77,4 +81,16 @@ assert(not result.available, 'Episode changes clear the estimate')
 snapshot=nil
 now=30; tick()
 assert(not result.available, 'Missing or malformed metrics remain unavailable')
+properties['paused-for-cache']=false
+now=30.001; observers['paused-for-cache']('paused-for-cache',true)
+now=30.006; observers['paused-for-cache']('paused-for-cache',false)
+local started,ended=trace[#trace-1],trace[#trace]
+assert(started.event=='cache-pause-start' and started.paused_for_cache==true,
+    'Use the callback value even when a property reread already returns false')
+assert(ended.event=='cache-pause-end' and ended.paused_for_cache==false,
+    'Record both edges of pauses shorter than the polling interval')
+assert(math.abs(ended.time-started.time-0.005)<0.000001, 'Preserve millisecond pause timing')
+assert(started.metrics_age_ms>3000, 'Stale snapshot age must not reset when the file is reread')
+for i=1,4200 do observers['paused-for-cache']('paused-for-cache',i%2==1) end
+assert(#trace==4097 and trace[#trace].event=='trace-truncated', 'Bound the event log and mark truncation')
 print('menu cache panel: PASS')

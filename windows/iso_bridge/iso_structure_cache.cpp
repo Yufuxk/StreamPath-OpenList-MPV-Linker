@@ -514,6 +514,11 @@ bool write_structure_cache(const std::filesystem::path& path,
 }
 
 
+std::optional<std::array<std::uint8_t, 32>> cache_content_digest(
+    const std::uint8_t* data, std::size_t length) noexcept {
+  return sha256(data, length);
+}
+
 std::optional<BlockCacheHandoff> load_dvd_metadata_cache(
     const std::filesystem::path& path, const StructureCacheIdentity& identity) noexcept {
   try {

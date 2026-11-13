@@ -6,8 +6,49 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <sstream>
 
 namespace streampath::iso_bridge {
+
+void DiscIoTrace::enable() {
+  events_.reserve(1024);
+  began_ = std::chrono::steady_clock::now();
+  enabled_ = true;
+}
+
+std::uint64_t DiscIoTrace::record(const char* kind, std::uint64_t id,
+    std::uint64_t offset, std::uint64_t length, std::uint64_t generation,
+    std::uint64_t detail) {
+  if (!enabled_) return 0;
+  std::lock_guard lock(mutex_);
+  const auto serial = ++serial_;
+  Event event{kind, serial, static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - began_).count()),
+      id, offset, length, generation, detail};
+  if (events_.size() < 1024) events_.push_back(event);
+  else events_[(serial - 1) % 1024] = event;
+  return serial;
+}
+
+std::string DiscIoTrace::json() const {
+  if (!enabled_) return "null";
+  std::lock_guard lock(mutex_);
+  std::ostringstream out;
+  out << "{\"version\":1,\"overwritten\":"
+      << (serial_ - events_.size()) << ",\"events\":[";
+  for (std::size_t i = 0; i < events_.size(); ++i) {
+    const auto& e = events_[(serial_ - events_.size() + i) % 1024];
+    if (i) out << ',';
+    out << "{\"kind\":\"" << e.kind << "\",\"serial\":" << e.serial
+        << ",\"us\":" << e.time_us << ",\"id\":" << e.id
+        << ",\"offset\":" << e.offset << ",\"length\":" << e.length
+        << ",\"generation\":" << e.generation << ",\"detail\":" << e.detail << '}';
+  }
+  out << "]}";
+  return out.str();
+}
+
 namespace {
 
 std::string_view trim(std::string_view value) {
@@ -583,7 +624,8 @@ BlockCache::BlockCache(std::shared_ptr<BlockSource> source,
                        std::size_t initial_prefetch_batch_blocks,
                        std::size_t prefetch_batch_blocks,
                        std::size_t recovery_prefetch_batch_blocks,
-                       bool stream_prefetch)
+                       bool stream_prefetch, bool compact_extents,
+                       std::size_t maximum_stream_batch_blocks)
     : source_(std::move(source)),
       block_size_(block_size),
       configuration_block_scale_(configuration_block_scale),
@@ -591,6 +633,9 @@ BlockCache::BlockCache(std::shared_ptr<BlockSource> source,
       prefetch_batch_blocks_(prefetch_batch_blocks),
       recovery_prefetch_batch_blocks_(recovery_prefetch_batch_blocks),
       stream_prefetch_(stream_prefetch),
+      compact_extents_(compact_extents),
+      maximum_stream_batch_blocks_(maximum_stream_batch_blocks),
+      stable_batch_blocks_(prefetch_batch_blocks),
       block_count_(block_count * configuration_block_scale),
       max_read_ahead_blocks_(kMaximumPlaybackReadAheadBlocks *
                              configuration_block_scale) {
@@ -649,6 +694,7 @@ std::uint64_t BlockCache::begin_playback() {
       if (!entry->loading && entry->error) {
         entry->removed = true;
         lru_.erase(entry->lru_position);
+        reserved_bytes_ -= entry->charge;
         iterator = entries_.erase(iterator);
       } else {
         ++iterator;
@@ -663,6 +709,8 @@ std::uint64_t BlockCache::begin_playback() {
 
 void BlockCache::reset_read_ahead() {
   std::lock_guard lock(mutex_);
+  if (trace_) trace_->record("window_reset", 0, prefetch_window_start_ * block_size_,
+      (prefetch_end_ - prefetch_window_start_) * block_size_, prefetch_generation_);
   unread_window_start_ = 0;
   unread_window_end_ = 0;
   prefetch_pending_ = false;
@@ -694,7 +742,8 @@ void BlockCache::configure(std::size_t block_count,
   protect_read_ahead_ = protect_read_ahead && max_read_ahead_blocks < block_count;
   protect_unread_window_ =
       protect_unread_window && max_read_ahead_blocks < block_count;
-  while (entries_.size() > block_count_ && evict_one_locked()) {
+  while ((reserved_bytes_ > block_count_ * block_size_ ||
+          entries_.size() > (compact_extents_ ? 32768 : block_count_)) && evict_one_locked()) {
   }
   space_available_.notify_all();
 }
@@ -837,6 +886,7 @@ BlockCacheHandoff BlockCache::take_handoff(
     if (handoff.retained_bytes == maximum_retained_bytes) break;
   }
   entries_.clear();
+  reserved_bytes_ = 0;
   lru_.clear();
   resident_bytes_ = 0;
   return handoff;
@@ -869,7 +919,8 @@ void BlockCache::restore_handoff(BlockCacheHandoff handoff) {
     retained_bytes += block.bytes.size();
   }
   if (retained_bytes != handoff.retained_bytes ||
-      handoff.blocks.size() > block_count_) {
+      retained_bytes > block_count_ * block_size_ ||
+      handoff.blocks.size() > (compact_extents_ ? 32768 : block_count_)) {
     throw std::invalid_argument("invalid cache handoff");
   }
 
@@ -913,6 +964,8 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
           metrics_.foreground_loading_wait_us_total += elapsed;
           metrics_.foreground_loading_wait_us_max =
               std::max(metrics_.foreground_loading_wait_us_max, elapsed);
+          if (trace_) trace_->record("block_wait", 0, index * block_size_,
+              block_size_, playback_generation, elapsed);
         } else {
           while (entry->loading) entry->ready.wait(lock);
         }
@@ -934,11 +987,12 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
         }
         return entry;
       }
-      if (entries_.size() < block_count_ || evict_one_locked()) {
+      if (has_capacity_for(index, 1)) {
         entry = insert_entry_locked(index);
         if (entry) break;
         continue;
       }
+      if (evict_one_locked()) continue;
       space_available_.wait(lock);
     }
     ++metrics_.requests;
@@ -951,6 +1005,7 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
 
   try {
     const std::uint64_t start = index * block_size_;
+    if (trace_) trace_->record("demand_fetch", 0, start, block_size_, playback_generation);
     const std::uint64_t end =
         std::min(source_->extent_end(start) - 1, start + block_size_ - 1);
     auto bytes = source_->fetch(start, end, [this, playback_generation] {
@@ -1003,6 +1058,7 @@ std::shared_ptr<BlockCache::Entry> BlockCache::block(std::uint64_t index,
             !entry->removed) {
         entry->removed = true;
         lru_.erase(entry->lru_position);
+        reserved_bytes_ -= found->second->charge;
         entries_.erase(found);
       }
       entry->cancelled = true;
@@ -1062,11 +1118,17 @@ void BlockCache::schedule_prefetch(std::uint64_t next_offset,
       ++prefetch_generation_;
       initial_prefetch_batch_ = true;
       replaced = true;
+      if (trace_) trace_->record("window_replace", 0, start * block_size_,
+          (end - start) * block_size_, prefetch_generation_);
     }
     const std::uint64_t queued = prefetch_end_ - prefetch_next_;
+    // 大窗口内合批；短窗口沿用原批次和触发量，避免增加碎片请求。
+    stable_batch_blocks_ = stream_prefetch_ && maximum_stream_batch_blocks_ != 0
+        ? std::max(prefetch_batch_blocks_, std::min(maximum_stream_batch_blocks_, block_count / 2))
+        : prefetch_batch_blocks_;
     const std::size_t refill_blocks = protect_read_ahead_
         ? std::min(prefetch_batch_blocks_, std::max<std::size_t>(1, block_count / 2))
-        : prefetch_batch_blocks_;
+        : stable_batch_blocks_;
     prefetch_pending_ =
         prefetch_next_ < prefetch_end_ &&
         (prefetch_pending_ || replaced ||
@@ -1110,7 +1172,7 @@ void BlockCache::prefetch_loop() {
             (initial_prefetch_batch_ || short_disc_window)
                 ? initial_prefetch_batch_blocks_
                 : (recovery_prefetch_batch_ ? recovery_prefetch_batch_blocks_
-                                            : prefetch_batch_blocks_);
+                                            : stable_batch_blocks_);
         const std::uint64_t batch_limit = std::min<std::uint64_t>(
             prefetch_end_, batch_start + batch_blocks);
         batch_count = 0;
@@ -1118,7 +1180,7 @@ void BlockCache::prefetch_loop() {
                entries_.find(batch_start + batch_count) == entries_.end()) {
           ++batch_count;
         }
-        if (entries_.size() + batch_count <= block_count_) break;
+        if (has_capacity_for(batch_start, batch_count)) break;
         if (evict_one_locked()) continue;
         space_available_.wait(lock);
         if (stopping_) return;
@@ -1140,6 +1202,7 @@ void BlockCache::prefetch_loop() {
           for (const auto& [done_index, done_entry] : batch) {
             done_entry->removed = true;
             lru_.erase(done_entry->lru_position);
+            reserved_bytes_ -= done_entry->charge;
             entries_.erase(done_index);
           }
           batch.clear();
@@ -1165,6 +1228,8 @@ void BlockCache::prefetch_loop() {
       in_flight_bytes = fetch_end - fetch_start + 1;
       record_prefetch_started_locked(in_flight_bytes,
                                      std::chrono::steady_clock::now());
+      if (trace_) trace_->record("batch_start", 0, fetch_start,
+          in_flight_bytes, generation, (prefetch_end_ - prefetch_next_) * block_size_);
     }
 
     std::uint64_t published_bytes = 0;
@@ -1212,6 +1277,8 @@ void BlockCache::prefetch_loop() {
               }
             }
             ++next_entry;
+            if (trace_ && next_entry == 1) trace_->record("batch_first_block", 0,
+                index * block_size_, length, generation);
             entry->ready.notify_all();
             space_available_.notify_all();
             entry.reset();
@@ -1240,6 +1307,7 @@ void BlockCache::prefetch_loop() {
                   !entry->removed) {
               entry->removed = true;
               lru_.erase(entry->lru_position);
+              reserved_bytes_ -= found->second->charge;
               entries_.erase(found);
             }
             entry->cancelled = true;
@@ -1301,6 +1369,7 @@ void BlockCache::prefetch_loop() {
                 !entry->removed) {
             entry->removed = true;
             lru_.erase(entry->lru_position);
+            reserved_bytes_ -= found->second->charge;
             entries_.erase(found);
           }
           entry->cancelled = true;
@@ -1315,6 +1384,8 @@ void BlockCache::prefetch_loop() {
       std::lock_guard lock(mutex_);
       record_prefetch_finished_locked(in_flight_bytes,
                                       std::chrono::steady_clock::now());
+      if (trace_) trace_->record("batch_end", 0, fetch_start,
+          published_bytes, generation, generation != prefetch_generation_);
       for (const auto& [index, entry] : batch) {
         static_cast<void>(index);
         if (entry) entry->ready.notify_all();
@@ -1388,6 +1459,19 @@ void BlockCache::touch_locked(std::uint64_t index,
   entry->lru_position = lru_.begin();
 }
 
+std::uint64_t BlockCache::entry_charge(std::uint64_t index) const {
+  if (!compact_extents_) return block_size_;
+  const auto start = index * block_size_;
+  return std::min(block_size_, source_->extent_end(start) - start);
+}
+
+bool BlockCache::has_capacity_for(std::uint64_t index, std::size_t count) const {
+  if (entries_.size() + count > (compact_extents_ ? 32768 : block_count_)) return false;
+  std::uint64_t needed = 0;
+  for (std::size_t i = 0; i < count; ++i) needed += entry_charge(index + i);
+  return reserved_bytes_ + needed <= block_count_ * block_size_;
+}
+
 bool BlockCache::evict_one_locked() {
   // 优先保留当前前向块；没有其他候选时仍允许腾出需求/批次容量。
   for (const bool allow_unread : {false, true}) {
@@ -1408,6 +1492,7 @@ bool BlockCache::evict_one_locked() {
       resident_bytes_ -= found->second->bytes.size();
       const auto forward = std::next(iterator).base();
       lru_.erase(forward);
+      reserved_bytes_ -= found->second->charge;
       entries_.erase(found);
       return true;
     }
@@ -1427,6 +1512,8 @@ std::shared_ptr<BlockCache::Entry> BlockCache::insert_entry_locked(
     throw;
   }
   entry->lru_position = lru_.begin();
+  entry->charge = entry_charge(index);
+  reserved_bytes_ += entry->charge;
   return entry;
 }
 

@@ -99,6 +99,38 @@ class IsoBridgeClient {
     }
   });
 
+  /// 合并写入已有 v1 帧，服务端仍逐帧校验。
+  Future<void> sendAll(Iterable<Map<String, Object?>> messages) =>
+      _serialize(() async {
+        var batch = BytesBuilder(copy: false);
+        Future<void> flush() async {
+          if (batch.isEmpty) return;
+          final bytes = batch.takeBytes();
+          final handle = _requireHandle();
+          final result = await _writeBatchInWorker(handle, bytes);
+          if (result != 0) {
+            await close();
+            throw IsoBridgeProtocolException(
+              'ISO Bridge batch write failed: $result',
+            );
+          }
+        }
+
+        for (final message in messages) {
+          final body = utf8.encode(jsonEncode(message));
+          if (body.isEmpty || body.length > _maximumMessageBytes) {
+            throw const IsoBridgeProtocolException(
+              'Invalid ISO Bridge message length',
+            );
+          }
+          if (batch.length + body.length + 4 > 256 * 1024) await flush();
+          final prefix = ByteData(4)..setUint32(0, body.length, Endian.little);
+          batch.add(prefix.buffer.asUint8List());
+          batch.add(body);
+        }
+        await flush();
+      });
+
   Future<Map<String, dynamic>> receive({
     Duration timeout = const Duration(seconds: 120),
   }) =>
@@ -155,23 +187,33 @@ class IsoBridgeClient {
     return result;
   }
 
+  static Future<int> _writeBatchInWorker(int handle, Uint8List bytes) =>
+      Isolate.run(() => _writeFrame(handle: handle, body: bytes, framed: true));
+
   static Future<int> _writeFrameInWorker(int handle, Uint8List body) =>
       Isolate.run(() => _writeFrame(handle: handle, body: body));
 
   static Future<Map<String, Object?>> _readFrameInWorker(int handle) =>
       Isolate.run(() => _readFrame(handle));
 
-  static int _writeFrame({required int handle, required Uint8List body}) {
-    final frame = calloc<Uint8>(body.length + 4);
+  static int _writeFrame({
+    required int handle,
+    required Uint8List body,
+    bool framed = false,
+  }) {
+    final prefixLength = framed ? 0 : 4;
+    final frame = calloc<Uint8>(body.length + prefixLength);
     final written = calloc<Uint32>();
     try {
-      final bytes = frame.asTypedList(body.length + 4);
+      final bytes = frame.asTypedList(body.length + prefixLength);
       final length = body.length;
-      bytes[0] = length & 0xff;
-      bytes[1] = (length >> 8) & 0xff;
-      bytes[2] = (length >> 16) & 0xff;
-      bytes[3] = (length >> 24) & 0xff;
-      bytes.setRange(4, bytes.length, body);
+      if (!framed) {
+        bytes[0] = length & 0xff;
+        bytes[1] = (length >> 8) & 0xff;
+        bytes[2] = (length >> 16) & 0xff;
+        bytes[3] = (length >> 24) & 0xff;
+      }
+      bytes.setRange(prefixLength, bytes.length, body);
       var offset = 0;
       while (offset < bytes.length) {
         if (WriteFile(

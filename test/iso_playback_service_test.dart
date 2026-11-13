@@ -10,6 +10,7 @@ import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/data/models/webdav_bdmv.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
+import 'package:streampath/domain/services/bd_java_runtime.dart';
 import 'package:streampath/domain/services/iso_access_provider.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
@@ -163,8 +164,21 @@ class _CachedDiscService extends WebDAVService {
   Future<String?> cachedDiscPath(WebDavFile file) async => path;
 }
 
+class _DelayedJavaRuntime extends BdJavaRuntime {
+  final entered = Completer<void>();
+  final result = Completer<Map<String, String>?>();
+  @override
+  Future<Map<String, String>?> environment(
+    Directory root, {
+    bool required = false,
+  }) {
+    entered.complete();
+    return result.future;
+  }
+}
+
 class _FakeMenuService extends RemoteMenuPlaybackService {
-  _FakeMenuService({this.onReady, this.capabilityExecutable})
+  _FakeMenuService({this.onReady, this.capabilityExecutable, super.javaRuntime})
     : super(
         configLoader: () async =>
             const PlayerConfig(name: 'MPV', executable: 'mpv'),
@@ -348,7 +362,7 @@ void main() {
     configLoader: () async =>
         PlayerConfig(name: 'MPV', executable: r'C:\Tools\mpv.exe',
             menuProgressSharingEnabled: shareMenuProgress),
-    processStarter: (_, args) async {
+    processStarter: (_, args, {Map<String, String>? environment}) async {
       onLaunch?.call(args);
       return playerIdentity.pid;
     },
@@ -701,6 +715,31 @@ void main() {
     expect(index.recordFor('bd://mpls/00001'), isNull);
     expect(index.recordFor('bd://mpls/00002')?.startSeconds, 120);
 
+  });
+
+  test('Java 准备期间取消，迟到的环境结果不会启动 MPV', () async {
+    final runtime = _DelayedJavaRuntime();
+    final remote = _FakeIsoAccessProvider(
+      handleFactory: (directory) => _FakeRemoteHandle(directory),
+    );
+    var launched = false;
+    final service = buildService(
+      _FakeIsoAccessProvider(),
+      remoteProvider: remote,
+      menuService: _FakeMenuService(javaRuntime: runtime),
+      onLaunch: (_) => launched = true,
+    );
+    final opening = service.startRemoteMenu(
+      webDavService: webDavService,
+      file: isoFile,
+    );
+    await runtime.entered.future;
+    service.cancel();
+    runtime.result.complete({'JAVA_HOME': 'late-runtime'});
+    expect(await opening, isNull);
+    expect(launched, isFalse);
+    expect(remote.handle!.cleaned, isTrue);
+    service.dispose();
   });
 
   test('菜单启动等待阶段取消会定向关闭播放器并清理本次会话', () async {
@@ -1070,8 +1109,8 @@ void main() {
     expect(script, contains('append_performance_event("seek-start")'));
     expect(script, contains('not was_seeking and not resume_inflight'));
     expect(script, contains('append_performance_event("stable-playback")'));
-    expect(script, contains('append_performance_event("cache-pause-start")'));
-    expect(script, contains('append_performance_event("cache-pause-end")'));
+    expect(script, contains('append_performance_event("cache-pause-start", nil, nil, nil, value)'));
+    expect(script, contains('append_performance_event("cache-pause-end", nil, nil, nil, value)'));
     expect(script, contains('record["position"] = event_position'));
     expect(
       script,
@@ -1235,7 +1274,7 @@ void main() {
       processController: raceController,
       configLoader: () async =>
           const PlayerConfig(name: 'MPV', executable: r'C:\Tools\mpv.exe'),
-      processStarter: (_, _) async => playerIdentity.pid,
+      processStarter: (_, _, {Map<String, String>? environment}) async => playerIdentity.pid,
       ownerIdentityLoader: () async => ownerIdentity,
       tempRootProvider: () async => Directory(
         p.join(tempDirectory.path, IsoPlaybackService.tempDirectoryName),

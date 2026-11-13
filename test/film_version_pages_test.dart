@@ -309,8 +309,20 @@ void main() {
       find.descendant(of: first, matching: find.byType(ImageFiltered)),
       findsWidgets,
     );
-    await tester.tap(find.descendant(of: first, matching: find.text('展示封面')));
+    expect(
+      find.descendant(of: first, matching: find.text('展示封面')),
+      findsNothing,
+      reason:
+          'Episodes without an independent overview reveal artwork through watch state',
+    );
+    await tester.runAsync(
+      () => catalog.store.markWatched([cards().first.resource], true),
+    );
     await settleVersions(tester);
+    expect(
+      find.descendant(of: first, matching: find.byType(ImageFiltered)),
+      findsNothing,
+    );
     final revealedArtState = tester.state(art);
     final revealedContinueArtState = tester.state(continueArt);
     final revealedBounds = tester.getRect(first);

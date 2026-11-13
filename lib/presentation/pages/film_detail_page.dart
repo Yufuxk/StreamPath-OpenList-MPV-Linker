@@ -1024,9 +1024,15 @@ class _FilmDetailPageState extends State<FilmDetailPage>
         const SliverToBoxAdapter(child: AppText('请选择资源播放，或将正片标记为非特典')),
       if (main.isNotEmpty || _loading) ...[
         SliverToBoxAdapter(
-          child: AppText(
-            '正片与版本',
-            style: Theme.of(context).textTheme.titleLarge,
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: SkeletonRegion(
+              key: const Key('film-skeleton-movie-heading'),
+              child: AppText(
+                '正片与版本',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
           ),
         ),
         SliverToBoxAdapter(child: const SizedBox(height: 12)),

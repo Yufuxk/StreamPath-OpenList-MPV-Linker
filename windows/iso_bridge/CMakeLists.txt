@@ -28,6 +28,19 @@ target_include_directories(streampath_iso_bridge_core PUBLIC
 target_compile_options(streampath_iso_bridge_core PRIVATE /W4 /WX /EHsc /utf-8)
 
 include("winfsp.cmake")
+set(BDJ_RUNTIME "${CMAKE_BINARY_DIR}/bdj-runtime")
+execute_process(COMMAND "$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -ExecutionPolicy Bypass -File
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/prepare_bdj_runtime.ps1"
+  -Destination "${BDJ_RUNTIME}" RESULT_VARIABLE BDJ_RUNTIME_RESULT)
+if(NOT BDJ_RUNTIME_RESULT EQUAL 0)
+  message(FATAL_ERROR "Could not prepare the fixed BD-J runtime")
+endif()
+install(DIRECTORY "${BDJ_RUNTIME}/java" "${BDJ_RUNTIME}/licenses"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/bdj" COMPONENT Runtime)
+install(FILES "${BDJ_RUNTIME}/runtime-manifest.json"
+  "${BDJ_RUNTIME}/libbluray-j2se-1.5.0.jar"
+  "${BDJ_RUNTIME}/libbluray-awt-j2se-1.5.0.jar"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/lib/bdj" COMPONENT Runtime)
 include("dvd.cmake")
 add_executable(streampath_dvd_tests "dvd_disc_tests.cpp" "dvd_disc.cpp")
 target_compile_features(streampath_dvd_tests PRIVATE cxx_std_17)

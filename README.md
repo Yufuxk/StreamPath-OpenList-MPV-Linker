@@ -122,7 +122,7 @@ Blu-ray ISO／BDMV 与 DVD ISO 支持外挂 `.ass`、`.ssa`、`.srt` 字幕：�
 
 - **系统：** Windows 10/11 x64。
 - **播放器：** MPV 是主要支持目标；视频和音频也可按播放器参数模板使用其他外部播放器。
-- **蓝光：** 支持未加密 Blu-ray。DVD ISO 使用标题播放列表，不提供 DVD 菜单或 CSS 解密；网络播放需要随机 Range 读取和资源版本校验。AACS/BD+ 加密碟片及 BD-J 不在支持范围内。HDMV 菜单为可选测试功能。
+- **蓝光：** 支持未加密 Blu-ray 的标题播放与可选 HDMV／BD-J 原生菜单，菜单兼容性取决于所选 MPV。BD-J 随软件附带 Java，无需配置系统 Java；远程菜单需安装随附的 WinFsp。DVD ISO 使用标题播放列表，不提供 DVD 菜单或 CSS 解密；网络播放需要随机 Range 读取和资源版本校验，不支持 AACS／BD+ 解密。
 - **便携数据：** 配置、缓存和播放记录默认保存在程序同级的 `stream_path_data/` 目录。
 - **安装版数据：** 配置、缓存和播放记录保存在 `%LOCALAPPDATA%\StreamPath\stream_path_data\`，与安装目录分开。
 - **媒体服务器：** 支持直接播放及进度、观看状态同步，不提供转码、直播或远程控制。离线记录会在重连后同步。

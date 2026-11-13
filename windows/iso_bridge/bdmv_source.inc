@@ -35,6 +35,21 @@ class BdmvSource final : public RemoteSource {
     return bridge::make_structure_cache_identity(files.bytes,
         bridge::StructureCacheValidatorKind::strong_etag, wide_from_utf8(snapshot));
   }
+  // 固定槽位只缓存已验证的元数据块；碰撞按未命中处理。
+  void configure_metadata_cache(const std::filesystem::path& structure_path) {
+    if (!local_root_.empty()) return;
+    const auto identity = structure_identity();
+    if (!identity) return;
+    metadata_root_ = structure_path.parent_path() / L"bdmv_metadata";
+    std::error_code error;
+    std::filesystem::create_directories(metadata_root_, error);
+    if (error || std::filesystem::is_symlink(std::filesystem::symlink_status(metadata_root_, error))) {
+      metadata_root_.clear();
+      return;
+    }
+    metadata_namespace_ = L"bdmv-metadata-v1:" + structure_path.stem().wstring();
+    for (const auto byte : identity->validator_digest) metadata_namespace_ += std::to_wstring(byte) + L":";
+  }
   std::uint64_t size() const override { return files.address_size; }
   std::uint64_t extent_end(std::uint64_t offset) const override {
     const auto* file = files.at(offset);
@@ -62,6 +77,25 @@ class BdmvSource final : public RemoteSource {
       local.fetch_stream(start - file->base, end - file->base, cancelled, consume);
       return;
     }
+    const bool metadata = !metadata_root_.empty() && end - start < bridge::kIsoDemandBlockSize &&
+        !(file->path.size() >= 5 && _stricmp(file->path.c_str() + file->path.size() - 5, ".m2ts") == 0);
+    const auto key = metadata ? bridge::make_structure_cache_identity(file->size,
+        bridge::StructureCacheValidatorKind::strong_etag, metadata_namespace_ + wide_from_utf8(file->path) +
+        L":" + std::to_wstring(start - file->base) + L":" + std::to_wstring(end - file->base)) : std::nullopt;
+    if (key) {
+      if (cancelled && cancelled()) throw bridge::FetchCancelled(0);
+      auto bytes = read_metadata(key->validator_digest, static_cast<std::size_t>(end - start + 1));
+      if (bytes) {
+        if (cancelled && cancelled()) throw bridge::FetchCancelled(0);
+        consume(bytes->data(), bytes->size());
+        return;
+      }
+      auto source = acquire(*file);
+      auto verified = source->fetch(start - file->base, end - file->base, cancelled);
+      write_metadata(key->validator_digest, verified);
+      consume(verified.data(), verified.size());
+      return;
+    }
     auto source = acquire(*file);
     source->fetch_stream(start - file->base, end - file->base, cancelled, consume);
   }
@@ -83,6 +117,60 @@ class BdmvSource final : public RemoteSource {
     return result;
   }
  private:
+  std::filesystem::path metadata_root_;
+  std::wstring metadata_namespace_;
+  std::atomic<bool> metadata_writes_enabled_ = true;
+  void metadata_write_failed() {
+    if (metadata_writes_enabled_.exchange(false))
+      std::fprintf(stderr, "BDMV metadata cache write failed; continuing verified reads without persistence\n");
+  }
+  std::filesystem::path metadata_path(const std::array<std::uint8_t, 32>& key) const {
+    const auto slot = (static_cast<unsigned>(key[0]) * 256 + key[1]) % 500;
+    return metadata_root_ / (std::to_wstring(slot) + L".spmeta");
+  }
+  std::optional<std::vector<std::uint8_t>> read_metadata(
+      const std::array<std::uint8_t, 32>& key, std::size_t length) const {
+    const auto path = metadata_path(key);
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error))) return std::nullopt;
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input || input.tellg() != static_cast<std::streamoff>(64 + length)) return std::nullopt;
+    input.seekg(0);
+    std::array<std::uint8_t, 32> stored{}, expected{};
+    std::vector<std::uint8_t> bytes(length);
+    input.read(reinterpret_cast<char*>(stored.data()), 32);
+    input.read(reinterpret_cast<char*>(expected.data()), 32);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    if (!input || stored != key || bridge::cache_content_digest(bytes.data(), bytes.size()) != expected) return std::nullopt;
+    return bytes;
+  }
+  void write_metadata(const std::array<std::uint8_t, 32>& key, const std::vector<std::uint8_t>& bytes) {
+    if (!metadata_writes_enabled_) return;
+    const auto digest = bridge::cache_content_digest(bytes.data(), bytes.size());
+    if (!digest) return;
+    const auto path = metadata_path(key);
+    const auto temporary = path.wstring() + L".tmp";
+    // 独占临时文件阻止并发覆盖；进程异常留下的固定槽位可重建。
+    DeleteFileW(temporary.c_str());
+    KernelHandle output(CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, nullptr));
+    if (!output) {
+      const auto error = GetLastError();
+      if (error != ERROR_FILE_EXISTS && error != ERROR_SHARING_VIOLATION) metadata_write_failed();
+      return;
+    }
+    std::vector<std::uint8_t> data(key.begin(), key.end());
+    data.insert(data.end(), digest->begin(), digest->end());
+    data.insert(data.end(), bytes.begin(), bytes.end());
+    DWORD written = 0;
+    const bool complete = WriteFile(output.get(), data.data(), static_cast<DWORD>(data.size()), &written, nullptr) &&
+        written == data.size() && FlushFileBuffers(output.get());
+    output.reset();
+    if (!complete || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      if (!complete) metadata_write_failed();
+      DeleteFileW(temporary.c_str());
+    }
+  }
   std::filesystem::path local_root_;
   static std::optional<std::pair<bridge::StructureCacheValidatorKind, std::wstring>> manifest_validator(const bridge::DiscFile& file) {
     if (file.etag.size() >= 2 && file.etag.front() == '"' && file.etag.back() == '"' &&

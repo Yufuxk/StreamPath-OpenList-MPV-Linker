@@ -11,6 +11,7 @@ class MenuCachePanelScript {
     final l10n = AppLocalizations(language);
     final config = jsonEncode({
       'metrics': p.absolute(directory.path, 'iso-bridge-metrics.json'),
+      'events': p.absolute(directory.path, 'iso-menu-events.jsonl'),
       'labels': {
         for (final label in const [
           'ISO 前向缓存',
@@ -40,6 +41,45 @@ local visible = false
 local serial, refreshed, reset_at = nil, 0, mp.get_time()
 local anchor, rate, last_sequence = nil, nil, nil
 local last_reads, invalid_reads = nil, nil
+local last_metrics, last_metrics_at = nil, nil
+local event_count, was_paused = 0, false
+local function record_event(event, paused)
+    if event_count > 4096 then return end
+    event_count = event_count + 1
+    if event_count == 4097 then event = 'trace-truncated' end
+    local now = mp.get_time()
+    local record = {
+        event=event, time=now, paused_for_cache=paused,
+        position=mp.get_property_number('time-pos'),
+        duration=mp.get_property_number('duration'),
+        seeking=mp.get_property_native('seeking'),
+        menu=mp.get_property_native('disc-menu-active'),
+        cache_duration=mp.get_property_number('demuxer-cache-duration'),
+        vo_drops=mp.get_property_number('vo-drop-frame-count'),
+        decoder_drops=mp.get_property_number('decoder-frame-drop-count'),
+    }
+    -- 快照有独立采样年龄，不把上一秒的数据当作事件时刻水位。
+    if last_metrics then
+        record.metrics_age_ms = (now - last_metrics_at) * 1000
+        local disc = last_metrics.virtualDisc
+        local cache = last_metrics.playbackCache
+        if disc then
+            record.forward_ready, record.forward_bytes = disc.forwardReady, disc.forwardBytes
+            record.read_sequence, record.snapshot_serial = disc.readSequence, disc.snapshotSerial
+        end
+        if cache then
+            record.foreground_wait_count = cache.foregroundLoadingWaitCount
+            record.foreground_wait_us = cache.foregroundLoadingWaitUsTotal
+            record.cache_misses = cache.cacheMissCount
+        end
+    end
+    local ok, line = pcall(utils.format_json, record)
+    if not ok then return end
+    local file = io.open(config.events, 'ab')
+    if not file then return end
+    file:write(line, '\n')
+    file:close()
+end
 local function clear_estimate()
     anchor, rate, last_sequence = nil, nil, nil
     reset_at = mp.get_time()
@@ -60,6 +100,7 @@ local function sample()
     local unavailable = not disc or disc.failed or not disc.forwardReady
     if disc and disc.snapshotSerial ~= serial then
         serial, refreshed = disc.snapshotSerial, now
+        last_metrics, last_metrics_at = data, now
     end
     unavailable = unavailable or now - refreshed > 3 or now - reset_at < 2
         or (invalid_reads and last_reads == invalid_reads)
@@ -124,6 +165,14 @@ mp.register_event('end-file', function()
 end)
 mp.observe_property('current-edition', 'number', clear_estimate)
 mp.observe_property('disc-menu-active', 'bool', clear_estimate)
+mp.observe_property('paused-for-cache', 'bool', function(_, value)
+    if type(value) ~= 'boolean' or value == was_paused then return end
+    record_event(value and 'cache-pause-start' or 'cache-pause-end', value)
+    was_paused = value
+end)
+for _, event in ipairs({'start-file', 'file-loaded', 'playback-restart', 'seek', 'end-file', 'shutdown'}) do
+    mp.register_event(event, function() record_event(event) end)
+end
 mp.add_periodic_timer(1, sample)
 ''';
 }

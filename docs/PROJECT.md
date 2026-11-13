@@ -41,11 +41,13 @@
 
 `BdmvSource` 复用 WinHTTP Range、认证、If-Range 和取消机制；文件映射为对齐且留有间隔的内部地址区间，`BlockCache::extent_end` 使需求读取与预读停在文件尾。所有文件共享会话缓存预算与 worker；只对 M2TS 做流式预读，最多保留 8 个文件 HTTP source。此地址空间不是合成 ISO。打开时按需校验实际读取的文件。新鲜 PROPFIND 清单中的强 ETag 或有效 Last-Modified 随文件传入原生，以有序路径、类型、长度及版本生成 bdmv-manifest-v2 复合身份；全部非空文件版本可靠时复用结构缓存 schema 1，缺少可靠版本时冷解析并使用仅会话有效的字幕 revision。采用全清单版本作为依赖的保守超集，目录新增/删除、备份路径和同大小内容变更均影响身份；缓存依赖以完整清单为准。文件首次实际 Range 同时校验 206/范围/长度/版本并填充缓存，无版本时从该响应取得，必要时仅为当前文件补充 HEAD；同文件首次读取同步初始化，网络不占用跨文件 source 表锁。后续维持 If-Range 校验，首读版本与目录信息不符明确失败。远程目录不是事务快照，准备期间应保持盘片静止，实际读取遇到版本变化即失败。
 
+BDMV 的小 extent 按实际字节预留及计费，条目上限 32,768，ISO 单文件按原块计费。标题冷枚举和菜单准备按 libbluray 的实际文件需求读取元数据，目录清单不触发整目录内容预取；媒体预读为单 worker。完整可靠清单允许将已校验非 M2TS 小块保存到 `iso_structure/bdmv_metadata` 的 500 个固定槽位，身份含匿名来源键、完整清单版本、路径及区间，内容校验 SHA-256；正式文件与临时文件合计低于 256 MiB，碰撞按未命中处理。无可靠版本时不跨会话复用，清单仍要求刷新。
+
 媒体库使用可空 `discRootPath`，保持旧 ISO 记录兼容。跨文件网络 wall-clock 并集和并发峰值目前无法精确合并，相关遥测返回 null；请求数、字节数、请求活跃时间及共享缓存数据仍可用。
 
 BDMV 字幕发现与 Bridge 准备并行，在 Title 选择/MPV 启动前汇合；取消立即清理 Bridge 并阻止迟到结果启动，字幕发现停止后续请求，已发出的读取仍受原有超时约束。会话 disc-startup.json 记录方式选择到 Process.start 成功的时间、Title 人工选择等待与扣除后的处理时间。字幕发现范围、绑定与重新确认规则见 5.7。
 
-支持范围为 Windows x64、未加密 Blu-ray；菜单限 HDMV。不支持解密、BD-J 或完整盘片磁盘缓存。验证范围见第 9 节。
+支持范围为 Windows x64、未加密 Blu-ray。原生 HDMV／BD-J 菜单由用户选择的兼容 MPV 执行与渲染，StreamPath 提供数据、缓存和会话控制；不实现 AACS／BD+ 解密或完整盘片磁盘缓存。验证范围见第 9 节。
 
 ## 2. 启动与模块关系
 
@@ -164,6 +166,7 @@ Windows runner 枚举已安装字体族。`AppTheme` 统一桌面文字层级、
   `mpv-audio-progress-*`：独立音频会话通道。
 - `cache/iso_temp/<session>/`：ISO Bridge 会话的 M3U8、Lua、JSONL、状态/命令文件、脱敏双进程
   manifest 和 metrics；不得创建完整 ISO，MPV/helper 都明确退出后删除，身份无法证明时保守保留。
+- `cache/iso_benchmarks/last-prepare-failure-title.json`／`last-prepare-failure-menu.json`：两种模式各保留最近一次 Bridge 准备失败的阶段、耗时、错误枚举、HTTP 状态及数值指标；不保存来源 URL、凭据或原始 stderr。
 - `cache/iso_catalog.json`：以匿名 ISO 键保存 Title 顺序、选择结果和最后播放 MPLS。
 - `cache/iso_watch_later/<匿名 ISO 键>/`：ISO 独立续播点，不与视频或音频进度混用。
 - `diagnostics/streampath-diagnostics-*.json`：用户主动导出的脱敏诊断包。
@@ -642,13 +645,17 @@ OpenList 恢复、视频 `MediaEntry` 或字幕匹配模块。
 
 ### 5.6 WebDAV Blu-ray ISO 无驱动 Bridge 链路
 
-WebDAV HDMV 菜单为可选测试功能，通过 helper 内 WinFsp 只读 ISO 使用用户配置的普通本地菜单 MPV，无需专用播放器；复用既有 RangeSource/Metadata Cache/BlockCache。菜单组件通过能力核验后才提供入口，用户明确选择菜单，失败时可返回 Title/MPLS 选择，不自动切换或完整下载。未启用菜单时保持原有 Title/MPLS 流程。本地 ISO/BDMV 菜单边界不变。
+WebDAV 原生蓝光菜单通过 helper 内 WinFsp 只读 ISO／BDMV 使用用户配置的兼容 MPV，复用 RangeSource／Metadata Cache／BlockCache。菜单组件通过能力核验后提供入口，用户明确选择菜单，失败时可返回 Title/MPLS 选择，不自动切换或完整下载。Title/MPLS 保持独立链路且不要求 WinFsp 或 Java。
 
-远程菜单复用既有 Range、validator、BlockCache、进程身份和会话清理，使用独立的 `webdavHdmvMenu` 历史键；仅支持未加密 HDMV，拒绝 BD-J。真实光盘、体验、网盘请求行为和旧 Title 性能回归由用户验收。
+远程菜单复用既有 Range、validator、BlockCache、进程身份和会话清理，历史键保持 `webdavHdmvMenu`。hello 的 `discMenuVersion=1` 协商 `disc-menu`，ready 明确返回 BD-J 检出结果；旧 `hdmv` 请求保留原能力边界。BD-J 仅经完整文件系统传输交给外部 MPV，Bridge 不启动 JVM 或执行 Xlet。程序在 `lib/bdj` 分发固定版本完整 x64 JRE、主／AWT JAR、校验清单及许可证；只向菜单子进程注入 JAVA_HOME、LIBBLURAY_CP 和可写数据目录，不修改系统 PATH／Java。本机实盘验证不代表所有 MPV 构建、商业盘片或真实网盘均兼容。
 
-菜单使用统一缓存策略：MPV 自动预算 16 MiB，ISO 字节缓存按策略内存预算分配、最高 1 GiB，最多四分之三用于前向预读。窗口从 8 MiB 起步，连续读取后按消费速度与目标时长逐步扩大，Seek 后重新从短窗口起步；仅菜单保护未消费的前向窗口。短窗口保留 4 MiB 批次，长窗口合并最多 16 MiB Range，仍只有一个 worker。MPV 导航缓存条可能仍为 0。菜单每次从光盘入口启动，不恢复 edition/时间。设置“WebDAV 蓝光菜单进度”默认为独立：不保存菜单线性进度；共享时保存明确 MPLS 的正片进度，退出同步到同源 ISO 的 Title/MPLS watch_later。菜单底栏与媒体中心继续播放依据历史保留光盘和目录，不要求时间进度；不保存光盘 VM 快照。
+远程 Java Cache／Persistent 位于会话私有目录并随会话清理，不保存跨会话 Xlet 偏好；本地菜单使用软件数据目录。
+
+菜单使用统一缓存策略：MPV 自动预算 16 MiB，ISO 字节缓存按策略内存预算分配、最高 1 GiB，最多四分之三用于前向预读；JVM／解码器／系统缓存另计。窗口从 8 MiB 起步，连续读取后按消费速度与目标时长逐步扩大，Seek 后重新从短窗口起步；仅菜单保护未消费的前向窗口。短窗口使用 4 MiB 批次；较大稳定窗口的批次取 `max(16 MiB, min(24 MiB, 当前窗口 / 2))`，补充触发量为 16 MiB 与半窗的较小值，独立于传输上限。媒体读取使用单 worker，完整 256 KiB 块到齐即可发布；菜单首批与窗口恢复批次为 4 MiB，Range 不跨 extent。MPV 导航缓存条可能仍为 0。菜单每次从光盘入口启动，不恢复 edition/时间。设置“WebDAV 蓝光菜单进度”默认为独立：不保存菜单线性进度；共享时保存明确 MPLS 的正片进度，退出同步到同源 ISO 的 Title/MPLS watch_later。菜单底栏与媒体中心继续播放依据历史保留光盘和目录，不要求时间进度；不保存光盘 VM 快照。
 
 菜单独立缓存面板（Ctrl+Alt+i）：WinFsp 通过原有每秒 metrics 快照发布最后成功读取位置之后的连续已完成缓存字节，BlockCache 只观察、不请求数据、不改变 LRU。会话 Lua 使用同一连续读取代际内的字节增量与媒体时间增量估算时长；Seek/切集/菜单切换、在途或失败读取、陈旧快照清除旧估算。显示 MiB 与明确标注的估算时长，不写 MPV 原生缓存属性。四语言通过既有本地化目录提供，新会话使用当前应用语言；面板只负责显示缓存信息。
+
+远程菜单会话通过 `iso-menu-events.jsonl` 记录缓冲起止、Seek、restart 和生命周期事件，以及缓存时长、掉帧和最近 Bridge 快照的计数与采样年龄；最多 4,096 条普通事件，达到上限追加截断标记。事件使用 MPV 单调时钟，缓冲状态取属性回调参数；退出归档与既有菜单指标一同保留。标题模式沿用 `iso-performance-events.jsonl` 的事件和汇总。记录不控制暂停、预读或缓存参数；每秒 Bridge 快照不能当成毫秒事件发生时的精确水位。 helper 的可选 `STREAMPATH_DISC_IO_TRACE=1` 在既有 metrics 中附带最多 1024 项的内存事件环，默认关闭，记录 HTTP 阶段、缓存等待、批次和窗口变化；覆盖数量显式输出。事件只含固定类型及数值，不含资源路径或凭据。HTTP 序号只关联同一请求；BDMV 文件内 HTTP 偏移与会话合成缓存地址不能直接比较。
 
 `.iso` 由 `WebDavFile.isIso` 独立识别，不加入 `videoExtensions`、`isPlayable`、
 `isMediaPlayable` 或 `MediaLibraryKind`。未启用菜单时，浏览页点击后直接进入 ISO 远程播放系统弹窗，不调用视频或
@@ -682,10 +689,12 @@ helper 使用 WinHTTP 手动跟随最多五次重定向，Basic 只发送到 Web
 单位合并；选择完成后
 Flutter 在 `attachPlayer` 前发送一次 `configure_cache`，按所选 Title 最大约 8 秒数据量配置
 4～12 个预读块，并把容量设为预读块数加 2、限制为 4～16 块。新播放代际的首个后台批次只取
-最多 2 MiB，下一批最多 8 MiB，此后由单 worker 合并成最多 16 MiB 的 Range；新代际或非连续窗口重新从短批次开始。
-该批次规则仅用于 Title 模式。Title 预读在验证响应头后按完整 256 KiB 块交付；
+最多 2 MiB，下一批最多 8 MiB；新代际或非连续窗口重新从短批次开始。
+这组启动与恢复批次仅用于 Title 模式。Title 流式媒体稳定批次取 `max(16 MiB, min(32 MiB, 当前窗口 / 2))`，
+当前 48 MiB Title 窗口最多合并 24 MiB Range，16／24／32 MiB 短窗口使用 16 MiB 批次。
+Title 预读在验证响应头后按完整 256 KiB 块交付；
 残块不入缓存，断流仍明确失败，旧代际不得继续发布。WinFsp 菜单同样按完整块交付，
-保留原 4～16 MiB 批次、单 worker、窗口与预算；旧 remote-disc 适配器仍整批交付。
+短窗口使用 4 MiB 批次、稳定窗口按 24 MiB 上限与半窗合批，补充触发量按 16 MiB 与半窗取较小值；单 worker、窗口与预算独立约束；旧 remote-disc 适配器仍整批交付。
 菜单流式预读的真实 WebDAV 性能与非退化验收尚未完成。
 Title 的当前前向消费窗口与调度窗口分离，回收时优先淘汰窗口外块，
 没有其他可回收条目时仍允许按 LRU 腾出容量；新播放代际清除旧窗口保护但保留有效完整块。
@@ -713,7 +722,7 @@ playback generation 隔离，旧请求不能污染新代际。最终 metrics 保
 存活与峰值，以及远端传输墙钟并集、并发传输墙钟、预读并发峰值、在途字节峰值、批间空窗和
 预读命中字节；性能归档记录脱敏的 MPV 终止原因、位置、时长、错误类别、shutdown、helper 哈希、
 按 MPLS/目标位置对齐的 Seek 样本、缓存暂停和 Bridge/MPV 总预算。这些字段用于性能观测与验收，
-生产路径为单预读 worker 和最多 16 MiB 的单 Range。
+生产路径为单预读 worker 和最多 32 MiB 的单 Range；元数据、DVD 与旧传输路径使用各自既有批次。
 
 本地 M3U8 只含 loopback URI。启动时移除 `{url}`、`{subfile}`、`{start}`、旧 ISO/播放列表、
 HTTP header、cookie、referrer、proxy 和原生续播参数；不使用 `--bluray-device`、
@@ -744,7 +753,7 @@ ISO 同时只允许一个准备或播放任务。manifest v2 依次写 `bridge-s
 缓存清理；两者明确退出后才同步进度和删除小型会话目录。
 数据库维护和学习数据清理不依赖 ISO 模块。
 
-WebDAV 远程 ISO 支持 Windows x64 未加密 Blu-ray ISO 的原有 Title/MPLS 和可选 WinFsp HDMV 菜单；不实现 AACS、BD+、BD-J 解密。DVD ISO 的标题播放见 5.8；完整媒体离线缓存独立于流式 BlockCache。本地 ISO/BDMV 的 `bd://menu`
+WebDAV 远程 ISO 支持 Windows x64 未加密 Blu-ray ISO 的原有 Title/MPLS 和可选 WinFsp 原生 HDMV／BD-J 菜单；不实现 AACS／BD+ 解密。DVD ISO 的标题播放见 5.8；完整媒体离线缓存独立于流式 BlockCache。本地 ISO/BDMV 的 `bd://menu`
 能力由配置的 MPV 提供，完整菜单交互仍需在目标环境验收。界面覆盖四语言。
 自动化与本机受控测试不能替代真实网络和光盘验收。真实未加密 WebDAV Blu-ray ISO 的
 固定五轮前后基线、多 Clip、自动切 Title、音轨、
@@ -1191,7 +1200,7 @@ UI 首帧前完成。预热仅使用 64×36 固定 RGBA 图和 256×144 离屏�
 
 `FilmCatalogScanner` 一次一个根，逐目录串行枚举；`FilmCatalogController.scanRoots` 串行编排用户选择的多个根，每根独立 generation 与逐目录事务，取消在等待元数据凭据后也会再次检查。`LocalMediaSource.fetchCatalogDirectory()` 只读名称和类型，不逐文件 stat，不跟随链接或 Windows reparse point，不写浏览缓存。WebDAV 建库使用 `Depth: 1` 的显式 `displayname`／`resourcetype` PROPFIND，绕过缓存，目录请求间隔至少一秒；不打开媒体、STRM、字幕或字体。扫描结果逐目录在同一事务写入 staging 与正式资源，并将发现的文件交给 FilmCatalogController 持有的独立刮削队列；资源可立即关联元数据，保留资源 ID 和人工关联；完整成功后以独立事务确认普通全量扫描的 missing 状态；增量扫描仍枚举全部视频子目录，以本根现有 present 路径键跳过已收录文件，仅 staging 新文件与重新出现的 missing 文件，提交时不标记其他资源 missing；取消、失败或进程中断保留旧记录与已确认的新资源，不执行 missing 判定；过期 generation 和已移除根拒绝后续写入。独立 worker 通过 FilmScanMetadataSession 复用作品和季请求，applyMetadata 在事务内逐资源核对 binding_version，字段完全相同的作品与季资料不重复写入；网络剧集结果在同根、同目录内最多 12 项小批保存，准备耗时达到 16ms 时停止追加；电影、本地 NFO 模式与 NFO 结果保持逐项保存，错误前已准备的前缀提交后保留错误项与剩余队列；资源与资料变更按批通知主页，任务进度使用独立监听入口，扫描与刮削并行；持续变更通知在 150ms 窗口内合并刷新；刷新在途时保留一次待刷新请求，不使已完成分页结果反复失效。观看遮挡层监听独立的观看状态通知，未变化的刮削资料不触发重复读取；资源关联、季集、观看进度、人工标记和根状态变化仍沿用现有聚合范围；关联作品页合并通知查询，海报墙筛选和翻页仅请求当前作品页，主页栏目与来源封面不阻塞海报结果发布。扫描结束、取消或失败只结束文件生产，队列仍继续处理；已有清单也可单独刮削。管理页每根提供独立的增量扫描与增量刮削入口，增量刮削仅选择当前 TV 根内 availability=present、workId 为空的待整理资源，不读取来源目录，电影与已有作品但待映射的资源不进入该队列。暂停或错误保留当前项和剩余队列，应用关闭时唤醒等待并取消请求，等待两项任务结束后释放数据库。递归没有固定层数上限，复用 SpecialVideoPlaylistCollector.directChildPath 的直属路径校验；特典及 Season 0 纳入视频清单；本地与 WebDAV ISO 直接登记，发现直属 BDMV 时将当前光盘根登记为单个资源并停止进入内部，VIDEO_TS 保留在原 DVD 边界。
 
-影片详情由 DirectoryScrollView 的单一控制器驱动 CustomScrollView，头部、季切换、电影版本和特典共享滚动视口。剧集及资源卡片按原列数、宽度和 16px 间距逐行懒构建，SliverVariedExtentList 的行高与卡片共用字号和时长规则；只有展开浮层或菜单操作临时保留所在行，结束后可回收。观看写入按来源和逻辑季集／独立资源传播，在途观看读取按调用时的绑定快照分表、去重，每批最多 200 个身份／800 个参数；技术探测读取每批最多 400 个资源 ID，不持有额外的长期观看状态缓存。人工标记未看同时重置关联内容的剧透揭示。播放进度只更新续播区域，收藏、版本偏好和剧透开关独立于静态资料刷新，季集资料按身份索引。无独立简介的卡片使用文件名槽位，默认单行省略，展开后在同一浮层内换行和滚动显示全文，封面保留防剧透和揭示动作。
+影片详情由 DirectoryScrollView 的单一控制器驱动 CustomScrollView，头部、季切换、电影版本和特典共享滚动视口。剧集及资源卡片按原列数、宽度和 16px 间距逐行懒构建，SliverVariedExtentList 的行高与卡片共用字号和时长规则；只有展开浮层或菜单操作临时保留所在行，结束后可回收。观看写入按来源和逻辑季集／独立资源传播，在途观看读取按调用时的绑定快照分表、去重，每批最多 200 个身份／800 个参数；技术探测读取每批最多 400 个资源 ID，不持有额外的长期观看状态缓存。人工标记未看同时重置关联内容的剧透揭示。播放进度只更新续播区域，收藏、版本偏好和剧透开关独立于静态资料刷新，季集资料按身份索引。无独立简介的卡片使用文件名槽位，默认单行省略，展开后在同一浮层内换行和滚动显示全文，封面保持防剧透；有独立简介时通过简介揭示，无独立简介时仅随观看状态显示。
 
 `TmdbMetadataService` 只使用固定 `https://api.themoviedb.org/3/` 与 `https://api.tmdb.org/3/`，连接错误或连接／发送／接收超时最多切换一次入口，成功入口在当前实例内优先复用；两个入口均失败继续上报原网络错误。Bearer 仅发送到这两个固定 HTTPS API origin；电影检索使用 `primary_release_year` 过滤年份，剧集检索不使用年份参数；串行元数据请求、合并重复详情／季请求、禁止重定向，401/403 暂停凭据请求、429 遵守 Retry-After。认证、限流、其他 HTTP 状态、证书／TLS 握手异常、数据错误和取消不触发域名切换。`tmdb_http_client.dart` 仅为 TMDB API 与图片客户端读取当前用户 Windows 手动代理，支持统一地址、按协议地址和主机例外；未设置手动代理时遵守 Dart 环境变量代理，不执行 PAC／WPAD。读取结果由 WinHTTP 提供并按要求释放，TLS 校验保持开启；连接超时、网络故障与认证失败分别提示。`TmdbCredentialStore` 使用专用 Windows 凭据目标 `StreamPath/tmdb`，与 WebDAV、OpenList 后台令牌隔离；保存后清空输入，验证使用内存或凭据管理器中的值。`FilmCatalogMatcher` 先提取明确 ID，电影按完整片名与年份解析，TV 保留原文件名季集提示，识别片名时忽略季集前的 4K／1080P 等画质标记；只有季集的文件从所选根内作品目录取名，去掉目录编号与书名号并跳过特别篇等通用目录。冲突 ID 保留待整理。剧集以根下第一层目录（条目容器）为作品身份，容器名称是季、特典或纯数字时退回文件名检索；电影文件名检索失败时用条目目录名再检索一次，先带目录年份再不带；容器检索的数据类错误不影响文件名检索。无 `SxxExx` 标记时用解析结果补全季集（1x01、第 N 话、EP01、番剧 `- NN`），季号缺失取最近的季目录，仍无则按第一季；已含 `SxxExx`、多集、小数集号与三位以上绝对集号保留人工映射。文本搜索先只用完整名称，没有可接受候选时才启用双语拆分，且拆分要求两段分别以中文字符与拉丁字母为主；候选先核验标题／原名，再以 append_to_response 读取官方译名与别名；归一化标点和剧场版标签后允许模糊匹配。剧集中英双名在两部分续作数字一致且两段分别是中文字符与拉丁字母为主体时才能拆分，拆分只补充候选、不推翻完整名称的结论。相似度使用归一化 Damerau-Levenshtein 距离，至少 0.85，领先次选至少 0.08；四字以内的非同名候选、不同续作数字及电影年份不符均不自动关联。完全同名仍须唯一；剧集出现多个同名候选时，以文件年份或所选根内最近的目录年份消歧，后续季年份不限制唯一作品的首播年。最终详情再次核验；歧义由用户确认。查询、标题、详情及季结果在本次刮削任务内复用；TMDB 认证、限流或网络故障暂停刮削队列，目录枚举继续；scrapeError／scrapePaused 与扫描错误独立，用户可在处理问题后继续。扫描根状态只记录目录任务的结果。第一页候选没有结论且满页时补读第二页。`catalog_preferences.matcher_version` 记录已完成的匹配规则版本，版本变化时非人工绑定重新计算，人工绑定与人工季集始终保留；刮削排空后执行结构守卫：同一作品的兄弟容器剧集重叠且去掉版本标记后名称不同时，保留标题证据更强的一方并把另一方退回待整理，特典目录内没有季集标记的媒体按路径顺序分配 S00 编号且已编号的不再变动。TV 目录归属按最近祖先继承，人工关联和人工季集优先；单一 SxxExx 按文件名保存季集号，S00Exx 对应第 0 季；紧随季集的四位年份参与提示提取，S00E02 11.5集等描述性小数集号忽略并采用明确整数编号，实际小数 S/E 编号、多集与冲突标记保留人工映射；本地季集关联独立于 TMDB 是否收录该集。季详情 404 视为缺少官方资料，在任务内复用缺失结果；其他请求错误继续上报。官方集资料存在时显示集名、剧照及日期／时长，缺少时复用作品名称和背景图，不生成虚构集资料。多集与绝对集号使用人工映射预览，季号非负、集号为正且文件属于同一作品即可保存，不要求官方季集存在。关联版本校验拒绝迟到写入。
 
@@ -1225,7 +1234,7 @@ UI 首帧前完成。预热仅使用 64×36 固定 RGBA 图和 256×144 离屏�
 
 文件夹按网络存储、本地文件夹、媒体服务器、影视库分组。网络存储的统一添加按钮复用 WebDAV 挂载和 SMB／FTP／NFS 编辑流程，文件夹页的网络与媒体服务器添加按钮使用相同顶部位置。目录管理采用宽度受限的自适应卡片列，保留原启用开关与扫描／刮削操作；四项设置在「编辑影视目录」窗口打开后按需读取，保存时提交草稿，取消保留原配置。定时扫描选项按 rootId 保存，本地元数据／写回／只读按 sourceId 共享，原生存储的来源选项沿用连接编辑流程。管理页不读取这些设置，也不挂载对应勾选控件。编辑选项沿用首页栏目设置的 ListTile／Checkbox 结构，本地草稿即时反馈。目录启用状态保存在 catalog_preferences 的 library_enabled:<rootId>，缺省开启，与 root_enabled:<rootId> 的定时扫描选择独立；数据库 schema 为 10。展示查询在分页前排除停用目录，来源卡片、来源筛选、每日精选、合集成员与影视继续播放共用该范围；影视库播放队列只纳入启用目录，起播及切集前重新检查目录启用状态，已预取版本同样受此约束；文件浏览器直接播放沿用自身来源范围。停用目录不参加定时扫描，资源、人工匹配、收藏和观看状态保留。`MediaConnectionStore` 在独立 `media_sources.json` 中保存稳定 ID 与非敏感配置，SMB、FTP/FTPS、NFS、Jellyfin、Emby 的秘密字段通过 Windows Credential Manager 保存；WebDAV/OpenList 继续使用原档案。目录操作由 `MediaDirectorySource` 提供枚举、逻辑资源解析、受限文件读取和可选创建能力。页面依据来源能力提供操作；网络 NFO／图片写回默认关闭，显式开启且非只读才可创建缺失文件，媒体服务器始终禁止文件写回。
 
-`NativeStorageReader` 在工作 isolate 顺序调用固定版本 libsmb2 6.2、libnfs 6.0.2、libcurl 8.22.0。SMB 支持 SMB2/3、域和账号及 URL 编码的中文子目录；操作失败且 socket 已断开时重建连接并有限重试，文件内容写入不自动重试。NFS 支持 v3/v4、UID/GID；v4 每个上下文使用独立 client name，并在挂载时查询服务器返回的 MAXREAD/MAXWRITE，读写受客户端及服务器上限共同约束。NFS 同步等待在工作线程检查原子取消标记，取消时由该线程断开并清理待完成操作，成功挂载后的轮询间隔为 100ms。FTP/FTPS 默认被动模式。FTP 优先 MLSD，仅在服务器明确返回不支持该命令时使用 Unix LIST，权限拒绝保持失败；其他 LIST 格式明确报告不支持。目录枚举保留文件大小与修改时间，数据直接来自列表，目录大小显示为 0；MLSD 时间为 UTC，Unix LIST 按 UTC 解释，精度及时区受服务器列表限制，不逐文件查询时间。FTP/FTPS 禁止自动 NFO／图片写回及原生创建，已有配置的 writeBack=true 同样受能力限制；SMB／NFS 创建使用 O_EXCL。`StorageRangeBridge` 仅绑定 loopback，以会话令牌保护 GET／HEAD／PROPFIND 与单段 Range；PROPFIND 包含文件大小和修改时间，GET 响应以可取消异步数据流绑定 HTTP 输出，客户端断连时停止继续读取该范围，已提交的一次读取允许完成；首块失败保持 502。读取分块、最多八个并发请求、取消、超时和响应反压共用原 MPV／蓝光 Bridge。普通视频、同来源 STRM、ISO／BDMV Title 和 WinFsp HDMV 菜单使用稳定来源及逻辑路径保存进度，不保存临时端口或令牌。FTP 不支持随机读取时失败，不整文件下载；无可靠版本的来源不复用跨会话结构缓存。支持未加密 Blu-ray、HDMV，不支持 AACS、BD+、BD-J。
+`NativeStorageReader` 在工作 isolate 顺序调用固定版本 libsmb2 6.2、libnfs 6.0.2、libcurl 8.22.0。SMB 支持 SMB2/3、域和账号及 URL 编码的中文子目录；操作失败且 socket 已断开时重建连接并有限重试，文件内容写入不自动重试。NFS 支持 v3/v4、UID/GID；v4 每个上下文使用独立 client name，并在挂载时查询服务器返回的 MAXREAD/MAXWRITE，读写受客户端及服务器上限共同约束。NFS 同步等待在工作线程检查原子取消标记，取消时由该线程断开并清理待完成操作，成功挂载后的轮询间隔为 100ms。FTP/FTPS 默认被动模式。FTP 优先 MLSD，仅在服务器明确返回不支持该命令时使用 Unix LIST，权限拒绝保持失败；其他 LIST 格式明确报告不支持。目录枚举保留文件大小与修改时间，数据直接来自列表，目录大小显示为 0；MLSD 时间为 UTC，Unix LIST 按 UTC 解释，精度及时区受服务器列表限制，不逐文件查询时间。FTP/FTPS 禁止自动 NFO／图片写回及原生创建，已有配置的 writeBack=true 同样受能力限制；SMB／NFS 创建使用 O_EXCL。`StorageRangeBridge` 仅绑定 loopback，以会话令牌保护 GET／HEAD／PROPFIND 与单段 Range；PROPFIND 包含文件大小和修改时间，GET 响应以可取消异步数据流绑定 HTTP 输出，客户端断连时停止继续读取该范围，已提交的一次读取允许完成；首块失败保持 502。读取分块、最多八个并发请求、取消、超时和响应反压共用原 MPV／蓝光 Bridge。普通视频、同来源 STRM、ISO／BDMV Title 和 WinFsp 原生蓝光菜单使用稳定来源及逻辑路径保存进度，不保存临时端口或令牌。FTP 不支持随机读取时失败，不整文件下载；无可靠版本的来源不复用跨会话结构缓存。支持未加密 Blu-ray 与兼容 MPV 的 HDMV／BD-J 菜单，不支持 AACS／BD+ 解密。
 
 `JellyfinApi`、`EmbyApi` 分页读取电影、剧集、季集、版本、图片、可信人员 ID、BoxSet 合集与视频播放列表镜像。服务器页使用带 sourceId 的目录控制器视图，SQL 在分页前限定来源，共享数据库、图片缓存和播放宿主。PlaybackInfo 只选择允许直接播放的版本；HTTP 鉴权留在会话读取器，MPV 访问本机桥。`MediaServerSync` 合并十秒进度，暂停、跳转、切集及停止即时上报，离线修改持久化为同条目最新状态；重连先提交再拉取，未发送状态不被远端覆盖，认证错误保留队列并显示。影视库顶部圆角工具栏共用 AppTheme.controlBarTheme，影视库选择、搜索、来源、排序与两个独立操作按钮默认等高 40px，整体保留 12px 内边距和 16px 圆角描边，外框按控件总宽度收紧、相邻控件保持 12px 间距；工具栏复用 SPControlBar 的集中式材质和最大 1248px 浮动岛，暗色玻璃为冷灰 25%～35% 底色及 sigma 24，其他模式沿用主题表面；窄窗与文字放大同步换行、展开页头。待整理数量使用强调色主题徽标，扫描／刮削任务紧凑行按需放在工具栏下方。影视库选择使用 SPDropdownButtonFormField，主影视库汇总已启用目录，服务器选项创建 sourceId 视图；已有目录全部停用的服务器不出现在影视库选择器中；文件夹中的服务器行只提供管理操作。选择服务器先读取本地目录缓存，随后刷新元数据；FutureBuilder 沿用同一状态树，等待新来源就绪期间保留现有正文、工具栏及已解码背景，字段原位更新；旧正文暂停交互与分页，影视库选择仍可操作，视图解除监听后释放旧来源控制器。页面可见时每分钟刷新用户状态，元数据刷新先提交离线修改、完成导入后拉取一次用户状态。服务器导入每 20 项合并数据库通知，用户状态按分页合并，保持逐项事务和取消边界。挂载异步结果仅对仍配置的同一连接生效；不增加转码、直播或远程控制。
 

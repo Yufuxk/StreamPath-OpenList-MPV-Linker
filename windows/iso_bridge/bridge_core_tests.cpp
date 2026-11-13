@@ -1675,8 +1675,123 @@ void test_bdmv_file_boundaries() {
   expect(rejected, "path traversal rejected");
 }
 
+void test_compact_bdmv_metadata_budget() {
+  class Source final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 9616; }
+    std::uint64_t extent_end(std::uint64_t offset) const override {
+      return offset < 9600 ? offset / 32 * 32 + 1 : 9616;
+    }
+    std::vector<std::uint8_t> fetch(std::uint64_t start, std::uint64_t end) override {
+      expect(start >= 9600 || start == end, "metadata reads stop at file tail");
+      ++calls;
+      return std::vector<std::uint8_t>(end - start + 1, static_cast<std::uint8_t>(start / 32));
+    }
+    int calls = 0;
+  };
+  for (bool menu : {false, true}) {
+    auto source = std::make_shared<Source>();
+    bridge::BlockCache cache(source, 16, 32, 1, 2, 4, 0, menu, true);
+    const auto generation = cache.begin_playback();
+    std::uint8_t byte = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+      for (std::uint64_t i = 0; i < 300; ++i) {
+        expect(cache.read(i * 32, &byte, 1, 0, generation) == 1 && byte == static_cast<std::uint8_t>(i),
+               "compact metadata bytes remain exact in title and menu modes");
+      }
+    }
+    expect(source->calls == 300 && cache.metrics().refetch_count == 0,
+           "small files share the actual byte budget without repeated downloads");
+    expect(cache.metrics().resident_bytes == 300, "metadata resident bytes are exact");
+    cache.configure(4, 2);
+    expect(cache.metrics().resident_bytes <= 64, "shrinking includes reserved capacity");
+    std::array<std::uint8_t, 16> media{};
+    expect(cache.read(9600, media.data(), media.size(), 0, generation) == media.size(),
+           "a media block follows compact metadata in both modes");
+    expect(cache.metrics().resident_bytes <= 64,
+           "larger blocks evict enough small extents to preserve the byte budget");
+    auto handoff = cache.take_handoff(64);
+    bridge::BlockCache restored(source, 16, 4, 1, 2, 4, 0, menu, true);
+    restored.restore_handoff(std::move(handoff));
+    expect(restored.metrics().resident_bytes <= 64, "compact handoff fits both limits");
+  }
+}
+
+void test_disc_io_trace_is_bounded_and_opt_in() {
+  bridge::DiscIoTrace trace;
+  expect(trace.record("disabled") == 0 && trace.json() == "null", "trace disabled by default");
+  trace.enable();
+  for (int i = 0; i < 1500; ++i) trace.record("wait", 3, 4, 5, 6, 7);
+  const auto json = trace.json();
+  expect(json.find("\"overwritten\":476") != std::string::npos &&
+         json.find("\"serial\":477,") != std::string::npos &&
+         json.find("\"serial\":1500,") != std::string::npos &&
+         json.find("\"serial\":476,") == std::string::npos,
+         "trace retains latest bounded numeric events in order");
+}
+
+void test_window_aware_stream_batches() {
+  class Source final : public bridge::BlockSource {
+   public:
+    std::uint64_t size() const override { return 65536; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start, std::uint64_t end) override {
+      std::lock_guard lock(mutex);
+      ranges.emplace_back(start, end - start + 1);
+      std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end - start + 1));
+      for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<std::uint8_t>((start + i) & 255);
+      return bytes;
+    }
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+  };
+  for (const bool menu : {false, true}) {
+    for (const std::size_t window : {64U, 96U, 128U, 192U, 384U}) {
+      auto source = std::make_shared<Source>();
+      const auto capacity = window / 16 + 4;
+      bridge::BlockCache cache(source, 8, capacity, 16, menu ? 16 : 8, 64,
+                               menu ? 0 : 32, true, false, 128);
+      cache.configure(capacity, window / 16, menu, !menu);
+      const auto batch = std::max<std::size_t>(64, std::min<std::size_t>(128, window / 2));
+      const auto refill = menu ? (std::min)(std::size_t{64}, window / 2) : batch;
+      std::uint8_t byte = 0;
+      for (const std::uint64_t base : {0ULL, 4096ULL}) {
+        const auto generation = cache.begin_playback();
+        const auto before = cache.metrics();
+        std::size_t first;
+        { std::lock_guard lock(source->mutex); first = source->ranges.size(); }
+        for (std::uint64_t i = 0; i <= 512; ++i) {
+          expect(cache.read((base + i) * 8, &byte, 1, window, generation) == 1 &&
+                 byte == static_cast<std::uint8_t>(((base + i) * 8) & 255), "adaptive batch bytes");
+          if (i % refill == 0) {
+            const auto target = before.prefetched_bytes + (window + i) * 8;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (cache.metrics().prefetched_bytes < target && std::chrono::steady_clock::now() < deadline)
+              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            expect(cache.metrics().prefetched_bytes == target, "adaptive refill remains inside consumer window");
+          }
+        }
+        const auto after = cache.metrics();
+        expect(after.refetch_count == 0 && after.cache_miss_count == before.cache_miss_count + 1 &&
+               after.resident_bytes <= after.cache_capacity_bytes, "adaptive no holes or budget regression");
+        std::lock_guard lock(source->mutex);
+        expect(source->ranges.at(first + 1).second == (menu ? 16ULL : 8ULL) * 8,
+               "adaptive keeps startup batch");
+        bool stable_seen = false;
+        for (auto i = first + 1; i < source->ranges.size(); ++i) {
+          expect(source->ranges[i].second <= batch * 8, "adaptive range capped");
+          stable_seen |= source->ranges[i].second == refill * 8;
+        }
+        expect(stable_seen, "adaptive stable batch reaches intended transfer size");
+      }
+    }
+  }
+}
+
 int main() {
   try {
+    test_disc_io_trace_is_bounded_and_opt_in();
+    test_window_aware_stream_batches();
+    test_compact_bdmv_metadata_budget();
     test_bdmv_file_boundaries();
     test_ranges();
     test_contiguous_cached_bytes();

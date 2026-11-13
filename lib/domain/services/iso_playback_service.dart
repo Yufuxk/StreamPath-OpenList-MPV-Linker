@@ -200,7 +200,11 @@ typedef IsoPlayerConfigLoader = Future<PlayerConfig> Function();
 typedef IsoTitleSelector =
     Future<IsoTitleSelection?> Function(IsoTitleSelectionRequest request);
 typedef IsoProcessStarter =
-    Future<int> Function(String executable, List<String> args);
+    Future<int> Function(
+      String executable,
+      List<String> args, {
+      Map<String, String>? environment,
+    });
 typedef IsoProgressCallback = void Function(IsoPlaybackProgress progress);
 typedef IsoTempRootProvider = Future<Directory> Function();
 typedef IsoOwnerIdentityLoader = Future<PlayerProcessIdentity?> Function();
@@ -1114,7 +1118,16 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         ),
       );
       startupTrace?.mark('processStartStarted');
-      final pid = await _processStarter(executable, args);
+      final environment = await remoteMenu.javaRuntime.environment(
+        directory,
+        required: handle is LoopbackIsoAccessHandle && handle.bdjDetected,
+      );
+      if (_cancelRequested) return null;
+      final pid = await _processStarter(
+        executable,
+        args,
+        environment: environment,
+      );
       final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
       startupTrace?.mark('processStarted');
       if (startupClock != null) {
@@ -1794,6 +1807,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         );
         for (final name in [
           'iso-bridge-metrics.json',
+          'iso-menu-events.jsonl',
           'remote-menu-mpv.json',
           'disc-startup.json',
         ]) {
@@ -2410,13 +2424,22 @@ local function sanitize_file_error(value)
     return category
 end
 
-local function append_performance_event(name, position_override, end_reason, file_error)
+local function append_performance_event(name, position_override, end_reason, file_error, paused_override)
     local record = {
         event = name,
         time = mp.get_time(),
         playlist_pos = position_override or mp.get_property_number("playlist-pos", -1),
         restart_serial = restart_serial,
+        seeking = mp.get_property_bool("seeking", false),
+        cache_duration = mp.get_property_number("demuxer-cache-duration"),
+        vo_drops = mp.get_property_number("vo-drop-frame-count"),
+        decoder_drops = mp.get_property_number("decoder-frame-drop-count"),
     }
+    if paused_override ~= nil then
+        record.paused_for_cache = paused_override
+    else
+        record.paused_for_cache = mp.get_property_bool("paused-for-cache", false)
+    end
     local event_position = mp.get_property_number("time-pos", -1)
     local event_duration = mp.get_property_number("duration", -1)
     if event_position >= 0 then record["position"] = event_position end
@@ -2663,12 +2686,13 @@ mp.observe_property("pause", "bool", function()
     write_status()
 end)
 
-mp.observe_property("paused-for-cache", "bool", function()
-    local paused_now = mp.get_property_bool("paused-for-cache", false)
+mp.observe_property("paused-for-cache", "bool", function(_, value)
+    if type(value) ~= "boolean" then return end
+    local paused_now = value
     if paused_now and not was_paused_for_cache then
-        append_performance_event("cache-pause-start")
+        append_performance_event("cache-pause-start", nil, nil, nil, value)
     elseif not paused_now and was_paused_for_cache then
-        append_performance_event("cache-pause-end")
+        append_performance_event("cache-pause-end", nil, nil, nil, value)
     end
     was_paused_for_cache = paused_now
     write_status()
@@ -2990,11 +3014,17 @@ end)
     return name == 'mpv' || name.startsWith('mpv-');
   }
 
-  static Future<int> _startMpv(String executable, List<String> args) async {
+  static Future<int> _startMpv(
+    String executable,
+    List<String> args, {
+    Map<String, String>? environment,
+  }) async {
     try {
       final process = await Process.start(
         executable,
         args,
+        environment: environment,
+        includeParentEnvironment: true,
         mode: ProcessStartMode.detached,
       );
       return process.pid;

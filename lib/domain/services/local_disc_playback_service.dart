@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'bd_java_runtime.dart';
+
 import 'package:crypto/crypto.dart';
 import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
@@ -237,6 +239,9 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
           : null,
       mediaInfo: mediaInfo,
     );
+    final environment = mode == LocalDiscLaunchMode.menu
+        ? await BdJavaRuntime().environment(dataDirectory)
+        : null;
     if (config.subtitleInjectionEnabled && subtitles != null) {
       final directory = Directory(
         p.join(dataDirectory.path, 'local_iso_subtitles', sessionId),
@@ -257,6 +262,8 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
       process = await Process.start(
         config.executable,
         args,
+        environment: environment,
+        includeParentEnvironment: true,
         mode: ProcessStartMode.detached,
       );
     } on FileSystemException catch (error) {

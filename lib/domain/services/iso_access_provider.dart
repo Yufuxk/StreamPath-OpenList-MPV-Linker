@@ -1,5 +1,6 @@
 import 'disc_programme.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -67,6 +68,7 @@ class IsoBridgeReady {
     required this.totalBytes,
     required this.titles,
     this.discPath,
+    this.bdjDetected = false,
     this.discType = DiscType.bluray,
     this.unavailableDvdTitles = const [],
   });
@@ -76,6 +78,7 @@ class IsoBridgeReady {
   final int totalBytes;
   final List<IsoBridgeTitle> titles;
   final String? discPath;
+  final bool bdjDetected;
   final DiscType discType;
   final List<int> unavailableDvdTitles;
 
@@ -86,6 +89,7 @@ class IsoBridgeReady {
     String? mountedSessionPath,
     String? localDiscPath,
     bool detectOnly = false,
+    String menuMode = 'hdmv',
   }) {
     final port = (message['port'] as num?)?.toInt();
     final token = message['token'];
@@ -178,7 +182,8 @@ class IsoBridgeReady {
                     : bdmv
                     ? 'winfsp-bdmv-v1'
                     : 'winfsp-disc-v1') ||
-            message['mode'] != 'hdmv' ||
+            message['mode'] != menuMode ||
+            (menuMode == 'disc-menu' && message['bdjDetected'] is! bool) ||
             (!bdmv && totalBytes % 2048 != 0) ||
             titles.isNotEmpty)) {
       throw const IsoBridgeProtocolException('远程蓝光菜单能力响应无效');
@@ -199,6 +204,7 @@ class IsoBridgeReady {
       throw const IsoBridgeProtocolException('ISO Bridge 未返回可播放 Title');
     }
     return IsoBridgeReady(
+      bdjDetected: message['bdjDetected'] == true,
       port: port,
       token: token,
       totalBytes: totalBytes,
@@ -604,6 +610,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
     this.remoteMenu = false,
     this.probeOnly = false,
     this.discPath,
+    this.bdjDetected = false,
     this.discType = DiscType.bluray,
     this.unavailableDvdTitles = const [],
   });
@@ -623,6 +630,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
   final bool remoteMenu;
   final bool probeOnly;
   final String? discPath;
+  final bool bdjDetected;
   final DiscType discType;
   @override
   final List<int> unavailableDvdTitles;
@@ -708,13 +716,11 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
       }
     }
     await _client.close();
-    if (remoteMenu || probeOnly) {
-      try {
-        await _helperProcess.exitCode.timeout(const Duration(seconds: 5));
-      } on TimeoutException {
-        _helperProcess.kill();
-        await _helperProcess.exitCode;
-      }
+    try {
+      await _helperProcess.exitCode.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      _helperProcess.kill();
+      await _helperProcess.exitCode;
     }
     if (await sessionDirectory.exists()) {
       await sessionDirectory.delete(recursive: true);
@@ -780,6 +786,10 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     await sessionDirectory.create(recursive: true);
     Process? process;
     IsoBridgeClient? client;
+    final preparationClock = Stopwatch()..start();
+    var phase = IsoAccessPhase.startingBridge;
+    String? bridgeErrorCode;
+    int? bridgeHttpStatus;
     try {
       onPhase?.call(IsoAccessPhase.startingBridge);
       final helperPath = await _helperPathResolver();
@@ -812,12 +822,14 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
           hello['pid'] != process.pid) {
         throw const IsoBridgeProtocolException('ISO Bridge hello 响应无效');
       }
+      final menuMode = hello['discMenuVersion'] == 1 ? 'disc-menu' : 'hdmv';
       final snapshot = webDavService.credentialSnapshot;
       final cachedDisc = await webDavService.cachedDiscPath(file);
+      phase = IsoAccessPhase.probingStream;
       onPhase?.call(IsoAccessPhase.probingStream);
       await client.send({
         'type': remoteMenu ? 'open_disc' : 'open',
-        if (remoteMenu) 'mode': 'hdmv',
+        if (remoteMenu) 'mode': menuMode,
         if (remoteMenu) 'transport': 'winfsp',
         'version': 1,
         if (mediaProbe) 'mediaProbe': true,
@@ -832,10 +844,14 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         'structureCachePath': structureCachePath,
       });
       if (file is WebDavBdmv) {
-        for (final item in file.files) {
-          if (_cancelRequested) throw AppException.network('ISO 流式播放已取消');
-          await client.send(item);
+        Iterable<Map<String, Object?>> entries() sync* {
+          for (final item in file.files) {
+            if (_cancelRequested) throw AppException.network('ISO 流式播放已取消');
+            yield item;
+          }
         }
+
+        await client.sendAll(entries());
         await client.send({'type': 'files_end'});
       }
       Map<String, dynamic> response;
@@ -843,10 +859,15 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         response = await client.receive();
         if (response['type'] != 'metrics') break;
         if (response['stage'] == 'parsingTitles') {
+          phase = IsoAccessPhase.parsingTitles;
           onPhase?.call(IsoAccessPhase.parsingTitles);
         }
       }
       if (response['type'] == 'error') {
+        final code = response['code'];
+        final status = response['httpStatus'];
+        if (code is String) bridgeErrorCode = code;
+        if (status is num) bridgeHttpStatus = status.toInt();
         throw _bridgeError(response);
       }
       final ready = IsoBridgeReady.fromMessage(
@@ -856,6 +877,7 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         mountedSessionPath: remoteMenu ? sessionDirectory.path : null,
         localDiscPath: remoteMenu ? cachedDisc : null,
         detectOnly: discProbe,
+        menuMode: menuMode,
       );
       if (file is WebDavBdmv) {
         final revision = response['structureRevision'];
@@ -882,16 +904,44 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         remoteMenu: remoteMenu,
         probeOnly: mediaProbe || discProbe,
         discPath: ready.discPath,
+        bdjDetected: ready.bdjDetected,
         discType: ready.discType,
         unavailableDvdTitles: ready.unavailableDvdTitles,
       );
       _activeProcess = null;
       _activeClient = null;
       return handle;
-    } on IsoBridgeProtocolException catch (error) {
-      throw AppException.process('ISO Bridge 通信失败', error);
-    } on ProcessException catch (error) {
-      throw AppException.process('无法启动 ISO Bridge helper', error);
+    } catch (error, stackTrace) {
+      if (!_cancelRequested) {
+        await archivePreparationFailure(
+          sessionDirectory,
+          remoteMenu: remoteMenu,
+          phase: phase,
+          elapsedMs: preparationClock.elapsedMilliseconds,
+          code: bridgeErrorCode,
+          httpStatus: bridgeHttpStatus,
+          failureKind: error is TimeoutException
+              ? 'timeout'
+              : error is IsoBridgeProtocolException
+              ? 'protocol'
+              : error is ProcessException
+              ? 'process'
+              : 'bridge',
+        );
+      }
+      if (error is IsoBridgeProtocolException) {
+        Error.throwWithStackTrace(
+          AppException.process('ISO Bridge 通信失败', error),
+          stackTrace,
+        );
+      }
+      if (error is ProcessException) {
+        Error.throwWithStackTrace(
+          AppException.process('无法启动 ISO Bridge helper', error),
+          stackTrace,
+        );
+      }
+      rethrow;
     } finally {
       if (_activeProcess != null) {
         await client?.close();
@@ -903,6 +953,98 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         _activeProcess = null;
         _activeClient = null;
       }
+    }
+  }
+
+  /// 两种模式各保留最近一次失败；只写枚举、状态码和计数。
+  @visibleForTesting
+  static Future<void> archivePreparationFailure(
+    Directory sessionDirectory, {
+    required bool remoteMenu,
+    required IsoAccessPhase phase,
+    required int elapsedMs,
+    String? code,
+    int? httpStatus,
+    required String failureKind,
+  }) async {
+    const codes = {
+      'network_error',
+      'remote_changed',
+      'invalid_disc',
+      'range_unsupported',
+      'length_unavailable',
+      'encrypted_disc',
+      'internal_error',
+      'protocol_error',
+      'libbluray_unavailable',
+      'bdj_unsupported',
+      'menu_unknown',
+      'menu_unavailable',
+      'winfsp_unavailable',
+    };
+    final record = <String, Object?>{
+      'version': 1,
+      'recordedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      'mode': remoteMenu ? 'menu' : 'title',
+      'phase': phase.name,
+      'elapsedMs': elapsedMs,
+      'code': codes.contains(code) ? code : 'unknown',
+      'failureKind': failureKind,
+      if (httpStatus != null && httpStatus >= 100 && httpStatus <= 599)
+        'httpStatus': httpStatus,
+    };
+    try {
+      final metricsFile = File(
+        p.join(sessionDirectory.path, 'iso-bridge-metrics.json'),
+      );
+      if (await metricsFile.exists()) {
+        try {
+          final metrics = jsonDecode(await metricsFile.readAsString());
+          if (metrics is Map) {
+            for (final group in [
+              'network',
+              'metadataNetwork',
+              'metadataCache',
+            ]) {
+              final values = metrics[group];
+              if (values is! Map) continue;
+              record[group] = {
+                for (final field in const [
+                  'requestCount',
+                  'redirectCount',
+                  'remoteBodyBytes',
+                  'responseHeaderLatencyUsTotal',
+                  'responseBodyActiveUsTotal',
+                  'cacheMissCount',
+                  'foregroundLoadingWaitCount',
+                  'foregroundLoadingWaitUsTotal',
+                  'foregroundLoadingWaitUsMax',
+                  'residentBytes',
+                  'capacityBytes',
+                  'refetchCount',
+                ])
+                  if (values[field] is num) field: values[field],
+              };
+            }
+          }
+        } on FormatException {
+          record['metricsInvalid'] = true;
+        } on FileSystemException {
+          record['metricsUnavailable'] = true;
+        }
+      }
+      final archive = Directory(
+        p.join(sessionDirectory.parent.parent.path, 'iso_benchmarks'),
+      );
+      await archive.create(recursive: true);
+      await File(
+        p.join(
+          archive.path,
+          'last-prepare-failure-${remoteMenu ? 'menu' : 'title'}.json',
+        ),
+      ).writeAsString(jsonEncode(record), flush: true);
+    } on FileSystemException {
+      stderr.writeln('ISO preparation failure diagnostics could not be saved');
     }
   }
 
