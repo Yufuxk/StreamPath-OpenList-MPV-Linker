@@ -11,6 +11,8 @@ import 'player_config.dart';
 import 'server_profile.dart';
 import 'special_playlist_mode.dart';
 import 'video_playlist_mode.dart';
+import 'video_window_mode.dart';
+import 'mpv_menu_shortcuts.dart';
 
 /// StreamPath 统一用户配置（平铺结构，集中存放，用户可自行编辑）。
 ///
@@ -67,6 +69,8 @@ class StreamPathConfig {
     this.password = '',
     this.playerName = 'mpv',
     this.playerExecutable = 'mpv',
+    this.videoWindowMode = VideoWindowMode.external,
+    this.mpvMenuShortcuts,
     this.playerArgs = const [
       '--sub-file={subfile}',
       '{url}',
@@ -127,6 +131,8 @@ class StreamPathConfig {
   // ── 播放器配置 ───────────────────────────────────────────────
   final String playerName;
   final String playerExecutable;
+  final VideoWindowMode videoWindowMode;
+  final MpvMenuShortcuts? mpvMenuShortcuts;
   final List<String> playerArgs;
 
   /// 启动参数分类注入开关；缺省值与 [PlayerConfig] 一致。
@@ -218,6 +224,8 @@ class StreamPathConfig {
     name: playerName,
     executable: playerExecutable,
     args: playerArgs,
+    videoWindowMode: videoWindowMode,
+    mpvMenuShortcuts: mpvMenuShortcuts,
     argInjectionAllEnabled: argInjectionAllEnabled,
     argInjectionAnimeEnabled: argInjectionAnimeEnabled,
     argInjectionMovieEnabled: argInjectionMovieEnabled,
@@ -271,6 +279,8 @@ class StreamPathConfig {
       playerName: player.name,
       playerExecutable: player.executable,
       playerArgs: player.args,
+      videoWindowMode: player.videoWindowMode,
+      mpvMenuShortcuts: player.mpvMenuShortcuts,
       argInjectionAllEnabled: player.argInjectionAllEnabled,
       argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
       argInjectionMovieEnabled: player.argInjectionMovieEnabled,
@@ -436,6 +446,8 @@ class StreamPathConfig {
     playerName: player.name,
     playerExecutable: player.executable,
     playerArgs: player.args,
+    videoWindowMode: player.videoWindowMode,
+    mpvMenuShortcuts: player.mpvMenuShortcuts,
     argInjectionAllEnabled: player.argInjectionAllEnabled,
     argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
     argInjectionMovieEnabled: player.argInjectionMovieEnabled,
@@ -491,6 +503,8 @@ class StreamPathConfig {
     playerName: playerName,
     playerExecutable: playerExecutable,
     playerArgs: playerArgs,
+    videoWindowMode: videoWindowMode,
+    mpvMenuShortcuts: mpvMenuShortcuts,
     argInjectionAllEnabled: argInjectionAllEnabled,
     argInjectionAnimeEnabled: argInjectionAnimeEnabled,
     argInjectionMovieEnabled: argInjectionMovieEnabled,
@@ -543,6 +557,9 @@ class StreamPathConfig {
     'playerName': playerName,
     'playerExecutable': playerExecutable,
     'playerArgs': playerArgs,
+    'videoWindowMode': videoWindowMode.name,
+    if (mpvMenuShortcuts != null)
+      'mpvMenuShortcuts': mpvMenuShortcuts!.toJson(),
     'argInjectionAllEnabled': argInjectionAllEnabled,
     'argInjectionAnimeEnabled': argInjectionAnimeEnabled,
     'argInjectionMovieEnabled': argInjectionMovieEnabled,
@@ -636,6 +653,12 @@ class StreamPathConfig {
       password:
           selectedProfile?.password ?? (json['password'] as String?) ?? '',
       playerName: (json['playerName'] as String?) ?? '播放器',
+      videoWindowMode: VideoWindowMode.fromJson(json['videoWindowMode']),
+      mpvMenuShortcuts: json['mpvMenuShortcuts'] is Map<String, dynamic>
+          ? MpvMenuShortcuts.fromJson(
+              json['mpvMenuShortcuts'] as Map<String, dynamic>,
+            )
+          : null,
       playerExecutable: (json['playerExecutable'] as String?) ?? '',
       playerArgs:
           (json['playerArgs'] as List?)?.whereType<String>().toList() ??
@@ -738,6 +761,8 @@ class StreamPathConfig {
         playerName: playerName,
         playerExecutable: playerExecutable,
         playerArgs: playerArgs,
+        videoWindowMode: videoWindowMode,
+        mpvMenuShortcuts: mpvMenuShortcuts,
         argInjectionAllEnabled: argInjectionAllEnabled,
         argInjectionAnimeEnabled: argInjectionAnimeEnabled,
         argInjectionMovieEnabled: argInjectionMovieEnabled,

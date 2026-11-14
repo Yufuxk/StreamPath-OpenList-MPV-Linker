@@ -1,3 +1,4 @@
+import 'mpv_window_coordinator.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -96,11 +97,13 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     required PlaybackProgressService progressService,
     MediaLibraryStore? mediaLibraryStore,
     PlayerProcessController? processController,
+    MpvWindowCoordinator? windowCoordinator,
   }) => LocalDiscPlaybackService._(
     configStore,
     progressService,
     mediaLibraryStore,
     processController ?? PlayerProcessController(),
+    windowCoordinator,
   );
 
   LocalDiscPlaybackService._(
@@ -108,11 +111,13 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     this._progressService,
     this._mediaLibraryStore,
     this._processController,
+    this.windowCoordinator,
   ) {
     _progressService.addListener(_handleProgressChanged);
   }
 
   final StreamPathConfigStore _configStore;
+  final MpvWindowCoordinator? windowCoordinator;
   LocalDiscPlaybackService forFilmLibrary(
     PlaybackProgressService progress,
     MediaLibraryStore? records,
@@ -121,6 +126,7 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
     progress,
     records,
     _processController,
+    windowCoordinator,
   );
   final PlaybackProgressService _progressService;
   final MediaLibraryStore? _mediaLibraryStore;
@@ -257,6 +263,12 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
         ),
       );
     }
+    final windowLaunch = await windowCoordinator?.prepare(
+      config,
+      p.basename(devicePath),
+      discMenu: mode == LocalDiscLaunchMode.menu,
+    );
+    MpvWindowCoordinator.applyArguments(args, windowLaunch);
     final Process process;
     try {
       process = await Process.start(
@@ -267,12 +279,14 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
         mode: ProcessStartMode.detached,
       );
     } on FileSystemException catch (error) {
+      await windowCoordinator?.abandon(windowLaunch);
       if (subtitles != null) await _deleteSubtitleDirectory(sessionId);
       throw AppException.process(
         '无法启动播放器「${config.executable}」：文件不存在或路径错误',
         error,
       );
     } on ProcessException catch (error) {
+      await windowCoordinator?.abandon(windowLaunch);
       if (subtitles != null) await _deleteSubtitleDirectory(sessionId);
       throw AppException.process('播放器启动失败：${error.message}', error);
     }
@@ -325,6 +339,9 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
           resumeFromSavedPosition && resumeEdition != null,
     );
     _sessions[sessionId] = runtime;
+    if (windowLaunch != null) {
+      unawaited(windowCoordinator!.bind(windowLaunch, identity, pipeName));
+    }
     unawaited(_watchExit(runtime));
     return result;
   }

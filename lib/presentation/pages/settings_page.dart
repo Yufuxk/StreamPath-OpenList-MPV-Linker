@@ -1,3 +1,4 @@
+import '../../data/models/video_window_mode.dart';
 import '../widgets/section_switcher.dart';
 import '../widgets/sp_menu.dart';
 import '../../domain/services/app_update_service.dart';
@@ -404,6 +405,7 @@ class SettingsPageState extends State<SettingsPage> {
     try {
       final appState = context.read<AppState>();
       final appearanceController = context.read<AppearanceController>();
+      await appState.windowCoordinator?.configure(config);
       final previousAppearance = appearanceController.config;
       final appearanceChanged =
           previousAppearance.style != appearance.style ||
@@ -539,6 +541,9 @@ class SettingsPageState extends State<SettingsPage> {
     }
 
     final executable = _executableController.text.trim();
+    if (List.generate(5, _menuShortcutError).any((error) => error != null)) {
+      return SettingsSection.playback;
+    }
     if (executable.isEmpty ||
         ExternalPlayerService(
               configStore: context.read<AppState>().configStore,
@@ -1934,6 +1939,33 @@ class SettingsPageState extends State<SettingsPage> {
         '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
   }
 
+  String? _menuShortcutError(int index) {
+    final keys = _draft.menuShortcutControllers
+        .map((controller) => controller.text.trim())
+        .toList();
+    final key = keys[index];
+    final parts = key.toLowerCase().split('+');
+    final modifiers = parts.take(parts.length - 1).toList();
+    if (!RegExp(r'^[^\s+]+(?:\+[^\s+]+)*$').hasMatch(key) ||
+        modifiers.any(
+          (part) => !{'ctrl', 'alt', 'shift', 'meta'}.contains(part),
+        ) ||
+        modifiers.toSet().length != modifiers.length) {
+      return context.l10n.text('请输入有效的 MPV 快捷键');
+    }
+    String normalized(String value) {
+      final pieces = value.toLowerCase().split('+');
+      final modifiers = pieces.take(pieces.length - 1).toList()..sort();
+      return [...modifiers, pieces.last].join('+');
+    }
+
+    if (keys.where((other) => normalized(other) == normalized(key)).length >
+        1) {
+      return context.l10n.text('菜单快捷键不能重复');
+    }
+    return null;
+  }
+
   Widget _buildPlaybackSettings() {
     return SettingsColumns(
       firstFraction: 0.55,
@@ -1944,6 +1976,65 @@ class SettingsPageState extends State<SettingsPage> {
           description: '配置播放器程序及每行一个的启动参数。',
           child: Column(
             children: [
+              SPToggleTile(
+                key: const Key('embedded-mpv-enabled'),
+                title: const AppText('内嵌播放器模式'),
+                subtitle: const AppText('保存后用于新视频；不兼容时使用独立窗口。音频和光盘菜单保持独立窗口。'),
+                value: _draft.videoWindowMode == VideoWindowMode.embedded,
+                onChanged: (value) => setState(
+                  () => _draft.videoWindowMode = value
+                      ? VideoWindowMode.embedded
+                      : VideoWindowMode.external,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: AppText(
+                  '内嵌播放器菜单快捷键',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: AppText(
+                  '保存后用于新视频；使用 MPV 按键名称，如 Ctrl+Alt+m。自定义菜单操作键时使用内置菜单。首次编辑前，MPV 中原有的呼出键设置优先。',
+                ),
+              ),
+              const SizedBox(height: 12),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final labels = ['呼出菜单', '向上选择', '向下选择', '确认选择', '关闭菜单'];
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: List.generate(
+                      labels.length,
+                      (index) => SizedBox(
+                        width: constraints.maxWidth < 380
+                            ? constraints.maxWidth
+                            : (constraints.maxWidth - 12) / 2,
+                        child: _SettingsLabeledField(
+                          label: context.l10n.text(labels[index]),
+                          child: TextFormField(
+                            key: Key('mpv-menu-shortcut-$index'),
+                            controller: _draft.menuShortcutControllers[index],
+                            contextMenuBuilder: buildClipboardHistoryMenu,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                            ),
+                            onChanged: (_) =>
+                                _draft.menuShortcutsChanged = true,
+                            validator: (_) => _menuShortcutError(index),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
               _SettingsLabeledField(
                 label: context.l10n.text('播放器名称'),
                 child: TextFormField(

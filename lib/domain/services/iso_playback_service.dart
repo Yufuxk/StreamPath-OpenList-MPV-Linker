@@ -1,3 +1,4 @@
+import 'mpv_window_coordinator.dart';
 import 'disc_programme.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -250,6 +251,7 @@ class _IsoRuntime {
 class IsoPlaybackService implements IsoLibraryProgressReader {
   IsoPlaybackService({
     required StreamPathConfigStore configStore,
+    this.windowCoordinator,
     IsoAccessProvider? accessProvider,
     IsoAccessProvider? remoteMenuAccessProvider,
     RemoteMenuPlaybackService? remoteMenuService,
@@ -293,6 +295,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
 
   static const String tempDirectoryName = 'iso_temp';
   final String progressPrefix;
+  final MpvWindowCoordinator? windowCoordinator;
 
   static String libraryKey({
     required String profileId,
@@ -309,6 +312,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   ) async {
     final service = IsoPlaybackService(
       configStore: config,
+      windowCoordinator: windowCoordinator,
       accessProvider: _accessProvider,
       discTypeDetector: _discTypeDetector,
       remoteMenuAccessProvider: _remoteMenuAccess,
@@ -830,7 +834,15 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       startupTrace?.mark('launchFilesReady');
       performance.markMpvLaunch();
       startupTrace?.mark('processStartStarted');
-      final pid = await _processStarter(config.executable, args);
+      final windowLaunch = await windowCoordinator?.prepare(config, file.name);
+      MpvWindowCoordinator.applyArguments(args, windowLaunch);
+      final int pid;
+      try {
+        pid = await _processStarter(config.executable, args);
+      } catch (_) {
+        await windowCoordinator?.abandon(windowLaunch);
+        rethrow;
+      }
       final processStartedUtcUs = DateTime.now().toUtc().microsecondsSinceEpoch;
       startupTrace?.mark('processStarted');
       if (startupClock != null) {
@@ -844,6 +856,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         );
       }
       final identity = await _captureIdentityWithRetry(pid);
+      if (windowLaunch != null) {
+        unawaited(windowCoordinator!.bind(windowLaunch, identity, ipcPipeName));
+      }
       if (identity == null) {
         throw AppException.process('无法确认 ISO 播放器进程身份');
       }
@@ -1123,6 +1138,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         required: handle is LoopbackIsoAccessHandle && handle.bdjDetected,
       );
       if (_cancelRequested) return null;
+      await windowCoordinator?.prepare(config, file.name, discMenu: true);
       final pid = await _processStarter(
         executable,
         args,

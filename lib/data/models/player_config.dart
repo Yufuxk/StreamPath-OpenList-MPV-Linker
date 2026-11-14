@@ -7,6 +7,8 @@ import '../../core/utils/file_sort.dart';
 import 'playback_media_info.dart';
 import 'special_playlist_mode.dart';
 import 'video_playlist_mode.dart';
+import 'video_window_mode.dart';
+import 'mpv_menu_shortcuts.dart';
 
 ///
 /// `args` 为启动参数模板列表，每项支持占位符：
@@ -45,6 +47,8 @@ class PlayerConfig {
     required this.name,
     required this.executable,
     this.args = const [],
+    this.videoWindowMode = VideoWindowMode.external,
+    this.mpvMenuShortcuts,
     this.argInjectionAllEnabled = true,
     this.argInjectionAnimeEnabled = false,
     this.argInjectionMovieEnabled = false,
@@ -89,6 +93,10 @@ class PlayerConfig {
 
   /// 启动参数模板列表（每项一行，可含占位符）。
   final List<String> args;
+
+  /// 视频窗口展示方式；缺省保持独立播放器。
+  final VideoWindowMode videoWindowMode;
+  final MpvMenuShortcuts? mpvMenuShortcuts;
 
   /// 每次播放都注入固定的附加参数行，不判断影片类型与元数据。
   final bool argInjectionAllEnabled;
@@ -206,6 +214,9 @@ class PlayerConfig {
     'name': name,
     'executable': executable,
     'args': args,
+    'videoWindowMode': videoWindowMode.name,
+    if (mpvMenuShortcuts != null)
+      'mpvMenuShortcuts': mpvMenuShortcuts!.toJson(),
     'argInjectionAllEnabled': argInjectionAllEnabled,
     'argInjectionAnimeEnabled': argInjectionAnimeEnabled,
     'argInjectionMovieEnabled': argInjectionMovieEnabled,
@@ -245,6 +256,12 @@ class PlayerConfig {
         injectionEnabled &&
         ((json['subtitleAutoSelectEnabled'] as bool?) ?? legacyEnabled ?? true);
     return PlayerConfig(
+      videoWindowMode: VideoWindowMode.fromJson(json['videoWindowMode']),
+      mpvMenuShortcuts: json['mpvMenuShortcuts'] is Map<String, dynamic>
+          ? MpvMenuShortcuts.fromJson(
+              json['mpvMenuShortcuts'] as Map<String, dynamic>,
+            )
+          : null,
       name: (json['name'] as String?) ?? '播放器',
       executable: (json['executable'] as String?) ?? '',
       args: (json['args'] as List?)?.whereType<String>().toList() ?? const [],

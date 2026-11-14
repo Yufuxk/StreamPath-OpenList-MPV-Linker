@@ -23,6 +23,56 @@ void main() {
   });
 
   test(
+    '真实 MPV 内嵌时禁用拖动，脱嵌恢复用户设置',
+    () async {
+      final script = await MpvScripts.ensureCurrent(
+        '${dir.path}/status.txt',
+        '${dir.path}/command.txt',
+        dir,
+        sessionId: 'drag',
+      );
+      final check = File('${dir.path}/check.lua');
+      for (final original in [true, false]) {
+        await check.writeAsString('''
+mp.add_timeout(0.3, function()
+    local names = {'window-dragging', 'input-builtin-dragging'}
+    for _, name in ipairs(names) do
+        assert(mp.get_property_native(name) == false, name .. ' not locked')
+    end
+    mp.commandv('script-message', 'streampath-window-mode', 'external')
+    mp.add_timeout(0.2, function()
+        for _, name in ipairs(names) do
+            assert(mp.get_property_native(name) == $original, name .. ' not restored')
+        end
+        mp.commandv('quit', '0')
+    end)
+end)
+mp.add_timeout(3, function() mp.commandv('quit', '1') end)
+''');
+        final result =
+            await Process.run(Platform.environment['STREAMPATH_PATH_MPV']!, [
+              '--no-config',
+              '--load-scripts=no',
+              '--idle=yes',
+              '--vo=null',
+              '--ao=null',
+              '--window-dragging=${original ? 'yes' : 'no'}',
+              '--input-builtin-dragging=${original ? 'yes' : 'no'}',
+              '--script-opts-append=streampath-window-embedded=yes',
+              '--script=$script',
+              '--script=${check.path}',
+            ]);
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+      }
+    },
+    skip: Platform.environment['STREAMPATH_PATH_MPV'] == null,
+  );
+
+  test(
     'ensureCurrent 脚本包含 demuxer-cache-idle（0.41 新名）优先读取与 cache-idle 回退',
     () async {
       final statusPath = '${dir.path}${Platform.pathSeparator}status.txt';

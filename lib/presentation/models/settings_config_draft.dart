@@ -11,6 +11,8 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
+import '../../data/models/mpv_menu_shortcuts.dart';
+import '../../data/models/video_window_mode.dart';
 import '../../data/models/special_playlist_mode.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/stream_path_config.dart';
@@ -56,6 +58,14 @@ class SettingsConfigDraft {
   final implicitPlaylistWindowController = TextEditingController();
   final audioLyricsFontFamilyController = TextEditingController();
 
+  final menuShortcutControllers = List.generate(
+    5,
+    (_) => TextEditingController(),
+  );
+  MpvMenuShortcuts? menuShortcuts;
+  bool menuShortcutsChanged = false;
+
+  VideoWindowMode videoWindowMode = VideoWindowMode.external;
   bool subtitleInjectionEnabled = true;
   bool subtitleAutoSelectEnabled = true;
   bool argInjectionAllEnabled = true;
@@ -117,6 +127,13 @@ class SettingsConfigDraft {
     required CacheExpirationConfig expirationConfig,
   }) {
     final player = fullConfig.toPlayerConfig();
+    videoWindowMode = player.videoWindowMode;
+    menuShortcuts = player.mpvMenuShortcuts;
+    menuShortcutsChanged = false;
+    final shortcuts = (menuShortcuts ?? const MpvMenuShortcuts()).values;
+    for (var i = 0; i < shortcuts.length; i++) {
+      menuShortcutControllers[i].text = shortcuts[i];
+    }
     mediaLibrarySharingMode = fullConfig.mediaLibrary.sharingMode;
     final connection = fullConfig.toConnectionConfig();
     nameController.text = player.name;
@@ -244,6 +261,16 @@ class SettingsConfigDraft {
         .map((value) => value.trim())
         .where((value) => value.isNotEmpty)
         .toList(),
+    videoWindowMode: videoWindowMode,
+    mpvMenuShortcuts: menuShortcutsChanged
+        ? MpvMenuShortcuts(
+            open: menuShortcutControllers[0].text.trim(),
+            up: menuShortcutControllers[1].text.trim(),
+            down: menuShortcutControllers[2].text.trim(),
+            confirm: menuShortcutControllers[3].text.trim(),
+            close: menuShortcutControllers[4].text.trim(),
+          )
+        : menuShortcuts,
     argInjectionAllEnabled: argInjectionAllEnabled,
     argInjectionAnimeEnabled: argInjectionAnimeEnabled,
     argInjectionMovieEnabled: argInjectionMovieEnabled,
@@ -373,6 +400,7 @@ class SettingsConfigDraft {
 
   void dispose() {
     for (final controller in <TextEditingController>[
+      ...menuShortcutControllers,
       nameController,
       executableController,
       argsController,

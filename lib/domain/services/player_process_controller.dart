@@ -205,6 +205,18 @@ class PlayerProcessController {
     }
   }
 
+  /// 控制命令同时绑定进程身份与当前 named pipe 服务端。
+  Future<bool> ownsPipe(
+    PlayerProcessIdentity? expected,
+    String pipeName,
+  ) async {
+    if (expected == null ||
+        await probeOwned(expected) != PlayerProcessLiveness.alive) {
+      return false;
+    }
+    return await _pipeServerPidLoader(pipeName) == expected.pid;
+  }
+
   /// 仅在 PID、可执行路径和创建时间全部匹配时确认进程存活。
   Future<PlayerProcessLiveness> probeOwned(
     PlayerProcessIdentity? expected,

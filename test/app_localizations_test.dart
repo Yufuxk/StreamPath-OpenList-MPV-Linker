@@ -6,6 +6,28 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_text.dart';
 
 void main() {
+  test('内嵌菜单快捷键设置覆盖四种语言', () {
+    const labels = [
+      '内嵌播放器菜单快捷键',
+      '呼出菜单',
+      '向上选择',
+      '向下选择',
+      '确认选择',
+      '关闭菜单',
+      '请输入有效的 MPV 快捷键',
+      '菜单快捷键不能重复',
+      '保存后用于新视频；使用 MPV 按键名称，如 Ctrl+Alt+m。自定义菜单操作键时使用内置菜单。首次编辑前，MPV 中原有的呼出键设置优先。',
+    ];
+    for (final language in AppLanguage.values) {
+      final localizations = AppLocalizations(language);
+      for (final label in labels) {
+        expect(localizations.text(label), isNotEmpty);
+        if (language != AppLanguage.simplifiedChinese) {
+          expect(localizations.text(label), isNot(label));
+        }
+      }
+    }
+  });
   test('自定义播放列表的操作与动态数量覆盖四种语言', () {
     for (final language in AppLanguage.values) {
       final l10n = AppLocalizations(language);
@@ -70,7 +92,11 @@ void main() {
         '含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。',
       ]) {
         final translated = l10n.text(source);
-        expect(translated.trim(), isNotEmpty, reason: '${language.name}: $source');
+        expect(
+          translated.trim(),
+          isNotEmpty,
+          reason: '${language.name}: $source',
+        );
         if (language == AppLanguage.simplifiedChinese ||
             (language == AppLanguage.traditionalChinese &&
                 identicalInTraditional.contains(source))) {

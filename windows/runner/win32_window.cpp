@@ -520,7 +520,9 @@ Win32Window::MessageHandler(HWND hwnd,
       break;
 
     case WM_NCRBUTTONUP:
-      if (wparam == HTCAPTION && !IsFullscreen()) {
+      if (!IsFullscreen() && (wparam == HTCAPTION ||
+          (GetPropW(hwnd, L"StreamPathMpvActive") &&
+           (wparam == HTTOP || wparam == HTTOPLEFT || wparam == HTTOPRIGHT)))) {
         ShowWindowMenu(hwnd, {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         return 0;
       }

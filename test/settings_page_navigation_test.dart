@@ -1,4 +1,5 @@
 import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'package:streampath/data/models/video_window_mode.dart';
 import 'helpers/pump_until.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -40,6 +41,7 @@ import 'package:streampath/features/cache_expiration/models/cache_expiration_con
 import 'package:streampath/features/cache_expiration/store/cache_expiration_config_store.dart';
 import 'package:streampath/presentation/pages/settings_page.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
+import 'package:streampath/presentation/models/settings_config_draft.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
@@ -1629,6 +1631,114 @@ void main() {
               as Map<String, dynamic>,
     );
     expect(persisted!['language'], 'en');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('内嵌播放器默认关闭，设置入口可开启、保存并重新关闭', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final toggle = find.byKey(const Key('embedded-mpv-enabled'));
+    expect(tester.widget<SwitchListTile>(toggle).value, false);
+    for (final enabled in [true, false]) {
+      tester.widget<SwitchListTile>(toggle).onChanged!(enabled);
+      await tester.pump();
+      final save = tester.widget<FilledButton>(
+        find.byKey(const Key('save-settings-button')),
+      );
+      await tester.runAsync(() async {
+        await (save.onPressed! as Future<void> Function())();
+      });
+      await tester.pumpAndSettle();
+      expect(
+        configStore.current.videoWindowMode,
+        enabled ? VideoWindowMode.embedded : VideoWindowMode.external,
+      );
+      expect(tester.widget<SwitchListTile>(toggle).value, enabled);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('内嵌菜单五个快捷键可配置、校验并持久化', (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final keys = ['Ctrl+Alt+u', 'w', 's', 'd', 'q'];
+    for (var i = 0; i < keys.length; i++) {
+      final field = find.byKey(Key('mpv-menu-shortcut-$i'));
+      await tester.ensureVisible(field);
+      await tester.enterText(field, keys[i]);
+    }
+    await tester.enterText(
+      find.byKey(const Key('mpv-menu-shortcut-4')),
+      'Ctrl++x',
+    );
+    var save = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(
+      () async => await (save.onPressed! as Future<void> Function())(),
+    );
+    await tester.pump();
+    expect(find.text('请输入有效的 MPV 快捷键'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('mpv-menu-shortcut-4')), 'd');
+    save = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(
+      () async => await (save.onPressed! as Future<void> Function())(),
+    );
+    await tester.pump();
+    expect(find.text('菜单快捷键不能重复'), findsWidgets);
+    expect(configStore.current.mpvMenuShortcuts, isNull);
+    await tester.enterText(find.byKey(const Key('mpv-menu-shortcut-4')), 'q');
+    save = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(
+      () async => await (save.onPressed! as Future<void> Function())(),
+    );
+    await tester.pumpAndSettle();
+    expect(configStore.current.mpvMenuShortcuts!.values, keys);
+    final persisted = await tester.runAsync(
+      () async =>
+          jsonDecode(
+                await File(
+                  '${tempDir.path}${Platform.pathSeparator}stream_path_config.json',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>,
+    );
+    expect(persisted!['mpvMenuShortcuts'], {
+      'open': keys[0],
+      'up': keys[1],
+      'down': keys[2],
+      'confirm': keys[3],
+      'close': keys[4],
+    });
+    final restored = SettingsConfigDraft()
+      ..loadFrom(
+        fullConfig: StreamPathConfig.fromJson(persisted),
+        appearance: const AppearanceConfig(),
+        cacheConfig: const CachePolicyConfig(),
+        intelligenceConfig: const CacheIntelligenceConfig(),
+        expirationConfig: const CacheExpirationConfig(),
+      );
+    expect(
+      restored.menuShortcutControllers.map((item) => item.text).toList(),
+      keys,
+    );
+    restored.dispose();
     expect(tester.takeException(), isNull);
   });
 

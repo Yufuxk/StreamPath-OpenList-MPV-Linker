@@ -1,3 +1,5 @@
+import 'domain/services/mpv_window_coordinator.dart';
+import 'presentation/pages/embedded_mpv_player_page.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -208,8 +210,22 @@ Future<void> main() async {
     ],
   );
 
+  final windowCoordinator = MpvWindowCoordinator(
+    menuLanguage: () => configStore.current.language.configValue,
+    menuShortcuts: () => configStore.current.mpvMenuShortcuts,
+    menuBaseDirectory: Directory(p.join(cacheDir.path, 'mpv-window-menus')),
+    capabilityFile: File(
+      p.join(configDir.path, 'mpv_embedding_capability.json'),
+    ),
+  );
+  WidgetsBinding.instance.addPostFrameCallback(
+    (_) => unawaited(
+      windowCoordinator.configure(configStore.current.toPlayerConfig()),
+    ),
+  );
   IsoPlaybackService? isoPlaybackService;
   final isoService = IsoPlaybackService(
+    windowCoordinator: windowCoordinator,
     configStore: configStore,
     cacheCoordinator: IsoCacheCoordinator(
       policyService: cachePolicy,
@@ -226,6 +242,7 @@ Future<void> main() async {
 
   // 组装 WebDAV、播放器、缓存与界面状态。
   appState = AppState(
+    windowCoordinator: windowCoordinator,
     configStore: configStore,
     playbackHistoryStore: playbackHistoryStore,
     progressService: progressService,
@@ -291,7 +308,7 @@ Future<void> main() async {
 }
 
 /// 应用根组件：注入全局状态 + 主题。
-class StreamPathApp extends StatelessWidget {
+class StreamPathApp extends StatefulWidget {
   const StreamPathApp({
     super.key,
     required this.appState,
@@ -306,6 +323,32 @@ class StreamPathApp extends StatelessWidget {
   /// 是否跳过登录页并自动尝试连接。
   final bool autoConnect;
   final AppUpdateService? updates;
+
+  @override
+  State<StreamPathApp> createState() => _StreamPathAppState();
+}
+
+class _StreamPathAppState extends State<StreamPathApp> {
+  AppState get appState => widget.appState;
+  AppearanceController get appearanceController => widget.appearanceController;
+  bool get autoConnect => widget.autoConnect;
+  AppUpdateService? get updates => widget.updates;
+  MpvPlaybackNavigation? _mpvNavigation;
+
+  @override
+  void initState() {
+    super.initState();
+    final coordinator = appState.windowCoordinator;
+    if (coordinator != null) {
+      _mpvNavigation = MpvPlaybackNavigation(coordinator);
+    }
+  }
+
+  @override
+  void dispose() {
+    _mpvNavigation?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -324,6 +367,9 @@ class StreamPathApp extends StatelessWidget {
               appearanceController.lastResult?.actualBackdrop ??
               WindowBackdropType.none;
           return MaterialApp(
+            navigatorKey: _mpvNavigation?.navigatorKey,
+            scaffoldMessengerKey: _mpvNavigation?.messengerKey,
+            navigatorObservers: [?_mpvNavigation],
             onGenerateTitle: (context) =>
                 context.l10n.text('StreamPath — WebDAV 浏览器'),
             debugShowCheckedModeBanner: false,
@@ -390,12 +436,16 @@ class StreamPathApp extends StatelessWidget {
                 app.filmDetailChrome,
                 app.filmLibraryActive,
                 app.fullSpeedExclusive,
+                if (app.windowCoordinator != null) app.windowCoordinator!,
               ]),
               child: content,
               builder: (context, child) {
                 final progress = app.filmDetailChrome.value;
+                final playing = app.windowCoordinator?.active != null;
                 final immersive =
-                    progress != null || app.filmLibraryActive.value;
+                    playing ||
+                    !playing &&
+                        (progress != null || app.filmLibraryActive.value);
                 return Stack(
                   children: [
                     Positioned.fill(
@@ -403,7 +453,9 @@ class StreamPathApp extends StatelessWidget {
                       child: MediaQuery(
                         data: MediaQuery.of(context).copyWith(
                           padding: MediaQuery.paddingOf(context).copyWith(
-                            top: immersive ? WindowTitleBar.height : 0,
+                            top: immersive && !playing
+                                ? WindowTitleBar.height
+                                : 0,
                           ),
                         ),
                         child: ExcludeFocus(
@@ -425,24 +477,46 @@ class StreamPathApp extends StatelessWidget {
                       top: 0,
                       left: 0,
                       right: 0,
-                      child: WindowTitleBar(
-                        taskLocked: app.fullSpeedExclusive.value,
-                        detailScrollProgress: immersive ? progress ?? 0 : null,
-                        onCloseRequested: () async {
-                          if (updates?.status == AppUpdateStatus.installing) {
-                            try {
-                              if (!await app.prepareForUpdate()) {
-                                throw const AppUpdateBlocked();
+                      child: Offstage(
+                        offstage: playing,
+                        child: Theme(
+                          data: playing
+                              ? Theme.of(context).copyWith(
+                                  scaffoldBackgroundColor: Colors.black,
+                                  appBarTheme: const AppBarTheme(
+                                    backgroundColor: Colors.black,
+                                  ),
+                                  colorScheme: Theme.of(context).colorScheme
+                                      .copyWith(
+                                        brightness: Brightness.dark,
+                                        onSurface: Colors.white,
+                                        onSurfaceVariant: Colors.white70,
+                                      ),
+                                )
+                              : Theme.of(context),
+                          child: WindowTitleBar(
+                            taskLocked: app.fullSpeedExclusive.value,
+                            detailScrollProgress: immersive && !playing
+                                ? progress ?? 0
+                                : null,
+                            onCloseRequested: () async {
+                              if (updates?.status ==
+                                  AppUpdateStatus.installing) {
+                                try {
+                                  if (!await app.prepareForUpdate()) {
+                                    throw const AppUpdateBlocked();
+                                  }
+                                  await updates!.confirmClosePrepared();
+                                } catch (_) {
+                                  await updates!.cancelRestart();
+                                  rethrow;
+                                }
+                              } else {
+                                await app.prepareForClose();
                               }
-                              await updates!.confirmClosePrepared();
-                            } catch (_) {
-                              await updates!.cancelRestart();
-                              rethrow;
-                            }
-                          } else {
-                            await app.prepareForClose();
-                          }
-                        },
+                            },
+                          ),
+                        ),
                       ),
                     ),
                     if (updates != null)

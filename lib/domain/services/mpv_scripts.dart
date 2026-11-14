@@ -1013,9 +1013,31 @@ mp.register_script_message('streampath-queue-suspend', function()
     end
 end)
 mp.register_script_message('streampath-queue-resume', function() queue_suspended = false end)
+local embedded_window = mp.get_opt('streampath-window-embedded') == 'yes'
+local window_drag_options = {}
+local function update_window_dragging()
+    for _, name in ipairs({'window-dragging', 'input-builtin-dragging'}) do
+        if embedded_window then
+            local value = mp.get_property_native(name)
+            if value ~= nil and window_drag_options[name] == nil then
+                window_drag_options[name] = value
+                mp.set_property_native(name, false)
+            end
+        elseif window_drag_options[name] ~= nil then
+            mp.set_property_native(name, window_drag_options[name])
+            window_drag_options[name] = nil
+        end
+    end
+end
+-- 只锁定内嵌窗口的拖动，脱嵌后恢复本次启动读取的用户设置。
+update_window_dragging()
+mp.register_script_message('streampath-window-mode', function(mode)
+    embedded_window = mode == 'embedded'
+    update_window_dragging()
+end)
 mp.register_event("file-loaded", function()
     file_loaded_current = true
-    if QUEUE == "" then mp.set_property_native("fullscreen", true) end
+    if QUEUE == "" and not embedded_window then mp.set_property_native("fullscreen", true) end
     has_loaded = true
     entry_started = true
     write_media_info()

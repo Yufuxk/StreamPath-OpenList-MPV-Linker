@@ -225,6 +225,10 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  mpv_window_ = std::make_unique<MpvWindowHost>(
+      flutter_controller_->engine()->messenger(), GetHandle(),
+      [this](bool enabled) { return SetFullscreen(enabled); },
+      [this]() { return fullscreen_; });
 
   // Win+V clipboard history fallback: watch clipboard changes so the Dart
   // side can paste the content into the focused text field even when the
@@ -460,6 +464,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  mpv_window_.reset();
   RemoveClipboardFormatListener(GetHandle());
   folder_picker_channel_.reset();
   appearance_channel_.reset();
@@ -513,6 +518,7 @@ bool FlutterWindow::SetFullscreen(bool enabled) {
         "fullscreenChanged",
         std::make_unique<flutter::EncodableValue>(fullscreen_));
   }
+  if (mpv_window_) mpv_window_->NotifyWindowState();
   return true;
 }
 
@@ -520,6 +526,8 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_SYSCOMMAND && mpv_window_ &&
+      mpv_window_->HandleSystemCommand(wparam)) return 0;
   constexpr UINT kCloseApproved = WM_APP + 61;
   constexpr UINT kCloseFailed = WM_APP + 62;
   if (message == kCloseApproved) {
@@ -554,6 +562,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   switch (message) {
+    case WM_ACTIVATE:
+      if (LOWORD(wparam) != WA_INACTIVE && mpv_window_ && mpv_window_->Focus()) return 0;
+      break;
     case WM_DISPLAYCHANGE:
       if (fullscreen_) SetFullscreen(true);
       break;
@@ -566,6 +577,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
       }
       break;
     case WM_SIZE: {
+      if (mpv_window_) mpv_window_->NotifyWindowState();
       // Keep the Dart-side title bar in sync with the maximize state
       // (switches between the maximize and restore icons).
       if (appearance_channel_) {

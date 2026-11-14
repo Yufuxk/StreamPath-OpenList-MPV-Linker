@@ -29,6 +29,7 @@ import '../../features/cache_control/monitor/playback_monitor.dart';
 import 'mpv_playback_progress_sync.dart';
 import 'mpv_idle_completion_marker.dart';
 import 'mpv_session_controller.dart';
+import 'mpv_window_coordinator.dart';
 import 'mpv_scripts.dart';
 import 'playback_startup_trace.dart';
 import 'mpv_watch_later_sync.dart';
@@ -125,6 +126,7 @@ class _PlaybackLaunchContext {
         name: player.name,
         executable: player.executable,
         args: List<String>.unmodifiable(player.args),
+        videoWindowMode: player.videoWindowMode,
         argInjectionAllEnabled: player.argInjectionAllEnabled,
         argInjectionAnimeEnabled: player.argInjectionAnimeEnabled,
         argInjectionMovieEnabled: player.argInjectionMovieEnabled,
@@ -407,8 +409,10 @@ class _CacheIpcState {
 ///     `--start` 模板参数；无进度时清除旧记录并禁用恢复；
 ///  6. 完整错误捕获：配置缺失 / 可执行文件不存在 / 启动失败。
 class ExternalPlayerService {
+  final MpvWindowCoordinator? windowCoordinator;
   ExternalPlayerService({
     required StreamPathConfigStore configStore,
+    this.windowCoordinator,
     this._progressService,
     this._watchLaterDir,
     this._cachePolicy,
@@ -444,6 +448,7 @@ class ExternalPlayerService {
     Directory watchLater,
   ) => ExternalPlayerService(
     configStore: _configStore,
+    windowCoordinator: windowCoordinator,
     progressService: progress,
     watchLaterDir: watchLater,
     cachePolicy: _cachePolicy,
@@ -1427,6 +1432,14 @@ class ExternalPlayerService {
     // ── 4. 启动进程 ───────────────────────────────────────────
     onPreparationStage?.call('正在启动播放器…');
     await ensureOwned();
+    final windowLaunch = isMpv
+        ? await windowCoordinator?.prepare(
+            config,
+            entries[playlistStart].title ??
+                p.basename(entries[playlistStart].url),
+          )
+        : null;
+    MpvWindowCoordinator.applyArguments(args, windowLaunch);
     final Process process;
     try {
       // detached 模式：子进程独立运行、正常弹出播放器窗口。
@@ -1441,6 +1454,7 @@ class ExternalPlayerService {
         mode: ProcessStartMode.detached,
       );
     } on FileSystemException catch (e) {
+      await windowCoordinator?.abandon(windowLaunch);
       await _deleteLaunchArtifacts(
         sessionId: resolvedSessionId,
         launchEpoch: launchEpoch,
@@ -1454,6 +1468,7 @@ class ExternalPlayerService {
       }
       throw AppException.process('无法启动播放器「${config.executable}」：文件不存在或路径错误', e);
     } on ProcessException catch (e) {
+      await windowCoordinator?.abandon(windowLaunch);
       await _deleteLaunchArtifacts(
         sessionId: resolvedSessionId,
         launchEpoch: launchEpoch,
@@ -1469,6 +1484,12 @@ class ExternalPlayerService {
     }
     trace?.mark('processCreated', {'pid': process.pid});
     final processIdentity = await _processController.capture(process.pid);
+    if (windowLaunch != null) {
+      unawaited(
+        windowCoordinator!.bind(windowLaunch, processIdentity, ipcPipe!),
+      );
+    }
+
     if (!_ownsLaunch(resolvedSessionId, ownershipGeneration)) {
       final termination = await _terminateCapturedProcess(
         pid: process.pid,
@@ -4395,7 +4416,9 @@ class ExternalPlayerService {
         return false;
       }
       await syncActiveProgress(sessionId);
-      await controller.setProperty('fullscreen', true);
+      if (windowCoordinator?.active?.pipeName != runtime.ipcPipeName) {
+        await controller.setProperty('fullscreen', true);
+      }
       await controller.command(['loadlist', nextPlaylistPath, 'replace']);
       try {
         await controller.setProperty('pause', false);

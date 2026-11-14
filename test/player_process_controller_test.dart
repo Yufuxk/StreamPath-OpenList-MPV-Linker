@@ -49,6 +49,22 @@ void main() {
     expect(terminateCalls, 1);
   });
 
+  test('窗口控制仅接受完整进程身份和匹配的 IPC 服务端', () async {
+    for (final owner in [pid, pid + 1, null]) {
+      final controller = controllerFor(
+        lookup: PlayerProcessLookupResult.found(expected),
+        pipeOwnerPid: owner,
+        onTerminate: () =>
+            fail('Window ownership checks must not terminate a process'),
+      );
+      expect(
+        await controller.ownsPipe(expected, r'\\.\pipe\owned-window'),
+        owner == pid,
+      );
+      expect(await controller.ownsPipe(null, r'\\.\pipe\owned-window'), false);
+    }
+  });
+
   test('默认终止边界在租约释放前完成终止，闭合最终 PID 复用窗口', () async {
     final events = <String>[];
     var leaseOpen = true;

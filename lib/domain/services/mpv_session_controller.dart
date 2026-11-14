@@ -18,6 +18,120 @@ class MpvPropertyEvent {
   final Object? value;
 }
 
+/// 独占一个 IPC 连接持续读取事件，命令连接保持原有请求顺序。
+class MpvPropertySubscription {
+  MpvPropertySubscription(this.pipeName, this.properties);
+
+  final String pipeName;
+  final List<String> properties;
+  final _events = StreamController<MpvPropertyEvent>();
+  bool _stopped = false;
+  Future<void>? _work;
+
+  Stream<MpvPropertyEvent> get events => _events.stream;
+
+  void start() => _work ??= _run();
+
+  Future<void> _run() async {
+    final client = MpvSessionController(pipeName: pipeName);
+    final forwarding = client.propertyEvents.listen(_events.add);
+    try {
+      if (!await client.connect(timeout: const Duration(seconds: 3))) {
+        throw StateError('MPV window event connection unavailable');
+      }
+      for (var i = 0; i < properties.length && !_stopped; i++) {
+        await client.observe(properties[i], i + 1);
+      }
+      while (!_stopped) {
+        final handle = client._handle;
+        final chunk = await Isolate.run(() => _readEvents(handle));
+        client._readRemainder = Uint8List.fromList([
+          ...client._readRemainder,
+          ...chunk,
+        ]);
+        var consumed = 0;
+        final bytes = client._readRemainder;
+        for (var i = 0; i < bytes.length; i++) {
+          if (bytes[i] != 10) continue;
+          final decoded = jsonDecode(utf8.decode(bytes.sublist(consumed, i)));
+          consumed = i + 1;
+          if (decoded is! Map) continue;
+          if (decoded['event'] == 'property-change' &&
+              decoded['name'] is String) {
+            _events.add(
+              MpvPropertyEvent(
+                name: decoded['name'] as String,
+                value: decoded['data'],
+              ),
+            );
+          } else if (decoded['event'] == 'video-reconfig') {
+            _events.add(MpvPropertyEvent(name: 'window-id', value: null));
+          } else if (decoded['event'] == 'client-message' &&
+              decoded['args'] is List) {
+            _events.add(
+              MpvPropertyEvent(name: 'client-message', value: decoded['args']),
+            );
+          }
+        }
+        client._readRemainder = Uint8List.fromList(bytes.sublist(consumed));
+      }
+    } on StateError catch (error, stack) {
+      if (!_stopped) _events.addError(error, stack);
+    } on FormatException catch (error, stack) {
+      if (!_stopped) _events.addError(error, stack);
+    } finally {
+      await forwarding.cancel();
+      await client.dispose();
+      await _events.close();
+    }
+  }
+
+  static Uint8List _readEvents(int handle) {
+    final buffer = calloc<Uint8>(4096);
+    final count = calloc<Uint32>();
+    final overlapped = calloc<OVERLAPPED>();
+    final event = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    overlapped.ref.hEvent = event;
+    try {
+      // 提前解析接口，避免首次动态绑定覆盖 ReadFile 的错误码。
+      GetLastError();
+      if (ReadFile(handle, buffer, 4096, count, overlapped) == 0) {
+        final error = GetLastError();
+        if (error != ERROR_IO_PENDING) {
+          throw StateError('MPV window event read failed: $error');
+        }
+        if (GetOverlappedResultEx(handle, overlapped, count, 250, FALSE) == 0) {
+          final completion = GetLastError();
+          CancelIoEx(handle, overlapped);
+          final completed = GetOverlappedResult(
+            handle,
+            overlapped,
+            count,
+            TRUE,
+          );
+          if (completion == WAIT_TIMEOUT) {
+            if (completed == 0) return Uint8List(0);
+          } else {
+            throw StateError('MPV window event connection closed: $completion');
+          }
+        }
+      }
+      if (count.value == 0) throw StateError('MPV window event pipe closed');
+      return Uint8List.fromList(buffer.asTypedList(count.value));
+    } finally {
+      CloseHandle(event);
+      free(buffer);
+      free(count);
+      free(overlapped);
+    }
+  }
+
+  Future<void> dispose() async {
+    _stopped = true;
+    await _work;
+  }
+}
+
 /// MPV JSON-RPC IPC 会话控制器（Windows named pipe）。
 ///
 /// 负责：
@@ -198,6 +312,12 @@ class MpvSessionController {
             MpvPropertyEvent(name: name, value: decoded['data']),
           );
         }
+      } else if (decoded['event'] == 'client-message' &&
+          decoded['args'] is List &&
+          !_eventsClosed) {
+        _propertyEvents.add(
+          MpvPropertyEvent(name: 'client-message', value: decoded['args']),
+        );
       }
     }
     if (!responseSeen) throw StateError('mpv IPC 响应缺少 request_id=$requestId');

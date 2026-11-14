@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -8,6 +10,46 @@ import 'package:streampath/presentation/theme/appearance_controller.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
 void main() {
+  testWidgets('内嵌隐藏标题栏时仍处理原生关闭请求', (tester) async {
+    final appearance = AppearanceController(
+      initialConfig: const AppearanceConfig(),
+      driver: _FakeDriver(),
+    );
+    var closeCalls = 0;
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: appearance,
+        child: MaterialApp(
+          home: Scaffold(
+            body: Offstage(
+              offstage: true,
+              child: WindowTitleBar(
+                onCloseRequested: () async {
+                  closeCalls++;
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final response = Completer<void>();
+    tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'streampath/appearance',
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('closeRequested'),
+      ),
+      (_) => response.complete(),
+    );
+    await tester.runAsync(() => response.future);
+    expect(closeCalls, 1);
+    expect(find.byType(WindowTitleBar), findsNothing);
+    expect(find.byType(WindowTitleBar, skipOffstage: false), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    appearance.dispose();
+  });
   testWidgets('标题栏位于 Navigator 之上的 builder 中仍正常渲染且配色一致', (tester) async {
     final appearanceController = AppearanceController(
       initialConfig: const AppearanceConfig(),

@@ -1,5 +1,78 @@
 /// 顺序：繁体中文、日文、英文。
 const mpvManagerTranslations = <String, List<String>>{
+  '内嵌播放器菜单快捷键': [
+    '內嵌播放器選單快捷鍵',
+    '埋め込みプレーヤーメニューのショートカット',
+    'Embedded player menu shortcuts',
+  ],
+  '保存后用于新视频；使用 MPV 按键名称，如 Ctrl+Alt+m。自定义菜单操作键时使用内置菜单。首次编辑前，MPV 中原有的呼出键设置优先。': [
+    '儲存後用於新影片；使用 MPV 按鍵名稱，如 Ctrl+Alt+m。自訂選單操作鍵時使用內建選單。首次編輯前，MPV 原有的開啟按鍵設定優先。',
+    '保存後、新しい動画に適用します。Ctrl+Alt+m など MPV のキー名を使用します。メニュー操作キーを変更すると内蔵メニューを使用します。初回編集前は MPV の既存の起動キー設定が優先されます。',
+    'Applies to new videos after saving. Use MPV key names such as Ctrl+Alt+m. Custom navigation keys use the built-in menu. Existing MPV menu key settings take precedence until these shortcuts are edited.',
+  ],
+  '呼出菜单': ['開啟選單', 'メニューを開く', 'Open menu'],
+  '向上选择': ['向上選擇', '上を選択', 'Select up'],
+  '向下选择': ['向下選擇', '下を選択', 'Select down'],
+  '确认选择': ['確認選擇', '選択を確定', 'Confirm selection'],
+  '关闭菜单': ['關閉選單', 'メニューを閉じる', 'Close menu'],
+  '请输入有效的 MPV 快捷键': [
+    '請輸入有效的 MPV 快捷鍵',
+    '有効な MPV ショートカットを入力してください',
+    'Enter a valid MPV shortcut',
+  ],
+  '菜单快捷键不能重复': [
+    '選單快捷鍵不可重複',
+    'メニューのショートカットは重複できません',
+    'Menu shortcuts must be different',
+  ],
+  '内嵌播放器模式': ['內嵌播放器模式', '埋め込みプレーヤーモード', 'Embedded player mode'],
+  '保存后用于新视频；不兼容时使用独立窗口。音频和光盘菜单保持独立窗口。': [
+    '儲存後用於新影片；不相容時使用獨立視窗。音訊和光碟選單保持獨立視窗。',
+    '保存後、新しい動画に適用します。非対応のプレーヤー、音声、ディスクメニューは独立ウィンドウで再生します。',
+    'Applies to new videos after saving. Unsupported players, audio and disc menus use separate windows.',
+  ],
+  '转为独立窗口': ['轉為獨立視窗', '独立ウィンドウに切り替え', 'Switch to separate window'],
+  '结束播放': ['結束播放', '再生を終了', 'Stop playback'],
+  '当前 MPV 未通过内嵌兼容检查，将继续使用独立窗口。': [
+    '目前 MPV 未通過內嵌相容檢查，將繼續使用獨立視窗。',
+    'この MPV は埋め込み互換性チェックに合格しませんでした。独立ウィンドウを使用します。',
+    'This MPV build did not pass the embedding check. Playback will use a separate window.',
+  ],
+  '光盘菜单暂时使用独立窗口播放。': [
+    '光碟選單暫時使用獨立視窗播放。',
+    'ディスクメニューは現在、独立ウィンドウで再生します。',
+    'Disc menus currently play in a separate window.',
+  ],
+  '内嵌播放器尚未就绪，本次使用独立窗口播放。': [
+    '內嵌播放器尚未就緒，本次使用獨立視窗播放。',
+    '埋め込みプレーヤーの準備ができていません。今回は独立ウィンドウで再生します。',
+    'The embedded player is not ready. This playback will use a separate window.',
+  ],
+  '播放器窗口同步失败，可尝试转为独立窗口。': [
+    '播放器視窗同步失敗，可嘗試轉為獨立視窗。',
+    'プレーヤーのウィンドウ同期に失敗しました。独立ウィンドウへの切り替えをお試しください。',
+    'Player window synchronization failed. Try switching to a separate window.',
+  ],
+  '播放器正在转为独立窗口，请稍候。': [
+    '播放器正在轉為獨立視窗，請稍候。',
+    '独立ウィンドウに切り替えています。しばらくお待ちください。',
+    'The player is switching to a separate window. Please wait.',
+  ],
+  '无法转为独立窗口，已保留播放器。请重试或结束播放。': [
+    '無法轉為獨立視窗，已保留播放器。請重試或結束播放。',
+    '独立ウィンドウに切り替えられませんでした。プレーヤーは保持されています。再試行するか再生を終了してください。',
+    'Could not switch to a separate window. The player was kept open. Retry or stop playback.',
+  ],
+  '无法结束播放，请在 MPV 中退出后重试。': [
+    '無法結束播放，請在 MPV 中退出後重試。',
+    '再生を終了できません。MPV を終了してから再試行してください。',
+    'Could not stop playback. Quit MPV and try again.',
+  ],
+  '播放器仍在启动，请稍候再关闭。': [
+    '播放器仍在啟動，請稍候再關閉。',
+    'プレーヤーの起動中です。しばらく待ってから閉じてください。',
+    'The player is still starting. Please wait before closing.',
+  ],
   '文件': ['檔案', 'ファイル', 'Files'],
   '引用目标是目录，未作为配置文件读取。': [
     '引用目標是目錄，未作為設定檔讀取。',

@@ -1,3 +1,4 @@
+import '../../domain/services/mpv_window_coordinator.dart';
 import 'package:flutter/services.dart';
 import '../../domain/services/film_scan_scheduler.dart';
 import '../../features/video_cache/video_cache_service.dart';
@@ -391,6 +392,7 @@ class AppState extends ChangeNotifier {
 
   AppState({
     required StreamPathConfigStore configStore,
+    this.windowCoordinator,
     required PlaybackHistoryStore playbackHistoryStore,
     required PlaybackProgressService progressService,
     AudioPlaybackHistoryStore? audioPlaybackHistoryStore,
@@ -459,6 +461,7 @@ class AppState extends ChangeNotifier {
     _playerService =
         playerService ??
         ExternalPlayerService(
+          windowCoordinator: windowCoordinator,
           configStore: configStore,
           progressService: progressService,
           cachePolicy: cachePolicy,
@@ -483,6 +486,7 @@ class AppState extends ChangeNotifier {
     _localDiscPlaybackService =
         localDiscPlaybackService ??
         LocalDiscPlaybackService(
+          windowCoordinator: windowCoordinator,
           configStore: configStore,
           progressService: progressService,
           mediaLibraryStore: mediaLibraryStore,
@@ -500,6 +504,7 @@ class AppState extends ChangeNotifier {
   }
 
   final StreamPathConfigStore _configStore;
+  final MpvWindowCoordinator? windowCoordinator;
   final CachePolicyConfigStore? _cachePolicyConfigStore;
   final CacheIntelligenceConfigStore? _cacheIntelligenceConfigStore;
   final CacheExpirationConfigStore? _cacheExpirationConfigStore;
@@ -1530,8 +1535,19 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
-  Future<void> prepareForClose() => _closePreparation ??= () async {
+  Future<void> prepareForClose() => _closePreparation ??= _prepareForClose();
+
+  Future<void> _prepareForClose() async {
     _closing = true;
+    if (windowCoordinator != null) {
+      try {
+        await windowCoordinator!.prepareForClose();
+      } catch (_) {
+        _closing = false;
+        _closePreparation = null;
+        rethrow;
+      }
+    }
     await _filmCatalogValue?.pauseFastTask();
     if (_videoCacheDownloadListener case final listener?) {
       videoCache?.changes.removeListener(listener);
@@ -1571,7 +1587,7 @@ class AppState extends ChangeNotifier {
     for (final source in _serverSources.values) {
       await source.close();
     }
-  }();
+  }
 
   Future<void> _finishPendingNativeMounts() => Future.wait([
     for (final mounting in _nativeMounting.values.toList())

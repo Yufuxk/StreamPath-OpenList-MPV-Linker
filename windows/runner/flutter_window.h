@@ -10,6 +10,7 @@
 #include <string>
 
 #include "win32_window.h"
+#include "mpv_window_host.h"
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
@@ -28,6 +29,7 @@ class FlutterWindow : public Win32Window {
 
  private:
   bool SetFullscreen(bool enabled);
+  std::unique_ptr<MpvWindowHost> mpv_window_;
   bool fullscreen_ = false;
   bool close_requested_ = false;
   bool close_approved_ = false;
