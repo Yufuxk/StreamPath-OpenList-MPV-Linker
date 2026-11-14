@@ -17,6 +17,7 @@ import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/domain/services/webdav_font_cache.dart';
+import 'package:streampath/domain/services/webdav_font_localizer.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
 import 'package:streampath/domain/services/webdav_subtitle_localizer.dart';
 
@@ -582,10 +583,14 @@ void main() {
         ],
       );
 
+      final reports = <WebDavFontLocalizationProgress>[];
+      final stages = <String>[];
       final result = await service.launch(
         entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
         sessionId: 'streamed-fonts',
         webDavFonts: fonts,
+        onFontProgress: reports.add,
+        onPreparationStage: stages.add,
         webDavFontLoader: (url, {required maxBytes, required timeout}) =>
             throw StateError('Byte loader must not run'),
         webDavFontFileLoader:
@@ -596,7 +601,10 @@ void main() {
               required timeout,
               onProgress,
             }) async {
-              await destination.writeAsBytes([0, 1, 2, 3]);
+              await destination.writeAsBytes([0, 1]);
+              onProgress?.call(2);
+              await destination.writeAsBytes([2, 3], mode: FileMode.append);
+              onProgress?.call(4);
               return 4;
             },
       );
@@ -612,7 +620,54 @@ void main() {
         2,
         3,
       ]);
+      expect(
+        reports.any((p) => p.receivedBytes == 2 && p.expectedBytes == 4),
+        isTrue,
+      );
+      expect(reports.last.completedFiles, 1);
+      expect(reports.last.receivedBytes, 4);
+      expect(stages, contains('正在启动播放器…'));
     });
+
+    test(
+      'all font downloads can fail without blocking player launch',
+      () async {
+        final (service, dir) = await makeService();
+        addTearDown(() async {
+          await service.terminateSession('failed-fonts');
+          await dir.delete(recursive: true);
+        });
+        const fonts = WebDavFontDirectory(
+          name: 'Fonts',
+          requestPath: 'Series/Fonts',
+          entryKey: 'http://h/dav/Series/Fonts/',
+          files: [
+            WebDavFontFile(
+              name: 'unavailable.ttf',
+              url: 'http://h/dav/Series/Fonts/unavailable.ttf',
+              size: 4,
+            ),
+          ],
+        );
+        final stages = <String>[];
+        final reports = <WebDavFontLocalizationProgress>[];
+        final result = await service.launch(
+          entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
+          sessionId: 'failed-fonts',
+          webDavFonts: fonts,
+          webDavFontLoader: (url, {required maxBytes, required timeout}) =>
+              throw const FileSystemException('Font unavailable'),
+          onFontProgress: reports.add,
+          onPreparationStage: stages.add,
+        );
+        expect(reports, isNotEmpty);
+        expect(stages, contains('正在启动播放器…'));
+        expect(
+          result.args.any((arg) => arg.contains('streampath-font-directory-')),
+          isFalse,
+        );
+      },
+    );
 
     test('普通视频重开复用续播字体缓存并保持 MPV 字体注入', () async {
       final cacheDirectory = Directory.systemTemp.createTempSync(
@@ -676,13 +731,16 @@ void main() {
           .single;
       expect(await cachedDirectory.exists(), isTrue);
 
+      final reports = <WebDavFontLocalizationProgress>[];
       final second = await service.launch(
         entries: const [MediaEntry(url: 'http://h/dav/Series/01.mp4')],
         sessionId: 'font-cache-second',
         webDavFonts: fonts,
         webDavFontLoader: loader,
+        onFontProgress: reports.add,
       );
       expect(downloads, 1);
+      expect(reports.single.fromCache, isTrue);
       for (final script in [firstScript, await fontScript(second)]) {
         expect(script, contains(cachedDirectory.path.replaceAll('\\', '\\\\')));
       }

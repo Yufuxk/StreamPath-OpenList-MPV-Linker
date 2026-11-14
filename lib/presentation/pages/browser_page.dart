@@ -3618,6 +3618,7 @@ class BrowserPageState extends State<BrowserPage> {
     int? playlistIndex,
     bool playlistLoop = false,
     FilmPlaybackContext? filmVersionContext,
+    void Function(String stage, WebDavFontLocalizationProgress? font)? report,
   }) async {
     final app = context.read<AppState>();
     final source = _source;
@@ -3781,6 +3782,7 @@ class BrowserPageState extends State<BrowserPage> {
         ),
       );
     }
+    report?.call('正在查找外挂字体…', null);
     final preparer = VideoEntryPreparer(
       source: source,
       config: config,
@@ -3824,6 +3826,7 @@ class BrowserPageState extends State<BrowserPage> {
       isAvailable: available,
     );
     if (!mounted) return;
+    report?.call('正在准备播放列表…', null);
     final id = sessionId ?? _newSessionId();
     final now = DateTime.now();
     final queuePaths = playlistHistory == null
@@ -3979,6 +3982,10 @@ class BrowserPageState extends State<BrowserPage> {
       final resume = progress != null && !progress.isFinishedNearEnd()
           ? progress.resumeSeconds
           : null;
+      report?.call(
+        initial.remoteFonts != null ? '正在下载外挂字体…' : '正在启动播放器…',
+        null,
+      );
       session.statusNotBefore = DateTime.now();
       final result = local
           ? await player.launchLocal(
@@ -4001,6 +4008,9 @@ class BrowserPageState extends State<BrowserPage> {
               webDavFontsByEntry: [initial.remoteFonts],
               webDavFontLoader: service.fetchFileBytes,
               webDavFontFileLoader: service.downloadFile,
+              onFontProgress: (font) =>
+                  report?.call(font.fromCache ? '已使用缓存字体' : '正在下载外挂字体…', font),
+              onPreparationStage: (stage) => report?.call(stage, null),
             );
       final current = (await histories.loadAll()).firstWhere(
         (h) => h.sessionId == id,
@@ -4170,6 +4180,7 @@ class BrowserPageState extends State<BrowserPage> {
         existingSession,
         playbackScope,
         filmVersionContext: filmVersionContext,
+        report: report,
       );
       return;
     }
