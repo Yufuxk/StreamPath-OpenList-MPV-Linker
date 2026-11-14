@@ -1198,4 +1198,14 @@ const filmCatalogTranslations = <String, List<String>>{
     '再生終了後に接続設定を変更してください',
     'Finish playback before changing this connection',
   ],
+  '播放会话状态无法恢复，请关闭播放器后重试': [
+    '播放工作階段狀態無法恢復，請關閉播放器後重試',
+    '再生セッションを復元できません。プレーヤーを閉じて再試行してください',
+    'Playback session state could not be restored. Close the player and try again',
+  ],
+  '背景图片加载失败，请重新选择或刷新': [
+    '背景圖片載入失敗，請重新選擇或重新整理',
+    '背景画像を読み込めません。選び直すか更新してください',
+    'Background image could not be loaded. Select it again or refresh',
+  ],
 };

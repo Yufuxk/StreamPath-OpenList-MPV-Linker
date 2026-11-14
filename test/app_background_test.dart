@@ -19,6 +19,7 @@ import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/glass_tokens.dart';
 
 import 'helpers/shell_test_app_state.dart';
+import 'helpers/pump_until.dart';
 
 void main() {
   setUpAll(sqfliteFfiInit);
@@ -112,6 +113,16 @@ void main() {
           ),
         );
         await settle();
+        await pumpUntil(
+          tester,
+          () =>
+              find
+                  .byKey(const Key('adaptive-backdrop-sharp'))
+                  .evaluate()
+                  .isNotEmpty &&
+              app.startupReady.value,
+          reason: 'Global background and startup are ready',
+        );
         final background = find.byType(AdaptiveFilmBackdrop);
         expect(background, findsOneWidget);
         expect(
@@ -176,6 +187,25 @@ void main() {
         tester.view.devicePixelRatio = 2;
         await settle();
         expect(tester.getRect(background), const Rect.fromLTWH(0, 0, 800, 600));
+        final beforeReload = tester.widget<RawImage>(sharp).image;
+        catalog.reloadBackground();
+        await settle();
+        expect(tester.element(background), same(element));
+        expect(tester.widget<RawImage>(sharp).image, isNot(same(beforeReload)));
+        await tester.runAsync(
+          () => File(
+            '${temp.path}/replacement.png',
+          ).writeAsString('invalid image'),
+        );
+        final lastFrame = tester.widget<RawImage>(sharp).image;
+        expect(
+          tester.widget<AdaptiveFilmBackdrop>(background).onError,
+          isNotNull,
+        );
+        catalog.reloadBackground();
+        await settle();
+        expect(tester.widget<RawImage>(sharp).image, same(lastFrame));
+        expect(find.text('背景图片加载失败，请重新选择或刷新'), findsOneWidget);
         await tester.runAsync(() async {
           await catalog.store.setBackgroundPath(null);
           await catalog.refresh();

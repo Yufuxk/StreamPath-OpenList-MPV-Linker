@@ -6,6 +6,8 @@ import '../state/app_state.dart';
 import '../theme/glass_tokens.dart';
 import 'film_library_background.dart';
 import 'transition_content.dart';
+import 'sp_notice.dart';
+import '../localization/app_text.dart';
 
 /// 自定义背景常驻于窗口与全部导航分支下方。
 class AppBackground extends StatefulWidget {
@@ -20,6 +22,7 @@ class AppBackground extends StatefulWidget {
 class _AppBackgroundState extends State<AppBackground> {
   late final Future<FilmCatalogController> _catalog;
   String? _readyPath;
+  (String, int)? _reportedFailure;
 
   @override
   void initState() {
@@ -56,6 +59,22 @@ class _AppBackgroundState extends State<AppBackground> {
           FilmLibraryBackground(
             cache: catalog!.images,
             file: file,
+            revision: catalog.backgroundRevision,
+            onError: () {
+              final identity = (file.path, catalog.backgroundRevision);
+              if (_reportedFailure == identity) return;
+              _reportedFailure = identity;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted &&
+                    catalog.backgroundFile?.path == file.path &&
+                    catalog.backgroundRevision == identity.$2) {
+                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                    const SPNotice(content: AppText('背景图片加载失败，请重新选择或刷新')),
+                  );
+                }
+              });
+              WidgetsBinding.instance.ensureVisualUpdate();
+            },
             onReady: () {
               if (mounted &&
                   catalog.backgroundFile?.path == file.path &&

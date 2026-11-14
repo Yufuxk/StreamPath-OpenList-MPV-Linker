@@ -486,6 +486,7 @@ void main() {
     expect(find.text('𠮷'), findsOneWidget);
     final expand = find.widgetWithText(TextButton, '展开简介');
     await tester.ensureVisible(expand);
+    await settle(tester);
     await tester.tap(expand);
     await settle(tester);
     expect(tester.widget<Text>(find.text(long)).maxLines, isNull);
@@ -495,6 +496,7 @@ void main() {
     );
     final collapse = find.widgetWithText(TextButton, '收起简介');
     await tester.ensureVisible(collapse);
+    await settle(tester);
     await tester.tap(collapse);
     await settle(tester);
     expect(tester.widget<Text>(find.text(long)).maxLines, 4);
@@ -1570,7 +1572,14 @@ void main() {
           }
           painter.dispose();
         }
-        final colors = {for (final row in textRows) row.$3};
+        final colors = {
+          for (final row in textRows)
+            if (row.$1 != overview) row.$3,
+        };
+        expect(
+          tester.widget<Text>(find.text(overview)).style!.color,
+          Colors.white.withValues(alpha: .82),
+        );
         expect(colors, hasLength(1));
         expect([Colors.black, Colors.white], contains(colors.single));
         final backgroundKey = tester

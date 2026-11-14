@@ -794,7 +794,7 @@ class BrowserPageState extends State<BrowserPage> {
           if (index == history.videoIndex &&
               history.playlistRelativePaths[index] == item.targetPath &&
               !_playerService.hasPendingVideo(history.sessionId)) {
-            await _playerService.sendResume(history.sessionId);
+            await _resumeVideoSession(history.sessionId);
             return;
           }
           try {
@@ -965,6 +965,26 @@ class BrowserPageState extends State<BrowserPage> {
       await _localDiscPlaybackService.refreshPlaybackStatus(id);
     }
     if (mounted) setState(() {});
+    if (mounted && await _playerService.isSessionStateUnknown(id)) {
+      if (mounted) _showLibraryError('无法确认视频播放器已退出');
+    } else if (mounted &&
+        _playerService.hasRestoreFailure(id) &&
+        await _playerService.isPlayerRunning(id)) {
+      if (mounted) _showLibraryError('播放会话状态无法恢复，请关闭播放器后重试');
+    }
+  }
+
+  Future<void> _resumeVideoSession(String id) async {
+    if (await _playerService.isSessionStateUnknown(id)) {
+      if (mounted) _showLibraryError('无法确认视频播放器已退出');
+      return;
+    }
+    if (_playerService.hasRestoreFailure(id) &&
+        await _playerService.isPlayerRunning(id)) {
+      if (mounted) _showLibraryError('播放会话状态无法恢复，请关闭播放器后重试');
+      return;
+    }
+    await _playerService.sendResume(id);
   }
 
   Future<void> showLibraryPlaybackMenu(
@@ -1883,7 +1903,9 @@ class BrowserPageState extends State<BrowserPage> {
         currentSeasonPlaylistPath: history.seasonPlaylistPath,
         currentStageLength: history.playlistFileNames.length,
       );
-      if (history.sourceId == _sourceId && history.queueItems.isNotEmpty) {
+      if (history.sourceId == _sourceId &&
+          history.queueItems.isNotEmpty &&
+          !_playerService.hasRestoreFailure(history.sessionId)) {
         await _restoreImplicitControl(history);
       }
     }
@@ -6359,7 +6381,7 @@ class BrowserPageState extends State<BrowserPage> {
           session.history.isoSessionDirectoryPath,
         );
       } else {
-        await _playerService.sendResume(session.history.sessionId);
+        await _resumeVideoSession(session.history.sessionId);
       }
       return;
     }
@@ -6482,7 +6504,7 @@ class BrowserPageState extends State<BrowserPage> {
 
   Future<void> _resumePlaylistHistory(PlaybackHistory history) async {
     if (await _playerService.isPlayerRunning(history.sessionId)) {
-      await _playerService.sendResume(history.sessionId);
+      await _resumeVideoSession(history.sessionId);
       return;
     }
     if (!mounted) return;
@@ -7182,7 +7204,7 @@ class BrowserPageState extends State<BrowserPage> {
       title = '已暂停：${history.fileName}';
       icon = SPIcons.play;
       tooltip = '继续播放';
-      onPressed = () => _playerService.sendResume(sessionId);
+      onPressed = () => _resumeVideoSession(sessionId);
     } else {
       title = '继续播放：${history.fileName}';
       icon = SPIcons.play;

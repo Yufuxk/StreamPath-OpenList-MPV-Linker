@@ -326,6 +326,34 @@ void main() {
     expect(tracker.nextProbeDelay, const Duration(seconds: 2));
   });
 
+  test('缺身份的 PID 仅在不存在时确认退出，存活和查询失败均不认领', () async {
+    for (final lookup in [
+      const PlayerProcessLookupResult.notFound(),
+      PlayerProcessLookupResult.found(expected),
+      const PlayerProcessLookupResult.failed(),
+    ]) {
+      var terminated = false;
+      final controller = controllerFor(
+        lookup: lookup,
+        onTerminate: () => terminated = true,
+      );
+      final tracker = PlayerProcessLivenessTracker(
+        controller: controller,
+        expectedIdentity: null,
+        unverifiedPid: pid,
+      );
+      expect(
+        await tracker.probe(),
+        lookup.status == PlayerProcessLookupStatus.notFound
+            ? PlayerProcessLiveness.exited
+            : PlayerProcessLiveness.unknown,
+      );
+      expect(tracker.expectedIdentity, isNull);
+      expect(terminated, isFalse);
+      tracker.stop();
+    }
+  });
+
   test('sample 完成后记录调度时间并在健康间隔内复用结果', () async {
     var lookupCalls = 0;
     final controller = PlayerProcessController(

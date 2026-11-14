@@ -790,6 +790,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       child: FilmLibraryBackground(
                         cache: c.images,
                         file: c.backgroundFile,
+                        revision: c.backgroundRevision,
                         onReady: _markBackgroundReady,
                       ),
                     ),
@@ -1381,6 +1382,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     if (action == 'background') {
       await showFilmArtworkPicker(context, c);
     } else if (action == 'refresh') {
+      c.reloadBackground();
       setState(() => _refreshingPlayback = true);
       try {
         await widget.onRefreshPlaybackStatus!();

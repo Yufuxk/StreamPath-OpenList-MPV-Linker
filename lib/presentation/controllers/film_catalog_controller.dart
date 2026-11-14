@@ -400,6 +400,16 @@ class FilmCatalogController extends ChangeNotifier {
   Map<String, List<FilmWork>> sectionWorks = {};
   List<FilmCategory> categories = [];
   File? backgroundFile;
+  int _backgroundRevision = 0;
+  int get backgroundRevision => _taskOwner._backgroundRevision;
+
+  void reloadBackground() {
+    final owner = _taskOwner;
+    owner._backgroundRevision++;
+    owner._notify();
+    if (owner != this) _notify();
+  }
+
   final Map<int, String> _customCovers = {};
   FilmCatalogSortMode sortMode = FilmCatalogSortMode.title;
   FilmCatalogSortDirection sortDirection = FilmCatalogSortDirection.ascending;

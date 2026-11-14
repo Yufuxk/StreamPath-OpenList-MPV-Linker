@@ -25,11 +25,13 @@ class AdaptiveFilmBackdrop extends StatefulWidget {
     this.file,
     this.style = FilmBackdropStyle.detail,
     this.onReady,
+    this.onError,
     this.onImageReady,
     this.watchStore,
     this.workId,
     this.textColors,
     this.fadeFirstFrame = false,
+    this.revision = 0,
   }) : assert(path == null || file == null);
 
   final FilmCatalogImageCache cache;
@@ -37,11 +39,13 @@ class AdaptiveFilmBackdrop extends StatefulWidget {
   final File? file;
   final FilmBackdropStyle style;
   final VoidCallback? onReady;
+  final VoidCallback? onError;
   final VoidCallback? onImageReady;
   final FilmCatalogStore? watchStore;
   final int? workId;
   final FilmBackdropTextController? textColors;
   final bool fadeFirstFrame;
+  final int revision;
 
   @override
   State<AdaptiveFilmBackdrop> createState() => _AdaptiveFilmBackdropState();
@@ -58,6 +62,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
   AdaptiveBackdropLayout? _layout;
   (Size, Size, double)? _layoutInputs;
   bool _moving = false, _loadPending = false;
+  bool _reloadFile = false;
   (ImageProvider<Object>, int)? _pendingCommit;
   Object? _samplingInputs;
 
@@ -110,7 +115,9 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.cache != widget.cache ||
         oldWidget.path != widget.path ||
-        oldWidget.file?.path != widget.file?.path) {
+        oldWidget.file?.path != widget.file?.path ||
+        oldWidget.revision != widget.revision) {
+      if (oldWidget.revision != widget.revision) _reloadFile = true;
       if (oldWidget.cache != widget.cache) _clearFrames();
       _load();
     }
@@ -151,7 +158,12 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
       return;
     }
     if (file != null) {
-      _resolve(file, generation);
+      if (_reloadFile) {
+        _reloadFile = false;
+        unawaited(_reloadLocalFile(file, generation));
+      } else {
+        _resolve(file, generation);
+      }
       return;
     }
     final known =
@@ -161,6 +173,18 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
       _resolve(known, generation);
     }
     unawaited(_loadPath(path!, generation));
+  }
+
+  Future<void> _reloadLocalFile(File file, int generation) async {
+    await filmArtworkProvider(
+      file,
+      target: 'original',
+      backdrop: true,
+      devicePixelRatio: _dpr!,
+    ).evict();
+    if (mounted && generation == _generation) {
+      _resolve(file, generation, force: true);
+    }
   }
 
   Future<void> _loadPath(String path, int generation) async {
@@ -186,11 +210,18 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
   void _failed(Object? code) {
     debugPrint('Film backdrop load failed: $code');
     widget.onReady?.call();
+    widget.onError?.call();
   }
 
-  void _resolve(File file, int generation, {ImageProvider<Object>? provider}) {
+  void _resolve(
+    File file,
+    int generation, {
+    ImageProvider<Object>? provider,
+    bool force = false,
+  }) {
     if (_moving) {
       _loadPending = true;
+      _reloadFile = _reloadFile || force;
       return;
     }
     final thumbnailPath = provider == null ? widget.path : null;
@@ -200,7 +231,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
       backdrop: true,
       devicePixelRatio: _dpr!,
     );
-    if (_current?.provider == provider ||
+    if ((!force && _current?.provider == provider) ||
         _pendingCommit == (provider, generation)) {
       return;
     }
@@ -247,8 +278,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
       onError: (Object error, StackTrace? stack) {
         stream.removeListener(listener);
         if (mounted && generation == _generation) {
-          // 同一文件失效时释放已显示内容；新候选失败仍保留原背景。
-          if (_current?.file.path == file.path) setState(_clearFrames);
+          // 重新加载失败时保留最后一帧有效背景。
           _failed(error.runtimeType);
         }
       },

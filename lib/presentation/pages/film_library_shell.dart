@@ -45,6 +45,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
   FilmCatalogController? _backgroundCatalog;
   VoidCallback? _onBackgroundReady;
   String? _backgroundPath;
+  int _backgroundRevision = 0;
 
   void setBackground(FilmCatalogController catalog, VoidCallback onReady) {
     if (_backgroundCatalog != catalog) {
@@ -55,12 +56,19 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
     setState(() {
       _onBackgroundReady = onReady;
       _backgroundPath = catalog.backgroundFile?.path;
+      _backgroundRevision = catalog.backgroundRevision;
     });
   }
 
   void _backgroundChanged() {
     final path = _backgroundCatalog!.backgroundFile?.path;
-    if (path != _backgroundPath) setState(() => _backgroundPath = path);
+    final revision = _backgroundCatalog!.backgroundRevision;
+    if (path != _backgroundPath || revision != _backgroundRevision) {
+      setState(() {
+        _backgroundPath = path;
+        _backgroundRevision = revision;
+      });
+    }
   }
 
   @override
@@ -431,6 +439,7 @@ class FilmLibraryShellState extends State<FilmLibraryShell> {
                   FilmLibraryBackground(
                     cache: catalog.images,
                     file: catalog.backgroundFile,
+                    revision: catalog.backgroundRevision,
                     onReady: _onBackgroundReady,
                   )
                 else

@@ -112,7 +112,13 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
         final copy = File(
           p.join(directory.path, '${sha256.convert(bytes)}.img'),
         );
-        if (!await copy.exists()) await copy.writeAsBytes(bytes, flush: true);
+        final temporary = File('${copy.path}.tmp');
+        try {
+          await temporary.writeAsBytes(bytes, flush: true);
+          await temporary.rename(copy.path);
+        } finally {
+          if (await temporary.exists()) await temporary.delete();
+        }
         path = copy.path;
       }
       if (widget.collectionId case final id?) {
@@ -123,6 +129,9 @@ class _ArtworkPickerState extends State<_ArtworkPicker> {
         await c.store.setBackgroundPath(path);
       }
       await c.refresh();
+      if (widget.collectionId == null && widget.rootId == null) {
+        c.reloadBackground();
+      }
     });
     if (!mounted) return;
     if (ok) {

@@ -599,6 +599,7 @@ class AppState extends ChangeNotifier {
           ipcPipeName: history.ipcPipeName,
           launchEpoch: history.launchEpoch,
         );
+        if (player.hasRestoreFailure(history.sessionId)) continue;
         final store = await getFilmCatalogStore();
         final items = history.queueItems;
         final preparer = VideoEntryPreparer(

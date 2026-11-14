@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:meta/meta.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path/path.dart' as p;
 
 import '../../core/cache/cache_retention_policy.dart';
@@ -246,17 +247,29 @@ class _ImplicitQueueEntry {
     'entry_id': entryId,
   };
 
-  factory _ImplicitQueueEntry.fromJson(Map<String, dynamic> json) =>
-      _ImplicitQueueEntry(
-        index: json['index'] as int,
-        generation: json['generation'] as int,
-        catalogPath: json['catalog_path'] as String,
-        url: json['url'] as String,
-        playlist: json['playlist'] as String,
-        initialIds: (json['initial_ids'] as List).cast<int>(),
-        checkBeforeLoad: json['check_before_load'] as bool,
-        entryId: json['entry_id'] as int?,
-      );
+  factory _ImplicitQueueEntry.fromJson(Map<String, dynamic> json) {
+    if (json['index'] is! int ||
+        json['generation'] is! int ||
+        json['catalog_path'] is! String ||
+        json['url'] is! String ||
+        json['playlist'] is! String ||
+        json['initial_ids'] is! List ||
+        (json['initial_ids'] as List).any((id) => id is! int) ||
+        json['check_before_load'] is! bool ||
+        (json['entry_id'] != null && json['entry_id'] is! int)) {
+      throw const FormatException('Invalid playback queue entry');
+    }
+    return _ImplicitQueueEntry(
+      index: json['index'] as int,
+      generation: json['generation'] as int,
+      catalogPath: json['catalog_path'] as String,
+      url: json['url'] as String,
+      playlist: json['playlist'] as String,
+      initialIds: List<int>.from(json['initial_ids'] as List),
+      checkBeforeLoad: json['check_before_load'] as bool,
+      entryId: json['entry_id'] as int?,
+    );
+  }
 }
 
 class _PlayerSessionRuntime {
@@ -296,6 +309,7 @@ class _PlayerSessionRuntime {
   int queueGeneration = 0;
   int queueSerial = 0;
   bool rollingQueue = false;
+  bool restoreArtifactsFailed = false;
 
   /// 隐式窗口包含当前项在内的最大集数。
   int get implicitWindowSize =>
@@ -715,9 +729,9 @@ class ExternalPlayerService {
         // 重启后这类历史被恢复为 pid 与身份均为 null 的会话，probeOwned
         // 对其必然返回 unknown，若按 unknown 拒绝将永远无法再次播放。
         if (existing.processIdentity != null || existing.pid != null) {
-          final liveness = await _processController.probeOwned(
-            existing.processIdentity,
-          );
+          final liveness = existing.processIdentity == null
+              ? await _processController.probeUnidentified(existing.pid!)
+              : await _processController.probeOwned(existing.processIdentity);
           _ensureLaunchOwnership(resolvedSessionId, ownershipGeneration);
           if (liveness != PlayerProcessLiveness.exited) {
             throw AppException.process('该播放会话仍在运行，请先关闭或删除后再继续');
@@ -4090,9 +4104,28 @@ class ExternalPlayerService {
       p.join(base.path, 'mpv-season-entries-${runtime.artifactSessionId}.json'),
     );
     if (!await file.exists()) return;
-    final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final json = jsonDecode(await file.readAsString());
+    if (json is! Map<String, dynamic> ||
+        (json['entries'] != null && json['entries'] is! List) ||
+        (json['artifacts'] != null &&
+            (json['artifacts'] is! List ||
+                (json['artifacts'] as List).any((path) => path is! String))) ||
+        (json['queueFile'] != null && json['queueFile'] is! String) ||
+        (json['queueGeneration'] != null && json['queueGeneration'] is! num) ||
+        (json['stageNumber'] != null && json['stageNumber'] is! num) ||
+        (json['externalAudioInjectionEnabled'] != null &&
+            json['externalAudioInjectionEnabled'] is! bool)) {
+      throw const FormatException('Invalid playback session artifacts');
+    }
     for (final value in (json['entries'] as List? ?? const [])) {
-      if (value is! Map || value['url'] is! String) continue;
+      if (value is! Map<String, dynamic> ||
+          value['url'] is! String ||
+          (value['title'] != null && value['title'] is! String) ||
+          (value['catalogPath'] != null && value['catalogPath'] is! String) ||
+          (value['progressTarget'] != null &&
+              value['progressTarget'] is! String)) {
+        throw const FormatException('Invalid playback media entry');
+      }
       final entry = MediaEntry(
         url: value['url'] as String,
         title: value['title'] as String?,
@@ -4109,17 +4142,26 @@ class ExternalPlayerService {
     runtime.queueGeneration = (json['queueGeneration'] as num?)?.toInt() ?? 0;
     runtime.queueSerial = runtime.queueGeneration;
     if (runtime.queueFilePath != null) {
-      final queue =
-          jsonDecode(await File(runtime.queueFilePath!).readAsString())
-              as Map<String, dynamic>;
+      final queue = jsonDecode(
+        await File(runtime.queueFilePath!).readAsString(),
+      );
+      if (queue is! Map<String, dynamic>) {
+        throw const FormatException('Invalid playback queue');
+      }
       runtime.rollingQueue = queue['version'] == 2;
       if (runtime.rollingQueue) {
+        if (queue['generation'] is! int ||
+            queue['serial'] is! int ||
+            queue['entries'] is! List) {
+          throw const FormatException('Invalid rolling playback queue');
+        }
         runtime.queueGeneration = queue['generation'] as int;
         runtime.queueSerial = queue['serial'] as int;
         for (final value in queue['entries'] as List) {
-          final entry = _ImplicitQueueEntry.fromJson(
-            value as Map<String, dynamic>,
-          );
+          if (value is! Map<String, dynamic>) {
+            throw const FormatException('Invalid rolling playback entry');
+          }
+          final entry = _ImplicitQueueEntry.fromJson(value);
           runtime.queueEntries[entry.generation] = entry;
         }
       }
@@ -4393,6 +4435,7 @@ class ExternalPlayerService {
       livenessTracker: PlayerProcessLivenessTracker(
         controller: _processController,
         expectedIdentity: processIdentity,
+        unverifiedPid: pid,
       ),
       statusFilePath: p.join(
         dataDir.path,
@@ -4423,18 +4466,34 @@ class ExternalPlayerService {
       dataDir.path,
       'mpv-season-plan-${runtime.artifactSessionId}.json',
     );
-    if (await File(planPath).exists()) {
-      runtime
-        ..seasonPlanFilePath = planPath
-        ..seasonMarkerFilePath = p.join(
-          dataDir.path,
-          'mpv-season-marker-${runtime.artifactSessionId}.txt',
-        )
-        ..currentSeasonPlaylistPath = currentSeasonPlaylistPath
-        ..currentStageLength = currentStageLength;
+    try {
       await _restoreSeasonEntries(runtime);
+      if (await File(planPath).exists()) {
+        runtime
+          ..seasonPlanFilePath = planPath
+          ..seasonMarkerFilePath = p.join(
+            dataDir.path,
+            'mpv-season-marker-${runtime.artifactSessionId}.txt',
+          )
+          ..currentSeasonPlaylistPath = currentSeasonPlaylistPath
+          ..currentStageLength = currentStageLength;
+      }
+    } on FileSystemException {
+      runtime.restoreArtifactsFailed = true;
+    } on FormatException {
+      runtime.restoreArtifactsFailed = true;
     }
-    if (runtime.entries.isEmpty) await _restoreSeasonEntries(runtime);
+    if (runtime.restoreArtifactsFailed) {
+      // 会话身份和进度保留；坏工件不参与自动控制或退出清理。
+      runtime
+        ..entries.clear()
+        ..watchLaterUrls.clear()
+        ..artifactPaths.clear()
+        ..queueEntries.clear()
+        ..queueFilePath = null
+        ..rollingQueue = false;
+      debugPrint('Playback session artifacts could not be restored');
+    }
     _sessions[sessionId] = runtime;
     _launchOwnership[sessionId] = runtime.ownershipGeneration;
     _lastSessionId = sessionId;
@@ -4448,6 +4507,16 @@ class ExternalPlayerService {
     final liveness = await runtime!.livenessTracker.sample();
     // unknown 不能降级为 false；否则 UI 会误删仍可能存活的会话。
     return liveness != PlayerProcessLiveness.exited;
+  }
+
+  bool hasRestoreFailure(String sessionId) =>
+      _sessions[sessionId]?.restoreArtifactsFailed == true;
+
+  Future<bool> isSessionStateUnknown(String sessionId) async {
+    final runtime = _sessions[sessionId];
+    return runtime?.pid != null &&
+        await runtime!.livenessTracker.sample() ==
+            PlayerProcessLiveness.unknown;
   }
 
   Future<void> refreshPlaybackStatus(String sessionId) async {

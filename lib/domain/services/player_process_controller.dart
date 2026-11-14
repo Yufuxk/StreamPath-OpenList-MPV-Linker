@@ -182,6 +182,15 @@ class PlayerProcessController {
   final PlayerProcessLeaseLoader _leaseLoader;
   final PlayerPipeServerPidLoader _pipeServerPidLoader;
 
+  /// 无完整身份时只能确认 PID 不存在，不能据当前进程补造所有权。
+  Future<PlayerProcessLiveness> probeUnidentified(int pid) async {
+    final opened = await _openLease(pid);
+    opened.lease?.close();
+    return opened.status == PlayerProcessLookupStatus.notFound
+        ? PlayerProcessLiveness.exited
+        : PlayerProcessLiveness.unknown;
+  }
+
   Future<PlayerProcessIdentity?> capture(int pid) async {
     final result = await _openLease(pid);
     final lease = result.lease;
@@ -343,6 +352,8 @@ class PlayerProcessController {
     if (!Platform.isWindows || pid <= 0) {
       return const PlayerProcessLeaseLookupResult.failed();
     }
+    // 先绑定 GetLastError，避免首次 FFI 解析覆盖 OpenProcess 的错误码。
+    GetLastError();
     final handle = OpenProcess(
       PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
       FALSE,
@@ -476,6 +487,7 @@ class PlayerProcessLivenessTracker {
   PlayerProcessLivenessTracker({
     required this.controller,
     required this.expectedIdentity,
+    this.unverifiedPid,
     this.healthyProbeInterval = const Duration(seconds: 2),
     this.unknownInitialDelay = const Duration(seconds: 2),
     this.unknownMaxDelay = const Duration(seconds: 16),
@@ -489,6 +501,7 @@ class PlayerProcessLivenessTracker {
 
   final PlayerProcessController controller;
   final PlayerProcessIdentity? expectedIdentity;
+  final int? unverifiedPid;
   final Duration healthyProbeInterval;
   final Duration unknownInitialDelay;
   final Duration unknownMaxDelay;
@@ -623,7 +636,9 @@ class PlayerProcessLivenessTracker {
     _probeCount++;
     PlayerProcessLiveness next;
     try {
-      next = await controller.probeOwned(expectedIdentity);
+      next = expectedIdentity == null && unverifiedPid != null
+          ? await controller.probeUnidentified(unverifiedPid!)
+          : await controller.probeOwned(expectedIdentity);
     } catch (_) {
       next = PlayerProcessLiveness.unknown;
     }

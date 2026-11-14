@@ -206,9 +206,9 @@ class AudioPlayerService {
         // 重启后这类历史被恢复为 pid 与身份均为 null 的会话，probeOwned
         // 对其必然返回 unknown，若按 unknown 拒绝将永远无法再次播放。
         if (existing.processIdentity != null || existing.pid != null) {
-          final liveness = await _processController.probeOwned(
-            existing.processIdentity,
-          );
+          final liveness = existing.processIdentity == null
+              ? await _processController.probeUnidentified(existing.pid!)
+              : await _processController.probeOwned(existing.processIdentity);
           _ensureLaunchOwnership(sessionId, ownershipGeneration);
           if (liveness != PlayerProcessLiveness.exited) {
             throw AppException.process('该音频播放会话仍在运行，请先关闭或删除后再继续');
@@ -606,6 +606,7 @@ class AudioPlayerService {
       livenessTracker: PlayerProcessLivenessTracker(
         controller: _processController,
         expectedIdentity: processIdentity,
+        unverifiedPid: pid,
       ),
       ipcPipeName: ipcPipeName,
       statusFilePath: p.join(
