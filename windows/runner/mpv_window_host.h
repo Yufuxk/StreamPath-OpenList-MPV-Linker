@@ -19,6 +19,8 @@ class MpvWindowHost {
   void NotifyWindowState();
   bool Focus();
   bool HandleSystemCommand(WPARAM command);
+  HWND root() const { return root_; }
+  bool is_fullscreen() const { return is_fullscreen_(); }
 
  private:
   struct Surface {

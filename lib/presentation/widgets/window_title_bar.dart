@@ -304,7 +304,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final backgroundColor = _titleBarColor(theme);
-    // 主内容区与原生圆角填充沿用 AppBar 的合成色。
+    // 原生框架与实际显示的标题栏使用相同透明度。
     _syncFrameColor(backgroundColor);
     return _buildChrome(backgroundColor);
   }
@@ -378,10 +378,12 @@ class _WindowTitleBarState extends State<WindowTitleBar>
     return chrome;
   }
 
-  Color _titleBarColor(ThemeData theme) => Color.alphaBlend(
-    theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
-    theme.scaffoldBackgroundColor,
-  );
+  Color _titleBarColor(ThemeData theme) => widget.detailScrollProgress != null
+      ? Colors.transparent
+      : Color.alphaBlend(
+          theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface,
+          theme.scaffoldBackgroundColor,
+        );
 }
 
 /// 标题栏右侧的最小化 / 最大化（还原）/ 关闭按钮，尺寸与系统标题栏按钮一致。

@@ -1,6 +1,8 @@
 #include "mpv_window_host.h"
 
 #include <commctrl.h>
+#include <windowsx.h>
+
 #include <string>
 
 namespace {
@@ -11,9 +13,40 @@ constexpr UINT kMenuStop = 0x1f20;
 constexpr UINT kMenuSeparator = 0x1f30;
 constexpr UINT kMenuFullscreen = 0x1f40;
 constexpr UINT_PTR kSurfaceSubclassId = 1;
+
+// 顶部标题栏与窗口边缘命中交给父窗口，视频区保留给 MPV 子窗口。
+bool DelegatesToHostFrame(HWND root, LPARAM lparam, bool fullscreen) {
+  if (fullscreen) return false;
+  POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ScreenToClient(root, &point);
+  RECT client{};
+  GetClientRect(root, &client);
+  const UINT dpi = GetDpiForWindow(root);
+  if (!IsZoomed(root)) {
+    const int margin = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) +
+                       GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+    if (point.x < margin || point.x >= client.right - margin ||
+        point.y < margin || point.y >= client.bottom - margin) {
+      return true;
+    }
+  }
+  const int title_bar_height = MulDiv(32, dpi, 96);
+  const int window_controls_width = MulDiv(46 * 4, dpi, 96);
+  return point.y < title_bar_height &&
+         point.x < client.right - window_controls_width;
+}
+
 LRESULT CALLBACK SurfaceWindowProc(HWND window, UINT message, WPARAM wparam,
                                    LPARAM lparam, UINT_PTR subclass_id,
-                                   DWORD_PTR) {
+                                   DWORD_PTR ref_data) {
+  if (message == WM_NCHITTEST) {
+    auto* host = reinterpret_cast<MpvWindowHost*>(ref_data);
+    if (host != nullptr && host->root() != nullptr &&
+        DelegatesToHostFrame(host->root(), lparam, host->is_fullscreen())) {
+      return HTTRANSPARENT;
+    }
+    return HTCLIENT;
+  }
   if (message == WM_ERASEBKGND) {
     RECT bounds{};
     GetClientRect(window, &bounds);
@@ -81,6 +114,19 @@ HWND ChildFor(HWND host, DWORD pid) {
   }
   return nullptr;
 }
+
+// MPV 从子窗口样式读取窗口状态；保持与宿主一致，避免缩放后回报错误的还原状态。
+void SyncPlayerWindowState(HWND root, HWND player, bool fullscreen) {
+  const LONG_PTR style = GetWindowLongPtrW(player, GWL_STYLE);
+  const LONG_PTR state = (!fullscreen && IsZoomed(root) ? WS_MAXIMIZE : 0) |
+                         (IsIconic(root) ? WS_MINIMIZE : 0);
+  const LONG_PTR updated = (style & ~(WS_MAXIMIZE | WS_MINIMIZE)) | state;
+  if (style == updated) return;
+  SetWindowLongPtrW(player, GWL_STYLE, updated);
+  SetWindowPos(player, nullptr, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+      SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+}
 }  // namespace
 
 MpvWindowHost::MpvWindowHost(flutter::BinaryMessenger* messenger, HWND root,
@@ -100,6 +146,12 @@ MpvWindowHost::~MpvWindowHost() {
 
 void MpvWindowHost::NotifyWindowState() {
   if (surfaces_.empty()) return;
+  for (const auto& entry : surfaces_) {
+    const auto& surface = entry.second;
+    if (OwnedWindow(surface.player, surface.pid)) {
+      SyncPlayerWindowState(root_, surface.player, is_fullscreen_());
+    }
+  }
   channel_->InvokeMethod("windowState", std::make_unique<Value>(Map{
       {Value("fullscreen"), Value(is_fullscreen_())},
       {Value("window-maximized"), Value(IsZoomed(root_) != FALSE)},
@@ -146,7 +198,8 @@ void MpvWindowHost::Handle(const flutter::MethodCall<Value>& call,
       result->Error("surface_create", "Unable to create MPV surface");
       return;
     }
-    if (!SetWindowSubclass(host, SurfaceWindowProc, kSurfaceSubclassId, 0)) {
+    if (!SetWindowSubclass(host, SurfaceWindowProc, kSurfaceSubclassId,
+                           reinterpret_cast<DWORD_PTR>(this))) {
       DestroyWindow(host);
       result->Error("surface_create", "Unable to initialize MPV surface");
       return;
@@ -230,6 +283,7 @@ void MpvWindowHost::Handle(const flutter::MethodCall<Value>& call,
     }
     surface.player = child;
     EnableWindow(child, TRUE);
+    SyncPlayerWindowState(root_, child, is_fullscreen_());
     result->Success(Value(true));
   } else if (method == "bounds") {
     // 布局坐标已由 FlutterView 的 DPR 转为物理像素。
@@ -237,6 +291,7 @@ void MpvWindowHost::Handle(const flutter::MethodCall<Value>& call,
     SetWindowPos(surface.window, HWND_TOP, pixel("x"), pixel("y"),
                  pixel("width"), pixel("height"), SWP_NOACTIVATE);
     if (OwnedWindow(surface.player, surface.pid)) {
+      SyncPlayerWindowState(root_, surface.player, is_fullscreen_());
       RECT bounds{};
       GetClientRect(surface.window, &bounds);
       SetWindowPos(surface.player, nullptr, 0, 0, bounds.right, bounds.bottom,

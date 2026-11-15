@@ -36,6 +36,7 @@ class EmbeddedMpvLaunch {
   bool detaching = false;
   bool ready = false;
   bool binding = false;
+  bool reconnecting = false;
   bool laidOut = false;
   bool visibleRequested = false;
   Future<void>? finishing;
@@ -71,6 +72,8 @@ class MpvWindowCoordinator extends ChangeNotifier {
   String? warning;
   bool _closing = false;
   bool fullscreen = false;
+  bool _maximized = false;
+  bool _minimized = false;
   bool _disposed = false;
   Future<void>? _configuration;
   String? _configuredFingerprint;
@@ -364,6 +367,22 @@ class MpvWindowCoordinator extends ChangeNotifier {
     await _native<void>('release', {'host': launch.host});
   }
 
+  Future<void> _bindingFailed(EmbeddedMpvLaunch launch) async {
+    if (!identical(active, launch) || _disposed) return;
+    launch.binding = false;
+    try {
+      await detach();
+      _notice('内嵌播放器尚未就绪，本次使用独立窗口播放。');
+    } on AppException {
+      if (!identical(active, launch) || launch.detaching || _disposed) return;
+      // 未确认脱嵌时保留表面及会话，避免隐藏仍在播放的 MPV。
+      launch.ready = true;
+      if (launch.observer == null && launch.identity != null) _observe(launch);
+      await onReady?.call(launch);
+      _notice('无法转为独立窗口，已保留播放器。请重试或结束播放。');
+    }
+  }
+
   Future<void> bind(
     EmbeddedMpvLaunch? launch,
     PlayerProcessIdentity? identity,
@@ -381,9 +400,13 @@ class MpvWindowCoordinator extends ChangeNotifier {
       if (identity == null) {
         throw StateError('MPV process identity unavailable');
       }
-      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      final startup = Stopwatch()..start();
+      const startupLimit = Duration(minutes: 2);
       var bound = false;
-      while (DateTime.now().isBefore(deadline)) {
+      while (startup.elapsed < startupLimit &&
+          !_disposed &&
+          identical(active, launch) &&
+          !launch.detaching) {
         bound =
             await _native<bool>('bind', {
               'host': launch.host,
@@ -398,16 +421,51 @@ class MpvWindowCoordinator extends ChangeNotifier {
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
+      if (_disposed || !identical(active, launch) || launch.detaching) return;
       if (!bound) throw StateError('MPV child window unavailable');
       final initial = MpvSessionController(pipeName: pipeName);
       try {
-        if (!await initial.connect(timeout: const Duration(seconds: 3))) {
+        Object? desiredFullscreen;
+        var connected = false;
+        // 窗口创建、管道连接与属性读取共用启动预算，单次 I/O 超时不代表播放失败。
+        while (startup.elapsed < startupLimit &&
+            !_disposed &&
+            identical(active, launch) &&
+            !launch.detaching) {
+          if (await _processes.probeOwned(identity) ==
+              PlayerProcessLiveness.exited) {
+            await _finish(launch);
+            return;
+          }
+          if (!initial.isConnected &&
+              !await initial.connect(
+                timeout: const Duration(milliseconds: 500),
+              )) {
+            continue;
+          }
+          final owner = initial.serverProcessId;
+          if (owner == null) {
+            await initial.disconnect();
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            continue;
+          }
+          if (owner != identity.pid) {
+            throw StateError('MPV window pipe ownership mismatch');
+          }
+          try {
+            desiredFullscreen = await initial.getProperty('fullscreen');
+            connected = true;
+            break;
+          } on TimeoutException {
+            // 请求超时会关闭该连接；下次尝试重新连接并核对归属。
+          } on StateError {
+            if (initial.isConnected) rethrow;
+          }
+        }
+        if (_disposed || !identical(active, launch) || launch.detaching) return;
+        if (!connected) {
           throw StateError('MPV initial window connection unavailable');
         }
-        if (!await _processes.ownsPipe(identity, pipeName)) {
-          throw StateError('MPV window pipe ownership mismatch');
-        }
-        final desiredFullscreen = await initial.getProperty('fullscreen');
         await _native<void>('fullscreen', {
           'enabled': desiredFullscreen == true,
         });
@@ -439,6 +497,7 @@ class MpvWindowCoordinator extends ChangeNotifier {
       } finally {
         await initial.dispose();
       }
+      if (_disposed || !identical(active, launch) || launch.detaching) return;
       launch.ready = true;
       try {
         final labels = mpvWindowMenuLabels(menuLanguage?.call() ?? 'zh-CN');
@@ -451,64 +510,65 @@ class MpvWindowCoordinator extends ChangeNotifier {
       } on PlatformException catch (error) {
         debugPrint('MPV system menu installation failed: ${error.code}');
       }
-      final observer = MpvPropertySubscription(pipeName, [
-        'fullscreen',
-        'window-maximized',
-        'window-minimized',
-        'window-id',
-      ]);
-      launch.observer = observer;
-      launch.events = observer.events.listen(
-        (event) {
-          if (event.name == 'client-message') {
-            final args = event.value;
-            if (args is! List ||
-                args.isEmpty ||
-                args.first != 'streampath-window-menu') {
-              return;
-            }
-            launch.menuTail = launch.menuTail
-                .then((_) => _menuAction(launch, event.value))
-                .catchError((Object error) {
-                  debugPrint('MPV menu action failed: ${error.runtimeType}');
-                  _notice('播放器窗口同步失败，可尝试转为独立窗口。');
-                });
-            return;
-          }
-          launch.tail = launch.tail
-              .then((_) => _property(launch, event))
-              .catchError((Object error) {
-                debugPrint(
-                  'MPV window synchronization failed: ${error.runtimeType}',
-                );
-                _notice('播放器窗口同步失败，可尝试转为独立窗口。');
-              });
-        },
-        onError: (Object error) {
-          unawaited(_connectionEnded(launch));
-        },
-      );
-      observer.start();
+      _observe(launch);
       await onReady?.call(launch);
     } on StateError catch (error) {
       debugPrint('MPV embedding bind failed: ${error.runtimeType}');
-      launch.binding = false;
-      try {
-        await detach();
-        _notice('内嵌播放器尚未就绪，本次使用独立窗口播放。');
-      } on AppException {
-        await _connectionEnded(launch);
-      }
+      await _bindingFailed(launch);
     } on PlatformException catch (error) {
       debugPrint('MPV embedding bind failed: ${error.code}');
-      _notice('播放器窗口同步失败，可尝试转为独立窗口。');
-      await onReady?.call(launch);
+      await _bindingFailed(launch);
     } on TimeoutException {
-      _notice('播放器窗口同步失败，可尝试转为独立窗口。');
-      await onReady?.call(launch);
+      await _bindingFailed(launch);
     } finally {
       launch.binding = false;
     }
+  }
+
+  void _observe(EmbeddedMpvLaunch launch) {
+    final observer = MpvPropertySubscription(
+      launch.pipeName!,
+      ['fullscreen', 'window-maximized', 'window-minimized', 'window-id'],
+      keepConnecting: () async =>
+          !_disposed &&
+          identical(active, launch) &&
+          !launch.detaching &&
+          await _processes.probeOwned(launch.identity) !=
+              PlayerProcessLiveness.exited,
+    );
+    launch.observer = observer;
+    launch.events = observer.events.listen(
+      (event) {
+        if (event.name == 'client-message') {
+          final args = event.value;
+          if (args is! List ||
+              args.isEmpty ||
+              args.first != 'streampath-window-menu') {
+            return;
+          }
+          launch.menuTail = launch.menuTail
+              .then((_) => _menuAction(launch, event.value))
+              .catchError((Object error) {
+                debugPrint('MPV menu action failed: ${error.runtimeType}');
+                _notice('播放器窗口同步失败，可尝试转为独立窗口。');
+              });
+          return;
+        }
+        launch.tail = launch.tail
+            .then((_) => _property(launch, event))
+            .catchError((Object error) {
+              debugPrint(
+                'MPV window synchronization failed: ${error.runtimeType}',
+              );
+              _notice('播放器窗口同步失败，可尝试转为独立窗口。');
+            });
+      },
+      onError: (Object error) {
+        unawaited(_connectionEnded(launch));
+      },
+      onDone: () => unawaited(_connectionEnded(launch)),
+    );
+    observer.start();
   }
 
   Future<void> _property(
@@ -524,13 +584,8 @@ class MpvWindowCoordinator extends ChangeNotifier {
         return;
       }
     }
-    // MPV 会回报子窗口自身的还原状态，不能据此还原宿主窗口。
-    if ((event.name == 'window-maximized' ||
-            event.name == 'window-minimized') &&
-        event.value != true) {
-      return;
-    }
     final state = await _native<Map<Object?, Object?>>('state');
+    if (!identical(active, launch) || launch.detaching || _closing) return;
     if (event.name == 'window-id') {
       final identity = launch.identity!;
       await _native<bool>('bind', {
@@ -538,7 +593,11 @@ class MpvWindowCoordinator extends ChangeNotifier {
         'pid': identity.pid,
         'creation': identity.creationTime,
       });
-    } else if (event.value is bool && state?[event.name] != event.value) {
+    } else if (event.value is bool &&
+        (event.name == 'window-maximized' && state?['fullscreen'] == true
+                ? false
+                : state?[event.name]) !=
+            event.value) {
       final method = switch (event.name) {
         'fullscreen' => 'fullscreen',
         'window-maximized' => 'maximize',
@@ -632,9 +691,15 @@ class MpvWindowCoordinator extends ChangeNotifier {
     if (call.method != 'windowState') return;
     final state = call.arguments as Map;
     final changed = fullscreen != (state['fullscreen'] == true);
+    final maximized =
+        state['fullscreen'] != true && state['window-maximized'] == true;
+    final minimized = state['window-minimized'] == true;
+    final windowChanged = _maximized != maximized || _minimized != minimized;
+    _maximized = maximized;
+    _minimized = minimized;
     fullscreen = state['fullscreen'] == true;
     if (changed && !_disposed) notifyListeners();
-    if (!changed) return;
+    if (!changed && !windowChanged) return;
     final launch = active;
     if (launch == null || !launch.ready || launch.detaching || _closing) return;
     launch.tail = launch.tail
@@ -646,16 +711,19 @@ class MpvWindowCoordinator extends ChangeNotifier {
               return;
             }
             final currentState = await _native<Map<Object?, Object?>>('state');
-            for (final property in ['fullscreen']) {
-              if (await client.getProperty(property) !=
-                  currentState?[property]) {
+            final values = {
+              'fullscreen': currentState?['fullscreen'] == true,
+              'window-maximized':
+                  currentState?['fullscreen'] != true &&
+                  currentState?['window-maximized'] == true,
+              'window-minimized': currentState?['window-minimized'] == true,
+            };
+            for (final property in values.keys) {
+              if (await client.getProperty(property) != values[property]) {
                 launch.synchronizedValues
                     .putIfAbsent(property, () => [])
-                    .add(currentState![property] as bool);
-                await client.setProperty(
-                  property,
-                  currentState[property] as bool,
-                );
+                    .add(values[property]!);
+                await client.setProperty(property, values[property]!);
               }
             }
           } finally {
@@ -670,18 +738,32 @@ class MpvWindowCoordinator extends ChangeNotifier {
   }
 
   Future<void> _connectionEnded(EmbeddedMpvLaunch launch) async {
-    if (!identical(active, launch) || launch.detaching) return;
-    for (var attempt = 0; attempt < 30; attempt++) {
-      if (!identical(active, launch) || launch.detaching) return;
+    if (!identical(active, launch) || launch.detaching || launch.reconnecting) {
+      return;
+    }
+    launch.reconnecting = true;
+    try {
+      await launch.events?.cancel();
+      await launch.observer?.dispose();
+      if (_disposed || !identical(active, launch) || launch.detaching) return;
+      // 事件连接可独立恢复，只有确认进程退出才结束播放页。
       if (await _processes.probeOwned(launch.identity) ==
           PlayerProcessLiveness.exited) {
         await _finish(launch);
         return;
       }
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!_disposed && identical(active, launch) && !launch.detaching) {
+        if (await _processes.probeOwned(launch.identity) ==
+            PlayerProcessLiveness.exited) {
+          await _finish(launch);
+        } else {
+          _observe(launch);
+        }
+      }
+    } finally {
+      launch.reconnecting = false;
     }
-    _notice('播放器窗口同步失败，可尝试转为独立窗口。');
-    await onReady?.call(launch);
   }
 
   Future<bool> _waitDetached(MpvSessionController client, int host) async {

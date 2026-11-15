@@ -5,10 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/errors/app_exception.dart';
 import '../../domain/services/mpv_window_coordinator.dart';
 import '../localization/app_localizations.dart';
-import '../localization/app_text.dart';
-import '../widgets/sp_back_icon.dart';
-import '../widgets/sp_controls.dart';
 import '../widgets/sp_notice.dart';
+import '../widgets/window_title_bar.dart';
 
 /// 只承载原生视频区域，媒体控制继续由 MPV 及其插件提供。
 class MpvPlaybackNavigation extends NavigatorObserver {
@@ -24,6 +22,9 @@ class MpvPlaybackNavigation extends NavigatorObserver {
   final MpvWindowCoordinator coordinator;
   final navigatorKey = GlobalKey<NavigatorState>();
   final messengerKey = GlobalKey<ScaffoldMessengerState>();
+
+  /// 内嵌播放页是否真正挂载，宿主据此隐藏标题栏与切换沉浸布局。
+  final embeddedVisible = ValueNotifier<bool>(false);
   late final StreamSubscription<String> _notices;
   Route<void>? _page;
   EmbeddedMpvLaunch? _launch;
@@ -57,6 +58,7 @@ class MpvPlaybackNavigation extends NavigatorObserver {
           EmbeddedMpvPlayerPage(coordinator: coordinator, launch: launch),
     );
     _page = page;
+    embeddedVisible.value = true;
     unawaited(navigator.push(page));
   }
 
@@ -67,6 +69,7 @@ class MpvPlaybackNavigation extends NavigatorObserver {
     _launch = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (page.navigator != null) page.navigator!.removeRoute(page);
+      embeddedVisible.value = false;
     });
     WidgetsBinding.instance.scheduleFrame();
   }
@@ -103,6 +106,7 @@ class MpvPlaybackNavigation extends NavigatorObserver {
     if (route == _page) {
       _page = null;
       _launch = null;
+      embeddedVisible.value = false;
     }
     _visibility(_page?.isCurrent == true ? _page : null);
   }
@@ -128,6 +132,7 @@ class MpvPlaybackNavigation extends NavigatorObserver {
     coordinator.awaitsHostPaint = false;
     coordinator.repaintHost = null;
     coordinator.removeListener(_changed);
+    embeddedVisible.dispose();
     unawaited(_notices.cancel());
   }
 }
@@ -150,7 +155,6 @@ class _EmbeddedMpvPlayerPageState extends State<EmbeddedMpvPlayerPage>
   final _surface = GlobalKey();
   Rect? _lastBounds;
   bool _busy = false;
-  String? _error;
 
   @override
   void initState() {
@@ -189,19 +193,14 @@ class _EmbeddedMpvPlayerPageState extends State<EmbeddedMpvPlayerPage>
 
   Future<void> _action(Future<void> Function() action) async {
     if (_busy || !identical(widget.coordinator.active, widget.launch)) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
+    setState(() => _busy = true);
     try {
       await action();
     } on AppException catch (error) {
-      if (mounted) setState(() => _error = error.message);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SPNotice(content: Text(context.l10n.text(error.message))),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SPNotice(content: Text(context.l10n.text(error.message))));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -219,47 +218,11 @@ class _EmbeddedMpvPlayerPageState extends State<EmbeddedMpvPlayerPage>
         _layout();
         return Scaffold(
           backgroundColor: Colors.black,
-          appBar: _error == null && widget.coordinator.warning == null
-              ? null
-              : AppBar(
-                  leading: IconButton(
-                    tooltip: context.l10n.text('转为独立窗口'),
-                    icon: const SPBackIcon(),
-                    onPressed: _busy
-                        ? null
-                        : () => _action(widget.coordinator.detach),
-                  ),
-                  title: Text(
-                    widget.launch.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  actions: [
-                    SPButton(
-                      label: const AppText('转为独立窗口'),
-                      onPressed: _busy
-                          ? null
-                          : () => _action(widget.coordinator.detach),
-                    ),
-                    const SizedBox(width: 12),
-                    SPButton(
-                      label: const AppText('结束播放'),
-                      onPressed: _busy
-                          ? null
-                          : () => _action(widget.coordinator.stop),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
-                ),
           body: Column(
             children: [
-              if (_error ?? widget.coordinator.warning case final warning?)
-                Material(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: AppText(warning),
-                  ),
-                ),
+              // 窗口模式下让出标题栏高度，宿主窗口才能响应拖动与缩放。
+              if (!widget.coordinator.fullscreen)
+                const SizedBox(height: WindowTitleBar.height),
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {

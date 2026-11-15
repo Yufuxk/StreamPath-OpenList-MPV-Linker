@@ -236,6 +236,7 @@ Future<void> _verify(
     await waitFor(() async {
       final w = await connection.getProperty('osd-width');
       final h = await connection.getProperty('osd-height');
+      result['last_layout'] = [w, h, IsZoomed(root), IsIconic(root)];
       return w is int && h is int && h > 0 && w / h < 1.5;
     }, 'non-widescreen layout');
     await toggleMenuFullscreen(mouse: true);
@@ -311,21 +312,63 @@ Future<void> _verify(
     }
     await connection.command(['cycle', 'fullscreen']);
     await waitFor(() async => !coordinator.fullscreen, 'windowed mode');
-    await connection.setProperty('window-maximized', true);
+    final originalBorder = await connection.getProperty('border') as bool;
+    if (Platform.environment['STREAMPATH_EXPECT_UOSC'] == '1') {
+      // 仅验收会话临时显示 no-border 顶栏，不改动配置副本。
+      await connection.setProperty('border', false);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    Future<void> windowButton(String property) async {
+      if (Platform.environment['STREAMPATH_EXPECT_UOSC'] != '1') {
+        await connection.command(['cycle', property]);
+        return;
+      }
+      // 隔离副本使用 40px 顶栏、1.3 最大化缩放，验证原有 uosc 按钮。
+      final width = await connection.getProperty('osd-width') as int;
+      final size = IsZoomed(root) != 0 ? 52 : 40;
+      final x =
+          width - (size * (property == 'window-maximized' ? 1.5 : 2.5)).round();
+      final y = size ~/ 2;
+      final point = (y << 16) | x;
+      final cursor = calloc<POINT>();
+      final target = calloc<POINT>();
+      GetCursorPos(cursor);
+      target.ref
+        ..x = x
+        ..y = y;
+      ClientToScreen(window, target);
+      SetCursorPos(target.ref.x, target.ref.y);
+      SendMessage(window, WM_MOUSEMOVE, 0, point);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await connection.command([
+        'screenshot-to-file',
+        p.join(directory.path, 'button-$property-${IsZoomed(root)}.png'),
+        'window',
+      ]);
+      SendMessage(window, WM_LBUTTONDOWN, 1, point);
+      SendMessage(window, WM_LBUTTONUP, 0, point);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      SetCursorPos(cursor.ref.x, cursor.ref.y);
+      free(cursor);
+      free(target);
+    }
+
+    await windowButton('window-maximized');
     await waitFor(
       () async => IsZoomed(GetAncestor(launch.host, GA_ROOT)) != 0,
       'maximize',
     );
-    await MpvWindowCoordinator.channel.invokeMethod<void>('maximize', {
-      'host': launch.host,
-      'enabled': false,
-    });
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (await connection.getProperty('window-maximized') != true) {
+      throw StateError('MPV lost host maximized state after resize');
+    }
+    await windowButton('window-maximized');
     await waitFor(
       () async => IsZoomed(GetAncestor(launch.host, GA_ROOT)) == 0,
       'restore',
     );
     result['maximize_restore'] = true;
-    await connection.setProperty('window-minimized', true);
+    await windowButton('window-minimized');
     await waitFor(
       () async => IsIconic(GetAncestor(launch.host, GA_ROOT)) != 0,
       'minimize',
@@ -339,6 +382,18 @@ Future<void> _verify(
       'restore minimized window',
     );
     result['minimize_restore'] = true;
+    await waitFor(
+      () async => await connection.getProperty('window-minimized') == false,
+      'MPV minimized state restored',
+    );
+    await windowButton('window-minimized');
+    await waitFor(() async => IsIconic(root) != 0, 'minimize again');
+    ShowWindow(root, SW_RESTORE);
+    await waitFor(() async => IsIconic(root) == 0, 'taskbar restore again');
+    result['repeat_minimize_restore'] = true;
+    result['uosc_buttons_clicked'] =
+        Platform.environment['STREAMPATH_EXPECT_UOSC'] == '1';
+    await connection.setProperty('border', originalBorder);
     await connection.setProperty('pause', false);
     await Future<void>.delayed(const Duration(milliseconds: 300));
     final uosc = await openMenu();
@@ -360,6 +415,7 @@ Future<void> _verify(
     }
     await connection.command(['keypress', 'ENTER']);
     await waitFor(() async => coordinator.active == null, 'menu detach');
+    await launch.finishing;
     result['menu_detach'] = true;
     await coordinator.prepareForClose();
     result['system_menu_removed'] =

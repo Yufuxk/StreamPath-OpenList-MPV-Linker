@@ -7,6 +7,12 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:win32/win32.dart';
 
+final _getPipeServerProcessId = DynamicLibrary.open('kernel32.dll')
+    .lookupFunction<
+      Int32 Function(IntPtr, Pointer<Uint32>),
+      int Function(int, Pointer<Uint32>)
+    >('GetNamedPipeServerProcessId');
+
 /// MPV 属性变化事件（`property-change`）。
 class MpvPropertyEvent {
   const MpvPropertyEvent({required this.name, this.value});
@@ -20,10 +26,15 @@ class MpvPropertyEvent {
 
 /// 独占一个 IPC 连接持续读取事件，命令连接保持原有请求顺序。
 class MpvPropertySubscription {
-  MpvPropertySubscription(this.pipeName, this.properties);
+  MpvPropertySubscription(
+    this.pipeName,
+    this.properties, {
+    this.keepConnecting,
+  });
 
   final String pipeName;
   final List<String> properties;
+  final Future<bool> Function()? keepConnecting;
   final _events = StreamController<MpvPropertyEvent>();
   bool _stopped = false;
   Future<void>? _work;
@@ -36,7 +47,18 @@ class MpvPropertySubscription {
     final client = MpvSessionController(pipeName: pipeName);
     final forwarding = client.propertyEvents.listen(_events.add);
     try {
-      if (!await client.connect(timeout: const Duration(seconds: 3))) {
+      final connecting = Stopwatch()..start();
+      while (!_stopped && connecting.elapsed < const Duration(seconds: 3)) {
+        if (keepConnecting != null && !await keepConnecting!()) break;
+        if (await client.connect(
+          timeout: const Duration(milliseconds: 250),
+          retryInterval: const Duration(milliseconds: 50),
+        )) {
+          break;
+        }
+      }
+      if (_stopped) return;
+      if (!client.isConnected) {
         throw StateError('MPV window event connection unavailable');
       }
       for (var i = 0; i < properties.length && !_stopped; i++) {
@@ -77,6 +99,8 @@ class MpvPropertySubscription {
       }
     } on StateError catch (error, stack) {
       if (!_stopped) _events.addError(error, stack);
+    } on TimeoutException catch (error, stack) {
+      if (!_stopped) _events.addError(error, stack);
     } on FormatException catch (error, stack) {
       if (!_stopped) _events.addError(error, stack);
     } finally {
@@ -97,11 +121,11 @@ class MpvPropertySubscription {
       GetLastError();
       if (ReadFile(handle, buffer, 4096, count, overlapped) == 0) {
         final error = GetLastError();
-        if (error != ERROR_IO_PENDING) {
+        if (error != ERROR_IO_PENDING && error != 0) {
           throw StateError('MPV window event read failed: $error');
         }
-        if (GetOverlappedResultEx(handle, overlapped, count, 250, FALSE) == 0) {
-          final completion = GetLastError();
+        final wait = WaitForSingleObject(event, 250);
+        if (wait != WAIT_OBJECT_0) {
           CancelIoEx(handle, overlapped);
           final completed = GetOverlappedResult(
             handle,
@@ -109,11 +133,13 @@ class MpvPropertySubscription {
             count,
             TRUE,
           );
-          if (completion == WAIT_TIMEOUT) {
+          if (wait == WAIT_TIMEOUT) {
             if (completed == 0) return Uint8List(0);
           } else {
-            throw StateError('MPV window event connection closed: $completion');
+            throw StateError('MPV window event wait failed: $wait');
           }
+        } else if (GetOverlappedResult(handle, overlapped, count, FALSE) == 0) {
+          throw StateError('MPV window event connection closed');
         }
       }
       if (count.value == 0) throw StateError('MPV window event pipe closed');
@@ -166,6 +192,19 @@ class MpvSessionController {
 
   /// 是否已连接。
   bool get isConnected => _handle != INVALID_HANDLE_VALUE;
+
+  /// 直接校验当前连接，避免为归属检查再打开一条尚未被 MPV 接受的管道。
+  int? get serverProcessId {
+    if (!isConnected) return null;
+    final server = calloc<Uint32>();
+    try {
+      return _getPipeServerProcessId(_handle, server) != 0
+          ? server.value
+          : null;
+    } finally {
+      free(server);
+    }
+  }
 
   /// 连接 mpv 的 named pipe；pipe 由 mpv 启动后异步创建，
   /// 因此按 [retryInterval] 轮询尝试，直到 [timeout] 或成功。

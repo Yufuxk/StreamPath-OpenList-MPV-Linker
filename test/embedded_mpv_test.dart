@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' hide Size;
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -16,6 +17,7 @@ import 'package:streampath/domain/services/mpv_window_coordinator.dart';
 import 'package:streampath/domain/services/mpv_window_menu.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/presentation/pages/embedded_mpv_player_page.dart';
+import 'package:win32/win32.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -331,7 +333,7 @@ void main() {
         .setMockMethodCallHandler(MpvWindowCoordinator.channel, null);
   });
 
-  testWidgets('全屏窗口同步失败时仍提供转为独立窗口和结束播放入口', (tester) async {
+  testWidgets('同步警告保留仍在播放的页面', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           MpvWindowCoordinator.channel,
@@ -347,22 +349,26 @@ void main() {
       wasFullscreen: false,
     );
     coordinator.active = launch;
+    final navigator = GlobalKey<NavigatorState>();
     await tester.pumpWidget(
       MaterialApp(
-        home: EmbeddedMpvPlayerPage(coordinator: coordinator, launch: launch),
+        navigatorKey: navigator,
+        home: const Scaffold(body: Text('library')),
+      ),
+    );
+    unawaited(
+      navigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              EmbeddedMpvPlayerPage(coordinator: coordinator, launch: launch),
+        ),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('转为独立窗口'), findsOneWidget);
-    expect(find.text('结束播放'), findsOneWidget);
-    coordinator.active = EmbeddedMpvLaunch(
-      host: 456,
-      title: 'next',
-      wasFullscreen: false,
-    );
-    await tester.tap(find.text('结束播放'));
-    await tester.pump();
-    expect(tester.takeException(), isNull);
+    expect(find.text('转为独立窗口'), findsNothing);
+    expect(find.text('结束播放'), findsNothing);
+    expect(find.byType(EmbeddedMpvPlayerPage), findsOneWidget);
+    expect(find.text('library'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     coordinator.dispose();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -415,7 +421,242 @@ void main() {
     }
   }, skip: !Platform.isWindows);
 
+  test('未确认脱嵌时保留会话与容器，不隐藏正在播放的窗口', () async {
+    final calls = <String>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(MpvWindowCoordinator.channel, (call) async {
+          calls.add(call.method);
+          return null;
+        });
+    final coordinator = MpvWindowCoordinator(
+      capabilityFile: File('unused.json'),
+    );
+    final launch = EmbeddedMpvLaunch(
+      host: 123,
+      title: 'movie',
+      wasFullscreen: false,
+    )..pipeName = r'\\.\pipe\streampath_bind_fail_test';
+    try {
+      await coordinator.bind(launch, null, launch.pipeName!);
+      expect(coordinator.active, same(launch));
+      expect(launch.detaching, isFalse);
+      expect(calls, isNot(contains('visible')));
+      expect(calls, isNot(contains('release')));
+    } finally {
+      coordinator.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(MpvWindowCoordinator.channel, null);
+    }
+  });
+
   final executable = Platform.environment['STREAMPATH_PATH_MPV'];
+  test('取消属性订阅不等待尚未建立的 IPC 连接超时', () async {
+    final observer = MpvPropertySubscription(
+      r'\\.\pipe\streampath_cancel_missing_' +
+          DateTime.now().microsecondsSinceEpoch.toString(),
+      const ['fullscreen'],
+    );
+    final events = observer.events.listen((_) {}, onError: (Object _) {});
+    observer.start();
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    final elapsed = Stopwatch()..start();
+    await observer.dispose();
+    await events.cancel();
+    expect(elapsed.elapsed, lessThan(const Duration(milliseconds: 500)));
+  }, skip: !Platform.isWindows);
+
+  for (final exitDelay in [100, 700]) {
+    test(
+      '属性连接断开后 MPV 退出不等待下一轮 IPC 连接超时：$exitDelay',
+      () async {
+        final pipe =
+            r'\\.\pipe\streampath_close_reconnect_' +
+            DateTime.now().microsecondsSinceEpoch.toString();
+        final process = await Process.start(executable!, [
+          '--no-config',
+          '--load-scripts=no',
+          '--idle=yes',
+          '--vo=null',
+          '--ao=null',
+          '--input-ipc-server=$pipe',
+        ]);
+        unawaited(process.stdout.drain<void>());
+        unawaited(process.stderr.drain<void>());
+        final coordinator = MpvWindowCoordinator(
+          capabilityFile: File('unused.json'),
+        );
+        final launch = EmbeddedMpvLaunch(
+          host: 123,
+          title: 'close',
+          wasFullscreen: false,
+        );
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(MpvWindowCoordinator.channel, (
+              call,
+            ) async {
+              return switch (call.method) {
+                'bind' => true,
+                'state' => {
+                  'fullscreen': false,
+                  'window-maximized': false,
+                  'window-minimized': false,
+                },
+                _ => null,
+              };
+            });
+        try {
+          final identity = await PlayerProcessController().capture(process.pid);
+          await coordinator.bind(launch, identity, pipe);
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          if (exitDelay == 700) launch.pipeName = '${pipe}_unavailable';
+          await launch.observer!.dispose();
+          await Future<void>.delayed(Duration(milliseconds: exitDelay));
+          process.kill();
+          await process.exitCode;
+          final elapsed = Stopwatch()..start();
+          final deadline = DateTime.now().add(const Duration(seconds: 5));
+          while (coordinator.active != null &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          await launch.finishing;
+          expect(coordinator.active, isNull);
+          expect(elapsed.elapsed, lessThan(const Duration(seconds: 1)));
+        } finally {
+          launch.detaching = true;
+          await launch.events?.cancel();
+          await launch.observer?.dispose();
+          coordinator.dispose();
+          process.kill();
+          await process.exitCode;
+          if (await launch.menuDirectory?.exists() == true) {
+            await launch.menuDirectory!.delete(recursive: true);
+          }
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(MpvWindowCoordinator.channel, null);
+        }
+      },
+      skip: executable == null || !Platform.isWindows,
+    );
+  }
+  for (final scenario in ['slow-window', 'slow-ipc', 'observer-reconnect']) {
+    test(
+      '存活 MPV 的启动与同步恢复：$scenario',
+      () async {
+        final pipe =
+            r'\\.\pipe\streampath_recovery_' +
+            DateTime.now().microsecondsSinceEpoch.toString();
+        final process = await Process.start(executable!, [
+          '--no-config',
+          '--load-scripts=no',
+          '--idle=yes',
+          '--vo=null',
+          '--ao=null',
+          '--input-ipc-server=$pipe',
+        ]);
+        unawaited(process.stdout.drain<void>());
+        unawaited(process.stderr.drain<void>());
+        final client = MpvSessionController(pipeName: pipe);
+        final coordinator = MpvWindowCoordinator(
+          capabilityFile: File('unused.json'),
+        );
+        final launch = EmbeddedMpvLaunch(
+          host: 123,
+          title: 'recovery',
+          wasFullscreen: false,
+        );
+        final elapsed = Stopwatch()..start();
+        final calls = <MethodCall>[];
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(MpvWindowCoordinator.channel, (
+              call,
+            ) async {
+              calls.add(call);
+              return switch (call.method) {
+                'bind' =>
+                  scenario != 'slow-window' || elapsed.elapsed.inSeconds >= 31,
+                'state' => {
+                  'fullscreen': false,
+                  'window-maximized': false,
+                  'window-minimized': false,
+                },
+                _ => null,
+              };
+            });
+        var processHandle = 0;
+        Timer? resume;
+        final resumeProcess = DynamicLibrary.open('ntdll.dll')
+            .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'NtResumeProcess',
+            );
+        try {
+          expect(await client.connect(), isTrue);
+          final identity = await PlayerProcessController().capture(process.pid);
+          if (scenario == 'slow-ipc') {
+            processHandle = OpenProcess(0x0800, FALSE, process.pid);
+            expect(processHandle, isNot(0));
+            final suspendProcess = DynamicLibrary.open('ntdll.dll')
+                .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+                  'NtSuspendProcess',
+                );
+            expect(suspendProcess(processHandle), 0);
+            resume = Timer(const Duration(seconds: 5), () {
+              resumeProcess(processHandle);
+            });
+          }
+          await coordinator.bind(launch, identity, pipe);
+          expect(coordinator.active, same(launch));
+          expect(launch.ready, isTrue);
+          expect(coordinator.warning, isNull);
+          expect(calls.where((call) => call.method == 'release'), isEmpty);
+          if (scenario == 'observer-reconnect') {
+            final observer = launch.observer!;
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            await observer.dispose();
+            final deadline = DateTime.now().add(const Duration(seconds: 5));
+            while (identical(observer, launch.observer) &&
+                DateTime.now().isBefore(deadline)) {
+              await Future<void>.delayed(const Duration(milliseconds: 50));
+            }
+            expect(launch.observer, isNot(same(observer)));
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            await client.setProperty('fullscreen', true);
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            expect(
+              calls.where(
+                (call) =>
+                    call.method == 'fullscreen' &&
+                    (call.arguments as Map)['enabled'] == true,
+              ),
+              isNotEmpty,
+            );
+            expect(coordinator.warning, isNull);
+          }
+        } finally {
+          if (processHandle != 0) {
+            resume?.cancel();
+            resumeProcess(processHandle);
+            CloseHandle(processHandle);
+          }
+          launch.detaching = true;
+          await launch.events?.cancel();
+          await launch.observer?.dispose();
+          await client.dispose();
+          coordinator.dispose();
+          process.kill();
+          await process.exitCode;
+          if (await launch.menuDirectory?.exists() == true) {
+            await launch.menuDirectory!.delete(recursive: true);
+          }
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(MpvWindowCoordinator.channel, null);
+        }
+      },
+      skip: executable == null || !Platform.isWindows,
+      timeout: const Timeout(Duration(seconds: 55)),
+    );
+  }
+
   test('MPV 退出后持续事件连接报告断开并可释放', () async {
     final pipe =
         r'\\.\pipe\streampath_event_close_' +
@@ -513,7 +754,11 @@ void main() {
           calls.add(call);
           if (call.method == 'bind') return true;
           if (call.method == 'state') {
-            return {'fullscreen': false, 'window-maximized': maximized};
+            return {
+              'fullscreen': false,
+              'window-maximized': maximized,
+              'window-minimized': false,
+            };
           }
           if (call.method == 'maximize') {
             maximized = (call.arguments as Map)['enabled'] == true;

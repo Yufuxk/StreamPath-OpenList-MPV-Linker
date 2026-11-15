@@ -437,11 +437,12 @@ class _StreamPathAppState extends State<StreamPathApp> {
                 app.filmLibraryActive,
                 app.fullSpeedExclusive,
                 if (app.windowCoordinator != null) app.windowCoordinator!,
+                if (_mpvNavigation != null) _mpvNavigation!.embeddedVisible,
               ]),
               child: content,
               builder: (context, child) {
                 final progress = app.filmDetailChrome.value;
-                final playing = app.windowCoordinator?.active != null;
+                final playing = _mpvNavigation?.embeddedVisible.value ?? false;
                 final immersive =
                     playing ||
                     !playing &&
@@ -496,7 +497,7 @@ class _StreamPathAppState extends State<StreamPathApp> {
                               : Theme.of(context),
                           child: WindowTitleBar(
                             taskLocked: app.fullSpeedExclusive.value,
-                            detailScrollProgress: immersive && !playing
+                            detailScrollProgress: immersive
                                 ? progress ?? 0
                                 : null,
                             onCloseRequested: () async {

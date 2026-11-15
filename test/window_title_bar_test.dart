@@ -435,6 +435,32 @@ void main() {
     expect(args['a'], (argb >> 24) & 0xFF);
   });
 
+  testWidgets('隐藏的沉浸标题栏不向原生窗口写入黑色标题背景', (tester) async {
+    const channel = MethodChannel('streampath/appearance');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+    await tester.pumpWidget(
+      wrap(
+        const Offstage(child: WindowTitleBar(detailScrollProgress: 0)),
+        theme: AppTheme.dark().copyWith(
+          scaffoldBackgroundColor: Colors.black,
+          appBarTheme: const AppBarTheme(backgroundColor: Colors.black),
+        ),
+      ),
+    );
+    await tester.pump();
+    final frame = calls.lastWhere((call) => call.method == 'setFrameColor');
+    expect((frame.arguments as Map)['a'], 0);
+  });
+
   testWidgets('磨砂玻璃主题下原生框架保持透明并由 Flutter 覆盖', (tester) async {
     const channel = MethodChannel('streampath/appearance');
     final calls = <MethodCall>[];
