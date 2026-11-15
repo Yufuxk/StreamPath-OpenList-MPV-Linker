@@ -12,6 +12,7 @@ import '../../data/models/film_watch_state.dart';
 import 'skeleton_scope.dart';
 import '../state/app_state.dart';
 import 'film_artwork.dart';
+import 'film_text_styles.dart';
 
 const _progressHeight = 4.0;
 
@@ -58,6 +59,7 @@ class FilmWatchOverlay extends StatefulWidget {
     this.showStatus = true,
     this.canReveal = true,
     this.revealBelow = false,
+    this.revealCentered = false,
     this.softEdges = false,
     this.obscureChild = true,
     this.revealLabel = '展示剧透',
@@ -70,6 +72,7 @@ class FilmWatchOverlay extends StatefulWidget {
   final bool spoilerSensitive, showStatus;
   final bool canReveal;
   final bool revealBelow;
+  final bool revealCentered;
 
   /// 简介在原槽位中使用柔和渐隐与圆角，不影响揭示按钮位置。
   final bool softEdges;
@@ -393,16 +396,43 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     }
     return SkeletonLoadBoundary(
       ready: !pendingOverview,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          content,
-          if (blocked && widget.canReveal)
-            TextButton(onPressed: reveal, child: AppText(widget.revealLabel))
-          else if (!blocked && widget.footer != null)
-            widget.footer!,
-        ],
-      ),
+      child: widget.revealCentered
+          ? Stack(
+              alignment: Alignment.center,
+              children: [
+                content,
+                if (blocked && widget.canReveal)
+                  Positioned.fill(
+                    child: Center(
+                      child: TextButton(
+                        style: TextButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          foregroundColor: Colors.white,
+                          overlayColor: Colors.transparent,
+                          side: BorderSide.none,
+                          textStyle: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(shadows: FilmTextStyles.shadows),
+                        ),
+                        onPressed: reveal,
+                        child: AppText(widget.revealLabel),
+                      ),
+                    ),
+                  ),
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                content,
+                if (blocked && widget.canReveal)
+                  TextButton(
+                    onPressed: reveal,
+                    child: AppText(widget.revealLabel),
+                  )
+                else if (!blocked && widget.footer != null)
+                  widget.footer!,
+              ],
+            ),
     );
   }
 }

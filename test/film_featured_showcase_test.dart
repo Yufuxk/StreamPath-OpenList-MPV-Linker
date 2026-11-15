@@ -715,6 +715,38 @@ void main() {
     },
   );
 
+  for (final watched in [(true, true), (true, false), (false, false)]) {
+    testWidgets('防剧透切换保持胶囊纵坐标：$watched', (tester) async {
+      await prepare(tester);
+      catalog.store.spoilerProtection = true;
+      final works = catalog.sectionWorks['daily']!;
+      await tester.runAsync(() async {
+        for (var i = 0; i < 2; i++) {
+          await catalog.store.markWatched(
+            await catalog.store.resources(workId: works[i].id),
+            i == 0 ? watched.$1 : watched.$2,
+          );
+        }
+      });
+      await tester.pumpWidget(frame(showcase()));
+      await settle(tester);
+      for (final i in [1, 0, 1, 0]) {
+        await tester.tap(poster(works[i].id));
+        await tester.pump();
+        final pills = find.byType(FilmInformationPill);
+        final top = tester.getTopLeft(pills.first).dy;
+        await settle(tester);
+        expect(tester.getTopLeft(pills.first).dy, top);
+        final reveal = find.text('展示剧透');
+        if (reveal.evaluate().isNotEmpty) {
+          await tester.tap(reveal);
+          await settle(tester);
+          expect(tester.getTopLeft(pills.first).dy, top);
+        }
+      }
+    });
+  }
+
   testWidgets('watched synopsis never builds a transient spoiler layout', (
     tester,
   ) async {

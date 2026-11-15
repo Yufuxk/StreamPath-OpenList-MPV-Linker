@@ -589,6 +589,7 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                         spoilerSensitive: true,
                         showStatus: false,
                         revealBelow: true,
+                        revealCentered: true,
                         child: Text(
                           work.overview,
                           textAlign: TextAlign.center,
