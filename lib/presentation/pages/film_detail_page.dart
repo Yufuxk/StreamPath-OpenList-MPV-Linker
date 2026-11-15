@@ -984,12 +984,20 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               : WrapAlignment.spaceBetween,
           children: [
             if (title != null)
-              AppText(title, style: Theme.of(context).textTheme.titleLarge),
-            FilmExtraFilter(
-              store: widget.catalog.store,
-              resources: resources,
-              selected: _extraFilter,
-              onChanged: (value) => setState(() => _extraFilter = value),
+              SkeletonRegion(
+                child: AppText(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+            SkeletonRegion(
+              borderRadius: AppTheme.panelRadius,
+              child: FilmExtraFilter(
+                store: widget.catalog.store,
+                resources: resources,
+                selected: _extraFilter,
+                onChanged: (value) => setState(() => _extraFilter = value),
+              ),
             ),
           ],
         ),
