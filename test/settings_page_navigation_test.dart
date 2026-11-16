@@ -525,11 +525,7 @@ void main() {
   });
 
   testWidgets('深色设置按钮对比色与导航图标保持主题层级', (tester) async {
-    await tester.pumpWidget(
-      buildSettings(
-        theme: AppTheme.dark(systemAccent: const Color(0xFFAA5500)),
-      ),
-    );
+    await tester.pumpWidget(buildSettings(theme: AppTheme.dark()));
     await tester.pumpAndSettle();
 
     final saveFinder = find.byKey(const Key('save-settings-button'));

@@ -5,9 +5,7 @@ import 'package:flutter/material.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 
-import '../theme/appearance_controller.dart';
 import '../theme/glass_tokens.dart';
 import 'glass_dialog.dart';
 import 'sp_dialog.dart';
@@ -197,7 +195,7 @@ class _WindowTitleBarState extends State<WindowTitleBar>
       return;
     }
     if (call.method == 'accentChanged') {
-      await context.read<AppearanceController>().refreshSystemAccent();
+      // 暂时固定主题配色，系统强调色变化不再触发主题更新。
       return;
     }
     if (call.method != 'maximizeChanged') return;

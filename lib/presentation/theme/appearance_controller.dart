@@ -156,6 +156,8 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
   String? get capabilityError => _capabilityError;
   Color? get systemAccent => _systemAccent;
 
+  /// 暂时停用：主题固定使用基础色与用户所选强调色，不读取系统强调色。
+  /// 保留读取方法与原生通道，便于后续恢复。
   Future<void> refreshSystemAccent() async {
     if (!Platform.isWindows) return;
     try {
@@ -273,7 +275,7 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
           await WidgetsBinding.instance.endOfFrame;
         }
         try {
-          final result = await _driver.apply(next, _platformBrightness);
+          final result = await _driver.apply(next, _windowBrightness);
           _config = next;
           _capabilities = result.capabilities;
           _lastResult = result;
@@ -317,27 +319,11 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangePlatformBrightness() {
-    if (!glassActive) return;
-    unawaited(_refreshGlassTint());
+    // 主题固定为深色，系统明暗切换不重建原生窗口材质。
   }
 
-  Future<void> _refreshGlassTint() => _serializeAppearanceOperation(() async {
-    if (!glassActive) return;
-    try {
-      final result = await _driver.apply(_config, _platformBrightness);
-      _capabilities = result.capabilities;
-      _lastResult = result;
-      notifyListeners();
-    } catch (error) {
-      debugPrint(
-        'Failed to update window brightness mode '
-        '(error-type=${error.runtimeType})',
-      );
-    }
-  });
-
-  Brightness get _platformBrightness =>
-      WidgetsBinding.instance.platformDispatcher.platformBrightness;
+  /// 主题固定为深色，原生窗口材质始终按深色模式应用。
+  Brightness get _windowBrightness => Brightness.dark;
 
   bool _sameWindowAppearance(AppearanceConfig first, AppearanceConfig second) =>
       first.style == second.style &&

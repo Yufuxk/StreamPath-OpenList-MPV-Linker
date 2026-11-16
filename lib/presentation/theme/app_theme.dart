@@ -10,6 +10,7 @@ import 'accent_color_controller.dart';
 
 /// StreamPath 的轻量桌面主题。
 abstract final class AppTheme {
+  /// 固定主题基础色；系统强调色暂时不参与主题生成。
   static const Color _seedColor = Color(0xFF3B6FE8);
   static const controlRadius = BorderRadius.all(Radius.circular(10));
   static const panelRadius = BorderRadius.all(Radius.circular(16));
@@ -120,7 +121,6 @@ abstract final class AppTheme {
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
-    Color? systemAccent,
     int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.light,
@@ -128,7 +128,6 @@ abstract final class AppTheme {
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
-    systemAccent: systemAccent,
     accentColor: accentColor,
   );
 
@@ -137,7 +136,6 @@ abstract final class AppTheme {
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
-    Color? systemAccent,
     int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.dark,
@@ -145,7 +143,6 @@ abstract final class AppTheme {
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
-    systemAccent: systemAccent,
     accentColor: accentColor,
   );
 
@@ -155,12 +152,11 @@ abstract final class AppTheme {
     required double glassOpacity,
     required WindowBackdropType windowBackdrop,
     required String? fontFamily,
-    required Color? systemAccent,
     required int accentColor,
   }) {
     final isDark = brightness == Brightness.dark;
     final generated = ColorScheme.fromSeed(
-      seedColor: systemAccent ?? _seedColor,
+      seedColor: _seedColor,
       brightness: brightness,
     );
     final accentScheme = AccentColorController.apply(

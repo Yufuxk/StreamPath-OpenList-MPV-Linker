@@ -2,10 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 
-import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/data/models/app_language.dart';
+import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
+import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/presentation/theme/appearance_controller.dart';
 import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/window_title_bar.dart';
 
@@ -45,6 +48,43 @@ void main() {
       expect(calls, ['close']);
     },
   );
+
+  testWidgets('系统强调色变化不再读取系统颜色', (tester) async {
+    final calls = <String>[];
+    const channel = MethodChannel('streampath/appearance');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call.method);
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final controller = AppearanceController(
+      initialConfig: AppearanceConfig.defaults(),
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      ChangeNotifierProvider<AppearanceController>.value(
+        value: controller,
+        child: MaterialApp(home: Scaffold(body: const WindowTitleBar())),
+      ),
+    );
+    await tester.pump();
+    calls.clear();
+    await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+          'streampath/appearance',
+          const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('accentChanged'),
+          ),
+          null,
+        );
+    await tester.pump();
+    expect(calls, isNot(contains('getSystemAccent')));
+    expect(controller.systemAccent, isNull);
+  });
 
   testWidgets('退出收尾超过 300ms 显示说明，完成后关闭提示', (tester) async {
     final finished = Completer<void>();

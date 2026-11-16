@@ -99,6 +99,26 @@ void main() {
     expect(controller.lastResult?.actualBackdrop, WindowBackdropType.mica);
   });
 
+  testWidgets('窗口材质始终按深色应用且不响应系统明暗切换', (tester) async {
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+    final driver = _FakeWindowAppearanceDriver();
+    final controller = AppearanceController(
+      initialConfig: const AppearanceConfig(style: InterfaceStyle.glass),
+      driver: driver,
+    );
+    addTearDown(controller.dispose);
+
+    expect(await controller.restoreForStartup(), isTrue);
+    expect(driver.lastBrightness, Brightness.dark);
+
+    final appliedCount = driver.applied.length;
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+    await tester.pump();
+    expect(driver.lastBrightness, Brightness.dark);
+    expect(driver.applied, hasLength(appliedCount));
+  });
+
   testWidgets('显式 Acrylic 在支持 Mica 的系统仍保持 Acrylic', (tester) async {
     final driver = _FakeWindowAppearanceDriver();
     const glass = AppearanceConfig(
@@ -294,6 +314,7 @@ class _FakeWindowAppearanceDriver implements WindowAppearanceDriver {
   final bool shouldFail;
   WindowAppearanceCapabilities capabilities;
   final List<AppearanceConfig> applied = [];
+  Brightness? lastBrightness;
   int queryCount = 0;
 
   @override
@@ -308,6 +329,7 @@ class _FakeWindowAppearanceDriver implements WindowAppearanceDriver {
     Brightness brightness,
   ) async {
     applied.add(config);
+    lastBrightness = brightness;
     if (shouldFail) throw StateError('test failure');
     if (!config.isGlass) {
       return WindowAppearanceResult.classic(capabilities);

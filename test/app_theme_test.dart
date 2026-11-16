@@ -83,10 +83,9 @@ void main() {
     );
   });
 
-  test('系统强调色不改变旧版按钮与图标主配色', () {
-    const accent = Color(0xFFAA5500);
-    final light = AppTheme.light(systemAccent: accent).colorScheme;
-    final dark = AppTheme.dark(systemAccent: accent).colorScheme;
+  test('主题使用固定基础色，不读取系统强调色', () {
+    final light = AppTheme.light().colorScheme;
+    final dark = AppTheme.dark().colorScheme;
 
     expect(light.primary, const Color(0xFF1142B2));
     expect(light.onPrimary, Colors.white);

@@ -58,13 +58,11 @@ void main() {
                 accentColor: 0xFFFFFFFF,
                 glass: backdrop != WindowBackdropType.none,
                 windowBackdrop: backdrop,
-                systemAccent: Colors.orange,
               )
             : AppTheme.light(
                 accentColor: 0xFFFFFFFF,
                 glass: backdrop != WindowBackdropType.none,
                 windowBackdrop: backdrop,
-                systemAccent: Colors.orange,
               );
         final scheme = theme.colorScheme;
         expect(scheme.primary.r, scheme.primary.g);

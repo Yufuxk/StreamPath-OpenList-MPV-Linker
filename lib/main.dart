@@ -282,7 +282,7 @@ Future<void> main() async {
   );
   // 持久化为磨砂样式时先完成窗口合成，再绘制首帧，避免窗口先黑后亮。
   await appearanceController.restoreForStartup();
-  await appearanceController.refreshSystemAccent();
+  // 暂时固定深色主题，启动阶段不再读取 Windows 系统强调色。
   await shaderWarmUp;
   final updates = AppUpdateService(
     appDirectory: Directory(p.dirname(Platform.resolvedExecutable)),
@@ -384,12 +384,13 @@ class _StreamPathAppState extends State<StreamPathApp> {
               GlobalCupertinoLocalizations.delegate,
             ],
             color: glass ? Colors.transparent : null,
+            // 暂时固定深色主题，不跟随 Windows 明暗模式。
+            themeMode: ThemeMode.dark,
             theme: AppTheme.light(
               glass: glass,
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
-              systemAccent: appearanceController.systemAccent,
               accentColor: appearance.accentColor,
             ),
             darkTheme: AppTheme.dark(
@@ -397,7 +398,6 @@ class _StreamPathAppState extends State<StreamPathApp> {
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
-              systemAccent: appearanceController.systemAccent,
               accentColor: appearance.accentColor,
             ),
             builder: (context, navigator) => AppBackground(

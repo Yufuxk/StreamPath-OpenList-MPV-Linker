@@ -134,7 +134,7 @@ void main() {
         final image = tester.widget<RawImage>(sharp).image;
         expect(image, isNotNull);
         expect(app.startupReady.value, isTrue);
-        if (style == InterfaceStyle.glass && brightness == Brightness.dark) {
+        if (style == InterfaceStyle.glass) {
           final theme = Theme.of(tester.element(find.byType(WindowTitleBar)));
           expect(
             AppTheme.controlBarTheme(theme).glass.chromeSurface,
@@ -217,11 +217,10 @@ void main() {
         );
         expect(scope.hasBackground, isFalse);
         final theme = Theme.of(tester.element(find.byType(WindowTitleBar)));
-        final original = brightness == Brightness.dark
-            ? AppTheme.dark(glass: appearance.glassActive)
-            : AppTheme.light(glass: appearance.glassActive);
+        // 界面固定深色，不跟随系统明暗模式。
+        final original = AppTheme.dark(glass: appearance.glassActive);
         expect(theme.scaffoldBackgroundColor, original.scaffoldBackgroundColor);
-        if (style == InterfaceStyle.glass && brightness == Brightness.dark) {
+        if (style == InterfaceStyle.glass) {
           expect(
             AppTheme.controlBarTheme(theme).glass.chromeSurface,
             GlassTokens.controlBarAcrylic.withValues(alpha: .10),
