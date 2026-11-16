@@ -61,7 +61,18 @@ class FilmCatalogTasks extends StatelessWidget {
             spacing: 12,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              AppText(c.scrapePaused ? '刮削已暂停' : '正在刮削…'),
+              Tooltip(
+                message: c.scrapeError == null
+                    ? ''
+                    : context.l10n.text(filmCatalogErrorText(c.scrapeError!)),
+                child: AppText(
+                  c.scrapePaused
+                      ? '刮削已暂停'
+                      : c.tmdb.retryUntil.value != null
+                      ? '等待重试'
+                      : '正在刮削…',
+                ),
+              ),
               Text(
                 context.l10n
                     .format('已处理 {processed}/{total} 个文件 · 已匹配 {matched} 个', {
@@ -165,14 +176,18 @@ class FilmCatalogTasks extends StatelessWidget {
                         'matched': c.scrapedCount,
                       },
                     ),
-                    l10n.format(
-                      '已处理 {processed}/{total} 个文件 · 已匹配 {matched} 个',
-                      {
-                        'processed': c.scrapeProcessed,
-                        'total': c.scrapeTotal,
-                        'matched': c.scrapedCount,
-                      },
-                    ),
+                    c.scrapeError != null
+                        ? l10n.text(filmCatalogErrorText(c.scrapeError!))
+                        : c.tmdb.retryUntil.value != null
+                        ? l10n.text('等待重试')
+                        : l10n.format(
+                            '已处理 {processed}/{total} 个文件 · 已匹配 {matched} 个',
+                            {
+                              'processed': c.scrapeProcessed,
+                              'total': c.scrapeTotal,
+                              'matched': c.scrapedCount,
+                            },
+                          ),
                     TextButton(
                       style: buttonStyle,
                       onPressed: c.toggleScraping,

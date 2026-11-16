@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'package:flutter/foundation.dart';
 
 import 'package:dio/dio.dart';
 
@@ -14,11 +16,17 @@ typedef LogoChooser = Future<String?> Function(List<LogoChoice> candidates);
 
 /// 固定 TMDB API 域名、串行请求与连接故障时的备用入口。
 class TmdbMetadataService {
-  TmdbMetadataService({TmdbCredentialStore? credentials, Dio? dio})
-    : credentials = credentials ?? const TmdbCredentialStore(),
-      _dio = dio ?? createTmdbDio();
+  TmdbMetadataService({
+    TmdbCredentialStore? credentials,
+    Dio? dio,
+    this.retryDelay,
+  }) : credentials = credentials ?? const TmdbCredentialStore(),
+       _dio = dio ?? createTmdbDio();
   final TmdbCredentialStore credentials;
   final Dio _dio;
+  final Future<void> Function(Duration)? retryDelay;
+  final retryUntil = ValueNotifier<DateTime?>(null);
+  final _random = Random();
   String _apiHost = 'api.themoviedb.org';
   String? _token;
   bool _loadedToken = false;
@@ -29,6 +37,12 @@ class TmdbMetadataService {
   final Map<String, Future<FilmWork>> _workRequests = {};
   final Map<String, Future<Map<String, dynamic>>> _seasonRequests = {};
   final CancelToken _cancel = CancelToken();
+  CancelToken _normalCancel = CancelToken();
+  void pauseStandardRequests() {
+    _normalCancel.cancel();
+    _normalCancel = CancelToken();
+  }
+
   bool _fullSpeed = false;
   bool _fastStopping = false;
   CancelToken? _fastCancel;
@@ -86,7 +100,7 @@ class TmdbMetadataService {
         final wait =
             const Duration(milliseconds: 50) -
             DateTime.now().difference(_lastFastStart!);
-        if (wait > Duration.zero) await Future<void>.delayed(wait);
+        if (wait > Duration.zero) await _wait(wait);
       }
       if (_fastStopping) throw const FilmCatalogException('cancelled');
       _lastFastStart = DateTime.now();
@@ -132,6 +146,7 @@ class TmdbMetadataService {
 
   void close() {
     _cancel.cancel();
+    _normalCancel.cancel();
     stopFullSpeed();
     _dio.close(force: true);
   }
@@ -154,32 +169,142 @@ class TmdbMetadataService {
     });
   }
 
+  void _checkCancelled([CancelToken? token]) {
+    if (_cancel.isCancelled || _fastStopping || token?.isCancelled == true) {
+      throw const FilmCatalogException('cancelled');
+    }
+  }
+
+  Future<void> _wait(
+    Duration duration, {
+    CancelToken? cancellationToken,
+  }) async {
+    final token = cancellationToken ?? _fastCancel ?? _normalCancel;
+    _checkCancelled(token);
+    if (duration <= Duration.zero) return;
+    final timer = Completer<void>();
+    final scheduled = retryDelay == null
+        ? Timer(duration, timer.complete)
+        : null;
+    final cancellation = Completer<void>();
+    final poll = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if ((token.isCancelled || _cancel.isCancelled || _fastStopping) &&
+          !cancellation.isCompleted) {
+        cancellation.completeError(const FilmCatalogException('cancelled'));
+      }
+    });
+    try {
+      await Future.any([
+        retryDelay?.call(duration) ?? timer.future,
+        cancellation.future,
+      ]);
+      _checkCancelled(token);
+    } finally {
+      scheduled?.cancel();
+      poll.cancel();
+    }
+  }
+
   Future<Map<String, dynamic>> _get(
     String endpoint,
-    Map<String, dynamic> query, {
-    String? fallbackHost,
-  }) async {
-    if (_cancel.isCancelled || _fastStopping) {
-      throw const FilmCatalogException('cancelled');
+    Map<String, dynamic> query,
+  ) async {
+    final budget = Stopwatch()..start();
+    final token = _fastCancel ?? _normalCancel;
+    var host = _apiHost;
+    for (var attempt = 0; ; attempt++) {
+      _checkCancelled(token);
+      if (!await hasToken()) throw const FilmCatalogException('noToken');
+      if (_authenticationFailed) {
+        throw const FilmCatalogException('invalidToken');
+      }
+      if (_retryAt != null) {
+        final wait = _retryAt!.difference(DateTime.now());
+        if (wait > Duration.zero) {
+          if (wait + budget.elapsed > const Duration(seconds: 60)) {
+            throw const FilmCatalogException('rateLimited');
+          }
+          retryUntil.value = _retryAt;
+          try {
+            await _wait(wait, cancellationToken: token);
+          } finally {
+            if (!_cancel.isCancelled) retryUntil.value = null;
+          }
+        }
+      }
+      if (_fullSpeed) await _awaitFastStart();
+      _checkCancelled(token);
+      // 排队期间其他请求可能刚刚收到限流响应。
+      if (_retryAt != null && DateTime.now().isBefore(_retryAt!)) continue;
+      try {
+        return await _getOnce(
+          endpoint,
+          query,
+          host,
+          token,
+          const Duration(seconds: 60) - budget.elapsed,
+        );
+      } on FilmCatalogException catch (error) {
+        if (!const {
+              'metadataTimeout',
+              'metadataConnectionFailed',
+              'metadataTemporarilyUnavailable',
+              'rateLimited',
+            }.contains(error.code) ||
+            attempt >= 2 ||
+            budget.elapsed >= const Duration(seconds: 60)) {
+          if (error.code == 'metadataTemporarilyUnavailable') {
+            throw const FilmCatalogException('metadataRequestFailed');
+          }
+          rethrow;
+        }
+        if (error.code != 'rateLimited') {
+          if (error.code == 'metadataConnectionFailed' ||
+              error.code == 'metadataTimeout') {
+            host = host == 'api.themoviedb.org'
+                ? 'api.tmdb.org'
+                : 'api.themoviedb.org';
+          }
+          final delay = Duration(
+            milliseconds: 250 * (1 << attempt) + _random.nextInt(125),
+          );
+          retryUntil.value = DateTime.now().add(delay);
+          try {
+            await _wait(delay, cancellationToken: token);
+          } finally {
+            if (!_cancel.isCancelled) retryUntil.value = null;
+          }
+        }
+      }
     }
-    if (_retryAt != null && DateTime.now().isBefore(_retryAt!)) {
-      throw const FilmCatalogException('rateLimited');
+  }
+
+  Future<Map<String, dynamic>> _getOnce(
+    String endpoint,
+    Map<String, dynamic> query,
+    String host,
+    CancelToken parent,
+    Duration remaining,
+  ) async {
+    if (remaining <= Duration.zero) {
+      throw const FilmCatalogException('metadataTimeout');
     }
-    if (!await hasToken()) throw const FilmCatalogException('noToken');
-    if (_authenticationFailed) throw const FilmCatalogException('invalidToken');
-    if (_fullSpeed) await _awaitFastStart();
-    if (_cancel.isCancelled || _fastStopping) {
-      throw const FilmCatalogException('cancelled');
-    }
-    if (_retryAt != null && DateTime.now().isBefore(_retryAt!)) {
-      throw const FilmCatalogException('rateLimited');
-    }
-    final host = fallbackHost ?? _apiHost;
+    final requestCancel = CancelToken();
+    var expired = false;
+    final deadline = Timer(remaining, () {
+      expired = true;
+      requestCancel.cancel();
+    });
+    final cancellation = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if (parent.isCancelled || _cancel.isCancelled || _fastStopping) {
+        requestCancel.cancel();
+      }
+    });
     try {
       final response = await _dio.get<Object>(
         'https://$host/3/$endpoint',
         queryParameters: query,
-        cancelToken: _fastCancel ?? _cancel,
+        cancelToken: requestCancel,
         options: Options(
           followRedirects: false,
           maxRedirects: 0,
@@ -198,21 +323,22 @@ class TmdbMetadataService {
           throw const FilmCatalogException('metadataNotFound');
         case 429:
           final header = response.headers.value('retry-after');
-          if (header != null) {
-            final seconds = int.tryParse(header);
-            if (seconds != null) {
-              _retryAt = DateTime.now().add(
-                Duration(seconds: seconds < 0 ? 0 : seconds),
-              );
-            } else {
-              try {
-                _retryAt = HttpDate.parse(header);
-              } on FormatException {
-                _retryAt = null;
-              }
+          DateTime? until;
+          final seconds = int.tryParse(header ?? '');
+          if (seconds != null) {
+            until = DateTime.now().add(Duration(seconds: max(0, seconds)));
+          } else if (header != null) {
+            try {
+              until = HttpDate.parse(header);
+            } on FormatException {
+              until = null;
             }
           }
+          until ??= DateTime.now().add(const Duration(seconds: 1));
+          if (_retryAt == null || until.isAfter(_retryAt!)) _retryAt = until;
           throw const FilmCatalogException('rateLimited');
+        case 500 || 502 || 503 || 504:
+          throw const FilmCatalogException('metadataTemporarilyUnavailable');
         default:
           throw const FilmCatalogException('metadataRequestFailed');
       }
@@ -223,28 +349,15 @@ class TmdbMetadataService {
       _apiHost = host;
       return data;
     } on DioException catch (error) {
-      if (_cancel.isCancelled || _fastStopping) {
+      if (expired) throw const FilmCatalogException('metadataTimeout');
+      if (_cancel.isCancelled ||
+          _fastStopping ||
+          error.type == DioExceptionType.cancel) {
         throw const FilmCatalogException('cancelled');
       }
       if (error.error case final FilmCatalogException cause) throw cause;
       if (error.error is HandshakeException) {
         throw const FilmCatalogException('metadataTlsFailed');
-      }
-      if (fallbackHost == null &&
-          switch (error.type) {
-            DioExceptionType.connectionError ||
-            DioExceptionType.connectionTimeout ||
-            DioExceptionType.sendTimeout ||
-            DioExceptionType.receiveTimeout => true,
-            _ => false,
-          }) {
-        return _get(
-          endpoint,
-          query,
-          fallbackHost: host == 'api.themoviedb.org'
-              ? 'api.tmdb.org'
-              : 'api.themoviedb.org',
-        );
       }
       throw FilmCatalogException(switch (error.type) {
         DioExceptionType.connectionTimeout ||
@@ -254,6 +367,9 @@ class TmdbMetadataService {
         DioExceptionType.badCertificate => 'metadataTlsFailed',
         _ => 'metadataRequestFailed',
       });
+    } finally {
+      deadline.cancel();
+      cancellation.cancel();
     }
   }
 

@@ -128,7 +128,7 @@ void main() {
     service.endFullSpeed();
   });
 
-  test('429 stops queued HTTP requests without automatic retry', () async {
+  test('429 exceeding the wait budget retains queued HTTP requests', () async {
     final adapter = _Adapter()..limited = true;
     final service = TmdbMetadataService(
       credentials: _Credentials(),
@@ -237,7 +237,7 @@ class _Adapter implements HttpClientAdapter {
         limited ? 429 : 200,
         headers: {
           Headers.contentTypeHeader: ['application/json'],
-          if (limited) 'retry-after': ['2'],
+          if (limited) 'retry-after': ['120'],
         },
       );
     } finally {

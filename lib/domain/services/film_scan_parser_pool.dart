@@ -123,6 +123,7 @@ void _parseMain(SendPort host) {
       final result = const WebDavXmlParser().parse(
         job[1] as String,
         requestUrl: job[2] as String,
+        requireComplete: true,
       );
       host.send([job[0], result, null, null]);
     } catch (error, stack) {

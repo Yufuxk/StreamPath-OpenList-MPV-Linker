@@ -39,6 +39,239 @@ void main() {
   setUpAll(() {
     HttpOverrides.global = null;
   });
+  for (final fast in [false, true]) {
+    test(
+      'network failure with files but no NFO retains jobs ($fast)',
+      () async {
+        final f = await _Fixture.create();
+        addTearDown(f.close);
+        f.withFiles = true;
+        f.tree['Movies'] = ['A.2020.mkv', 'B.2020.mkv'];
+        f.metadata.failure = 'metadataRequestFailed';
+        await f.c.scan(
+          f.root,
+          executionMode: fast
+              ? FilmTaskExecutionMode.fullSpeed
+              : FilmTaskExecutionMode.standard,
+        );
+        if (fast) {
+          final task = await f.c.store.fastTask();
+          expect(task, isNotNull);
+          expect(task!.processed, 0);
+          expect(task.error, 'metadataRequestFailed');
+          f.metadata.failure = null;
+          await f.c.resumeFastTask();
+          expect(await f.c.store.fastTask(), isNull);
+        } else {
+          await _until(() => f.c.scrapePaused || !f.c.scraping);
+          expect(f.c.scrapePaused, isTrue);
+          expect(f.c.scrapeProcessed, 0);
+          f.metadata.failure = null;
+          f.c.toggleScraping();
+          await f.c.waitForScraping();
+          expect(f.c.scrapeProcessed, 2);
+        }
+        expect(f.metadata.calls, contains('B'));
+      },
+    );
+  }
+  for (final fast in [false, true]) {
+    test(
+      '1000 resources recover request 301 across controller restart ($fast)',
+      () async {
+        final f = await _Fixture.create();
+        addTearDown(f.close);
+        f.withFiles = true;
+        f.metadata.reliability = true;
+        f.metadata.failAt = 301;
+        f.tree['Movies'] = List.generate(1000, (i) => 'Bench$i.2020.mkv');
+        await f.c.scan(
+          f.root,
+          executionMode: fast
+              ? FilmTaskExecutionMode.fullSpeed
+              : FilmTaskExecutionMode.standard,
+        );
+        if (!fast) await _until(() => f.c.scrapePaused);
+        final completed = (await f.c.store.resources())
+            .where((r) => r.workId != null)
+            .length;
+        expect(completed, inInclusiveRange(290, 300));
+        final before = f.metadata.calls.length;
+        await f.reopen();
+        if (fast) {
+          await f.c.resumeFastTask();
+          expect(await f.c.store.fastTask(), isNull);
+        } else {
+          expect(f.c.scrapePaused, isTrue);
+          f.c.toggleScraping();
+          await f.c.waitForScraping();
+          expect(await f.c.store.pendingNormalScraping(f.root.id), isEmpty);
+        }
+        final resources = await f.c.store.resources();
+        expect(resources, hasLength(1000));
+        expect(resources.every((r) => r.workId != null), isTrue);
+        expect(resources.map((r) => r.path).toSet(), hasLength(1000));
+        expect(
+          f.metadata.calls.length - before,
+          lessThanOrEqualTo(1000 - completed),
+        );
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+  }
+
+  test('valid NFO fallback does not disable later network matching', () async {
+    final f = await _Fixture.create();
+    addTearDown(f.close);
+    f.metadataFactory = (root) => _OrderedFiles(f.source, root);
+    f.metadata.failure = 'metadataRequestFailed';
+    final session = await f.c.matcher.scanSession(
+      f.root,
+      cancelled: () => false,
+    );
+    FilmScanEntry entry(String name) => FilmScanEntry(
+      path: 'Movies/$name.2020.mkv',
+      parentPath: 'Movies',
+      name: '$name.2020.mkv',
+      mediaKind: 'video',
+    );
+    await session.prepare([entry('A')]);
+    expect(session.paused, isFalse);
+    expect(session.matches.values.single.origin, 'nfo');
+    expect(session.networkEnabled, isTrue);
+    f.metadata.failure = null;
+    final count = f.metadata.calls.length;
+    await session.prepare([entry('B')]);
+    expect(f.metadata.calls.length, greaterThan(count));
+  });
+  for (final fast in [false, true]) {
+    test('invalid directory response preserves inventory ($fast)', () async {
+      final f = await _Fixture.create();
+      addTearDown(f.close);
+      f.tree['Movies'] = ['A.2020.mkv'];
+      await f.c.scan(f.root);
+      await f.c.waitForScraping();
+      f.directoryBody = '';
+      await f.c.scan(
+        f.root,
+        executionMode: fast
+            ? FilmTaskExecutionMode.fullSpeed
+            : FilmTaskExecutionMode.standard,
+      );
+      final resources = await f.c.store.resources();
+      expect(resources, hasLength(1));
+      expect(resources.single.availability, 'present');
+      if (fast) {
+        expect((await f.c.store.fastTask())!.status, 'paused');
+      } else {
+        expect((await f.c.store.root(f.root.id))!.status, 'failed');
+      }
+    });
+  }
+
+  test(
+    'failed scrape acknowledgement rolls metadata back with the job',
+    () async {
+      final f = await _Fixture.create();
+      addTearDown(f.close);
+      f.metadata.reliability = true;
+      f.tree['Movies'] = ['Bench0.2020.mkv'];
+      final db = await databaseFactoryFfi.openDatabase(
+        p.join(f.temp.path, 'catalog.db'),
+      );
+      await db.execute(
+        "CREATE TRIGGER reject_scrape BEFORE UPDATE OF state ON fast_task_jobs WHEN NEW.kind='scrape' AND NEW.state='done' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END",
+      );
+      await f.c.scan(f.root, executionMode: FilmTaskExecutionMode.fullSpeed);
+      expect((await f.c.store.fastTask())!.processed, 0);
+      expect((await f.c.store.resources()).single.workId, isNull);
+      expect(await f.c.store.fastJobs('scrape'), hasLength(1));
+      await db.execute('DROP TRIGGER reject_scrape');
+      await f.c.resumeFastTask();
+      expect(await f.c.store.fastTask(), isNull);
+      expect((await f.c.store.resources()).single.workId, isNotNull);
+    },
+  );
+
+  test(
+    'v12 migration preserves manual bindings and creates a backup',
+    () async {
+      final f = await _Fixture.create();
+      addTearDown(f.close);
+      f.tree['Movies'] = ['A.2020.mkv'];
+      await f.c.scan(f.root);
+      await f.c.waitForScraping();
+      await f.c.store.bind(
+        await f.c.store.resources(),
+        f.metadata._work(FilmMediaType.movie, 999, 'zh-CN'),
+      );
+      final previous = (await f.c.store.resources()).single;
+      await f.closeController();
+      final db = await databaseFactoryFfi.openDatabase(
+        p.join(f.temp.path, 'catalog.db'),
+      );
+      await db.execute('DROP TABLE normal_scrape_jobs');
+      await db.setVersion(12);
+      await db.close();
+      await f.open();
+      final restored = (await f.c.store.resources()).single;
+      expect(restored.id, previous.id);
+      expect(restored.workId, previous.workId);
+      expect(restored.bindingOrigin, 'manual');
+      expect(await f.c.store.pendingNormalScraping(f.root.id), isEmpty);
+      expect(
+        f.temp.listSync().where((file) => file.path.contains('before-v13-')),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'invalid container metadata remains pending instead of becoming unmatched',
+    () async {
+      final f = await _Fixture.create(type: FilmMediaType.tv);
+      addTearDown(f.close);
+      f.withFiles = true;
+      f.metadata.failure = 'invalidMetadata';
+      f.metadata.failureQuery = 'Container';
+      final session = await f.c.matcher.scanSession(
+        f.root,
+        cancelled: () => false,
+      );
+      await session.prepare([
+        const FilmScanEntry(
+          path: 'Movies/Container/Different.S01E01.mkv',
+          parentPath: 'Movies/Container',
+          name: 'Different.S01E01.mkv',
+          mediaKind: 'video',
+        ),
+      ]);
+      expect(session.paused, isTrue);
+      expect(session.error, 'invalidMetadata');
+      expect(session.matches, isEmpty);
+      expect(f.metadata.calls, isNot(contains('Different')));
+    },
+  );
+
+  test('adding a token resumes an existing blocked ordinary session', () async {
+    final f = await _Fixture.create();
+    addTearDown(f.close);
+    f.withFiles = true;
+    f.metadata.available = false;
+    f.tree['Movies'] = ['A.2020.mkv'];
+    await f.c.scan(f.root);
+    await _until(() => f.c.scrapePaused);
+    expect(f.c.scrapeError, 'noToken');
+    expect(f.c.scrapeProcessed, 0);
+    f.metadata.available = true;
+    f.c.toggleScraping();
+    await _until(() => f.c.scrapePaused || !f.c.scraping);
+    expect(f.c.scrapePaused, isFalse);
+    expect(f.c.scrapeError, isNull);
+    expect(f.c.scrapeProcessed, 1);
+    expect(f.metadata.calls, contains('A'));
+  });
+
   test('checkpoint stores endpoint identity without URL credentials', () async {
     final f = await _Fixture.create();
     addTearDown(f.close);
@@ -692,11 +925,15 @@ Future<void> _until(bool Function() done) async {
 class _Metadata extends TmdbMetadataService {
   final calls = <String>[];
   bool benchmark = false;
+  bool available = true;
+  bool reliability = false;
+  int? failAt;
   String? failure;
+  String? failureQuery;
   Completer<void>? hold;
   int holdAfter = 0;
   @override
-  Future<bool> hasToken() async => true;
+  Future<bool> hasToken() async => available;
   @override
   Future<List<FilmWork>> search(
     FilmMediaType type,
@@ -706,10 +943,23 @@ class _Metadata extends TmdbMetadataService {
     int page = 1,
   }) async {
     calls.add(query);
+    if (calls.length == failAt) {
+      throw const FilmCatalogException('metadataRequestFailed');
+    }
     if (hold != null && calls.length > holdAfter) await hold!.future;
-    if (failure != null) throw FilmCatalogException(failure!);
-    await Future<void>.delayed(Duration(milliseconds: benchmark ? 300 : 2));
-    if (!benchmark) return [];
+    if (failure != null && (failureQuery == null || failureQuery == query)) {
+      throw FilmCatalogException(failure!);
+    }
+    await Future<void>.delayed(
+      Duration(
+        milliseconds: reliability
+            ? 0
+            : benchmark
+            ? 300
+            : 2,
+      ),
+    );
+    if (!benchmark && !reliability) return [];
     final id = int.parse(RegExp(r'\d+').firstMatch(query)!.group(0)!) + 1;
     return [_work(type, id, language)];
   }
@@ -732,10 +982,12 @@ class _Metadata extends TmdbMetadataService {
     String language, {
     LogoChooser? chooseLogo,
   }) async {
-    if (!benchmark) {
+    if (!benchmark && !reliability) {
       return super.details(type, id, language, chooseLogo: chooseLogo);
     }
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (!reliability) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
     return _work(type, id, language);
   }
 }
@@ -776,6 +1028,7 @@ class _Fixture {
   final metadata = _Metadata();
   int active = 0, peak = 0;
   int? failureStatus;
+  String? directoryBody;
   Completer<void>? holdChildren;
   Completer<void>? preparation;
   Completer<void>? holdFile;
@@ -881,7 +1134,8 @@ class _Fixture {
         charset: 'utf-8',
       );
       request.response.write(
-        '<d:multistatus xmlns:d="DAV:">${(tree[path] ?? []).map((name) => '<d:response><d:href>/dav/$path/$name</d:href><d:propstat><d:prop><d:displayname>${name.replaceAll('/', '')}</d:displayname><d:resourcetype>${name.endsWith('/') ? '<d:collection/>' : ''}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>').join()}</d:multistatus>',
+        directoryBody ??
+            '<d:multistatus xmlns:d="DAV:">${(tree[path] ?? []).map((name) => '<d:response><d:href>/dav/$path/$name</d:href><d:propstat><d:prop><d:displayname>${name.replaceAll('/', '')}</d:displayname><d:resourcetype>${name.endsWith('/') ? '<d:collection/>' : ''}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>').join()}</d:multistatus>',
       );
       await request.response.close();
     } finally {

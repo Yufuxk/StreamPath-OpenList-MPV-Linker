@@ -376,6 +376,7 @@ void main() {
       ]) {
         await db.execute('ALTER TABLE resources DROP COLUMN $field');
       }
+      await db.execute('DROP TABLE normal_scrape_jobs');
       await db.execute('DROP TABLE film_resource_watch_state');
       await db.setVersion(10);
       await db.close();
@@ -388,7 +389,7 @@ void main() {
         path,
         options: OpenDatabaseOptions(singleInstance: false),
       );
-      expect(await verify.getVersion(), 12);
+      expect(await verify.getVersion(), 13);
       expect((await verify.query('resources')), hasLength(2));
       await verify.close();
     });

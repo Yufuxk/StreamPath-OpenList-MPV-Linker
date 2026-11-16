@@ -1,5 +1,10 @@
 /// 影视库新增文案：繁体中文、日语、英语。
 const filmCatalogTranslations = <String, List<String>>{
+  "刮削完成，部分资源未匹配": [
+    "刮削完成，部分資源未匹配",
+    "取得完了。一部のファイルは未一致です",
+    "Scraping complete; some resources remain unmatched",
+  ],
   "特典分类管理": ["特典分類管理", "特典分類の管理", "Manage extra categories"],
   "编辑分类名称、识别别名或新增自定义分类": [
     "編輯分類名稱、識別別名或新增自訂分類",

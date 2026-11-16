@@ -49,6 +49,7 @@ class FilmCatalogController extends ChangeNotifier {
              (await images.get(path, target: 'original')).readAsBytes(),
        ) {
     store.addListener(_changed);
+    tmdb.retryUntil.addListener(_notifyTaskProgress);
     mediaProbe?.addListener(_notify);
   }
   final FilmCatalogStore store;
@@ -77,11 +78,43 @@ class FilmCatalogController extends ChangeNotifier {
   int _normalActivities = 0;
   int _normalScrapers = 0;
   int fastCompletion = 0;
+  int _fastProcessed = 0, _fastMatched = 0;
   bool get fullSpeedActive =>
       _taskOwner._fastRunner != null || _taskOwner._startingFast;
 
+  bool _restoredNormalScraping = false;
+  Future<void> restoreNormalScraping() async {
+    if (_restoredNormalScraping || standardTasksActive || fullSpeedActive) {
+      return;
+    }
+    if (await store.fastTask() != null) return;
+    _restoredNormalScraping = true;
+    for (final root in await store.roots()) {
+      if (sourceId != null && root.sourceId != sourceId) continue;
+      final entries = await store.pendingNormalScraping(root.id);
+      if (entries.isEmpty || _closed) continue;
+      _beginScrapeInput();
+      try {
+        scrapePaused = true;
+        await _queueScraping(
+          await _scrapeSession(root),
+          entries,
+          persist: false,
+        );
+      } finally {
+        _endScrapeInput();
+      }
+    }
+  }
+
   Future<void> reloadFastTask() async {
-    _taskOwner.fastTaskState.value = await store.fastTask();
+    final task = await store.fastTask();
+    _taskOwner.fastTaskState.value = task;
+    if (task != null) {
+      _fastProcessed = task.processed;
+      _fastMatched = task.matched;
+    }
+    await restoreNormalScraping();
   }
 
   Future<void> startFastTask(
@@ -246,7 +279,13 @@ class FilmCatalogController extends ChangeNotifier {
     images.beginFullSpeed();
     try {
       await runner.run();
-      if (await store.fastTask() == null) fastCompletion++;
+      if (await store.fastTask() == null) {
+        fastCompletion++;
+        scrapeTotal = scrapeProcessed = _fastProcessed;
+        scrapedCount = _fastMatched;
+        scrapeCompletion++;
+        _notify();
+      }
     } finally {
       images.endFullSpeed();
       _fastRunner = null;
@@ -787,7 +826,7 @@ class FilmCatalogController extends ChangeNotifier {
                 _notifyTaskProgress();
               },
               onEntries: (entries) async {
-                _queueScraping(metadata, entries);
+                await _queueScraping(metadata, entries);
               },
             );
             await store.reconcilePlaylists(sourceId: root.sourceId);
@@ -844,14 +883,26 @@ class FilmCatalogController extends ChangeNotifier {
   Future<FilmScanMetadataSession> _scrapeSession(FilmCatalogRoot root) =>
       _scrapeSessions.putIfAbsent(
         root.id,
-        () => matcher.scanSession(root, cancelled: () => _closed),
+        () =>
+            matcher.scanSession(root, cancelled: () => _closed || scrapePaused),
       );
 
-  void _queueScraping(
+  Future<void> _queueScraping(
     FilmScanMetadataSession session,
-    List<FilmScanEntry> entries,
-  ) {
+    List<FilmScanEntry> entries, {
+    bool persist = true,
+  }) async {
     if (_closed) return;
+    if (persist) {
+      await store.enqueueNormalScraping(
+        session.root,
+        entries
+            .where(
+              (entry) => !_scrapeSeen.contains((session.root.id, entry.path)),
+            )
+            .toList(),
+      );
+    }
     if (!session.enabled) {
       scrapeError = session.error ?? 'noToken';
       _notify();
@@ -899,6 +950,7 @@ class FilmCatalogController extends ChangeNotifier {
       _wakeScraping();
     } else {
       scrapePaused = true;
+      tmdb.pauseStandardRequests();
     }
     _notify();
   }
@@ -955,6 +1007,10 @@ class FilmCatalogController extends ChangeNotifier {
             );
             await next.session.prepare([next.entry], workCache: works);
             if (_closed) break;
+            if (next.session.paused && next.session.error == 'cancelled') {
+              next.session.resume();
+              break;
+            }
             if (next.session.paused) {
               scrapeError = next.session.error;
               scrapePaused = true;
@@ -971,7 +1027,18 @@ class FilmCatalogController extends ChangeNotifier {
         } finally {
           // 已准备好的前缀独立提交；错误项与剩余输入保留在队列中。
           if (jobs.isNotEmpty) {
-            await store.applyMetadata(job.session.root.id, matches);
+            await store.completeNormalScraping(
+              job.session.root.id,
+              jobs
+                  .map(
+                    (job) => filmPathKey(
+                      job.entry.path,
+                      job.session.root.sourceKind,
+                    ),
+                  )
+                  .toList(),
+              matches,
+            );
             scrapedCount += matches.length;
             for (var i = 0; i < jobs.length; i++) {
               _scrapeQueue.removeFirst();
@@ -1037,6 +1104,7 @@ class FilmCatalogController extends ChangeNotifier {
       final exclusions = await store.directoryExclusions();
       await store.pruneExcludedDirectories(root, exclusions);
       final session = await _scrapeSession(root);
+      await store.seedNormalScraping(root.id, incremental: incremental);
       var afterId = 0;
       while (!_closed) {
         final batch = await store.scrapeEntries(
@@ -1046,7 +1114,9 @@ class FilmCatalogController extends ChangeNotifier {
         );
         if (batch.isEmpty) break;
         afterId = batch.last.$1;
-        _queueScraping(session, [for (final row in batch) row.$2]);
+        await _queueScraping(session, [
+          for (final row in batch) row.$2,
+        ], persist: false);
       }
     } on FilmCatalogException catch (cause) {
       scrapeError = cause.code;
@@ -1065,6 +1135,7 @@ class FilmCatalogController extends ChangeNotifier {
     ++_queryGeneration;
     _refreshTimer?.cancel();
     store.removeListener(_changed);
+    tmdb.retryUntil.removeListener(_notifyTaskProgress);
     mediaProbe?.removeListener(_notify);
     await mediaProbe?.close();
     cancel();

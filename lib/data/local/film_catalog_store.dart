@@ -525,11 +525,11 @@ class FilmCatalogStore extends ChangeNotifier {
     final db = await (factory ?? (Platform.isWindows ? databaseFactoryFfi : databaseFactory)).openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 12,
+        version: 13,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           final version = await db.getVersion();
-          if (version > 0 && version < 12 && path != inMemoryDatabasePath) {
+          if (version > 0 && version < 13 && path != inMemoryDatabasePath) {
             final backup =
                 '$path.before-v${version + 1}-${DateTime.now().microsecondsSinceEpoch}.bak';
             await db.execute("VACUUM INTO '${backup.replaceAll("'", "''")}'");
@@ -542,6 +542,7 @@ class FilmCatalogStore extends ChangeNotifier {
           for (final statement in _schema) {
             await db.execute(statement);
           }
+          await db.execute(_normalScrapeSchema);
           await db.execute(_watchSchema);
           await db.execute(_discWatchSchema);
           await db.execute(_versionSchema);
@@ -652,6 +653,7 @@ class FilmCatalogStore extends ChangeNotifier {
               "ALTER TABLE resources ADD COLUMN metadata_override_json TEXT NOT NULL DEFAULT '{}'",
             );
           }
+          if (oldVersion < 13) await db.execute(_normalScrapeSchema);
         },
         onOpen: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
@@ -903,6 +905,11 @@ class FilmCatalogStore extends ChangeNotifier {
       }
       if (identityChanged) {
         await txn.delete(
+          'normal_scrape_jobs',
+          where: 'root_id=?',
+          whereArgs: [root.id],
+        );
+        await txn.delete(
           'resources',
           where: 'root_id = ?',
           whereArgs: [root.id],
@@ -1117,6 +1124,86 @@ class FilmCatalogStore extends ChangeNotifier {
       );
     });
     notifyListeners();
+  }
+
+  static const _normalScrapeSchema = '''CREATE TABLE normal_scrape_jobs (
+    root_id INTEGER NOT NULL REFERENCES catalog_roots(id) ON DELETE CASCADE,
+    path_key TEXT NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL,
+    name TEXT NOT NULL, media_kind TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY(root_id,path_key))''';
+
+  Future<void> seedNormalScraping(
+    int rootId, {
+    required bool incremental,
+  }) async {
+    await _db.transaction((txn) async {
+      await txn.rawInsert(
+        '''INSERT OR REPLACE INTO normal_scrape_jobs
+        (root_id,path_key,path,parent,name,media_kind,state)
+        SELECT root_id,path_key,relative_path,parent_path,name,media_kind,'pending'
+        FROM resources WHERE root_id=? AND availability='present'
+        ${incremental ? 'AND work_id IS NULL' : ''}''',
+        [rootId],
+      );
+    });
+  }
+
+  Future<void> enqueueNormalScraping(
+    FilmCatalogRoot root,
+    List<FilmScanEntry> entries,
+  ) async {
+    await _db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final entry in entries) {
+        batch.insert('normal_scrape_jobs', {
+          'root_id': root.id,
+          'path_key': filmPathKey(entry.path, root.sourceKind),
+          'path': entry.path,
+          'parent': entry.parentPath,
+          'name': entry.name,
+          'media_kind': entry.mediaKind,
+          'state': 'pending',
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<FilmScanEntry>> pendingNormalScraping(int rootId) async => [
+    for (final row in await _db.query(
+      'normal_scrape_jobs',
+      where: "root_id=? AND state='pending'",
+      whereArgs: [rootId],
+      orderBy: 'rowid',
+    ))
+      FilmScanEntry(
+        path: row['path'] as String,
+        parentPath: row['parent'] as String,
+        name: row['name'] as String,
+        mediaKind: row['media_kind'] as String,
+      ),
+  ];
+
+  Future<void> completeNormalScraping(
+    int rootId,
+    List<String> keys,
+    Map<String, FilmScanMatch> matches,
+  ) async {
+    final result = await _db.transaction((txn) async {
+      final result = await _applyMetadata(txn, rootId, matches);
+      final batch = txn.batch();
+      for (final key in keys) {
+        batch.update(
+          'normal_scrape_jobs',
+          {'state': matches.containsKey(key) ? 'matched' : 'unmatched'},
+          where: 'root_id=? AND path_key=?',
+          whereArgs: [rootId, key],
+        );
+      }
+      await batch.commit(noResult: true);
+      return result;
+    });
+    if (result.$1) _notifyChange(watch: result.$2);
   }
 
   /// 刮削资料逐项关联已登记资源，保留请求期间的人工纠错。

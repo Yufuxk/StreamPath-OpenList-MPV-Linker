@@ -144,12 +144,12 @@ void main() {
     });
   }
 
-  test('TMDB 两个入口均失败时只尝试一次备用，取消与 TLS 错误不切换', () async {
+  test('TMDB 连接故障共用三次预算，取消与 TLS 错误不切换', () async {
     for (final (type, code, count) in [
-      (DioExceptionType.connectionError, 'metadataConnectionFailed', 2),
-      (DioExceptionType.receiveTimeout, 'metadataTimeout', 2),
+      (DioExceptionType.connectionError, 'metadataConnectionFailed', 3),
+      (DioExceptionType.receiveTimeout, 'metadataTimeout', 3),
       (DioExceptionType.badCertificate, 'metadataTlsFailed', 1),
-      (DioExceptionType.cancel, 'metadataRequestFailed', 1),
+      (DioExceptionType.cancel, 'cancelled', 1),
     ]) {
       final adapter = _ApiAdapter((options) async {
         throw DioException(requestOptions: options, type: type);
@@ -1027,7 +1027,7 @@ void main() {
   });
 
   for (final status in [302, 401, 403, 404, 429, 500]) {
-    test('TMDB $status 不泄露令牌且无自动重试', () async {
+    test('TMDB $status 不泄露令牌且遵守重试分类', () async {
       final adapter = _ApiAdapter((_) async => {}, status: status);
       final tmdb = TmdbMetadataService(
         credentials: _MemoryToken(),
@@ -1044,11 +1044,11 @@ void main() {
         tmdb.details(FilmMediaType.movie, 1, 'zh-CN'),
         throwsA(_code(expected)),
       );
-      expect(adapter.requests, hasLength(1));
-      expect(adapter.requests.single.uri.host, 'api.themoviedb.org');
-      expect(adapter.requests.single.followRedirects, isFalse);
+      expect(adapter.requests, hasLength(status == 500 ? 3 : 1));
+      expect(adapter.requests.first.uri.host, 'api.themoviedb.org');
+      expect(adapter.requests.first.followRedirects, isFalse);
       expect(
-        adapter.requests.single.uri.toString(),
+        adapter.requests.first.uri.toString(),
         isNot(contains('fake-api-token')),
       );
       if ([401, 403, 429].contains(status)) {
@@ -1056,7 +1056,7 @@ void main() {
           tmdb.details(FilmMediaType.movie, 2, 'zh-CN'),
           throwsA(_code(expected)),
         );
-        expect(adapter.requests, hasLength(1));
+        expect(adapter.requests, hasLength(status == 500 ? 3 : 1));
       }
     });
   }
@@ -2427,6 +2427,8 @@ void main() {
         'name': 'AIR',
         'original_name': 'AIR',
         'first_air_date': '${years[index]}-01-01',
+        'alternative_titles': {'results': []},
+        'translations': {'translations': []},
       };
       final adapter = _ApiAdapter((options) async {
         if (options.path.endsWith('/search/tv')) {

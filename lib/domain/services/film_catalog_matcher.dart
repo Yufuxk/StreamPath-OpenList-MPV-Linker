@@ -718,6 +718,7 @@ class FilmScanMetadataSession {
   void resume() {
     _paused = false;
     error = null;
+    networkEnabled = files?.localMode != true;
   }
 
   static String _nameKey(String name) => name
@@ -777,8 +778,10 @@ class FilmScanMetadataSession {
   );
 
   Future<FilmWork> _lookupUnshared(int id) async {
+    if (cancelled()) throw const FilmCatalogException('cancelled');
     if (_works[id] case final work?) return work;
     final cached = await matcher.store.cachedWork(root.type, id);
+    if (cancelled()) throw const FilmCatalogException('cancelled');
     return _works[id] =
         cached?.language == language &&
             (root.type != FilmMediaType.movie ||
@@ -807,6 +810,7 @@ class FilmScanMetadataSession {
         work = await _matchTitles(hint, [hint.title, ...parts]);
       }
     }
+    if (cancelled()) throw const FilmCatalogException('cancelled');
     return _queries[key] = work;
   }
 
@@ -849,7 +853,7 @@ class FilmScanMetadataSession {
     Future<void> collect(int page) async {
       // 双语名称分别检索并合并候选，名称证据冲突时保留待整理。
       for (final name in names) {
-        if (cancelled()) return;
+        if (cancelled()) throw const FilmCatalogException('cancelled');
         for (final candidate in await matcher.tmdb.search(
           root.type,
           name,
@@ -895,7 +899,7 @@ class FilmScanMetadataSession {
     if (exact.isEmpty) {
       final scores = <(int, double)>[];
       for (final candidate in eligible.values) {
-        if (cancelled()) return null;
+        if (cancelled()) throw const FilmCatalogException('cancelled');
         final titles = _titles[candidate.tmdbId] ??= await _titleRequests
             .putIfAbsent(
               candidate.tmdbId,
@@ -959,7 +963,7 @@ class FilmScanMetadataSession {
     Map<int, FilmWork?>? workCache,
     bool deferLocalFallback = false,
   }) async {
-    if (!enabled || _paused) return;
+    if (!enabled) return;
     if (lazyBindings && entries.isNotEmpty) {
       _existing.addAll(
         await matcher.store.scanBindings(
@@ -972,7 +976,7 @@ class FilmScanMetadataSession {
     }
     final works = workCache ?? <int, FilmWork?>{};
     for (final entry in entries) {
-      if (cancelled() || _paused) return;
+      if (cancelled()) return;
       if (FilmExtraClassifier.excludedPath(entry.parentPath)) continue;
       final key = filmPathKey(entry.path, root.sourceKind);
       final existing = _existing[key];
@@ -1048,9 +1052,8 @@ class FilmScanMetadataSession {
                   ),
                 );
               } on FilmCatalogException catch (cause) {
-                // 容器只是补充依据，数据类错误退回文件名检索；其余错误继续上报。
-                if (cause.code != 'metadataNotFound' &&
-                    cause.code != 'invalidMetadata') {
+                // 容器无资料时可改用文件名；无效响应保留为未完成任务。
+                if (cause.code != 'metadataNotFound') {
                   rethrow;
                 }
               }
@@ -1089,10 +1092,22 @@ class FilmScanMetadataSession {
           work = await _lookup(work.tmdbId);
         }
       } on FilmCatalogException catch (cause) {
-        _failed(cause);
-        if (files == null) continue;
-        networkEnabled = false;
-        _paused = false;
+        if (cause.code != 'metadataNotFound') {
+          // 只有真实可用的本地资料才能替代失败的在线请求。
+          local =
+              files == null ||
+                  cause.code == 'cancelled' ||
+                  cancelled() ||
+                  existing?.bindingOrigin == 'manual'
+              ? null
+              : await files!.load(entry, language);
+          if (local == null) {
+            _failed(cause);
+            continue;
+          }
+          work = local.work;
+          origin = 'nfo';
+        }
       }
       if (work == null && files != null && !cancelled()) {
         if (deferLocalFallback) continue;
@@ -1101,6 +1116,9 @@ class FilmScanMetadataSession {
           work = local.work;
           origin = 'nfo';
         }
+      }
+      if (work == null && !networkEnabled && files?.localMode != true) {
+        _failed(FilmCatalogException(error ?? 'noToken'));
       }
       if (work == null || cancelled()) continue;
       Map<String, dynamic>? metadata;
@@ -1118,6 +1136,7 @@ class FilmScanMetadataSession {
       if (root.type == FilmMediaType.tv &&
           number != null &&
           metadata == null &&
+          origin != 'nfo' &&
           networkEnabled &&
           work.tmdbId > 0) {
         try {
@@ -1127,13 +1146,17 @@ class FilmScanMetadataSession {
               seasonKey,
               () async {
                 try {
-                  return (work!.id == 0
-                          ? null
-                          : await matcher.store.season(
-                              work.id,
-                              number,
-                              language: language,
-                            )) ??
+                  final cached = work!.id == 0
+                      ? null
+                      : await matcher.store.season(
+                          work.id,
+                          number,
+                          language: language,
+                        );
+                  if (cancelled()) {
+                    throw const FilmCatalogException('cancelled');
+                  }
+                  return cached ??
                       await matcher.tmdb.season(work.tmdbId, number, language);
                 } finally {
                   _seasonLoads.remove(seasonKey);

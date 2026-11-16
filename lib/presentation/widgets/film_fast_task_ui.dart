@@ -327,6 +327,8 @@ class _FilmFastTaskProgressState extends State<FilmFastTaskProgress> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const LinearProgressIndicator(),
+                        if (snapshot.data!.tmdb.retryUntil.value != null)
+                          const AppText('等待重试'),
                         const SizedBox(height: 16),
                         Text(
                           context.l10n.format(

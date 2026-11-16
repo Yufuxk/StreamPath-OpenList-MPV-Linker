@@ -20,8 +20,17 @@ class WebDavXmlParser {
   /// - 其 origin（scheme://host）用于把相对 href 补全为绝对 URL；
   /// - 空/空白 XML 返回空列表；
   /// - 非法 XML 抛 [AppException.parse]。
-  List<WebDavFile> parse(String xml, {required String requestUrl}) {
-    if (xml.trim().isEmpty) return const [];
+  List<WebDavFile> parse(
+    String xml, {
+    required String requestUrl,
+    bool requireComplete = false,
+  }) {
+    if (xml.trim().isEmpty) {
+      if (requireComplete) {
+        throw AppException.parse('Empty catalog directory response');
+      }
+      return const [];
+    }
 
     final XmlDocument doc;
     try {
@@ -30,6 +39,9 @@ class WebDavXmlParser {
       throw AppException.parse('服务器响应不是有效的 XML：${e.message}', e);
     }
 
+    if (requireComplete && doc.rootElement.localName != 'multistatus') {
+      throw AppException.parse('Invalid catalog directory response');
+    }
     final origin = _originOf(requestUrl);
     final isSelfEntry = _selfEntryMatcher(requestUrl);
     final results = <WebDavFile>[];
@@ -38,6 +50,27 @@ class WebDavXmlParser {
       if (response.localName != 'response') continue;
 
       final hrefText = _firstText(response, 'href');
+      if (requireComplete) {
+        final status = response.childElements
+            .where((e) => e.localName == 'status')
+            .firstOrNull
+            ?.innerText
+            .trim();
+        final propertyStatuses = response.childElements
+            .where((e) => e.localName == 'propstat')
+            .expand(
+              (e) => e.childElements.where((e) => e.localName == 'status'),
+            );
+        bool success(String value) =>
+            RegExp(r'^HTTP/\S+ 2\d\d(?: |$)').hasMatch(value.trim());
+        if (hrefText == null ||
+            hrefText.isEmpty ||
+            status != null && !success(status) ||
+            propertyStatuses.isNotEmpty &&
+                !propertyStatuses.any((e) => success(e.innerText))) {
+          throw AppException.parse('Incomplete catalog directory response');
+        }
+      }
       if (hrefText == null || hrefText.isEmpty) continue;
 
       // 目录判定：resourcetype 含 collection，或 href 以 / 结尾

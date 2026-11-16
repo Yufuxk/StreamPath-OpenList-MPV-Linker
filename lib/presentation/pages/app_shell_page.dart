@@ -70,7 +70,11 @@ class _AppShellPageState extends State<AppShellPage>
     final completion = _filmTasks!.scrapeCompletion;
     if (completion == _filmCompletion) return;
     _filmCompletion = completion;
-    _notice('刮削完成');
+    _notice(
+      _filmTasks!.scrapeProcessed > _filmTasks!.scrapedCount
+          ? '刮削完成，部分资源未匹配'
+          : '刮削完成',
+    );
   }
 
   final _keys = {
