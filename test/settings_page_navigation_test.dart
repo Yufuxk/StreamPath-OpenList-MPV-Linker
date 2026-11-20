@@ -177,6 +177,73 @@ void main() {
     }
   }
 
+  testWidgets('切回播放设置时参数文字在首帧保持独立滚动位置', (tester) async {
+    tester.view.physicalSize = const Size(1440, 540);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    final playback = find.byKey(const Key('settings-section-playback'));
+    final mediaLibrary = find.byKey(const Key('settings-section-mediaLibrary'));
+    final args = find.byKey(const Key('player-args-field'));
+    final page = find.byKey(
+      const PageStorageKey<String>('settings-page-playback'),
+    );
+    ScrollController pageScroll() =>
+        tester.widget<SingleChildScrollView>(page).controller!;
+    ScrollPosition argsScroll() => tester
+        .state<ScrollableState>(
+          find.descendant(of: args, matching: find.byType(Scrollable)),
+        )
+        .position;
+
+    await tester.tap(playback);
+    await tester.pumpAndSettle();
+    final draftArgs = List.generate(
+      24,
+      (index) => '--fixture-$index',
+    ).join('\n');
+    tester
+            .widget<EditableText>(
+              find.descendant(of: args, matching: find.byType(EditableText)),
+            )
+            .controller
+            .text =
+        draftArgs;
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(args);
+    await tester.pumpAndSettle();
+    final pageOffset = pageScroll().offset;
+    expect(pageOffset, greaterThan(0));
+    expect(argsScroll().pixels, 0);
+
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await tester.tap(mediaLibrary);
+      await tester.pumpAndSettle();
+      expect(args, findsNothing);
+      await tester.tap(playback);
+      await tester.pump();
+      for (var i = 0; i < 20 && args.evaluate().isEmpty; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(args, findsOneWidget);
+      expect(pageScroll().offset, pageOffset);
+      expect(argsScroll().pixels, 0, reason: '参数文字首帧');
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(argsScroll().pixels, 0);
+      await tester.pumpAndSettle();
+      expect(argsScroll().pixels, 0);
+      expect(tester.widget<TextFormField>(args).controller!.text, draftArgs);
+      argsScroll().jumpTo(64);
+      await tester.pumpAndSettle();
+      expect(argsScroll().pixels, 64);
+      expect(pageScroll().offset, pageOffset);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('设置左右切页仅挂载一个表单，动画帧不重建内容，快速选择定位最后目标', (tester) async {
     final builds = <SettingsSection, int>{};
     await tester.pumpWidget(

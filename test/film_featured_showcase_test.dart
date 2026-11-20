@@ -238,7 +238,9 @@ void main() {
 
   testWidgets('浅色橱窗缺图时使用主题文字，已有背景清空后恢复主题文字', (tester) async {
     await prepare(tester);
-    final works = catalog.sectionWorks['daily']!;
+    final works = (await tester.runAsync(
+      () => catalog.store.works(type: null),
+    ))!;
     final original = works.first;
     final missing = FilmWork(
       id: original.id,
@@ -266,13 +268,17 @@ void main() {
       await settle(tester);
     }
     expect(titleColor(ready.id), Colors.white);
+    expect(
+      DefaultTextStyle.of(tester.element(find.text('Drama'))).style.fontFamily,
+      'Segoe UI',
+    );
     await tester.tap(poster(missing.id));
     await settle(tester);
     expect(titleColor(missing.id), themeColor);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('六类背景验证橱窗固定白字、无取色链路与对称阴影', (tester) async {
+  testWidgets('六类背景验证橱窗文字层级、无取色链路与对称阴影', (tester) async {
     await prepare(tester);
     await tester.runAsync(
       () => catalog.store.setPreference('spoiler_protection', false),
@@ -388,7 +394,7 @@ void main() {
               findsOneWidget,
             );
             final textRows = <(String, Rect, Color, double, Color?)>[];
-            final informationRects = <Rect>[];
+            final informationRects = <(Rect, Color)>[];
             final informationColors = <Color>{};
             final inkRecorder = ui.PictureRecorder();
             final inkCanvas = Canvas(inkRecorder);
@@ -451,7 +457,7 @@ void main() {
               }
               final rect = tester.getRect(finder);
               if (backing == null) {
-                informationRects.add(rect);
+                informationRects.add((rect, style.color!));
                 informationColors.add(style.color!);
                 expect(
                   style.shadows,
@@ -523,8 +529,10 @@ void main() {
             expect(backdrop.textColors, isNull);
             expect(find.byType(FilmAdaptiveForeground), findsNothing);
             expect(find.byType(FilmBackdropSamplingBoundary), findsNothing);
+            final titleColor = dark ? AppTheme.darkTitleColor : Colors.white;
             expect(informationColors, {
-              Colors.white,
+              titleColor,
+              if (dark) AppTheme.darkBodyColor,
               Colors.white.withValues(alpha: .82),
             });
             final posterTitle = tester.widget<Text>(
@@ -533,7 +541,7 @@ void main() {
                 matching: find.text(work.title),
               ),
             );
-            expect(posterTitle.style!.color, Colors.white);
+            expect(posterTitle.style!.color, titleColor);
             final backgroundBoundary = GlobalKey();
             await tester.pumpWidget(
               frame(
@@ -574,37 +582,40 @@ void main() {
               expect(brightness(.5, .46), lessThan(brightness(.24, .46)));
               expect(brightness(.5, .99), lessThan(10));
             }
-            final informationColor = Colors.white;
-            var readingLuminance = 0.0;
+            var contrastSum = 0.0;
             var readingSamples = 0;
             var whiteReadable = 0;
-            for (final bounds in informationRects) {
+            for (final (bounds, foreground) in informationRects) {
               final rect = bounds.intersect(Offset.zero & viewport);
               for (var y = rect.top + 2; y < rect.bottom - 2; y += 4) {
                 for (var x = rect.left + 2; x < rect.right - 2; x += 4) {
                   final offset =
                       (y.floor() * viewport.width.toInt() + x.floor()) * 4;
-                  final luminance = Color.fromARGB(
+                  final background = Color.fromARGB(
                     255,
                     pixels.getUint8(offset),
                     pixels.getUint8(offset + 1),
                     pixels.getUint8(offset + 2),
+                  );
+                  final luminance = background.computeLuminance();
+                  final visible = Color.alphaBlend(
+                    foreground,
+                    background,
                   ).computeLuminance();
-                  readingLuminance += luminance;
-                  if (1.05 / (luminance + .05) >= 4.5) whiteReadable++;
+                  final ratio = (visible + .05) / (luminance + .05);
+                  contrastSum += ratio;
+                  if (ratio >= 4.5) whiteReadable++;
                   readingSamples++;
                 }
               }
             }
             expect(readingSamples, greaterThan(0));
-            final average = readingLuminance / readingSamples;
-            final averageContrast = 1.05 / (average + .05);
+            final averageContrast = contrastSum / readingSamples;
             rows.add({
               'scene': name,
               'label': 'information-region-average',
               'contrast': averageContrast,
               'readableCoverage': whiteReadable / readingSamples,
-              'foreground': informationColor.toARGB32(),
             });
             for (final (label, rect, foreground, fontSize, backing)
                 in textRows) {
@@ -795,8 +806,64 @@ void main() {
       find.descendant(of: overview, matching: find.byType(ImageFiltered)),
       findsOneWidget,
     );
-    expect(find.text('展示剧透'), findsOneWidget);
-    await tester.tap(find.text('展示剧透'));
+    final reveal = find.ancestor(
+      of: find.text('展示剧透'),
+      matching: find.byType(TextButton),
+    );
+    final ink = find.descendant(of: reveal, matching: find.byType(InkWell));
+    final material = find.descendant(
+      of: reveal,
+      matching: find.byType(Material),
+    );
+    final center = tester.getCenter(reveal);
+    expect(center, tester.getCenter(overview));
+    expect(tester.widget<Material>(material).color, Colors.transparent);
+    expect(
+      find.descendant(of: reveal, matching: find.byType(Icon)),
+      findsOneWidget,
+    );
+    TextStyle revealTextStyle() =>
+        DefaultTextStyle.of(tester.element(find.text('展示剧透'))).style;
+    expect(revealTextStyle().color, const Color(0x80FFFFFF));
+    expect(revealTextStyle().fontWeight, FontWeight.w500);
+    expect(revealTextStyle().letterSpacing, .3);
+    expect(revealTextStyle().shadows, hasLength(1));
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: center);
+    addTearDown(mouse.removePointer);
+    await tester.pump();
+    await tester.pump(AppTheme.hoverDuration ~/ 2);
+    expect(revealTextStyle().color!.a, inExclusiveRange(.51, .89));
+    await tester.pumpAndSettle();
+    expect(revealTextStyle().color, const Color(0xE6FFFFFF));
+    final inkWell = tester.widget<InkWell>(ink);
+    final states = inkWell.statesController!.value;
+    expect(states, contains(WidgetState.hovered));
+    final button = tester.widget<TextButton>(reveal);
+    for (final state in [WidgetState.focused, WidgetState.pressed]) {
+      expect(
+        button.style!.foregroundColor!.resolve({state}),
+        const Color(0xE6FFFFFF),
+      );
+    }
+    final context = tester.element(reveal);
+    final sharedHighlight =
+        TextButtonTheme.of(context).style?.overlayColor?.resolve(states) ??
+        button.defaultStyleOf(context).overlayColor!.resolve(states);
+    expect(inkWell.overlayColor!.resolve(states), sharedHighlight);
+    expect(tester.widget<Material>(material).color, Colors.transparent);
+    expect(tester.getCenter(reveal), center);
+    await mouse.moveTo(Offset.zero);
+    await tester.pumpAndSettle();
+    expect(
+      inkWell.statesController!.value,
+      isNot(contains(WidgetState.hovered)),
+    );
+    expect(tester.widget<Material>(material).color, Colors.transparent);
+
+    expect(revealTextStyle().color, const Color(0x80FFFFFF));
+    await tester.tap(reveal);
     await settle(tester);
     expect(
       find.descendant(of: overview, matching: find.byType(ImageFiltered)),
@@ -812,6 +879,16 @@ void main() {
       await settle(tester);
       expect(find.text('Drama'), findsOneWidget);
       expect(find.text('★ 8.2'), findsOneWidget);
+      final year = catalog.sectionWorks['daily']!.first.year;
+      for (final label in ['★ 8.2', '$year', 'Drama', '电影', '120 分钟']) {
+        final style = DefaultTextStyle.of(
+          tester.element(find.text(label)),
+        ).style;
+        expect(style.fontFamily, 'Sarasa UI SC');
+        expect(style.fontFamilyFallback, contains('Segoe UI'));
+        expect(style.fontWeight, FontWeight.w400);
+        expect(style.fontFeatures, [const ui.FontFeature.tabularFigures()]);
+      }
       expect(find.text('120 分钟'), findsOneWidget);
       expect(find.textContaining('官方时长'), findsNothing);
       expect(find.byType(FilmInformationPill), findsWidgets);
@@ -1980,7 +2057,9 @@ void main() {
         );
         expect(
           collections.style!.foregroundColor!.resolve({}),
-          Colors.white.withValues(alpha: .7),
+          dark
+              ? AppTheme.darkSecondaryColor
+              : Colors.white.withValues(alpha: .7),
         );
         final indicatorFinder = find.descendant(
           of: find.byType(FilmSegmentedControl<String>),

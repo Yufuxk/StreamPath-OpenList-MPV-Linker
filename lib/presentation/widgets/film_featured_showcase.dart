@@ -72,7 +72,9 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
   Future<String?>? _logoOverride;
 
   Color _foreground(BuildContext context) =>
-      _backdropReady && _visibleBackdrop?.path != null
+      Theme.of(context).brightness == Brightness.dark
+      ? AppTheme.darkTitleColor
+      : _backdropReady && _visibleBackdrop?.path != null
       ? Colors.white
       : Theme.of(context).colorScheme.onSurface;
 
@@ -404,35 +406,38 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
   Widget _hero(BuildContext context, bool narrow, bool compact) {
     final work = _daily ? _works[_index] : null;
     final collection = _daily ? null : _collections[_index];
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final metadataColor = dark ? AppTheme.darkBodyColor : _foreground(context);
+    final score = work?.metadata['vote_average'] as num?;
     final titleSize = narrow
         ? 30.0
         : compact
         ? 32.0
         : 40.0;
     final metadata = <Widget>[
-      if ((work?.metadata['vote_average'] as num? ?? 0) > 0)
+      if (score != null && score > 0)
         FilmInformationPill(
-          foreground: _foreground(context),
+          foreground: metadataColor,
           child: Text(
-            '★ ${(work!.metadata['vote_average'] as num).toStringAsFixed(1)}',
-            style: const TextStyle(fontWeight: FontWeight.w700),
+            '★ ${score.toStringAsFixed(1)}',
+            style: dark ? null : const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),
       if (work?.year != null)
         FilmInformationPill(
-          foreground: _foreground(context),
+          foreground: metadataColor,
           child: Text('${work!.year}'),
         ),
       if (work != null)
         FilmInformationPill(
-          foreground: _foreground(context),
+          foreground: metadataColor,
           child: Text(
             context.l10n.text(work.type == FilmMediaType.movie ? '电影' : '剧集'),
           ),
         ),
       if ((work?.metadata['runtime'] as num? ?? 0) > 0)
         FilmInformationPill(
-          foreground: _foreground(context),
+          foreground: metadataColor,
           child: Text(
             context.l10n.format('{minutes} 分钟', {
               'minutes': work!.metadata['runtime'],
@@ -442,20 +447,17 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
       if (work?.metadata['genres'] is List)
         for (final genre in (work!.metadata['genres'] as List).take(3))
           if (genre is String && genre.isNotEmpty)
-            FilmInformationPill(
-              foreground: _foreground(context),
-              child: Text(genre),
-            )
+            FilmInformationPill(foreground: metadataColor, child: Text(genre))
           else if (genre is Map &&
               genre['name'] is String &&
               (genre['name'] as String).isNotEmpty)
             FilmInformationPill(
-              foreground: _foreground(context),
+              foreground: metadataColor,
               child: Text(genre['name'] as String),
             ),
       if (collection != null)
         FilmInformationPill(
-          foreground: _foreground(context),
+          foreground: metadataColor,
           child: Text(
             context.l10n.format('收录 {count} 部作品', {'count': collection.count}),
           ),

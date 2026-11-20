@@ -27,7 +27,8 @@ class FilmSegmentedControl<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final index = segments.indexWhere((segment) => segment.value == selected);
     assert(index >= 0, 'The selected value must belong to the segments.');
     const shape = StadiumBorder();
@@ -53,6 +54,8 @@ class FilmSegmentedControl<T> extends StatelessWidget {
               TextButton.styleFrom(
                 foregroundColor: selectedSegment
                     ? scheme.onPrimary
+                    : !vertical && theme.brightness == Brightness.dark
+                    ? AppTheme.darkSecondaryColor
                     : Colors.white.withValues(alpha: .7),
                 disabledForegroundColor: selectedSegment
                     ? scheme.onPrimary.withValues(alpha: .38)

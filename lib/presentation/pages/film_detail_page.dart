@@ -338,6 +338,20 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    final metadataColor = FilmTextStyles.adaptiveTone(
+      theme,
+      foreground,
+      AppTheme.darkBodyColor,
+    );
+    final sourceColor = dark
+        ? FilmTextStyles.adaptiveTone(
+            theme,
+            foreground,
+            AppTheme.darkSecondaryColor,
+          )
+        : foreground.withValues(alpha: .7);
     final score = work.metadata['vote_average'] as num?;
     final minutes =
         work.type == FilmMediaType.movie &&
@@ -366,17 +380,19 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               'votes': work.metadata['vote_count'] ?? 0,
             }),
             child: FilmInformationPill(
-              foreground: foreground,
+              foreground: metadataColor,
               child: Text.rich(
                 TextSpan(
                   children: [
                     TextSpan(
                       text: '★ ${score.toStringAsFixed(1)}',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
+                      style: dark
+                          ? null
+                          : const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     TextSpan(
                       text: '  ${context.l10n.text('TMDB')}',
-                      style: TextStyle(color: foreground.withValues(alpha: .7)),
+                      style: TextStyle(color: sourceColor),
                     ),
                   ],
                 ),
@@ -385,12 +401,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           ),
         if (work.year != null)
           FilmInformationPill(
-            foreground: foreground,
+            foreground: metadataColor,
             child: Text('${work.year}'),
           ),
         if (minutes.isNotEmpty || work.metadata['runtime'] != null)
           FilmInformationPill(
-            foreground: foreground,
+            foreground: metadataColor,
             child: Text(
               context.l10n.format('{minutes} 分钟', {
                 'minutes': minutes.isEmpty
@@ -400,10 +416,13 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             ),
           ),
         for (final genre in genres)
-          FilmInformationPill(foreground: foreground, child: Text(genre)),
+          FilmInformationPill(foreground: metadataColor, child: Text(genre)),
         for (final tag in tags)
-          FilmInformationPill(foreground: foreground, child: Text(tag)),
-        FilmCertificationBadge(rating: work.certification, color: foreground),
+          FilmInformationPill(foreground: metadataColor, child: Text(tag)),
+        FilmCertificationBadge(
+          rating: work.certification,
+          color: dark ? sourceColor : metadataColor,
+        ),
       ],
     );
   }
@@ -1681,8 +1700,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                     .textTheme
                                                                     .headlineMedium
                                                                     ?.copyWith(
-                                                                      color:
-                                                                          foreground,
+                                                                      color: FilmTextStyles.adaptiveTone(
+                                                                        theme,
+                                                                        foreground,
+                                                                        AppTheme
+                                                                            .darkTitleColor,
+                                                                      ),
                                                                     ),
                                                               ),
                                                             ),
@@ -1706,8 +1729,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                 .textTheme
                                                                 .titleMedium
                                                                 ?.copyWith(
-                                                                  color:
-                                                                      foreground,
+                                                                  color: FilmTextStyles.adaptiveTone(
+                                                                    theme,
+                                                                    foreground,
+                                                                    AppTheme
+                                                                        .darkSecondaryColor,
+                                                                  ),
                                                                   fontWeight:
                                                                       FontWeight
                                                                           .w400,

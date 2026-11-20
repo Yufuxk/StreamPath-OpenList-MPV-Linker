@@ -23,6 +23,9 @@ abstract final class AppTheme {
   static const double videoCacheBlurSigma = 20;
   static const pagePadding = EdgeInsets.all(pageInset);
   static const hoverDuration = Duration(milliseconds: 200);
+  static const darkTitleColor = Color(0xEBFFFFFF);
+  static const darkBodyColor = Color(0xD9FFFFFF);
+  static const darkSecondaryColor = Color(0x99FFFFFF);
   static const double posterHoverScale = 1.05;
   static const double posterHoverLift = 6;
 
@@ -255,10 +258,8 @@ abstract final class AppTheme {
       splashFactory: NoSplash.splashFactory,
       extensions: [glassTokens],
     );
-    final titleColor = isDark ? Colors.white : scheme.onSurface;
-    final bodyColor = isDark
-        ? Colors.white.withValues(alpha: 0.85)
-        : scheme.onSurface;
+    final titleColor = isDark ? darkTitleColor : scheme.onSurface;
+    final bodyColor = isDark ? darkBodyColor : scheme.onSurface;
     final description = scheme.onSurfaceVariant;
     final desktopTextTheme = base.textTheme.copyWith(
       displayLarge: base.textTheme.displayLarge?.copyWith(color: titleColor),

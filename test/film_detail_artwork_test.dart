@@ -1572,16 +1572,31 @@ void main() {
           }
           painter.dispose();
         }
-        final colors = {
-          for (final row in textRows)
-            if (row.$1 != overview) row.$3,
-        };
         expect(
           tester.widget<Text>(find.text(overview)).style!.color,
           Colors.white.withValues(alpha: .82),
         );
-        expect(colors, hasLength(1));
-        expect([Colors.black, Colors.white], contains(colors.single));
+        final titleColor = textRows.firstWhere((row) => row.$1 == old.title).$3;
+        expect([Colors.black, AppTheme.darkTitleColor], contains(titleColor));
+        for (final row in textRows.where((row) => row.$1 != overview)) {
+          expect(
+            row.$3,
+            titleColor == Colors.black
+                ? Colors.black
+                : switch (row.$1) {
+                    'Original detail title with a long readable name' =>
+                      AppTheme.darkSecondaryColor,
+                    'Drama' || 'Science Fiction' => AppTheme.darkBodyColor,
+                    _ => AppTheme.darkTitleColor,
+                  },
+          );
+        }
+        expect(
+          DefaultTextStyle.of(
+            tester.element(find.text('2020')),
+          ).style.fontFamily,
+          'Sarasa UI SC',
+        );
         final backgroundKey = tester
             .widget<AdaptiveFilmBackdrop>(find.byType(AdaptiveFilmBackdrop))
             .textColors!
@@ -1798,6 +1813,23 @@ void main() {
       );
       expect(find.text('展示剧透'), findsOneWidget);
       expect(find.text('展开简介'), findsNothing);
+      final reveal = find.text('展示剧透');
+      final revealButton = find.ancestor(
+        of: reveal,
+        matching: find.byType(TextButton),
+      );
+      final overviewOverlay = find.ancestor(
+        of: find.text(overview),
+        matching: find.byType(FilmWatchOverlay),
+      );
+      expect(
+        tester.getTopLeft(revealButton).dx,
+        tester.getTopLeft(overviewOverlay).dx,
+      );
+      expect(
+        DefaultTextStyle.of(tester.element(reveal)).style.color,
+        const Color(0x80FFFFFF),
+      );
       for (final key in ['film-detail-poster', 'film-detail-backdrop']) {
         expect(
           find.ancestor(
@@ -1807,7 +1839,13 @@ void main() {
           findsNothing,
         );
       }
-      await tester.tap(find.text('展示剧透'));
+      Focus.of(tester.element(reveal)).requestFocus();
+      await tester.pumpAndSettle();
+      expect(
+        DefaultTextStyle.of(tester.element(reveal)).style.color,
+        const Color(0xE6FFFFFF),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       expect(
         find.ancestor(
@@ -2447,6 +2485,24 @@ void main() {
     expect(find.text('Animation'), findsOneWidget);
     expect(find.text('Drama'), findsOneWidget);
     expect(find.text('动画 · 剧情'), findsNothing);
+    for (final label in ['★ 8.6  TMDB', '2013', 'Animation', 'Drama']) {
+      expect(
+        DefaultTextStyle.of(tester.element(find.text(label))).style.fontFamily,
+        'Sarasa UI SC',
+      );
+    }
+    final badge = find.byType(FilmCertificationBadge);
+    final badgeText = tester.widget<Text>(
+      find.descendant(of: badge, matching: find.text('PG-13')),
+    );
+    expect(badgeText.style!.color, AppTheme.darkSecondaryColor);
+    expect(badgeText.style!.fontFamily, 'Sarasa UI SC');
+    expect(badgeText.style!.fontWeight, FontWeight.w400);
+    final container = tester.widget<Container>(
+      find.descendant(of: badge, matching: find.byType(Container)),
+    );
+    final outline = (container.decoration! as BoxDecoration).border! as Border;
+    expect(outline.top.color.a, closeTo(.33, .001));
     expect(tester.takeException(), isNull);
   });
 

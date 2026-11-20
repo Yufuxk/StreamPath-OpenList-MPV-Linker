@@ -41,9 +41,13 @@ class SettingsCategoryForm extends StatelessWidget {
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 1200),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [content],
+              // 输入框的滚动位置不继承外层正文的页面存储键。
+              child: PageStorage(
+                bucket: PageStorage.of(context),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [content],
+                ),
               ),
             ),
           ),

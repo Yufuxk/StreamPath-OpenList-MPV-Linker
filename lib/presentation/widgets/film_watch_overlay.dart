@@ -13,6 +13,7 @@ import 'skeleton_scope.dart';
 import '../state/app_state.dart';
 import 'film_artwork.dart';
 import 'film_text_styles.dart';
+import 'sp_icons.dart';
 
 const _progressHeight = 4.0;
 
@@ -274,6 +275,79 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     _loadTimer = Timer(Duration.zero, _load);
   }
 
+  Widget _revealBelowButton(BuildContext context, VoidCallback reveal) {
+    final theme = Theme.of(context);
+    if (widget.workId == null || theme.brightness != Brightness.dark) {
+      return TextButton(
+        onPressed: reveal,
+        child: AppText(
+          widget.revealLabel,
+          style: widget.revealCentered
+              ? const TextStyle(
+                  color: Colors.white,
+                  shadows: FilmTextStyles.shadows,
+                )
+              : null,
+        ),
+      );
+    }
+    final foreground = WidgetStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(WidgetState.disabled)) return null;
+      final active =
+          states.contains(WidgetState.hovered) ||
+          states.contains(WidgetState.pressed) ||
+          states.contains(WidgetState.focused);
+      return active ? const Color(0xE6FFFFFF) : const Color(0x80FFFFFF);
+    });
+    final button = TextButton(
+      onPressed: reveal,
+      style: ButtonStyle(
+        foregroundColor: foreground,
+        iconColor: foreground,
+        animationDuration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : AppTheme.hoverDuration,
+        textStyle: WidgetStatePropertyAll(
+          theme.textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w500,
+            letterSpacing: .3,
+            shadows: const [
+              Shadow(
+                color: Color(0x73000000),
+                blurRadius: 4,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(child: AppText(widget.revealLabel)),
+          const SizedBox(width: 4),
+          const Icon(SPIcons.chevronDown, size: 12),
+        ],
+      ),
+    );
+    // 橱窗按钮叠在海报上，用柔边暗影托住常态弱文字。
+    return widget.revealCentered
+        ? DecoratedBox(
+            decoration: const BoxDecoration(
+              borderRadius: AppTheme.controlRadius,
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x80000000),
+                  blurRadius: 12,
+                  spreadRadius: -3,
+                ),
+              ],
+            ),
+            child: button,
+          )
+        : button;
+  }
+
   @override
   Widget build(BuildContext context) {
     final fraction = widget.fallbackFraction ?? _state?.fraction;
@@ -403,20 +477,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
                 content,
                 if (blocked && widget.canReveal)
                   Positioned.fill(
-                    child: Center(
-                      child: TextButton(
-                        style: TextButton.styleFrom(
-                          backgroundColor: Colors.transparent,
-                          foregroundColor: Colors.white,
-                          overlayColor: Colors.transparent,
-                          side: BorderSide.none,
-                          textStyle: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(shadows: FilmTextStyles.shadows),
-                        ),
-                        onPressed: reveal,
-                        child: AppText(widget.revealLabel),
-                      ),
-                    ),
+                    child: Center(child: _revealBelowButton(context, reveal)),
                   ),
               ],
             )
@@ -425,10 +486,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
               children: [
                 content,
                 if (blocked && widget.canReveal)
-                  TextButton(
-                    onPressed: reveal,
-                    child: AppText(widget.revealLabel),
-                  )
+                  _revealBelowButton(context, reveal)
                 else if (!blocked && widget.footer != null)
                   widget.footer!,
               ],

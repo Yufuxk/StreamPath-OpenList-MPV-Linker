@@ -95,6 +95,19 @@ void main() {
     expect(dark.primaryContainer, const Color(0xFF143A78));
     expect(dark.onPrimaryContainer, const Color(0xFFD6E5FF));
     expect(dark.onSurfaceVariant, Colors.white.withValues(alpha: 0.55));
+    expect(
+      AppTheme.dark().textTheme.titleLarge!.color,
+      const Color(0xEBFFFFFF),
+    );
+    expect(
+      AppTheme.dark().textTheme.bodyMedium!.color,
+      const Color(0xD9FFFFFF),
+    );
+    expect(AppTheme.dark().textTheme.bodySmall!.fontFamily, 'Segoe UI');
+    expect(
+      AppTheme.dark(fontFamily: 'Arial').textTheme.bodySmall!.fontFamily,
+      'Arial',
+    );
   });
 
   test('磨砂主题保持主背景控制并建立可区分的表面层级', () {
