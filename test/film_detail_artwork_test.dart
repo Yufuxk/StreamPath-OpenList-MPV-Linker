@@ -3444,6 +3444,10 @@ void main() {
         matching: find.byType(FilmArtwork),
       );
       final sourceState = tester.state(sourceArtwork);
+      final sourceImage = tester.renderObject<RenderImage>(
+        find.descendant(of: sourceArtwork, matching: find.byType(RawImage)),
+      );
+      final anchor = sourceTag as FilmPosterAnchor;
       final start = tester.getRect(sourceHero);
       final points = [
         Offset(start.right - 8, start.top + 8),
@@ -3542,6 +3546,15 @@ void main() {
         isFalse,
       );
       expect(destination, const Rect.fromLTWH(24, 68, 180, 270));
+      // 模拟解码 LRU 淘汰 w342，并保留 live 图片索引。
+      final imageKey = await anchor.provider!.obtainKey(
+        ImageConfiguration.empty,
+      );
+      final imageCache = PaintingBinding.instance.imageCache;
+      expect(imageCache.evict(imageKey, includeLive: false), isTrue);
+      expect(imageCache.statusForKey(imageKey).keepAlive, isFalse);
+      expect(imageCache.statusForKey(imageKey).live, isTrue);
+      expect(sourceImage.image, isNotNull);
       final nav = Navigator.of(tester.element(find.byType(FilmDetailPage)));
       await mouse.moveTo(Offset.zero);
       nav.pop();
@@ -3549,14 +3562,36 @@ void main() {
       await tester.pump();
       expect(flight, findsOneWidget);
       expect(tester.getRect(flight).left, closeTo(destination.left, .5));
+      final returnedPixels = await sampleCover([destination.center]);
+      for (var channel = 0; channel < 4; channel++) {
+        expect(
+          returnedPixels[channel],
+          closeTo(sourcePixels[8 + channel], 6),
+          reason: 'The first return flight frame must paint the decoded poster',
+        );
+      }
       await tester.pump(const Duration(milliseconds: 210));
       expect(tester.getRect(flight).left, greaterThan(24));
-      await settle(tester);
-      expect(find.byType(FilmDetailPage), findsNothing);
-      expect(flight, findsNothing);
       final returnedHero = find.byWidgetPredicate(
         (w) => w is Hero && w.tag == sourceTag,
       );
+      await tester.pump(const Duration(milliseconds: 149));
+      final lastFlightPixels = await sampleCover([tester.getCenter(flight)]);
+      await tester.pump(const Duration(milliseconds: 2));
+      expect(flight, findsNothing);
+      final firstCardPixels = await sampleCover([
+        tester.getCenter(returnedHero),
+      ]);
+      for (var channel = 0; channel < 4; channel++) {
+        expect(
+          firstCardPixels[channel],
+          closeTo(lastFlightPixels[channel], 6),
+          reason:
+              'The source card must paint the same poster on the landing frame',
+        );
+      }
+      await settle(tester);
+      expect(find.byType(FilmDetailPage), findsNothing);
       expect(
         tester.state(
           find.descendant(of: returnedHero, matching: find.byType(FilmArtwork)),
@@ -3571,6 +3606,8 @@ void main() {
       );
       expect(tester.takeException(), isNull);
       await mouse.removePointer();
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(imageCache.statusForKey(imageKey).live, isFalse);
     });
   }
 
@@ -3720,6 +3757,9 @@ void main() {
       matching: find.byType(FilmArtwork),
     );
     final sourceState = tester.state(artwork);
+    final sourceImage = tester.renderObject<RenderImage>(
+      find.descendant(of: artwork, matching: find.byType(RawImage)),
+    );
     final provider = tester
         .widget<Image>(
           find.descendant(of: artwork, matching: find.byType(Image)),
@@ -3760,6 +3800,15 @@ void main() {
     final flight = find.byKey(const Key('film-connected-flight'));
     expect(flight, findsOneWidget);
     expect(tester.widget<Image>(flight).image, same(provider));
+    expect(
+      tester
+          .renderObject<RenderImage>(
+            find.descendant(of: flight, matching: find.byType(RawImage)),
+          )
+          .image!
+          .isCloneOf(sourceImage.image!),
+      isTrue,
+    );
     await settle(tester);
     Navigator.of(tester.element(find.byType(FilmDetailPage))).pop();
     await settle(tester);

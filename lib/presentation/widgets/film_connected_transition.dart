@@ -275,9 +275,23 @@ class FilmConnectedHeroController extends HeroController {
 /// 沿用 Navigator 的 Hero 交接与中途反向，不创建额外动画控制器。
 class FilmConnectedDetailRoute extends MaterialPageRoute<void> {
   FilmConnectedDetailRoute({required this.poster, required super.builder})
-    : super(allowSnapshotting: false);
+    : _posterStream = poster.provider!.resolve(ImageConfiguration.empty),
+      super(allowSnapshotting: false) {
+    _posterStream.addListener(_posterListener);
+  }
 
   final FilmPosterAnchor poster;
+  // 原卡片隐藏期间保留 live 图片流，飞行层与落位卡片可继续复用。
+  final ImageStream _posterStream;
+  final ImageStreamListener _posterListener = ImageStreamListener(
+    (frame, _) => frame.dispose(),
+  );
+
+  @override
+  void dispose() {
+    _posterStream.removeListener(_posterListener);
+    super.dispose();
+  }
 
   @override
   Duration get transitionDuration => const Duration(milliseconds: 360);
