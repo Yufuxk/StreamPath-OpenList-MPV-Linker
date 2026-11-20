@@ -119,6 +119,7 @@ class AppearanceConfig {
   }
 
   AppearanceConfig copyWith({
+    String? fontFamily,
     int? accentColor,
     SidebarDisplayMode? sidebarMode,
     bool? sidebarCompact,
@@ -127,7 +128,7 @@ class AppearanceConfig {
     style: style,
     material: material,
     glassOpacity: glassOpacity,
-    fontFamily: fontFamily,
+    fontFamily: fontFamily ?? this.fontFamily,
     accentColor: accentColor ?? this.accentColor,
     sidebarMode: sidebarMode ?? this.sidebarMode,
     sidebarCompact: sidebarCompact ?? this.sidebarCompact,

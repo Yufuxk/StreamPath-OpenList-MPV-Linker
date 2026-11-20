@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_acrylic/flutter_acrylic.dart' as acrylic;
 
 import '../../data/models/appearance_config.dart';
+import 'installed_fonts.dart';
 import 'window_appearance_status.dart';
 
 export 'window_appearance_status.dart';
@@ -229,8 +230,15 @@ class AppearanceController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// 首帧前恢复外观，默认样式不会初始化原生插件。
+  /// 首帧前恢复字体与窗口外观。
   Future<bool> restoreForStartup() async {
+    final savedFamily = _config.fontFamily;
+    if (savedFamily != null) {
+      final family = await InstalledFonts.resolveFamily(savedFamily);
+      if (family != savedFamily) {
+        _config = _config.copyWith(fontFamily: family);
+      }
+    }
     if (!_config.isGlass) return true;
     final restored = await apply(_config);
     if (!restored) {

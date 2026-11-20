@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../localization/app_localizations.dart';
-import 'film_text_styles.dart';
+import '../theme/app_theme.dart';
 
 /// 详情信息使用的文字轮廓徽标。
 class FilmCertificationBadge extends StatelessWidget {
@@ -14,10 +14,9 @@ class FilmCertificationBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
     final foreground = color ?? theme.colorScheme.onSurface;
-    final outlineAlpha = theme.brightness == Brightness.dark
-        ? foreground.a * .55
-        : .7;
+    final outlineAlpha = dark ? foreground.a * .55 : .7;
     final label = rating == 'NR'
         ? context.l10n.text('未分级')
         : context.l10n.format('影片分级：{value}', {'value': rating});
@@ -43,15 +42,18 @@ class FilmCertificationBadge extends StatelessWidget {
             rating,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: FilmTextStyles.metadata(
-              theme,
-              theme.textTheme.labelLarge!.copyWith(
-                color: foreground,
-                fontSize: _fontSize,
-                fontWeight: FontWeight.w700,
-                letterSpacing: .6,
-                height: 1.1,
-              ),
+            style: theme.textTheme.labelLarge!.copyWith(
+              inherit: false,
+              fontFamily: dark ? 'Sarasa UI SC' : AppTheme.defaultFontFamily,
+              fontFamilyFallback: dark
+                  ? const [AppTheme.defaultFontFamily]
+                  : const [],
+              color: foreground,
+              fontSize: _fontSize,
+              fontWeight: dark ? FontWeight.w400 : FontWeight.w700,
+              fontFeatures: dark ? const [FontFeature.tabularFigures()] : null,
+              letterSpacing: .6,
+              height: 1.1,
             ),
           ),
         ),

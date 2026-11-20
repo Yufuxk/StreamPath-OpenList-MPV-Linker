@@ -15,4 +15,17 @@ abstract final class InstalledFonts {
     }
     return values..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
   }
+
+  static Future<String> resolveFamily(String family) async {
+    if (kIsWeb || !Platform.isWindows) return family;
+    try {
+      return await _channel.invokeMethod<String>('resolveFontFamily', family) ??
+          family;
+    } on PlatformException catch (error) {
+      debugPrint('Failed to resolve interface font (code=${error.code})');
+    } on MissingPluginException {
+      debugPrint('Interface font channel is unavailable');
+    }
+    return family;
+  }
 }

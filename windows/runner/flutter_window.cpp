@@ -1,9 +1,9 @@
 #include "flutter_window.h"
 
 #include <windows.h>
+#include <dwrite.h>
 #include <dwmapi.h>
 #include <optional>
-#include <set>
 #include <shobjidl.h>
 #include <winternl.h>
 #include <wrl/client.h>
@@ -14,30 +14,61 @@
 
 namespace {
 
-std::vector<std::string> ReadInstalledFontFamilies(HWND window) {
-  HDC device = ::GetDC(window);
-  if (device == nullptr) return {};
-  std::set<std::wstring> families;
-  LOGFONTW query = {};
-  query.lfCharSet = DEFAULT_CHARSET;
-  ::EnumFontFamiliesExW(
-      device, &query,
-      [](const LOGFONTW* font, const TEXTMETRICW*, DWORD,
-         LPARAM value) -> int {
-        if (font->lfFaceName[0] != L'@') {
-          auto* names = reinterpret_cast<std::set<std::wstring>*>(value);
-          names->insert(font->lfFaceName);
-        }
-        return 1;
-      },
-      reinterpret_cast<LPARAM>(&families), 0);
-  ::ReleaseDC(window, device);
-  std::vector<std::string> result;
-  result.reserve(families.size());
-  for (const auto& family : families) {
-    result.push_back(Utf8FromUtf16(family.c_str()));
+std::optional<std::string> ReadFontFamilyName(IDWriteFontFamily* family) {
+  Microsoft::WRL::ComPtr<IDWriteLocalizedStrings> names;
+  if (FAILED(family->GetFamilyNames(&names))) return std::nullopt;
+  UINT32 index;
+  BOOL has_english;
+  if (FAILED(names->FindLocaleName(L"en-us", &index, &has_english))) {
+    return std::nullopt;
   }
-  return result;
+  if (!has_english) index = 0;
+  UINT32 length;
+  if (FAILED(names->GetStringLength(index, &length))) return std::nullopt;
+  std::wstring name(length + 1, L'\0');
+  if (FAILED(names->GetString(index, name.data(), length + 1))) {
+    return std::nullopt;
+  }
+  return Utf8FromUtf16(name.c_str());
+}
+
+std::optional<flutter::EncodableList> ReadInstalledFontFamilies(
+    IDWriteFontCollection* collection) {
+  flutter::EncodableList families;
+  const UINT32 count = collection->GetFontFamilyCount();
+  families.reserve(count);
+  for (UINT32 index = 0; index < count; ++index) {
+    Microsoft::WRL::ComPtr<IDWriteFontFamily> family;
+    if (FAILED(collection->GetFontFamily(index, &family))) return std::nullopt;
+    const auto name = ReadFontFamilyName(family.Get());
+    if (!name) return std::nullopt;
+    families.emplace_back(*name);
+  }
+  return families;
+}
+
+HRESULT ResolveFontFamily(IDWriteFactory* factory,
+                          IDWriteFontCollection* collection,
+                          const std::wstring& name,
+                          IDWriteFontFamily** family) {
+  UINT32 index;
+  BOOL exists;
+  const HRESULT lookup = collection->FindFamilyName(name.c_str(), &index, &exists);
+  if (FAILED(lookup)) return lookup;
+  if (exists) return collection->GetFontFamily(index, family);
+  if (name.size() >= LF_FACESIZE) return DWRITE_E_NOFONT;
+
+  // 旧设置可存储 GDI 的字重名称，例如「苹方 常规」。
+  LOGFONTW legacy{};
+  legacy.lfCharSet = DEFAULT_CHARSET;
+  wcscpy_s(legacy.lfFaceName, name.c_str());
+  Microsoft::WRL::ComPtr<IDWriteGdiInterop> interop;
+  const HRESULT setup = factory->GetGdiInterop(&interop);
+  if (FAILED(setup)) return setup;
+  Microsoft::WRL::ComPtr<IDWriteFont> font;
+  const HRESULT match = interop->CreateFontFromLOGFONT(&legacy, &font);
+  if (FAILED(match)) return match;
+  return font->GetFontFamily(family);
 }
 
 struct WindowsVersion {
@@ -385,12 +416,46 @@ bool FlutterWindow::OnCreate() {
           return;
         }
 
-        if (method == "getInstalledFonts") {
-          flutter::EncodableList fonts;
-          for (const auto& family : ReadInstalledFontFamilies(GetHandle())) {
-            fonts.emplace_back(family);
+        if (method == "getInstalledFonts" || method == "resolveFontFamily") {
+          Microsoft::WRL::ComPtr<IDWriteFactory> factory;
+          Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
+          if (FAILED(::DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                                          __uuidof(IDWriteFactory), &factory)) ||
+              FAILED(factory->GetSystemFontCollection(
+                  &collection, method == "getInstalledFonts"))) {
+            result->Error("font_query_failed", "Cannot read DirectWrite fonts");
+            return;
           }
-          result->Success(flutter::EncodableValue(fonts));
+          if (method == "getInstalledFonts") {
+            auto fonts = ReadInstalledFontFamilies(collection.Get());
+            if (fonts) {
+              result->Success(flutter::EncodableValue(std::move(*fonts)));
+            } else {
+              result->Error("font_query_failed", "Cannot enumerate font families");
+            }
+            return;
+          }
+
+          const auto* name = std::get_if<std::string>(call.arguments());
+          if (name == nullptr || name->empty()) {
+            result->Error("invalid_argument", "A font family name is required");
+            return;
+          }
+          Microsoft::WRL::ComPtr<IDWriteFontFamily> family;
+          const HRESULT resolved = ResolveFontFamily(
+              factory.Get(), collection.Get(), Utf16FromUtf8(*name), &family);
+          if (resolved == DWRITE_E_NOFONT) {
+            result->Success();
+            return;
+          }
+          if (SUCCEEDED(resolved)) {
+            const auto canonical = ReadFontFamilyName(family.Get());
+            if (canonical) {
+              result->Success(flutter::EncodableValue(*canonical));
+              return;
+            }
+          }
+          result->Error("font_query_failed", "Cannot resolve font family");
           return;
         }
 

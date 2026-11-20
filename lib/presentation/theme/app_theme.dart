@@ -12,6 +12,7 @@ import 'accent_color_controller.dart';
 abstract final class AppTheme {
   /// 固定主题基础色；系统强调色暂时不参与主题生成。
   static const Color _seedColor = Color(0xFF3B6FE8);
+  static const defaultFontFamily = 'Segoe UI';
   static const controlRadius = BorderRadius.all(Radius.circular(10));
   static const panelRadius = BorderRadius.all(Radius.circular(16));
   static const pillRadius = BorderRadius.all(Radius.circular(999));
@@ -249,11 +250,12 @@ abstract final class AppTheme {
             surfaceContainerHighest: glassTokens.floatingSurface,
           )
         : opaqueScheme;
+    final interfaceFont = fontFamily ?? defaultFontFamily;
     final base = ThemeData(
       useMaterial3: true,
       brightness: brightness,
       colorScheme: scheme,
-      fontFamily: fontFamily ?? 'Segoe UI',
+      fontFamily: interfaceFont,
       visualDensity: VisualDensity.standard,
       splashFactory: NoSplash.splashFactory,
       extensions: [glassTokens],
@@ -550,7 +552,10 @@ abstract final class AppTheme {
                 alpha: isDark ? 0.94 : 0.96,
               )
             : scheme.surfaceContainerHigh,
-        contentTextStyle: TextStyle(color: scheme.onSurface),
+        contentTextStyle: TextStyle(
+          color: scheme.onSurface,
+          fontFamily: interfaceFont,
+        ),
         elevation: glass ? 8 : 2,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),

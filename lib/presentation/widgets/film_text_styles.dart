@@ -4,16 +4,6 @@ import '../theme/app_theme.dart';
 
 /// 影视背景上的共享文字样式。
 abstract final class FilmTextStyles {
-  static TextStyle metadata(ThemeData theme, TextStyle style) =>
-      theme.brightness == Brightness.dark
-      ? style.copyWith(
-          fontFamily: 'Sarasa UI SC',
-          fontFamilyFallback: [?style.fontFamily, ...?style.fontFamilyFallback],
-          fontWeight: FontWeight.w400,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        )
-      : style;
-
   // 沿自适应黑白过渡淡化白字，保留纯黑前景的对比度。
   static Color adaptiveTone(ThemeData theme, Color foreground, Color tone) =>
       theme.brightness == Brightness.dark

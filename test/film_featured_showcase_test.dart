@@ -875,7 +875,14 @@ void main() {
     'showcase metadata uses individual pills and relaxed overview text',
     (tester) async {
       await prepare(tester);
-      await tester.pumpWidget(frame(showcase()));
+      await tester.pumpWidget(
+        frame(
+          Theme(
+            data: AppTheme.dark(fontFamily: 'PingFang SC'),
+            child: showcase(),
+          ),
+        ),
+      );
       await settle(tester);
       expect(find.text('Drama'), findsOneWidget);
       expect(find.text('★ 8.2'), findsOneWidget);
@@ -884,8 +891,7 @@ void main() {
         final style = DefaultTextStyle.of(
           tester.element(find.text(label)),
         ).style;
-        expect(style.fontFamily, 'Sarasa UI SC');
-        expect(style.fontFamilyFallback, contains('Segoe UI'));
+        expect(style.fontFamily, 'PingFang SC');
         expect(style.fontWeight, FontWeight.w400);
         expect(style.fontFeatures, [const ui.FontFeature.tabularFigures()]);
       }

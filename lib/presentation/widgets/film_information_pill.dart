@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../theme/glass_tokens.dart';
-import 'film_text_styles.dart';
 import 'glass_surface.dart';
 
 /// 作品信息胶囊；详情页与橱窗共用同一材质与内边距。
@@ -19,7 +18,12 @@ class FilmInformationPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final label = theme.textTheme.labelMedium!.copyWith(color: foreground);
+    final dark = theme.brightness == Brightness.dark;
+    final label = theme.textTheme.labelMedium!.copyWith(
+      color: foreground,
+      fontWeight: dark ? FontWeight.w400 : null,
+      fontFeatures: dark ? const [FontFeature.tabularFigures()] : null,
+    );
     return GlassSurface(
       level: GlassSurfaceLevel.content,
       borderRadius: AppTheme.pillRadius,
@@ -29,10 +33,7 @@ class FilmInformationPill extends StatelessWidget {
       blur: true,
       blurSigma: 10,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
-      child: DefaultTextStyle(
-        style: FilmTextStyles.metadata(theme, label),
-        child: child,
-      ),
+      child: DefaultTextStyle(style: label, child: child),
     );
   }
 }

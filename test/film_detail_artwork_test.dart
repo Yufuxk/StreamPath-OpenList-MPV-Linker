@@ -1663,7 +1663,7 @@ void main() {
           DefaultTextStyle.of(
             tester.element(find.text('2020')),
           ).style.fontFamily,
-          'Sarasa UI SC',
+          AppTheme.defaultFontFamily,
         );
         final backgroundKey = tester
             .widget<AdaptiveFilmBackdrop>(find.byType(AdaptiveFilmBackdrop))
@@ -2507,7 +2507,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('详情信息逐项胶囊排列且分级保持末位', (tester) async {
+  testWidgets('详情信息胶囊跟随界面字体且分级保持末位', (tester) async {
     await prepare(tester, count: 1);
     final work = works.single;
     await tester.runAsync(() async {
@@ -2536,11 +2536,14 @@ void main() {
     });
     await tester.pumpWidget(
       frame(
-        FilmDetailPage(
-          catalog: catalog,
-          workId: work.id,
-          initialWork: works.single,
-          onOpenItem: (_) async {},
+        Theme(
+          data: AppTheme.dark(fontFamily: 'PingFang SC'),
+          child: FilmDetailPage(
+            catalog: catalog,
+            workId: work.id,
+            initialWork: works.single,
+            onOpenItem: (_) async {},
+          ),
         ),
       ),
     );
@@ -2556,7 +2559,7 @@ void main() {
     for (final label in ['★ 8.6  TMDB', '2013', 'Animation', 'Drama']) {
       expect(
         DefaultTextStyle.of(tester.element(find.text(label))).style.fontFamily,
-        'Sarasa UI SC',
+        'PingFang SC',
       );
     }
     final badge = find.byType(FilmCertificationBadge);
@@ -2565,6 +2568,7 @@ void main() {
     );
     expect(badgeText.style!.color, AppTheme.darkSecondaryColor);
     expect(badgeText.style!.fontFamily, 'Sarasa UI SC');
+    expect(badgeText.style!.fontFamilyFallback, [AppTheme.defaultFontFamily]);
     expect(badgeText.style!.fontWeight, FontWeight.w400);
     final container = tester.widget<Container>(
       find.descendant(of: badge, matching: find.byType(Container)),
