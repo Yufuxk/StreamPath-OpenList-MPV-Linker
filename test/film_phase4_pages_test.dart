@@ -23,6 +23,7 @@ import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/local_root_config.dart';
+import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
@@ -44,6 +45,7 @@ import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.da
 import 'package:streampath/presentation/widgets/film_work_menu.dart';
 import 'package:streampath/presentation/widgets/startup_overlay.dart';
 
+import 'helpers/pump_until.dart';
 import 'helpers/shell_test_app_state.dart';
 
 void main() {
@@ -1503,6 +1505,128 @@ void main() {
     await settle(tester);
     expect(tester.widget<TabBar>(find.byType(TabBar)).tabs, hasLength(3));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('影视媒体中心按来源限制续播并即时更新共享分组', (tester) async {
+    await prepare(tester);
+    Future<void> mutate(Future<void> Function() action) async {
+      var done = false;
+      late Future<void> pending;
+      await tester.runAsync(() async {
+        pending = action().whenComplete(() => done = true);
+      });
+      await pumpUntil(tester, () => done, reason: 'Media update completes');
+      await tester.runAsync(() => pending);
+      await settle(tester);
+    }
+
+    Future<void> configure(MediaLibraryConfig mediaLibrary) async {
+      final store = app.configStore;
+      final current = store.current;
+      await store.save(
+        current.copyWithGlobalSettings(
+          player: current.toPlayerConfig(),
+          appearance: current.appearance,
+          mediaLibrary: mediaLibrary,
+        ),
+      );
+      await app.applyMediaLibraryConfig(current.mediaLibrary);
+    }
+
+    await tester.runAsync(() async {
+      final store = app.configStore;
+      await store.save(
+        store.current.withLocalRoots([
+          ...store.current.localRoots,
+          LocalRootConfig(
+            rootId: 'second',
+            displayName: 'Second source',
+            path: p.join(temp.path, 'second'),
+          ),
+        ]),
+      );
+      await configure(const MediaLibraryConfig(maxContinuePerLane: 1));
+      final records = app.filmMediaLibraryStore!;
+      await app.initializeFilmPlayback();
+      for (final (index, source) in [
+        root.sourceId,
+        root.sourceId,
+        'local:second',
+      ].indexed) {
+        final item = MediaLibraryItem(
+          sourceId: source,
+          sourceKind: MediaSourceKind.local,
+          parentPath: 'Movies',
+          name: 'Recorded$index.mkv',
+          kind: MediaLibraryKind.video,
+        );
+        await records.recordPlayback(item);
+        await app.filmProgressService.saveProgress(
+          url: app.resolveMediaLibraryTarget(item)!,
+          profileId: source,
+          positionMs: 20000,
+          durationMs: 80000,
+        );
+      }
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmMediaCenterPage(
+          onOpenItem: (_) {},
+          onContinueSelected: (_) {},
+          onContinueMenu: (_, _) {},
+          onOpenLegacyItem: (_) {},
+        ),
+      ),
+    );
+    await settle(tester);
+    await tester.tap(find.text('继续播放'));
+    await settle(tester);
+    final cards = find.byType(FilmContinueCard);
+    expect(
+      tester
+          .widgetList<FilmContinueCard>(cards)
+          .map((card) => card.record.item.sourceId),
+      unorderedEquals([root.sourceId, 'local:second']),
+    );
+
+    await mutate(
+      () => configure(const MediaLibraryConfig(maxContinuePerLane: 2)),
+    );
+    expect(cards, findsNWidgets(3));
+
+    final filter = find.byKey(const Key('media-library-source-filter'));
+    await tester.tap(filter);
+    await settle(tester);
+    expect(find.text('本地挂载文件夹共享'), findsOneWidget);
+    await tester.tap(find.text('本地挂载文件夹共享'));
+    await settle(tester);
+    await mutate(
+      () => configure(
+        const MediaLibraryConfig(
+          sharingMode: MediaLibrarySharingMode.independent,
+          maxContinuePerLane: 2,
+        ),
+      ),
+    );
+    await tester.tap(filter);
+    await settle(tester);
+    expect(find.text('本地挂载文件夹共享'), findsNothing);
+    expect(find.text('Second source'), findsOneWidget);
+    await tester.tap(find.text('Second source'));
+    await settle(tester);
+    await tester.tap(find.text('继续播放'));
+    await settle(tester);
+    expect(
+      tester.widget<FilmContinueCard>(cards).record.item.sourceId,
+      'local:second',
+    );
+    await mutate(() => app.filmMediaLibraryStore!.clearContinuePlayback());
+    expect(cards, findsNothing);
+    expect(find.text('还没有可继续播放的内容'), findsOneWidget);
+    await tester.tap(find.text('最近播放'));
+    await settle(tester);
+    expect(cards, findsOneWidget);
   });
 
   testWidgets('新媒体中心继续播放与最近播放空状态复用共享面板', (tester) async {

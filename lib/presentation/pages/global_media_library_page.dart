@@ -2,12 +2,15 @@ import '../widgets/sp_menu.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/models/media_library_config.dart';
 import '../../data/models/media_library_item.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import 'media_library_page.dart';
 import '../controllers/film_catalog_controller.dart';
+
+enum _SourceScope { all, local, network }
 
 /// 从侧边栏查看全部已挂载来源的媒体记录。
 class GlobalMediaLibraryPage extends StatefulWidget {
@@ -40,7 +43,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
     with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => widget.filmCatalog != null && !widget.filmCenter;
-  String? _selectedSource;
+  Object _selectedSource = _SourceScope.all;
   late final Future<void> _ready;
   @override
   void initState() {
@@ -99,14 +102,29 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
           ? const SizedBox.shrink()
           : const Scaffold(body: Center(child: AppText('没有可用的媒体来源')));
     }
-    final selected = names.containsKey(_selectedSource)
+    final local = names.keys.where((id) => id.startsWith('local:')).toSet();
+    final network = names.keys.where((id) => !local.contains(id)).toSet();
+    final mode = config.mediaLibrary.sharingMode;
+    final scopes = <Object, Set<String>>{
+      _SourceScope.all: names.keys.toSet(),
+      if (local.length > 1 &&
+          (mode == MediaLibrarySharingMode.localShared ||
+              mode == MediaLibrarySharingMode.networkAndLocalShared))
+        _SourceScope.local: local,
+      if (network.length > 1 &&
+          (mode == MediaLibrarySharingMode.networkShared ||
+              mode == MediaLibrarySharingMode.networkAndLocalShared))
+        _SourceScope.network: network,
+      for (final id in names.keys) id: {id},
+    };
+    final selected = scopes.containsKey(_selectedSource)
         ? _selectedSource
-        : null;
-    final sourceIds = selected == null ? names.keys.toSet() : {selected};
+        : _SourceScope.all;
+    final sourceIds = scopes[selected]!;
     final primary = sourceIds.firstOrNull ?? '';
     final filterWidth = MediaQuery.sizeOf(context).width < 680 ? 180.0 : 220.0;
     return MediaLibraryPage(
-      key: ValueKey(selected ?? 'all'),
+      key: ValueKey(selected),
       filmCatalog: widget.filmCatalog,
       onReadyChanged: widget.onReadyChanged,
       filmCenter: widget.filmCenter,
@@ -118,7 +136,7 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
       sourceIds: sourceIds,
       sourceNames: names,
       store: store,
-      config: widget.filmCatalog == null ? config.mediaLibrary : store.config,
+      config: config.mediaLibrary,
       directoryCache: app.directoryCache,
       videoProgressService: widget.filmCatalog == null
           ? app.progressService
@@ -140,35 +158,32 @@ class _GlobalMediaLibraryPageState extends State<GlobalMediaLibraryPage>
       sourceFilter: SizedBox(
         key: const Key('media-library-source-filter'),
         width: filterWidth,
-        child: SPDropdownButtonFormField<String>(
-          key: ValueKey('source-$selected-${names.keys.join('|')}'),
-          initialValue: selected ?? '',
+        child: SPDropdownButtonFormField<Object>(
+          key: ValueKey((selected, scopes.keys.join('|'))),
+          initialValue: selected,
           isExpanded: true,
           dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
           borderRadius: AppTheme.dropdownBorderRadius,
           decoration: const InputDecoration(),
           items: [
-            const DropdownMenuItem(
-              value: '',
-              child: AppText(
-                '全部已挂载来源',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            for (final entry in names.entries)
+            for (final scope in scopes.keys)
               DropdownMenuItem(
-                value: entry.key,
+                value: scope,
                 child: AppText(
-                  entry.value,
+                  switch (scope) {
+                    _SourceScope.all => '全部已挂载来源',
+                    _SourceScope.local => '本地挂载文件夹共享',
+                    _SourceScope.network => '网络存储共享',
+                    _ => names[scope]!,
+                  },
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
           ],
-          onChanged: (value) => setState(() {
-            _selectedSource = value == '' ? null : value;
-          }),
+          onChanged: (value) {
+            if (value != null) setState(() => _selectedSource = value);
+          },
         ),
       ),
     );

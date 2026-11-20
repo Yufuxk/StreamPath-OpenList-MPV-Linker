@@ -561,6 +561,51 @@ const filmCatalogTranslations = <String, List<String>>{
   ],
   "旧媒体中心": ["舊媒體中心", "旧メディアセンター", "Legacy media center"],
   "返回新媒体中心": ["返回新媒體中心", "新メディアセンターに戻る", "Return to new media center"],
+  "决定文件夹中的共享范围，以及媒体中心可用的来源分组。": [
+    "決定資料夾中的共用範圍，以及媒體中心可用的來源群組。",
+    "フォルダーでの共有範囲と、メディアセンターで選べるソースグループを設定します。",
+    "Sets what folders share and which source groups are available in the media center.",
+  ],
+  "影视作品收藏与旧版收藏分别计算，每个来源最多 {max} 条。": [
+    "影視作品收藏與舊版收藏分別計算，每個來源最多 {max} 筆。",
+    "作品のお気に入りと旧版のお気に入りは別々に数え、ソースごとに最大 {max} 件です。",
+    "Film and legacy favorites are counted separately, up to {max} per source.",
+  ],
+  "影视库合计影片和光盘；旧版按视频、音频和 ISO 分计，最高 {max} 条。": [
+    "影視庫合計影片與光碟；舊版依影片、音訊及 ISO 分開計算，最多 {max} 筆。",
+    "作品ライブラリでは動画とディスクを合算し、旧版では動画・音声・ISO を別々に数えます。最大 {max} 件です。",
+    "The film library counts videos and discs together. Legacy video, audio and ISO are counted separately, up to {max}.",
+  ],
+  "用于旧媒体中心，每个来源最多 {max} 条。": [
+    "適用於舊媒體中心，每個來源最多 {max} 筆。",
+    "旧メディアセンターに適用され、ソースごとに最大 {max} 件です。",
+    "Applies to the legacy media center, up to {max} per source.",
+  ],
+  "清理范围包括所有来源的影视库和旧媒体中心记录。": [
+    "清理範圍包含所有來源的影視庫及舊媒體中心記錄。",
+    "作品ライブラリと旧メディアセンターの全ソースが対象です。",
+    "Cleanup applies to all sources in the film library and the legacy media center.",
+  ],
+  "将清除所有来源的影视作品、目录及媒体文件收藏。": [
+    "將清除所有來源的影視作品、目錄及媒體檔案收藏。",
+    "すべてのソースの作品、フォルダー、メディアファイルのお気に入りを消去します。",
+    "Clears film, folder and media file favorites from all sources.",
+  ],
+  "将隐藏所有来源的继续播放项，保留最近播放与播放进度。再次播放后，对应会话可重新出现。": [
+    "將隱藏所有來源的繼續播放項目，保留最近播放與播放進度。再次播放後，對應的工作階段可重新出現。",
+    "すべてのソースの「続きから再生」を非表示にし、再生履歴と再生位置を保持します。再生すると、該当するセッションが再び表示されます。",
+    "Hides Continue Watching for all sources and keeps history and progress. Playing again can restore the corresponding session.",
+  ],
+  "将清除所有来源的最近播放及对应的继续播放项，保留播放进度。": [
+    "將清除所有來源的最近播放及對應的繼續播放項目，保留播放進度。",
+    "すべてのソースの再生履歴と対応する「続きから再生」を消去し、再生位置を保持します。",
+    "Clears recent playback and the corresponding Continue Watching entries from all sources. Playback progress is kept.",
+  ],
+  "将清除所有来源的最近访问目录，保留目录缓存与收藏。": [
+    "將清除所有來源的最近存取目錄，保留目錄快取與收藏。",
+    "すべてのソースの最近開いたフォルダーを消去し、フォルダーのキャッシュとお気に入りを保持します。",
+    "Clears recently visited folders from all sources and keeps the directory cache and favorites.",
+  ],
   "已播放 {time}": ["已播放 {time}", "再生済み {time}", "Played {time}"],
   "读取媒体资产失败": ["讀取媒體資產失敗", "メディア記録を読み込めません", "Cannot read media records"],
   "当前最多同时保留 {count} 个播放会话，请先关闭或删除一个下边栏后再播放。": [

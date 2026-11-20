@@ -12,6 +12,7 @@ import '../models/film_fast_task.dart';
 import '../models/film_directory_exclusions.dart';
 import '../models/media_source.dart';
 import '../models/film_home_section.dart';
+import '../models/media_library_config.dart';
 import '../models/media_library_item.dart';
 import '../models/film_watch_state.dart';
 import '../models/film_extra.dart';
@@ -40,6 +41,7 @@ part 'film_catalog_metadata.dart';
 class FilmCatalogStore extends ChangeNotifier {
   FilmCatalogStore._(this._db);
   final Database _db;
+  int _maxFavoritesPerSource = MediaLibraryConfig.defaultMaxFavoritesPerSource;
   FilmExtraRules extraRules = const FilmExtraRules();
   Future<void>? _extraTask;
   bool _closing = false;
@@ -1677,10 +1679,13 @@ class FilmCatalogStore extends ChangeNotifier {
 
   Future<void> setFavorite(int workId, bool value) async {
     if (value) {
-      await _db.insert('work_favorites', {
-        'work_id': workId,
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      await _db.transaction((txn) async {
+        await txn.insert('work_favorites', {
+          'work_id': workId,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        await _trimFavorites(txn);
+      });
     } else {
       await _db.delete(
         'work_favorites',
@@ -1691,11 +1696,40 @@ class FilmCatalogStore extends ChangeNotifier {
     _notifyPresentation();
   }
 
-  Future<void> clearFavorites(String sourceId) async {
-    await _db.rawDelete(
-      'DELETE FROM work_favorites WHERE work_id IN (SELECT r.work_id FROM resources r JOIN catalog_roots c ON c.id = r.root_id WHERE c.source_id = ?)',
-      [sourceId],
-    );
+  Future<void> applyFavoritesLimit(int limit) async {
+    _maxFavoritesPerSource = limit;
+    if (await _trimFavorites(_db) > 0) _notifyPresentation();
+  }
+
+  Future<int> _trimFavorites(DatabaseExecutor db) => db.rawDelete(
+    '''
+    WITH memberships AS (
+      SELECT DISTINCT c.source_id, f.work_id, f.created_at
+      FROM work_favorites f
+      JOIN resources r ON r.work_id = f.work_id
+      JOIN catalog_roots c ON c.id = r.root_id
+    ), ranked AS (
+      SELECT work_id, ROW_NUMBER() OVER (
+        PARTITION BY source_id ORDER BY created_at DESC, work_id DESC
+      ) AS position
+      FROM memberships
+    )
+    DELETE FROM work_favorites WHERE work_id IN (
+      SELECT work_id FROM ranked WHERE position > ?
+    )
+    ''',
+    [_maxFavoritesPerSource],
+  );
+
+  Future<void> clearFavorites([String? sourceId]) async {
+    if (sourceId == null) {
+      await _db.delete('work_favorites');
+    } else {
+      await _db.rawDelete(
+        'DELETE FROM work_favorites WHERE work_id IN (SELECT r.work_id FROM resources r JOIN catalog_roots c ON c.id = r.root_id WHERE c.source_id = ?)',
+        [sourceId],
+      );
+    }
     _notifyPresentation();
   }
 

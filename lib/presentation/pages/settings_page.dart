@@ -26,7 +26,6 @@ import '../../data/models/appearance_config.dart';
 import '../../data/models/accent_color_preset.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/media_library_config.dart';
-import '../../data/models/media_library_item.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/player_config.dart';
@@ -462,13 +461,10 @@ class SettingsPageState extends State<SettingsPage> {
       }
       appState.refreshOpenListIndexSchedule();
       await appState.applyDirectoryMemoryMode();
-      final mediaLibraryStore = appState.mediaLibraryStore;
-      if (mediaLibraryStore != null) {
-        try {
-          await mediaLibraryStore.applyConfig(mediaLibraryConfig);
-        } catch (error) {
-          throw AppException.storage('配置已保存，但媒体中心容量应用失败', error);
-        }
+      try {
+        await appState.applyMediaLibraryConfig(currentConfig.mediaLibrary);
+      } catch (error) {
+        throw AppException.storage('配置已保存，但媒体中心容量应用失败', error);
       }
       final cacheStore = appState.cachePolicyConfigStore;
       if (cacheStore != null && !await cacheStore.save(cacheConfig)) {
@@ -744,6 +740,7 @@ class SettingsPageState extends State<SettingsPage> {
       final appearanceController = context.read<AppearanceController>();
       final defaultConfig = StreamPathConfig.defaults();
       final defaultAppearance = defaultConfig.appearance;
+      final previousMediaLibrary = appState.configStore.current.mediaLibrary;
       final previousAppearance = appearanceController.config;
       final appearanceChanged =
           previousAppearance.style != defaultAppearance.style ||
@@ -767,13 +764,10 @@ class SettingsPageState extends State<SettingsPage> {
         }
         rethrow;
       }
-      final mediaLibraryStore = appState.mediaLibraryStore;
-      if (mediaLibraryStore != null) {
-        try {
-          await mediaLibraryStore.applyConfig(defaultConfig.mediaLibrary);
-        } catch (error) {
-          throw AppException.storage('主配置已重置，但媒体中心容量恢复失败', error);
-        }
+      try {
+        await appState.applyMediaLibraryConfig(previousMediaLibrary);
+      } catch (error) {
+        throw AppException.storage('主配置已重置，但媒体中心容量恢复失败', error);
       }
 
       final cacheStore = appState.cachePolicyConfigStore;
@@ -911,48 +905,30 @@ class SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  String? _currentMediaLibrarySourceId(AppState appState) {
-    final active = appState.mediaSourceId;
-    if (active != null) return active;
-    final config = appState.configStore.current;
-    if (!config.isConnectionComplete) return null;
-    return mediaSourceId(baseUrl: config.serverUrl, username: config.username);
-  }
-
   Future<void> _confirmAndClearMediaLibrary(
     _MediaLibraryCleanupTarget target,
   ) async {
     final appState = context.read<AppState>();
-    final store = appState.mediaLibraryStore;
-    final sourceId = _currentMediaLibrarySourceId(appState);
-    if (store == null || sourceId == null) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SPNotice(content: AppText('请先保存完整服务器信息，再清理媒体中心记录')),
-        );
-      return;
-    }
 
     final (title, description, successMessage) = switch (target) {
       _MediaLibraryCleanupTarget.favorites => (
         '清空收藏列表？',
-        '将清除当前来源的媒体、目录、视频、STRM、音频和 ISO 收藏。',
+        '将清除所有来源的影视作品、目录及媒体文件收藏。',
         '收藏列表已清空',
       ),
       _MediaLibraryCleanupTarget.continuePlayback => (
         '清空继续播放列表？',
-        '只隐藏当前来源已有的媒体中心继续播放项；不会删除 SQLite、watch_later、正式或临时续播点，也不会清除最近播放。再次播放后对应会话可重新出现。',
+        '将隐藏所有来源的继续播放项，保留最近播放与播放进度。再次播放后，对应会话可重新出现。',
         '继续播放列表已清空',
       ),
       _MediaLibraryCleanupTarget.recentPlayback => (
         '清空最近播放列表？',
-        '将清除当前来源的视频、音频和 ISO 最近播放记录，并同步移除这些记录在媒体中心的继续播放入口；不会删除底层播放进度。',
+        '将清除所有来源的最近播放及对应的继续播放项，保留播放进度。',
         '最近播放列表已清空',
       ),
       _MediaLibraryCleanupTarget.recentDirectories => (
         '清空最近目录列表？',
-        '将清除当前来源的最近访问目录，不删除目录缓存或收藏。',
+        '将清除所有来源的最近访问目录，保留目录缓存与收藏。',
         '最近目录列表已清空',
       ),
     };
@@ -979,17 +955,27 @@ class SettingsPageState extends State<SettingsPage> {
 
     setState(() => _clearingMediaLibrary = true);
     try {
-      await switch (target) {
-        _MediaLibraryCleanupTarget.favorites => store.clearFavorites(sourceId),
-        _MediaLibraryCleanupTarget.continuePlayback =>
-          store.clearContinuePlayback(sourceId),
-        _MediaLibraryCleanupTarget.recentPlayback =>
-          store.clearAllPlaybackHistory(sourceId),
-        _MediaLibraryCleanupTarget.recentDirectories =>
-          store.clearRecentDirectories(sourceId),
-      };
+      final film = appState.filmMediaLibraryStore;
+      final legacy = appState.mediaLibraryStore;
+      if (legacy == null && target != _MediaLibraryCleanupTarget.favorites) {
+        throw AppException.storage('读取媒体资产失败');
+      }
+      if (film != null && target == _MediaLibraryCleanupTarget.recentPlayback) {
+        await appState.initializeFilmPlayback();
+      }
+      for (final store in [legacy, film].nonNulls) {
+        await switch (target) {
+          _MediaLibraryCleanupTarget.favorites => store.clearFavorites(),
+          _MediaLibraryCleanupTarget.continuePlayback =>
+            store.clearContinuePlayback(),
+          _MediaLibraryCleanupTarget.recentPlayback =>
+            store.clearAllPlaybackHistory(),
+          _MediaLibraryCleanupTarget.recentDirectories =>
+            store.clearRecentDirectories(),
+        };
+      }
       if (target == _MediaLibraryCleanupTarget.favorites) {
-        await (await appState.getFilmCatalog()).store.clearFavorites(sourceId);
+        await (await appState.getFilmCatalogStore()).clearFavorites();
       }
       if (target == _MediaLibraryCleanupTarget.continuePlayback ||
           target == _MediaLibraryCleanupTarget.recentPlayback) {
@@ -2490,6 +2476,7 @@ class SettingsPageState extends State<SettingsPage> {
       contextMenuBuilder: buildClipboardHistoryMenu,
       decoration: InputDecoration(
         helperText: helperText,
+        helperMaxLines: 3,
         suffixText: context.l10n.text('条'),
         prefixIcon: Icon(icon),
         border: const OutlineInputBorder(),
@@ -2576,7 +2563,7 @@ class SettingsPageState extends State<SettingsPage> {
               Align(
                 alignment: Alignment.centerLeft,
                 child: AppText(
-                  '决定收藏与最近记录是否跨来源共享',
+                  '决定文件夹中的共享范围，以及媒体中心可用的来源分组。',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
@@ -2636,7 +2623,7 @@ class SettingsPageState extends State<SettingsPage> {
                   label: '收藏保存上限',
                   icon: SPIcons.favorite,
                   helperText: context.l10n.format(
-                    '目录、视频、STRM、音频和 ISO 合计；系统最高 {max} 条',
+                    '影视作品收藏与旧版收藏分别计算，每个来源最多 {max} 条。',
                     {'max': MediaLibraryConfig.systemMaxFavoritesPerSource},
                   ),
                   maximum: MediaLibraryConfig.systemMaxFavoritesPerSource,
@@ -2647,7 +2634,7 @@ class SettingsPageState extends State<SettingsPage> {
                   label: '继续播放显示上限',
                   icon: SPIcons.play,
                   helperText: context.l10n.format(
-                    '视频、音频、ISO 各自计算；系统最高 {max} 条',
+                    '影视库合计影片和光盘；旧版按视频、音频和 ISO 分计，最高 {max} 条。',
                     {'max': MediaLibraryConfig.systemMaxContinuePerLane},
                   ),
                   maximum: MediaLibraryConfig.systemMaxContinuePerLane,
@@ -2673,7 +2660,7 @@ class SettingsPageState extends State<SettingsPage> {
                   controller: _mediaLibraryRecentDirectoriesController,
                   label: '最近目录保存上限',
                   icon: SPIcons.folderOpen,
-                  helperText: context.l10n.format('当前来源单独计算；系统最高 {max} 条', {
+                  helperText: context.l10n.format('用于旧媒体中心，每个来源最多 {max} 条。', {
                     'max':
                         MediaLibraryConfig.systemMaxRecentDirectoriesPerSource,
                   }),
@@ -2696,7 +2683,7 @@ class SettingsPageState extends State<SettingsPage> {
           key: const Key('media-library-cleanup-section'),
           icon: SPIcons.erase,
           title: '记录清理',
-          description: '只处理当前已连接或已保存服务器来源的媒体中心个人资产。',
+          description: '清理范围包括所有来源的影视库和旧媒体中心记录。',
           child: Align(
             alignment: Alignment.centerLeft,
             child: Wrap(

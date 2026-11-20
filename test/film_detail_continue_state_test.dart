@@ -237,7 +237,13 @@ void main() {
     });
   }
 
-  for (final scenario in ['strm', 'eof', 'older-session', 'browser-store']) {
+  for (final scenario in [
+    'strm',
+    'eof',
+    'older-session',
+    'browser-store',
+    'bulk-clear',
+  ]) {
     final isStrm = scenario == 'strm';
     final name = isStrm ? 'Movie.strm' : 'Movie.mkv';
     testWidgets('mounted movie and home agree after $scenario', (tester) async {
@@ -415,32 +421,46 @@ void main() {
           expect(detailText('继续播放'), findsOneWidget);
           tester.widget<FilmContinueCard>(detailCards).onTap();
           expect(selected?.playbackSessionId, 'movie');
-          await mutate(() async {
-            final journal = await File('${dir.path}/progress.jsonl').writeAsString(
-              '${jsonEncode({'epoch': 'launch', 'outcome': 'completed', 'reason': 'eof', 'playlist_pos': 0, 'path': url, 'position': 97, 'duration': 120})}\n',
-            );
-            await const MpvPlaybackProgressSynchronizer().sync(
-              progressService: app.filmProgressService,
-              profileId: 'local:fixture',
-              entries: [MediaEntry(url: url)],
-              watchLaterDirectory: dir,
-              journalFile: journal,
-              expectedEpoch: 'launch',
-            );
-            expect(
-              await app.filmProgressService.getResumeProgress(
-                url,
-                profileId: 'local:fixture',
-              ),
-              isNull,
-            );
-            if (scenario != 'eof') {
-              await records.dismissVideoContinueSession(
-                'local:fixture',
-                'movie',
+          if (scenario == 'bulk-clear') {
+            await mutate(records.clearContinuePlayback);
+            await tester.runAsync(() async {
+              expect(
+                (await app.filmProgressService.getResumeProgress(
+                  url,
+                  profileId: 'local:fixture',
+                ))?.positionMs,
+                30000,
               );
-            }
-          });
+            });
+          } else {
+            await mutate(() async {
+              final journal = await File('${dir.path}/progress.jsonl')
+                  .writeAsString(
+                    '${jsonEncode({'epoch': 'launch', 'outcome': 'completed', 'reason': 'eof', 'playlist_pos': 0, 'path': url, 'position': 97, 'duration': 120})}\n',
+                  );
+              await const MpvPlaybackProgressSynchronizer().sync(
+                progressService: app.filmProgressService,
+                profileId: 'local:fixture',
+                entries: [MediaEntry(url: url)],
+                watchLaterDirectory: dir,
+                journalFile: journal,
+                expectedEpoch: 'launch',
+              );
+              expect(
+                await app.filmProgressService.getResumeProgress(
+                  url,
+                  profileId: 'local:fixture',
+                ),
+                isNull,
+              );
+              if (scenario != 'eof') {
+                await records.dismissVideoContinueSession(
+                  'local:fixture',
+                  'movie',
+                );
+              }
+            });
+          }
           await settle(tester);
         }
         expect(detailText('继续播放'), findsNothing);
@@ -468,7 +488,8 @@ void main() {
             audio: false,
           );
           expect(history.first.playbackSessionId, 'movie');
-          expect(history.first.continueCompleted, isTrue);
+          expect(history.first.continueDismissed, isTrue);
+          expect(history.first.continueCompleted, scenario != 'bulk-clear');
           expect(history, hasLength(scenario == 'older-session' ? 2 : 1));
         }
         await mutate(() async {

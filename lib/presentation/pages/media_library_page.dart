@@ -3,6 +3,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_notice.dart';
@@ -35,6 +36,7 @@ import '../widgets/cinematic_states.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/section_switcher.dart';
 import '../controllers/film_catalog_controller.dart';
+import '../state/app_state.dart';
 
 enum _FavoriteLane { media, video, audio, iso }
 
@@ -249,6 +251,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
               .map((root) => (root.id, root.sourceId, root.path))
               .toSet() ??
           <(int, String, String)>{};
+      unawaited(_loadAll(showLoading: false));
+    } else if (oldWidget.config.maxContinuePerLane !=
+        widget.config.maxContinuePerLane) {
       unawaited(_loadAll(showLoading: false));
     }
   }
@@ -467,37 +472,44 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     final generation = ++_progressGeneration;
     final limit = widget.config.normalized.maxContinuePerLane;
     final videoRecords = _continueCandidates(_videoHistory);
-    final video = Map<String, PlaybackProgress>.of(_videoContinue);
-    if (allVideo) {
-      video.clear();
-      await _loadProgressLane(
-        records: videoRecords,
-        service: widget.videoProgressService,
-        useTemporaryCheckpoint: true,
-        output: video,
-        generation: generation,
-      );
-    } else if (videoUrls.isNotEmpty) {
-      final wasFull = video.length >= limit;
-      final refreshedKeys = await _refreshProgressLane(
-        records: videoRecords,
-        service: widget.videoProgressService,
-        useTemporaryCheckpoint: true,
-        output: video,
-        urls: videoUrls,
-        generation: generation,
-      );
-      _trimProgressLane(video, videoRecords, limit);
-      if (wasFull && video.length < limit) {
+    final video = <String, PlaybackProgress>{};
+    for (final records in _progressGroups(videoRecords)) {
+      final group = <String, PlaybackProgress>{
+        if (!allVideo)
+          for (final record in records)
+            record.recordKey: ?_videoContinue[record.recordKey],
+      };
+      if (allVideo) {
         await _loadProgressLane(
-          records: videoRecords,
+          records: records,
           service: widget.videoProgressService,
           useTemporaryCheckpoint: true,
-          output: video,
+          output: group,
           generation: generation,
-          skipRecordKeys: refreshedKeys,
         );
+      } else if (videoUrls.isNotEmpty) {
+        final wasFull = group.length >= limit;
+        final refreshedKeys = await _refreshProgressLane(
+          records: records,
+          service: widget.videoProgressService,
+          useTemporaryCheckpoint: true,
+          output: group,
+          urls: videoUrls,
+          generation: generation,
+        );
+        _trimProgressLane(group, records, limit);
+        if (wasFull && group.length < limit) {
+          await _loadProgressLane(
+            records: records,
+            service: widget.videoProgressService,
+            useTemporaryCheckpoint: true,
+            output: group,
+            generation: generation,
+            skipRecordKeys: refreshedKeys,
+          );
+        }
       }
+      video.addAll(group);
     }
     final audioService = widget.audioProgressService;
     final audioRecords = _continueCandidates(_audioHistory);
@@ -554,13 +566,19 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     final video = <String, PlaybackProgress>{};
     final audio = <String, PlaybackProgress>{};
     final iso = <String, IsoLibraryProgress>{};
-    await _loadProgressLane(
-      records: _continueCandidates(records?[2] ?? _videoHistory),
-      service: widget.videoProgressService,
-      useTemporaryCheckpoint: true,
-      output: video,
-      generation: generation,
-    );
+    for (final group in _progressGroups(
+      _continueCandidates(records?[2] ?? _videoHistory),
+    )) {
+      final progress = <String, PlaybackProgress>{};
+      await _loadProgressLane(
+        records: group,
+        service: widget.videoProgressService,
+        useTemporaryCheckpoint: true,
+        output: progress,
+        generation: generation,
+      );
+      video.addAll(progress);
+    }
     final audioService = widget.audioProgressService;
     if (audioService != null) {
       await _loadProgressLane(
@@ -574,12 +592,18 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     final isoService =
         widget.isoProgressService ?? widget.localIsoProgressService;
     if (isoService != null) {
-      await _loadIsoProgressLane(
-        records: _continueCandidates(records?[4] ?? _isoHistory),
-        service: isoService,
-        output: iso,
-        generation: generation,
-      );
+      for (final group in _progressGroups(
+        _continueCandidates(records?[4] ?? _isoHistory),
+      )) {
+        final progress = <String, IsoLibraryProgress>{};
+        await _loadIsoProgressLane(
+          records: group,
+          service: isoService,
+          output: progress,
+          generation: generation,
+        );
+        iso.addAll(progress);
+      }
     }
     if (!mounted || generation != _progressGeneration) return;
     setState(() {
@@ -691,6 +715,17 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     records,
     latestPerVideo: widget.filmCatalog != null,
   );
+
+  Iterable<List<MediaLibraryRecord>> _progressGroups(
+    List<MediaLibraryRecord> records,
+  ) {
+    if (widget.filmCatalog == null) return [records];
+    final groups = <String, List<MediaLibraryRecord>>{};
+    for (final record in records) {
+      (groups[record.item.sourceId] ??= []).add(record);
+    }
+    return groups.values;
+  }
 
   void _trimProgressLane(
     Map<String, PlaybackProgress> output,
@@ -1280,12 +1315,14 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
       itemWidth: FilmContinueCard.landscapeWidth,
       onShowAll: () => Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => MediaLibraryPage(
+          builder: (context) => MediaLibraryPage(
             sourceId: widget.sourceId,
             sourceIds: widget.sourceIds,
             sourceNames: widget.sourceNames,
             store: widget.store,
-            config: widget.config,
+            config:
+                context.watch<AppState?>()?.configStore.current.mediaLibrary ??
+                widget.config,
             directoryCache: widget.directoryCache,
             videoProgressService: widget.videoProgressService,
             audioProgressService: widget.audioProgressService,

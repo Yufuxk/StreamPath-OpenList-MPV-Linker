@@ -52,6 +52,7 @@ import '../../data/models/appearance_config.dart';
 import '../../data/models/server_profile.dart';
 import '../../data/models/app_language.dart';
 import '../../data/models/stream_path_config.dart';
+import '../../data/models/media_library_config.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/playback_history.dart';
@@ -525,6 +526,13 @@ class AppState extends ChangeNotifier {
         final store = await FilmCatalogStore.open(
           p.join(library.path, 'film_catalog.db'),
         );
+        try {
+          await store.applyFavoritesLimit(
+            _configStore.current.mediaLibrary.maxFavoritesPerSource,
+          );
+        } on Exception catch (error) {
+          debugPrint('Film favorites limit could not be applied: $error');
+        }
         await importFilmWatchProgress(store);
         return store;
       }();
@@ -1924,6 +1932,11 @@ class AppState extends ChangeNotifier {
     }
     _filmLocalDiscPlaybackService = localDisc;
     _filmIsoPlaybackService = iso;
+    try {
+      await records?.applyConfig(_configStore.current.mediaLibrary);
+    } on Exception catch (error) {
+      debugPrint('Film media library limits could not be applied: $error');
+    }
     if (_disposed) await _closeFilmPlayback();
   }();
 
@@ -2197,6 +2210,29 @@ class AppState extends ChangeNotifier {
   PlaybackProgressService? get audioProgressService => _audioProgressService;
   MediaLibraryStore? get mediaLibraryStore => _mediaLibraryStore;
   MediaLibraryStore? get filmMediaLibraryStore => _filmMediaLibraryStore;
+
+  Future<void> applyMediaLibraryConfig(MediaLibraryConfig previous) async {
+    final config = _configStore.current.mediaLibrary;
+    try {
+      await _mediaLibraryStore?.applyConfig(config);
+      final film = _filmMediaLibraryStore;
+      if (film != null &&
+          (_filmPlaybackReady != null ||
+              previous.maxRecentPlaybackPerLane !=
+                  config.maxRecentPlaybackPerLane)) {
+        await initializeFilmPlayback();
+        await film.applyConfig(config);
+      }
+      if (previous.maxFavoritesPerSource != config.maxFavoritesPerSource) {
+        await (await getFilmCatalogStore()).applyFavoritesLimit(
+          config.maxFavoritesPerSource,
+        );
+      }
+    } finally {
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   DirectoryCache get directoryCache => _directoryCache;
   String? get mediaSourceId => _webDavService?.sourceId;
   ExternalPlayerService get playerService => _playerService;

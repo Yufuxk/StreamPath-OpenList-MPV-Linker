@@ -9,8 +9,11 @@ import 'package:streampath/data/local/media_library_store.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/media_library_item.dart';
+import 'package:streampath/data/models/local_root_config.dart';
+import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/openlist_index_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/server_profile.dart';
@@ -22,6 +25,9 @@ import 'package:streampath/presentation/pages/settings_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
+
+import 'helpers/pump_until.dart';
+import 'helpers/shell_test_app_state.dart';
 
 void main() {
   late Directory tempDir;
@@ -52,10 +58,10 @@ void main() {
     );
     await mediaLibraryStore.load();
     progressService = await PlaybackProgressService.open(
-      inMemoryDatabasePath,
+      '${tempDir.path}/progress.db',
       factory: databaseFactoryFfi,
     );
-    appState = AppState(
+    appState = ShellTestAppState(
       configStore: configStore,
       playbackHistoryStore: PlaybackHistoryStore.forPath(
         '${tempDir.path}${Platform.pathSeparator}playback_history.json',
@@ -72,6 +78,7 @@ void main() {
   tearDown(() async {
     appearanceController.dispose();
     appState.dispose();
+    if (appState case final ShellTestAppState app) await app.closeTestStores();
     await progressService.close();
     if (tempDir.existsSync()) await tempDir.delete(recursive: true);
   });
@@ -127,13 +134,73 @@ void main() {
     kind: kind,
   );
 
+  Future<List<int>> seedFilmFavorites(int count) async {
+    final catalog = await appState.getFilmCatalogStore();
+    final rootId = await catalog.addRoot(
+      sourceId: 'local:fixture',
+      kind: MediaSourceKind.local,
+      path: 'Movies',
+      type: FilmMediaType.movie,
+      name: 'Movies',
+    );
+    final root = (await catalog.root(rootId))!;
+    final generation = await catalog.beginScan(rootId);
+    await catalog.stage(root, generation, [
+      for (var index = 0; index < count; index++)
+        FilmScanEntry(
+          path: 'Movies/Movie$index.mkv',
+          parentPath: 'Movies',
+          name: 'Movie$index.mkv',
+          mediaKind: 'video',
+        ),
+    ]);
+    await catalog.commitScan(rootId, generation, cancelled: () => false);
+    final resources = await catalog.resources();
+    final ids = <int>[];
+    for (final (index, resource) in resources.indexed) {
+      await catalog.bind(
+        [resource],
+        FilmWork(
+          type: FilmMediaType.movie,
+          tmdbId: index + 1,
+          title: 'Movie $index',
+          originalTitle: 'Movie $index',
+          overview: '',
+          language: 'en',
+        ),
+      );
+      final id = (await catalog.resourceAt(
+        resource.sourceId,
+        resource.path,
+      ))!.workId!;
+      ids.add(id);
+      await catalog.setFavorite(id, true);
+    }
+    return ids;
+  }
+
   testWidgets('媒体中心容量设置保存到统一配置并立即应用', (tester) async {
+    late List<int> favoritesIds;
+    final film = appState.filmMediaLibraryStore!;
+    const localDirectory = MediaLibraryItem(
+      sourceId: 'local:fixture',
+      sourceKind: MediaSourceKind.local,
+      parentPath: '',
+      name: 'Movies',
+      kind: MediaLibraryKind.directory,
+    );
     await tester.runAsync(() async {
+      favoritesIds = await seedFilmFavorites(3);
       for (var index = 0; index < 3; index++) {
         await mediaLibraryStore.toggleFavorite(
           item('收藏$index.mkv', kind: MediaLibraryKind.video),
         );
+        await film.recordPlayback(
+          item('Movie$index.mkv', kind: MediaLibraryKind.video),
+          playbackSessionId: 'film-$index',
+        );
       }
+      await mediaLibraryStore.recordRecentDirectory(localDirectory);
     });
     await openMediaLibrarySettings(tester);
 
@@ -151,7 +218,7 @@ void main() {
     );
     await tester.enterText(
       find.byKey(const Key('media-library-recent-playback-limit-field')),
-      '300',
+      '2',
     );
     await tester.enterText(
       find.byKey(const Key('media-library-recent-directories-limit-field')),
@@ -173,7 +240,7 @@ void main() {
     final saved = configStore.current.mediaLibrary;
     expect(saved.maxFavoritesPerSource, 2);
     expect(saved.maxContinuePerLane, 40);
-    expect(saved.maxRecentPlaybackPerLane, 300);
+    expect(saved.maxRecentPlaybackPerLane, 2);
     expect(saved.maxRecentDirectoriesPerSource, 60);
     late Map<String, dynamic> json;
     late List<MediaLibraryRecord> favorites;
@@ -184,10 +251,27 @@ void main() {
       favorites = await mediaLibraryStore.favorites(
         item('x', kind: MediaLibraryKind.video).sourceId,
       );
+      final catalog = await appState.getFilmCatalogStore();
+      expect(await catalog.isFavorite(favoritesIds.first), isFalse);
+      expect(await catalog.isFavorite(favoritesIds.last), isTrue);
+      await catalog.setFavorite(favoritesIds.first, true);
+      expect(await catalog.isFavorite(favoritesIds.first), isTrue);
+      expect(await catalog.isFavorite(favoritesIds[1]), isFalse);
     });
     expect(json['mediaLibrary']['maxFavoritesPerSource'], 2);
     expect(json['mediaLibrary']['maxContinuePerLane'], 40);
     expect(favorites, hasLength(2));
+    expect(film.config.maxContinuePerLane, 40);
+    expect(film.config.maxRecentDirectoriesPerSource, 60);
+    expect(
+      film
+          .playbackHistorySnapshot(
+            item('x', kind: MediaLibraryKind.video).sourceId,
+            audio: false,
+          )
+          .map((record) => record.playbackSessionId),
+      ['film-2', 'film-1'],
+    );
   });
 
   testWidgets('共享按钮允许网络与本地同时开启，独立模式关闭冲突项', (tester) async {
@@ -268,7 +352,7 @@ void main() {
     await tester.tap(continueButton);
     await tester.pump();
     expect(find.text('清空继续播放列表？'), findsOneWidget);
-    expect(find.textContaining('不会删除 SQLite、watch_later'), findsOneWidget);
+    expect(find.textContaining('保留最近播放与播放进度'), findsOneWidget);
     await tester.tap(
       find.byKey(const Key('cancel-clear-media-library-button')),
     );
@@ -288,6 +372,121 @@ void main() {
     });
     expect(videoHistory.single.continueDismissed, isFalse);
     expect(audioHistory.single.continueDismissed, isFalse);
+  });
+
+  testWidgets('本地影视库可逐项清理，播放进度仍可读取', (tester) async {
+    const video = MediaLibraryItem(
+      sourceId: 'local:fixture',
+      sourceKind: MediaSourceKind.local,
+      parentPath: '',
+      name: 'Movie.mkv',
+      kind: MediaLibraryKind.video,
+    );
+    const directory = MediaLibraryItem(
+      sourceId: 'local:fixture',
+      sourceKind: MediaSourceKind.local,
+      parentPath: '',
+      name: 'Movies',
+      kind: MediaLibraryKind.directory,
+    );
+    final film = appState.filmMediaLibraryStore!;
+    late int workId;
+    late String url;
+    await tester.runAsync(() async {
+      await configStore.save(
+        StreamPathConfig(
+          localRoots: [
+            LocalRootConfig(
+              rootId: 'fixture',
+              displayName: 'Fixture',
+              path: tempDir.path,
+            ),
+          ],
+        ),
+      );
+      workId = (await seedFilmFavorites(1)).single;
+      await film.recordPlayback(video, playbackSessionId: 'film');
+      await mediaLibraryStore.recordPlayback(
+        video,
+        playbackSessionId: 'browser',
+      );
+      await mediaLibraryStore.toggleFavorite(video);
+      await mediaLibraryStore.recordRecentDirectory(directory);
+      await appState.initializeFilmPlayback();
+      url = appState.resolveMediaLibraryTarget(video)!;
+      await appState.filmProgressService.saveProgress(
+        url: url,
+        profileId: video.sourceId,
+        positionMs: 30000,
+        durationMs: 120000,
+      );
+    });
+    await openMediaLibrarySettings(tester);
+
+    Future<void> cleanup(String target, String message) async {
+      final button = find.byKey(Key('clear-media-library-$target-button'));
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      final confirm = find.byKey(
+        const Key('confirm-clear-media-library-button'),
+      );
+      expect(confirm, findsOneWidget);
+      await tester.tap(confirm);
+      await pumpUntil(
+        tester,
+        () => find.text(message).evaluate().isNotEmpty,
+        reason: 'Cleanup completed for $target',
+      );
+      await tester.pumpAndSettle();
+    }
+
+    await cleanup('continue', '继续播放列表已清空');
+    for (final store in [film, mediaLibraryStore]) {
+      expect(
+        store
+            .playbackHistorySnapshot(video.sourceId, audio: false)
+            .single
+            .continueDismissed,
+        isTrue,
+      );
+    }
+    await cleanup('directories', '最近目录列表已清空');
+    await tester.runAsync(() async {
+      expect(
+        await mediaLibraryStore.recentDirectories(video.sourceId),
+        isEmpty,
+      );
+      expect(await mediaLibraryStore.favorites(video.sourceId), hasLength(1));
+      expect(
+        await (await appState.getFilmCatalogStore()).isFavorite(workId),
+        isTrue,
+      );
+    });
+    await cleanup('favorites', '收藏列表已清空');
+    expect(
+      film.playbackHistorySnapshot(video.sourceId, audio: false),
+      hasLength(1),
+    );
+    await cleanup('recent', '最近播放列表已清空');
+    await tester.runAsync(() async {
+      expect(await mediaLibraryStore.favorites(video.sourceId), isEmpty);
+      expect(
+        await (await appState.getFilmCatalogStore()).isFavorite(workId),
+        isFalse,
+      );
+      for (final store in [film, mediaLibraryStore]) {
+        expect(
+          store.playbackHistorySnapshot(video.sourceId, audio: false),
+          isEmpty,
+        );
+      }
+      final progress = await appState.filmProgressService.getResumeProgress(
+        url,
+        profileId: video.sourceId,
+      );
+      expect(progress?.positionMs, 30000);
+    });
   });
 
   testWidgets('容量字段拒绝超过系统硬上限的数值', (tester) async {

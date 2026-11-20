@@ -563,16 +563,18 @@ class MediaLibraryStore {
   });
 
   /// 清空当前来源的视频、音频与 ISO 最近播放记录，不删除实际播放进度。
-  Future<void> clearAllPlaybackHistory(String sourceId) => _enqueue(() async {
+  Future<void> clearAllPlaybackHistory([
+    String? sourceId,
+  ]) => _enqueue(() async {
     await _load();
     final video = _videoHistory
-        .where((record) => record.item.sourceId != sourceId)
+        .where((record) => sourceId != null && record.item.sourceId != sourceId)
         .toList();
     final audio = _audioHistory
-        .where((record) => record.item.sourceId != sourceId)
+        .where((record) => sourceId != null && record.item.sourceId != sourceId)
         .toList();
     final iso = _isoHistory
-        .where((record) => record.item.sourceId != sourceId)
+        .where((record) => sourceId != null && record.item.sourceId != sourceId)
         .toList();
     await _write(videoHistory: video, audioHistory: audio, isoHistory: iso);
     _videoHistory = video;
@@ -581,12 +583,12 @@ class MediaLibraryStore {
     _notifyChanged();
   });
 
-  /// 只隐藏当前来源已有的继续播放项，保留最近播放和底层续播点。
-  Future<void> clearContinuePlayback(String sourceId) => _enqueue(() async {
+  /// 隐藏续播项，保留最近播放和底层续播点。省略来源则清理全部来源。
+  Future<void> clearContinuePlayback([String? sourceId]) => _enqueue(() async {
     await _load();
     List<MediaLibraryRecord> dismiss(List<MediaLibraryRecord> source) => source
         .map(
-          (record) => record.item.sourceId == sourceId
+          (record) => sourceId == null || record.item.sourceId == sourceId
               ? record.copyWith(continueDismissed: true)
               : record,
         )
@@ -651,11 +653,11 @@ class MediaLibraryStore {
     _notifyChanged();
   });
 
-  /// 清空当前来源的全部收藏，不影响最近目录和播放历史。
-  Future<void> clearFavorites(String sourceId) => _enqueue(() async {
+  /// 清空收藏。省略来源则清理全部来源。
+  Future<void> clearFavorites([String? sourceId]) => _enqueue(() async {
     await _load();
     final records = _favorites
-        .where((record) => record.item.sourceId != sourceId)
+        .where((record) => sourceId != null && record.item.sourceId != sourceId)
         .toList();
     await _write(favorites: records);
     _favorites = records;
@@ -673,10 +675,10 @@ class MediaLibraryStore {
         _notifyChanged();
       });
 
-  Future<void> clearRecentDirectories(String sourceId) => _enqueue(() async {
+  Future<void> clearRecentDirectories([String? sourceId]) => _enqueue(() async {
     await _load();
     final records = _recentDirectories
-        .where((record) => record.item.sourceId != sourceId)
+        .where((record) => sourceId != null && record.item.sourceId != sourceId)
         .toList();
     await _write(recentDirectories: records);
     _recentDirectories = records;
