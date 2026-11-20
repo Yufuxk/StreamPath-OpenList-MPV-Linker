@@ -3869,6 +3869,8 @@ void main() {
       }
     }
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await settle(tester);
   });
 
   testWidgets('共享封面：左侧卡片不同悬停阶段、切换页面与后台恢复后二十次往返', (tester) async {

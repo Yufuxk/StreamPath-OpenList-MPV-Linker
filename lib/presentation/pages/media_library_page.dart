@@ -19,6 +19,7 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/playback_progress.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/web_dav_file.dart';
+import '../../domain/services/media_continue_state.dart';
 import '../../domain/services/media_library_search.dart';
 import '../../domain/services/iso_playback_service.dart';
 import '../theme/glass_tokens.dart';
@@ -360,6 +361,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
               .where((record) => widget.filmCatalog!.isItemEnabled(record.item))
               .toList()
             ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      ++_progressGeneration;
       setState(() {
         final previous = {
           for (final record in _videoHistory)
@@ -370,7 +372,6 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
           if (previous[record.recordKey] != null &&
               previous[record.recordKey] != record.item.stableKey &&
               _videoContinue.containsKey(record.recordKey)) {
-            ++_progressGeneration;
             _videoContinue[record.recordKey] = PlaybackProgress(
               url: _progressUrlFor(record) ?? record.item.targetPath,
               positionMs: record.strmPositionMs ?? 0,
@@ -686,7 +687,10 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
 
   List<MediaLibraryRecord> _continueCandidates(
     List<MediaLibraryRecord> records,
-  ) => records.where((record) => !record.continueDismissed).toList();
+  ) => mediaContinueCandidates(
+    records,
+    latestPerVideo: widget.filmCatalog != null,
+  );
 
   void _trimProgressLane(
     Map<String, PlaybackProgress> output,
@@ -721,7 +725,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
       if (url == null || !urls.contains(url)) continue;
       recordsByUrl
           .putIfAbsent(
-            '${record.item.sourceId}\u0000$url\u0000${_canFilterCompletedProgress(record)}',
+            '${record.item.sourceId}\u0000$url\u0000${canFilterCompletedProgress(record)}',
             () => [],
           )
           .add(record);
@@ -749,49 +753,24 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     return refreshedKeys;
   }
 
-  /// 无列表信息的旧记录沿用单项完成过滤。
-  bool _canFilterCompletedProgress(MediaLibraryRecord record) =>
-      record.item.kind == MediaLibraryKind.audio ||
-      record.playlistIndex == null ||
-      record.playlistCount == null ||
-      record.playlistIndex == record.playlistCount! - 1;
-
   Future<PlaybackProgress?> _readProgress(
     MediaLibraryRecord record, {
     required PlaybackProgressReader service,
     required bool useTemporaryCheckpoint,
   }) async {
-    final canFilterCompleted = _canFilterCompletedProgress(record);
-    if (record.item.kind == MediaLibraryKind.strm) {
-      final positionMs = record.strmPositionMs;
-      if (positionMs == null || positionMs < 0) return null;
-      final progress = PlaybackProgress(
-        url: record.item.targetPath,
-        positionMs: positionMs,
-        durationMs: record.strmDurationMs,
-      );
-      return canFilterCompleted && progress.hasReachedFraction()
-          ? null
-          : progress;
-    }
     final url = _progressUrlFor(record);
+    if (useTemporaryCheckpoint) {
+      return readVideoContinueProgress(record, reader: service, url: url);
+    }
     if (url == null) return null;
     try {
-      final progress = useTemporaryCheckpoint
-          ? await service.getResumeProgress(
-              url,
-              profileId: record.item.sourceId,
-            )
-          : await service.getProgress(url, profileId: record.item.sourceId);
+      final progress = await service.getProgress(
+        url,
+        profileId: record.item.sourceId,
+      );
       if (progress == null ||
-          progress.positionMs < 0 ||
-          (progress.positionMs == 0 &&
-              record.item.kind == MediaLibraryKind.audio) ||
-          (canFilterCompleted &&
-              progress.positionMs > 0 &&
-              (record.item.kind == MediaLibraryKind.audio
-                  ? progress.isFinishedNearEnd()
-                  : progress.hasReachedFraction()))) {
+          progress.positionMs <= 0 ||
+          progress.isFinishedNearEnd()) {
         return null;
       }
       return progress;

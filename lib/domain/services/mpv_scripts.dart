@@ -668,6 +668,7 @@ local last_path = ""
 local last_time_pos = -1
 local last_duration = -1
 local last_entry_recorded = false
+local last_entry_completed = false
 local entry_started = false
 local checkpoint_armed_at = -1
 local temporary_checkpoint_active = false
@@ -956,6 +957,7 @@ mp.register_event("start-file", function(event)
     last_time_pos = -1
     last_duration = -1
     last_entry_recorded = false
+    last_entry_completed = false
     checkpoint_armed_at = -1
     temporary_checkpoint_active = false
     temporary_clear_written = false
@@ -1075,7 +1077,8 @@ mp.register_event("end-file", function(event)
     -- Lua 旧版把错误放在 error，新版使用 file_error；同时读取以兼容
     -- mpv 0.34～0.41+。不解析终端文案，不依赖特定 FFmpeg 日志格式。
     local file_error = event and (event["file_error"] or event["error"]) or nil
-    append_progress(reason == "eof" and "completed" or "position", reason, file_error)
+    last_entry_completed = reason == "eof"
+    append_progress(last_entry_completed and "completed" or "position", reason, file_error)
     last_entry_recorded = true
 end)
 mp.register_event("shutdown", function()
@@ -1120,7 +1123,7 @@ mp.register_script_message("streampath-queue-finished", function()
     mp.commandv("quit")
 end)
 
--- 播放列表播完（idle）时写 -1 标记；仅当已加载过文件时写入。
+-- 末项自然结束后进入 idle 时写 -1 标记。主动停止及播放错误不会写入。
 -- 播放中短暂 idle（缓冲/切集间隙）不写：延迟确认仍处于 idle 才写，
 -- 避免 UI 误清「继续播放」历史导致下边栏闪烁。
 local idle_timer = nil
@@ -1132,7 +1135,7 @@ mp.observe_property("idle-active", "bool", function(name, val)
     if val and has_loaded and QUEUE == "" then
         idle_timer = mp.add_timeout(1.0, function()
             idle_timer = nil
-            if mp.get_property_bool("idle-active") then
+            if last_entry_completed and mp.get_property_bool("idle-active") then
                 local f = io.open(OUT, "w")
                 if f then
                     f:write("-1\\n" .. tostring(last_playlist_pos) .. "\\n" .. EPOCH)

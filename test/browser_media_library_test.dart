@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'helpers/shell_test_app_state.dart';
@@ -15,6 +16,7 @@ import 'package:streampath/data/local/media_library_store.dart';
 import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/models/media_entry.dart';
 import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/app_language.dart';
@@ -28,6 +30,7 @@ import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/core/utils/app_paths.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
+import 'package:streampath/domain/services/mpv_playback_progress_sync.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/pages/media_library_page.dart';
 import 'package:streampath/presentation/localization/app_localizations.dart';
@@ -689,6 +692,11 @@ void main() {
   }
 
   for (final scenario in const [
+    (count: 1, start: 0, exit: 0, position: -1, persisted: false),
+    (count: 3, start: 0, exit: 0, position: -1, persisted: false),
+    (count: 3, start: 1, exit: 1, position: -1, persisted: false),
+    (count: 3, start: 2, exit: 2, position: -1, persisted: false),
+    (count: 3, start: 2, exit: 2, position: -2, persisted: false),
     (count: 3, start: 1, exit: 1, position: 99, persisted: false),
     (count: 3, start: 1, exit: 1, position: 99, persisted: true),
     (count: 3, start: 1, exit: 2, position: 99, persisted: false),
@@ -700,10 +708,14 @@ void main() {
     (count: 4, start: 0, exit: 0, position: 99, persisted: false),
     (count: 1, start: 0, exit: 0, position: 99, persisted: false),
   ]) {
-    for (final mediaType in ['mkv', 'strm', 'local']) {
+    final journalExit = scenario.position < 0;
+    final eof = scenario.position == -1;
+    final progresses = eof || scenario.position >= 99;
+    for (final mediaType
+        in journalExit ? ['local'] : ['mkv', 'strm', 'local']) {
       final extension = mediaType == 'local' ? 'mkv' : mediaType;
       testWidgets(
-        '99% 退出续播移到下一集或完成末集（${scenario.start}→${scenario.exit}/${scenario.count}，${scenario.position}%，进度库：${scenario.persisted}，$mediaType）',
+        '退出续播（${scenario.start}→${scenario.exit}/${scenario.count}，${scenario.position}%，进度库：${scenario.persisted}，$mediaType）',
         (tester) async {
           final sessionId =
               'completion-${tempDir.path.split(Platform.pathSeparator).last}';
@@ -800,14 +812,42 @@ void main() {
               playlistIndex: scenario.start,
               playlistCount: scenario.count,
             );
+            if (journalExit) {
+              await progressService.saveProgress(
+                url: url,
+                profileId: sourceId,
+                positionMs: 50000,
+                durationMs: 100000,
+              );
+              final journal = await File('${tempDir.path}/exit.jsonl')
+                  .writeAsString(
+                    '${jsonEncode({'epoch': history.launchEpoch, 'outcome': eof ? 'completed' : 'position', 'reason': eof ? 'eof' : 'error', 'playlist_pos': scenario.exit, 'path': url, 'position': 50, 'duration': 100})}\n',
+                  );
+              player.deferJournalSync = scenario.count == 1;
+              player.syncJournal = () =>
+                  const MpvPlaybackProgressSynchronizer().sync(
+                    progressService: progressService,
+                    profileId: sourceId,
+                    watchLaterDirectory: tempDir,
+                    entries: [
+                      for (var i = 0; i < names.length; i++)
+                        MediaEntry(url: targetUrl(i)),
+                    ],
+                    journalFile: journal,
+                    expectedEpoch: history.launchEpoch,
+                  );
+              if (eof) return;
+            }
             final cache = await AppPaths.cacheDirectory();
             final status = File(
               '${cache.path}${Platform.pathSeparator}${ExternalPlayerService.sessionStatusFileName(sessionId, launchEpoch: history.launchEpoch)}',
             );
             statusFiles.add(status);
             await status.writeAsString(
-              '${scenario.exit}\n$url\n0\n'
-              '${scenario.persisted ? '' : '${scenario.position}\n100\n'}',
+              journalExit
+                  ? '-1\n\n0\n50\n100\n'
+                  : '${scenario.exit}\n$url\n0\n'
+                        '${scenario.persisted ? '' : '${scenario.position}\n100\n'}',
             );
             if (scenario.persisted) {
               await progressService.saveProgress(
@@ -856,8 +896,7 @@ void main() {
           );
           await tester.pumpWidget(const SizedBox.shrink());
           await settleBrowser(tester);
-          final completed =
-              scenario.exit == scenario.count - 1 && scenario.position >= 99;
+          final completed = scenario.exit == scenario.count - 1 && progresses;
           expect(records, isNotNull);
           expect(records!.single.continueDismissed, completed);
           final sessions = appState.playbackHistoryStore.sessions
@@ -866,7 +905,7 @@ void main() {
           if (completed) {
             expect(sessions, isEmpty);
           } else {
-            final expectedIndex = scenario.position >= 99
+            final expectedIndex = progresses
                 ? scenario.exit + 1
                 : scenario.exit;
             expect(sessions.single.fileName, names[expectedIndex]);
@@ -875,7 +914,7 @@ void main() {
             expect(records!.single.item.name, names[expectedIndex]);
             expect(records!.single.playlistIndex, expectedIndex);
             expect(records!.single.playlistCount, scenario.count);
-            if (scenario.position >= 99) {
+            if (progresses) {
               if (extension == 'strm') {
                 expect(records!.single.strmPositionMs, 0);
                 expect(records!.single.strmDurationMs, isNull);
@@ -1463,11 +1502,32 @@ class _TransitionPlayer extends ExternalPlayerService {
   Future<bool> isPlayerRunning([String? sessionId]) async =>
       running || runningSessionIds.contains(sessionId);
 
+  Future<int?> Function()? syncJournal;
+  int? syncedEof;
+  bool deferJournalSync = false;
+  int exitSyncCalls = 0;
+
+  @override
+  bool videoExitSyncPending(String sessionId) =>
+      deferJournalSync && exitSyncCalls == 1;
+
+  @override
+  int? videoExitEofIndex(
+    String sessionId, {
+    required String? launchEpoch,
+    required List<String> playlistPaths,
+    required int playlistLength,
+  }) => syncedEof;
+
   @override
   Future<void> waitForExitSync(
     String sessionId, {
     Duration timeout = const Duration(seconds: 4),
-  }) async {}
+  }) async {
+    ++exitSyncCalls;
+    if (videoExitSyncPending(sessionId)) return;
+    syncedEof = await syncJournal?.call();
+  }
 }
 
 String _directoryXml(String requestPath) {

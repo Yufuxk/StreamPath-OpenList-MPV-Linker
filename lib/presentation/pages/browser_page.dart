@@ -816,6 +816,19 @@ class BrowserPageState extends State<BrowserPage> {
         await _playerService.waitForExitSync(history.sessionId);
         if (!mounted) return;
         final closedHistory = session.history;
+        final eofIndex = _playerService.videoExitEofIndex(
+          history.sessionId,
+          launchEpoch: closedHistory.launchEpoch,
+          playlistPaths: closedHistory.playlistRelativePaths,
+          playlistLength: closedHistory.playlistFileNames.length,
+        );
+        if (eofIndex == closedHistory.playlistFileNames.length - 1 &&
+            closedHistory.filmNextItem == null &&
+            closedHistory.pendingVideoIndex == null) {
+          // 自然结束后的重播不能复用尚待轮询清理的会话 ID。
+          await _openLibraryItem(item);
+          return;
+        }
         if (closedHistory.videoPlaylistMode == VideoPlaylistMode.implicit &&
             closedHistory.playlistRelativePaths[closedHistory.videoIndex] !=
                 item.targetPath) {
@@ -5501,7 +5514,16 @@ class BrowserPageState extends State<BrowserPage> {
         lines!.length >= 2 &&
         lines[1].trim().isNotEmpty;
     final isMpvSession = session.history.ipcPipeName != null;
-    if (guard.isWaiting && hasLoadedCurrentMedia) {
+    final launchEpoch = session.history.launchEpoch;
+    int? exitEofIndex() => playerService.videoExitEofIndex(
+      sessionId,
+      launchEpoch: launchEpoch,
+      playlistPaths: session.history.playlistRelativePaths,
+      playlistLength: names.length,
+    );
+    if (guard.isWaiting && !running && exitEofIndex() != null) {
+      guard.confirmActivation();
+    } else if (guard.isWaiting && hasLoadedCurrentMedia) {
       guard.confirmActivation();
       // 状态文件可能先于进程探测结果到达。本轮直接视为已运行，
       // 下一次 1 秒探测再确认进程存活，避免命中短暂 false 缓存。
@@ -5527,7 +5549,14 @@ class BrowserPageState extends State<BrowserPage> {
     // 中的 pause 值，避免两个状态在轮询中互相覆盖而闪烁。
     if (!running) {
       await playerService.waitForExitSync(sessionId);
-      if (!_playbackSessions.contains(session)) return;
+      if (!mounted ||
+          !_playbackSessions.contains(session) ||
+          session.history.launchEpoch != launchEpoch ||
+          session.launching) {
+        return;
+      }
+      if (playerService.videoExitSyncPending(sessionId)) return;
+      final journalEof = exitEofIndex();
       final pendingPos =
           session.history.videoPlaylistMode == VideoPlaylistMode.implicit
           ? session.history.pendingVideoIndex
@@ -5542,29 +5571,41 @@ class BrowserPageState extends State<BrowserPage> {
                 expectedLastPos: names.length - 1,
                 expectedEpoch: session.history.launchEpoch,
               ) ||
-              (pos == -1 && session.lastSyncedPos == names.length - 1));
+              (launchEpoch == null &&
+                  pos == -1 &&
+                  session.lastSyncedPos == names.length - 1));
       if (session.history.filmNextItem != null &&
-          _isFreshStatus(statusModifiedAt) &&
-          _isOwnedIdleCompletion(
-            lines,
-            expectedLastPos: names.length - 1,
-            expectedEpoch: session.history.launchEpoch,
-          )) {
+          (journalEof == names.length - 1 ||
+              (_isFreshStatus(statusModifiedAt) &&
+                  _isOwnedIdleCompletion(
+                    lines,
+                    expectedLastPos: names.length - 1,
+                    expectedEpoch: launchEpoch,
+                  )))) {
         session.history = session.history.copyWith(filmBoundaryReady: true);
         await store.upsert(session.history);
         await _completeFilmBoundary(session);
         return;
       }
-      final currentPos = pos != null && pos >= 0 && pos < names.length
-          ? pos
-          : session.lastSyncedPos;
+      final currentPos =
+          journalEof ??
+          (pos != null && pos >= 0 && pos < names.length
+              ? pos
+              : session.lastSyncedPos);
       final isLastItem = currentPos == names.length - 1;
-      var reachedCompletion = _hasReachedCompletionThreshold(session, lines);
+      var reachedCompletion =
+          journalEof != null || _hasReachedCompletionThreshold(session, lines);
       if (!reachedCompletion) {
         reachedCompletion = await _hasPersistedCompletionThreshold(
           session,
           lines,
         );
+      }
+      if (!mounted ||
+          !_playbackSessions.contains(session) ||
+          session.history.launchEpoch != launchEpoch ||
+          session.launching) {
+        return;
       }
       if (pendingPos == null &&
           (naturallyFinished || (isLastItem && reachedCompletion))) {
@@ -5642,7 +5683,7 @@ class BrowserPageState extends State<BrowserPage> {
         return;
       }
       final reachedSortedLast =
-          session.lastSyncedPos == names.length - 1 ||
+          (launchEpoch == null && session.lastSyncedPos == names.length - 1) ||
           _isOwnedIdleCompletion(
             lines,
             expectedLastPos: names.length - 1,

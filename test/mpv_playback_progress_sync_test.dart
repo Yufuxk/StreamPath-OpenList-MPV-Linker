@@ -197,6 +197,8 @@ void main() {
     await writeJournal([
       {
         'outcome': 'completed',
+        'reason': 'eof',
+        'epoch': 'current',
         'playlist_pos': 0,
         'path': url,
         'position': 120,
@@ -204,16 +206,64 @@ void main() {
       },
     ]);
 
-    await synchronizer.sync(
+    final eof = await synchronizer.sync(
       progressService: progressService,
       watchLaterDirectory: watchLaterDir,
       entries: const [MediaEntry(url: url)],
       journalFile: journalFile,
+      expectedEpoch: 'current',
     );
 
+    expect(eof, 0);
     expect(await progressService.getProgress(url), isNull);
     expect(await progressService.getTemporaryProgress(url), isNull);
     expect(watchLater.existsSync(), isFalse);
+  });
+
+  test('前一集 EOF 后末集出现网络错误时保留末集进度', () async {
+    const first = 'http://host/dav/first.mkv';
+    const last = 'http://host/dav/last.mkv';
+    await progressService.saveProgress(url: first, positionMs: 15000);
+    await writeJournal([
+      {
+        'epoch': 'current',
+        'outcome': 'completed',
+        'reason': 'eof',
+        'playlist_pos': 0,
+        'path': first,
+      },
+      {
+        'epoch': 'current',
+        'outcome': 'position',
+        'reason': 'error',
+        'playlist_pos': 1,
+        'path': last,
+        'position': 20,
+        'duration': 100,
+      },
+      {
+        'epoch': 'old',
+        'outcome': 'completed',
+        'reason': 'eof',
+        'playlist_pos': 1,
+        'path': last,
+      },
+    ]);
+    expect(
+      await synchronizer.sync(
+        progressService: progressService,
+        watchLaterDirectory: watchLaterDir,
+        entries: const [
+          MediaEntry(url: first),
+          MediaEntry(url: last),
+        ],
+        journalFile: journalFile,
+        expectedEpoch: 'current',
+      ),
+      isNull,
+    );
+    expect(await progressService.getProgress(first), isNull);
+    expect((await progressService.getProgress(last))?.positionMs, 20000);
   });
 
   test('主动跳回 0 秒会覆盖旧进度并删除恢复文件', () async {

@@ -20,6 +20,19 @@ import 'helpers/pump_until.dart';
 class _BoundaryPlayer extends ExternalPlayerService {
   _BoundaryPlayer({required super.configStore});
   int closed = 0;
+
+  @override
+  Future<void> restoreSession({
+    required String sessionId,
+    String? profileId,
+    required int? pid,
+    String? executablePath,
+    int? creationTime,
+    String? ipcPipeName,
+    String? launchEpoch,
+    String? currentSeasonPlaylistPath,
+    int? currentStageLength,
+  }) async {}
   @override
   ExternalPlayerService forFilmLibrary(
     PlaybackProgressService progress,
@@ -106,14 +119,12 @@ void main() {
         await status.writeAsString(scenario.status);
       });
       var prompts = 0;
-      final key = GlobalKey<BrowserPageState>();
       await tester.pumpWidget(
         ChangeNotifierProvider<AppState>.value(
           value: app,
           child: MaterialApp(
             home: Scaffold(
               body: BrowserPage(
-                key: key,
                 localRoot: root,
                 playbackOnly: true,
                 onFilmSourceBoundary: (_) async {
@@ -125,17 +136,12 @@ void main() {
           ),
         ),
       );
-      var refreshed = false;
-      await tester.runAsync(() async {
-        key.currentState!.refreshLibraryPlaybackStatuses().then(
-          (_) => refreshed = true,
-        );
-      });
-      await pumpUntil(
-        tester,
-        () => refreshed,
-        reason: 'Restored boundary history is checked',
-      );
+      await pumpUntil(tester, () {
+        final history = app.filmPlaybackHistoryStore.sessions.single;
+        return scenario.prompts == 1
+            ? history.filmBoundaryPrompted && prompts == 1
+            : history.playerPid == null;
+      }, reason: 'Restored boundary history is checked');
       expect(prompts, scenario.prompts);
       expect(player.closed, scenario.prompts);
       if (scenario.prompts == 1) {
@@ -147,6 +153,7 @@ void main() {
       }
       await tester.pumpWidget(const SizedBox());
       await tester.runAsync(() async {
+        await app.filmProgressService.close();
         app.dispose();
         await app.closeTestStores();
         await progress.close();

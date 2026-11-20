@@ -457,13 +457,13 @@ void main() {
           (r) => r.season == 1 && r.episode == (family == a ? 2 : 3),
         );
         final item = resource.playbackItem;
-        await app.progressService.saveProgress(
+        await app.filmProgressService.saveProgress(
           url: app.resolveMediaLibraryTarget(item, allowLogicalPath: true)!,
           profileId: item.sourceId,
           positionMs: family == a ? 10000 : 20000,
           durationMs: 100000,
         );
-        await app.mediaLibraryStore!.recordPlayback(
+        await app.filmMediaLibraryStore!.recordPlayback(
           item,
           playbackSessionId: 'real-${family.key}',
         );

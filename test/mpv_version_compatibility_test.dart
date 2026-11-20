@@ -40,6 +40,101 @@ final List<({int pid, Future<int> exitCode})> _ownedMpvProcesses = [];
 void main() {
   final testRoot = Platform.environment['STREAMPATH_MPV_TEST_ROOT'];
 
+  final mpv = Platform.environment['STREAMPATH_PATH_MPV'];
+  test(
+    '真实 MPV 播完本地 MKV 后同步 EOF 并清理进度',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('sp_mkv_eof_');
+      final movie = p.join(dir.path, 'movie.mkv');
+      final progress = await PlaybackProgressService.open(
+        p.join(dir.path, 'progress.db'),
+      );
+      const source = 'local:fixture';
+      const session = 'movie-eof';
+      const logicalPath = 'Movies/movie.mkv';
+      final config = StreamPathConfigStore.forPath(
+        p.join(dir.path, 'config.json'),
+      );
+      final service = ExternalPlayerService(
+        configStore: config,
+        progressService: progress,
+        watchLaterDir: Directory(p.join(dir.path, 'watch_later')),
+      );
+      PlayerLaunchResult? launch;
+      try {
+        final generated = await Process.run('ffmpeg', [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-f',
+          'lavfi',
+          '-i',
+          'color=size=160x90:rate=10',
+          '-t',
+          '3',
+          '-c:v',
+          'libx264',
+          '-threads',
+          '1',
+          movie,
+        ]);
+        expect(generated.exitCode, 0, reason: '${generated.stderr}');
+        await config.save(
+          StreamPathConfig(
+            playerExecutable: mpv!,
+            playerArgs: ['--no-config', '--vo=null', '--ao=null', '{url}'],
+            autoSeasonTransitionEnabled: false,
+          ),
+        );
+        await progress.saveProgress(
+          url: movie,
+          profileId: source,
+          positionMs: 1000,
+        );
+        launch = await service.launchLocal(
+          entries: [MediaEntry(url: movie, catalogPath: logicalPath)],
+          sourceId: source,
+          sessionId: session,
+        );
+        final elapsed = Stopwatch()..start();
+        while (await service.isPlayerRunning(session) &&
+            elapsed.elapsed < const Duration(seconds: 15)) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+        expect(await service.isPlayerRunning(session), isFalse);
+        await service.waitForExitSync(session);
+        expect(
+          service.videoExitEofIndex(
+            session,
+            launchEpoch: launch.launchEpoch,
+            playlistPaths: [logicalPath],
+            playlistLength: 1,
+          ),
+          0,
+        );
+        expect(
+          service.videoExitEofIndex(
+            session,
+            launchEpoch: 'new-launch',
+            playlistPaths: [logicalPath],
+            playlistLength: 1,
+          ),
+          isNull,
+        );
+        expect(
+          await progress.getResumeProgress(movie, profileId: source),
+          isNull,
+        );
+      } finally {
+        if (launch != null) await service.terminateLaunch(launch);
+        service.releaseSession(session);
+        await progress.close();
+        await dir.delete(recursive: true);
+      }
+    },
+    skip: mpv == null ? 'Set STREAMPATH_PATH_MPV' : false,
+  );
+
   test(
     '隐式滚动窗口提前挂入下一集且保留用户窗口状态',
     () async {

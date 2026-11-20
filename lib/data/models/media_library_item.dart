@@ -273,6 +273,7 @@ class MediaLibraryRecord {
     required this.updatedAt,
     this.playbackSessionId,
     this.continueDismissed = false,
+    this.continueCompleted = false,
     this.playbackBarDismissed = false,
     this.localDiscSession,
     this.playlistIndex,
@@ -286,6 +287,7 @@ class MediaLibraryRecord {
   final DateTime updatedAt;
   final String? playbackSessionId;
   final bool continueDismissed;
+  final bool continueCompleted;
   final bool playbackBarDismissed;
   final LocalDiscSessionSnapshot? localDiscSession;
   final int? playlistIndex;
@@ -310,6 +312,7 @@ class MediaLibraryRecord {
     DateTime? updatedAt,
     String? playbackSessionId,
     bool? continueDismissed,
+    bool? continueCompleted,
     bool? playbackBarDismissed,
     LocalDiscSessionSnapshot? localDiscSession,
     int? playlistIndex,
@@ -323,6 +326,7 @@ class MediaLibraryRecord {
     updatedAt: updatedAt ?? this.updatedAt,
     playbackSessionId: playbackSessionId ?? this.playbackSessionId,
     continueDismissed: continueDismissed ?? this.continueDismissed,
+    continueCompleted: continueCompleted ?? this.continueCompleted,
     playbackBarDismissed: playbackBarDismissed ?? this.playbackBarDismissed,
     localDiscSession: localDiscSession ?? this.localDiscSession,
     discResumeEdition: discResumeEdition ?? this.discResumeEdition,
@@ -342,6 +346,7 @@ class MediaLibraryRecord {
     if (discResumeEdition != null) 'discResumeEdition': discResumeEdition,
     if (playbackSessionId != null) 'playbackSessionId': playbackSessionId,
     if (continueDismissed) 'continueDismissed': true,
+    if (continueCompleted) 'continueCompleted': true,
     if (playbackBarDismissed) 'playbackBarDismissed': true,
     if (localDiscSession != null)
       'localDiscSession': localDiscSession!.toJson(),
@@ -364,6 +369,7 @@ class MediaLibraryRecord {
       discResumeEdition: (json['discResumeEdition'] as num?)?.toInt(),
       playbackSessionId: playbackSessionId,
       continueDismissed: json['continueDismissed'] == true,
+      continueCompleted: json['continueCompleted'] == true,
       playbackBarDismissed: json['playbackBarDismissed'] == true,
       localDiscSession: LocalDiscSessionSnapshot.tryFromJson(
         json['localDiscSession'],

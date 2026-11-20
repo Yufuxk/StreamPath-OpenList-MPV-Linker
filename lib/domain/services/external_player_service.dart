@@ -371,6 +371,9 @@ class _PlayerSessionRuntime {
   int temporaryProgressJournalByteOffset = 0;
 
   Future<void>? exitSyncFuture;
+  bool exitSyncPending = false;
+  bool exitProgressSynced = false;
+  int? exitEofIndex;
   Future<PlayerTerminationOutcome>? terminationFuture;
 }
 
@@ -1681,8 +1684,7 @@ class ExternalPlayerService {
         ),
       );
     }
-    final exitSync = _watchExitAndSync(runtime, entries, syncProgress: isMpv);
-    runtime.exitSyncFuture = exitSync;
+    final exitSync = _startExitSync(runtime);
     unawaited(exitSync);
 
     return PlayerLaunchResult(
@@ -2564,12 +2566,15 @@ class ExternalPlayerService {
   // ── 退出检测与进度写回 ───────────────────────────────────────
 
   /// detached 模式无法读取 exitCode，改用系统命令轮询探活：
+  Future<void> _startExitSync(_PlayerSessionRuntime runtime) {
+    runtime.exitSyncPending = true;
+    return runtime.exitSyncFuture = _watchExitAndSync(runtime).whenComplete(() {
+      runtime.exitSyncPending = false;
+    });
+  }
+
   /// 进程消失后执行进度同步（逐媒体日志 + watch_later → 进度库）。
-  Future<void> _watchExitAndSync(
-    _PlayerSessionRuntime runtime,
-    List<MediaEntry> entries, {
-    required bool syncProgress,
-  }) async {
+  Future<void> _watchExitAndSync(_PlayerSessionRuntime runtime) async {
     // watcher、界面查询和诊断共享同一个 tracker；unknown 只允许继续等待，
     // 探活重试耗尽时保留 runtime，不清理也不把状态改成已退出。
     await _calibrateVideoClock(runtime);
@@ -2611,9 +2616,10 @@ class ExternalPlayerService {
     await _reportCurrentVideoProgress(runtime, stopped: true);
     // 会话退出：停止本会话的播放中动态监控并清理认证头与切集代际。
     _cleanupCacheRuntime(runtime);
-    if (syncProgress) {
+    if (runtime.isMpv) {
+      runtime.exitProgressSynced = true;
       try {
-        await _syncProgress(runtime, runtime.entries);
+        runtime.exitEofIndex = await _syncProgress(runtime, runtime.entries);
       } catch (e) {
         // ignore: avoid_print
         print(
@@ -3026,7 +3032,7 @@ class ExternalPlayerService {
   }
 
   /// 合并 Lua 逐媒体结果与 watch_later，写回播放进度库。
-  Future<void> _syncProgress(
+  Future<int?> _syncProgress(
     _PlayerSessionRuntime runtime,
     List<MediaEntry> entries,
   ) async {
@@ -3047,8 +3053,8 @@ class ExternalPlayerService {
     await _restoreManualVideoResets(runtime);
     final ps = _progressService;
     final dir = _watchLaterDir;
-    if (ps == null || dir == null) return;
-    await _progressSyncCoordinator.run<void>(
+    if (ps == null || dir == null) return null;
+    return _progressSyncCoordinator.run<int?>(
       sessionId: runtime.sessionId,
       generation: runtime.progressGeneration,
       action: () => const MpvPlaybackProgressSynchronizer().sync(
@@ -4553,11 +4559,7 @@ class ExternalPlayerService {
     }
     await runtime.exitSyncFuture;
     if (!identical(_sessions[sessionId], runtime)) return;
-    await _watchExitAndSync(
-      runtime,
-      runtime.entries,
-      syncProgress: runtime.isMpv,
-    );
+    await _startExitSync(runtime);
   }
 
   /// 缓存与 IPC 后台任务需要在探活未知重试耗尽时停止，
@@ -4606,13 +4608,56 @@ class ExternalPlayerService {
     String sessionId, {
     Duration timeout = const Duration(seconds: 4),
   }) async {
-    final future = _sessions[sessionId]?.exitSyncFuture;
+    final runtime = _sessions[sessionId];
+    if (runtime == null) return;
+    // 重启恢复及探活一度未知的会话，确认退出后仍有机会同步本次日志。
+    if (runtime.isMpv &&
+        !runtime.exitProgressSynced &&
+        !runtime.exitSyncPending &&
+        runtime.entries.isNotEmpty &&
+        await runtime.livenessTracker.sample() ==
+            PlayerProcessLiveness.exited &&
+        identical(_sessions[sessionId], runtime) &&
+        !runtime.exitProgressSynced &&
+        !runtime.exitSyncPending) {
+      _startExitSync(runtime);
+    }
+    final future = runtime.exitSyncFuture;
     if (future == null) return;
     try {
       await future.timeout(timeout);
     } catch (_) {
       // 超时或同步失败时继续使用状态文件与已有进度，不阻塞下边栏。
     }
+  }
+
+  bool videoExitSyncPending(String sessionId) =>
+      _sessions[sessionId]?.exitSyncPending ?? false;
+
+  /// 只接受进程退出同步确认的 EOF，并绑定原播放代次与队列。
+  int? videoExitEofIndex(
+    String sessionId, {
+    required String? launchEpoch,
+    required List<String> playlistPaths,
+    required int playlistLength,
+  }) {
+    final runtime = _sessions[sessionId];
+    final index = runtime?.exitEofIndex;
+    if (runtime == null ||
+        index == null ||
+        launchEpoch != runtime.launchEpoch ||
+        !_progressSyncCoordinator.isCurrent(
+          sessionId,
+          runtime.progressGeneration,
+        )) {
+      return null;
+    }
+    if (runtime.entries.length == playlistLength) return index;
+    // 显式跨季进程保留多季的进度条目，使用资源路径确认当前季。
+    final path = runtime.entries[index].catalogPath;
+    if (path == null) return null;
+    final currentIndex = playlistPaths.indexOf(path);
+    return currentIndex < 0 ? null : currentIndex;
   }
 
   /// 自动切集时同步当前会话已产生的 JSONL 与 watch_later。

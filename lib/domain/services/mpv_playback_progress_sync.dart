@@ -71,6 +71,7 @@ class MpvProgressJournalRecord {
     required this.durationSeconds,
     this.epoch,
     this.recordedAt,
+    this.reason,
   });
 
   final MpvProgressOutcome outcome;
@@ -80,6 +81,7 @@ class MpvProgressJournalRecord {
   final double? durationSeconds;
   final String? epoch;
   final int? recordedAt;
+  final String? reason;
 
   static MpvProgressJournalRecord? tryParse(
     String line, {
@@ -105,6 +107,7 @@ class MpvProgressJournalRecord {
         durationSeconds: (value['duration'] as num?)?.toDouble(),
         epoch: epoch,
         recordedAt: (value['recorded_at'] as num?)?.toInt(),
+        reason: value['reason'] as String?,
       );
     } on FormatException {
       return null;
@@ -234,7 +237,8 @@ class MpvPlaybackProgressSynchronizer {
 
   final MpvWatchLaterSync watchLaterSync;
 
-  Future<void> sync({
+  /// 返回末条匹配日志确认自然结束的条目索引。
+  Future<int?> sync({
     required PlaybackProgressService progressService,
     String? profileId,
     required Directory watchLaterDirectory,
@@ -263,6 +267,7 @@ class MpvPlaybackProgressSynchronizer {
       ignoreBefore: ignoreBefore,
     );
     final latestJournalRecords = <int, MpvProgressJournalRecord>{};
+    int? eofIndex;
     if (journalFile != null) {
       for (final record in await _readJournal(
         journalFile,
@@ -277,6 +282,11 @@ class MpvPlaybackProgressSynchronizer {
           continue;
         }
         latestJournalRecords[index] = record;
+        eofIndex =
+            record.outcome == MpvProgressOutcome.completed &&
+                record.reason == 'eof'
+            ? index
+            : null;
         final entry = entries[index];
         final watchLaterUrl = index < watchLaterUrls.length
             ? watchLaterUrls[index]
@@ -349,6 +359,7 @@ class MpvPlaybackProgressSynchronizer {
         await _deleteWatchLater(watchLaterIndex, watchLaterUrl, entry.url);
       }
     }
+    return eofIndex;
   }
 
   /// 增量应用缓冲临时播放点事件，返回当前日志总行数。

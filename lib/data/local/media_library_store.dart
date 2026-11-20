@@ -370,6 +370,7 @@ class MediaLibraryStore {
             playlistIndex: playlistIndex,
             playlistCount: playlistCount,
           );
+    if (identical(records, source)) return;
     final bounded = _boundPerSource(
       records,
       item.sourceId,
@@ -604,13 +605,18 @@ class MediaLibraryStore {
   Future<void> dismissVideoContinueSession(String sourceId, String sessionId) =>
       _enqueue(() async {
         await _load();
-        final records = _videoHistory.map((record) {
-          if (record.item.sourceId != sourceId ||
-              record.playbackSessionId != sessionId) {
-            return record;
-          }
-          return record.copyWith(continueDismissed: true);
-        }).toList();
+        final index = _videoHistory.indexWhere(
+          (record) =>
+              record.item.sourceId == sourceId &&
+              record.playbackSessionId == sessionId &&
+              !record.continueCompleted,
+        );
+        if (index < 0) return;
+        final records = [..._videoHistory];
+        records[index] = records[index].copyWith(
+          continueDismissed: true,
+          continueCompleted: true,
+        );
         await _write(videoHistory: records);
         _videoHistory = records;
         _notifyChanged();
@@ -628,7 +634,7 @@ class MediaLibraryStore {
           record.item.sourceId == item.sourceId &&
           record.playbackSessionId == sessionId,
     );
-    if (index < 0) return;
+    if (index < 0 || _videoHistory[index].continueCompleted) return;
     final records = [..._videoHistory];
     records[index] = records[index]
         .copyWith(
@@ -726,20 +732,28 @@ class MediaLibraryStore {
     int? playlistIndex,
     int? playlistCount,
   }) {
-    final previous = source
-        .where(
-          (record) =>
-              record.item.sourceId == item.sourceId &&
-              record.playbackSessionId == playbackSessionId &&
-              record.item.stableKey == item.stableKey,
-        )
-        .firstOrNull;
-    final records = [...source]
-      ..removeWhere(
-        (record) =>
-            record.item.sourceId == item.sourceId &&
-            record.playbackSessionId == playbackSessionId,
-      );
+    final previousIndex = source.indexWhere(
+      (record) =>
+          record.item.sourceId == item.sourceId &&
+          record.playbackSessionId == playbackSessionId,
+    );
+    final previousSession = previousIndex < 0 ? null : source[previousIndex];
+    final previous = previousSession?.item.stableKey == item.stableKey
+        ? previousSession
+        : null;
+    final video = item.kind.isVideoLane;
+    if (video &&
+        (previousSession?.continueCompleted == true ||
+            (previous != null &&
+                source
+                    .take(previousIndex)
+                    .any((r) => _sameItem(r.item, item))))) {
+      return source;
+    }
+    final records = [...source];
+    if (previousIndex >= 0) {
+      records.removeAt(previousIndex);
+    }
     records.insert(
       0,
       MediaLibraryRecord(

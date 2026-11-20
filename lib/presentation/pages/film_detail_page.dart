@@ -27,6 +27,7 @@ import 'package:provider/provider.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_version.dart';
 import '../../domain/services/film_version_resolver.dart';
+import '../../domain/services/media_continue_state.dart';
 import '../widgets/film_extra_controls.dart';
 import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_notice.dart';
@@ -215,7 +216,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   int? _continuePositionMs, _continueDurationMs;
   final _progressReaders = <PlaybackProgressReader>[];
   final _isoReaders = <IsoLibraryProgressReader>[];
-  late final List<MediaLibraryStore> _playbackStores;
+  late final MediaLibraryStore? _playbackStore;
   bool _favorite = false;
   bool _loading = true;
   bool _refreshing = false;
@@ -229,13 +230,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     widget.catalog.store.dataChanges.addListener(_scheduleDetails);
     widget.catalog.store.presentationChanges.addListener(_loadPreferences);
     final app = context.read<AppState>();
-    _playbackStores = [
-      app.filmMediaLibraryStore,
-      app.mediaLibraryStore,
-    ].whereType<MediaLibraryStore>().toList();
-    for (final store in _playbackStores) {
-      store.addListener(_scheduleContinue);
-    }
+    _playbackStore = app.filmMediaLibraryStore;
+    _playbackStore?.addListener(_scheduleContinue);
   }
 
   @override
@@ -264,9 +260,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     widget.catalog.store.presentationChanges.removeListener(_loadPreferences);
     _detailTimer?.cancel();
     _continueChanges.dispose();
-    for (final store in _playbackStores) {
-      store.removeListener(_scheduleContinue);
-    }
+    _playbackStore?.removeListener(_scheduleContinue);
     _scroll.dispose();
     _textColors.dispose();
     super.dispose();
@@ -275,11 +269,9 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   Future<void> _listenToProgress(AppState app) async {
     await app.initializeFilmPlayback();
     if (!mounted) return;
-    _progressReaders.addAll([app.progressService, app.filmProgressService]);
+    _progressReaders.add(app.filmProgressService);
     _isoReaders.addAll([
-      app.localDiscPlaybackService,
       app.filmLocalDiscPlaybackService,
-      ?app.isoPlaybackService,
       ?app.filmIsoPlaybackService,
     ]);
     for (final reader in _progressReaders) {
@@ -291,80 +283,58 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   void _progressChanged(PlaybackProgressChange change) {
-    if (change.affectsAll ||
-        change.profileId == _continueRecord?.item.sourceId) {
+    if (_loading ||
+        change.affectsAll ||
+        change.profileId.isEmpty ||
+        _resources.any((resource) => resource.sourceId == change.profileId)) {
       _scheduleContinue();
     }
   }
 
-  Future<(int?, int?)> _continueProgress(
+  Future<(int, int?)?> _continueProgress(
     AppState app,
     MediaLibraryRecord record,
-    bool film,
   ) async {
     final item = record.item;
-    if (item.kind == MediaLibraryKind.strm) {
-      return (record.strmPositionMs, record.strmDurationMs);
-    }
-    final target = app.resolveMediaLibraryTarget(item, allowLogicalPath: true);
-    if (target == null) return (null, null);
+    final target = item.kind == MediaLibraryKind.strm
+        ? null
+        : app.resolveMediaLibraryTarget(item, allowLogicalPath: true);
     if (item.kind == MediaLibraryKind.iso) {
-      if (item.playbackMode == PlaybackMode.webdavHdmvMenu) return (null, null);
-      final IsoLibraryProgressReader? reader =
+      if (target == null) return null;
+      if (item.playbackMode == PlaybackMode.webdavHdmvMenu) return null;
+      final local = app.filmLocalDiscPlaybackService;
+      final reader =
           item.sourceKind == MediaSourceKind.local &&
               item.playbackMode == PlaybackMode.localHdmvMenu
-          ? film
-                ? app.filmLocalDiscPlaybackService
-                : app.localDiscPlaybackService
-          : film
-          ? app.filmIsoPlaybackService
-          : app.isoPlaybackService;
-      var progress = await reader?.getLibraryProgress(
+          ? local
+          : app.filmIsoPlaybackService ?? local;
+      var progress = await reader.getLibraryProgress(
         profileId: item.sourceId,
         resolvedUrl: target,
         playbackMode: item.playbackMode,
       );
       if (progress == null &&
           item.sourceKind == MediaSourceKind.local &&
-          item.playbackMode != PlaybackMode.localHdmvMenu) {
-        progress =
-            await (film
-                    ? app.filmLocalDiscPlaybackService
-                    : app.localDiscPlaybackService)
-                .getLibraryProgress(
-                  profileId: item.sourceId,
-                  resolvedUrl: target,
-                  playbackMode: item.playbackMode,
-                );
+          !identical(reader, local)) {
+        progress = await local.getLibraryProgress(
+          profileId: item.sourceId,
+          resolvedUrl: target,
+          playbackMode: item.playbackMode,
+        );
       }
-      return (
-        progress?.position.inMilliseconds,
-        progress?.duration?.inMilliseconds,
-      );
+      return progress == null
+          ? null
+          : (
+              progress.position.inMilliseconds,
+              progress.duration?.inMilliseconds,
+            );
     }
-    final progress =
-        await (film ? app.filmProgressService : app.progressService)
-            .getResumeProgress(target, profileId: item.sourceId);
-    return (progress?.positionMs, progress?.durationMs);
-  }
-
-  /// 详情页与主页共用同一完成判定：仅末项且达到 99% 时视为已完成。
-  bool _completedContinue(
-    MediaLibraryRecord? record,
-    int? positionMs,
-    int? durationMs,
-  ) {
-    if (record == null || !record.item.kind.isVideoLane) return false;
-    final index = record.playlistIndex;
-    final count = record.playlistCount;
-    if (index != null && count != null && index != count - 1) return false;
-    if (positionMs == null ||
-        positionMs <= 0 ||
-        durationMs == null ||
-        durationMs <= 0) {
-      return false;
-    }
-    return positionMs / durationMs >= .99;
+    final progress = await readVideoContinueProgress(
+      record,
+      reader: app.filmProgressService,
+      url: target,
+    );
+    return progress == null ? null : (progress.positionMs, progress.durationMs);
   }
 
   Widget _metadata(FilmWork work, List<String> tags, Color foreground) {
@@ -524,6 +494,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   }
 
   void _scheduleContinue() {
+    ++_continueGeneration;
     unawaited(_load(playbackOnly: true));
   }
 
@@ -573,43 +544,37 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               enabledOnly: true,
             );
       if (!mounted) return;
-      final records = <MediaLibraryRecord>[];
-      MediaLibraryRecord? recentVersionRecord;
-      final filmRecords = <MediaLibraryRecord>{};
       final paths = {
         for (final r in resources.where(
           (r) => work?.type != FilmMediaType.movie || r.isMovieMain,
         ))
           '${r.sourceId}\u0000${r.path}',
       };
-      for (final library in _playbackStores) {
-        for (final source in resources.map((r) => r.sourceId).toSet()) {
+      final sources = resources.map((r) => r.sourceId).toSet();
+      Future<List<MediaLibraryRecord>> readHistory(
+        MediaLibraryStore? store,
+      ) async {
+        if (store == null) return [];
+        final records = <MediaLibraryRecord>[];
+        for (final source in sources) {
           for (final iso in [false, true]) {
-            final available =
-                (await library.playbackHistory(source, audio: false, iso: iso))
-                    .where(
-                      (record) => paths.contains(
-                        '${record.item.sourceId}\u0000${record.item.targetPath}',
-                      ),
-                    )
-                    .toList();
-            for (final record in available) {
-              if (recentVersionRecord == null ||
-                  record.updatedAt.isAfter(recentVersionRecord.updatedAt)) {
-                recentVersionRecord = record;
-              }
-            }
-            final matching = available
-                .where((r) => !r.continueDismissed)
-                .toList();
-            records.addAll(matching);
-            if (library == app.filmMediaLibraryStore) {
-              filmRecords.addAll(matching);
-            }
+            records.addAll(
+              (await store.playbackHistory(
+                source,
+                audio: false,
+                iso: iso,
+              )).where(
+                (record) => paths.contains(
+                  '${record.item.sourceId}\u0000${record.item.targetPath}',
+                ),
+              ),
+            );
           }
         }
+        return records..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       }
-      records.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+      final records = await readHistory(_playbackStore);
       final versions = playbackOnly ? _versions : FilmVersionIndex(resources);
       FilmVersionSelection? selection = playbackOnly ? _versionSelection : null;
       if (work?.type == FilmMediaType.tv && versions.families.isNotEmpty) {
@@ -618,6 +583,18 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           sourceScope: widget.catalog.sourceId,
         );
         if (selection == null) {
+          // 首次选版可参考普通播放历史，续播入口始终使用影视库。
+          var recentVersionRecord = records.firstOrNull;
+          final browserRecord = (await readHistory(
+            app.mediaLibraryStore,
+          )).firstOrNull;
+          if (browserRecord != null &&
+              (recentVersionRecord == null ||
+                  browserRecord.updatedAt.isAfter(
+                    recentVersionRecord.updatedAt,
+                  ))) {
+            recentVersionRecord = browserRecord;
+          }
           selection = versions.initial(
             recentSource: recentVersionRecord?.item.sourceId,
             recentPath: recentVersionRecord?.item.targetPath,
@@ -640,20 +617,34 @@ class _FilmDetailPageState extends State<FilmDetailPage>
       }
       await app.initializeFilmPlayback();
       if (!mounted || generation != _generation) return;
-      final record = records.firstOrNull;
-      final (positionMs, durationMs) = record == null
-          ? (null, null)
-          : await _continueProgress(app, record, filmRecords.contains(record));
-      final continueRecord = _completedContinue(record, positionMs, durationMs)
-          ? null
-          : record;
+      MediaLibraryRecord? continueRecord;
+      int? positionMs;
+      int? durationMs;
+      for (final record in mediaContinueCandidates(
+        records,
+        latestPerVideo: true,
+      )) {
+        final progress = await _continueProgress(app, record);
+        if (!mounted ||
+            generation != _generation ||
+            (playbackOnly && continueGeneration != _continueGeneration)) {
+          return;
+        }
+        if (progress == null) continue;
+        continueRecord = record;
+        (positionMs, durationMs) = progress;
+        break;
+      }
       if (playbackOnly) {
         if (mounted &&
             generation == _generation &&
-            continueGeneration == _continueGeneration) {
+            continueGeneration == _continueGeneration &&
+            (!identical(_continueRecord, continueRecord) ||
+                _continuePositionMs != positionMs ||
+                _continueDurationMs != durationMs)) {
           _continueRecord = continueRecord;
-          _continuePositionMs = continueRecord == null ? null : positionMs;
-          _continueDurationMs = continueRecord == null ? null : durationMs;
+          _continuePositionMs = positionMs;
+          _continueDurationMs = durationMs;
           _continueChanges.value++;
         }
         return;
@@ -710,6 +701,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           _loading = false;
           _selected.removeWhere((id) => !resources.any((r) => r.id == id));
         });
+        if (continueGeneration != _continueGeneration) _scheduleContinue();
       }
       if (mounted && !_backdropChecked && work != null) {
         _backdropChecked = true;

@@ -186,7 +186,17 @@ mp.add_timeout(3, function() mp.commandv('quit', '1') end)
     expect(script, contains('mp.register_event("start-file"'));
     expect(script, contains('mp.register_event("playback-restart"'));
     expect(script, contains('mp.register_event("end-file"'));
-    expect(script, contains('reason == "eof" and "completed" or "position"'));
+    expect(script, contains('last_entry_completed = reason == "eof"'));
+    expect(
+      script,
+      contains('last_entry_completed and "completed" or "position"'),
+    );
+    expect(
+      script,
+      contains(
+        'if last_entry_completed and mp.get_property_bool("idle-active") then',
+      ),
+    );
     expect(script, contains('event["file_error"] or event["error"]'));
     expect(script, contains('record["reason"] = reason'));
     expect(script, contains('append_progress("position", "shutdown", nil)'));
