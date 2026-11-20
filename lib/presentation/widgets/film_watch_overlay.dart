@@ -276,8 +276,10 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
   }
 
   Widget _revealBelowButton(BuildContext context, VoidCallback reveal) {
-    final theme = Theme.of(context);
-    if (widget.workId == null || theme.brightness != Brightness.dark) {
+    final style = widget.workId == null
+        ? null
+        : FilmTextStyles.overviewAction(context);
+    if (style == null) {
       return TextButton(
         onPressed: reveal,
         child: AppText(
@@ -291,24 +293,12 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
         ),
       );
     }
-    final foreground = WidgetStateProperty.resolveWith<Color?>((states) {
-      if (states.contains(WidgetState.disabled)) return null;
-      final active =
-          states.contains(WidgetState.hovered) ||
-          states.contains(WidgetState.pressed) ||
-          states.contains(WidgetState.focused);
-      return active ? const Color(0xE6FFFFFF) : const Color(0x80FFFFFF);
-    });
     final button = TextButton(
       onPressed: reveal,
-      style: ButtonStyle(
-        foregroundColor: foreground,
-        iconColor: foreground,
-        animationDuration: MediaQuery.disableAnimationsOf(context)
-            ? Duration.zero
-            : AppTheme.hoverDuration,
+      style: style.copyWith(
+        iconColor: style.foregroundColor,
         textStyle: WidgetStatePropertyAll(
-          theme.textTheme.labelLarge?.copyWith(
+          Theme.of(context).textTheme.labelLarge?.copyWith(
             fontWeight: FontWeight.w500,
             letterSpacing: .3,
             shadows: const [

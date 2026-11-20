@@ -487,6 +487,19 @@ void main() {
     final expand = find.widgetWithText(TextButton, '展开简介');
     await tester.ensureVisible(expand);
     await settle(tester);
+    Color? buttonTextColor(String label) =>
+        DefaultTextStyle.of(tester.element(find.text(label))).style.color;
+    expect(buttonTextColor('展开简介'), const Color(0x80FFFFFF));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+    await mouse.moveTo(tester.getCenter(expand));
+    await tester.pump();
+    await tester.pump(AppTheme.hoverDuration);
+    expect(buttonTextColor('展开简介'), const Color(0xE6FFFFFF));
+    await mouse.moveTo(Offset.zero);
+    await tester.pumpAndSettle();
+    expect(buttonTextColor('展开简介'), const Color(0x80FFFFFF));
     await tester.tap(expand);
     await settle(tester);
     expect(tester.widget<Text>(find.text(long)).maxLines, isNull);
@@ -497,6 +510,7 @@ void main() {
     final collapse = find.widgetWithText(TextButton, '收起简介');
     await tester.ensureVisible(collapse);
     await settle(tester);
+    expect(buttonTextColor('收起简介'), const Color(0x80FFFFFF));
     await tester.tap(collapse);
     await settle(tester);
     expect(tester.widget<Text>(find.text(long)).maxLines, 4);

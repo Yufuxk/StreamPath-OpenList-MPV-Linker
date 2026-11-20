@@ -457,6 +457,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             revealBelow: true,
             footer: overflows
                 ? TextButton(
+                    style: FilmTextStyles.overviewAction(context),
                     onPressed: () =>
                         setState(() => _expandedOverview = !_expandedOverview),
                     child: AppText(_expandedOverview ? '收起简介' : '展开简介'),

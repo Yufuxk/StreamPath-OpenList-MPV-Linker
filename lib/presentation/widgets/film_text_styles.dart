@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/app_theme.dart';
+
 /// 影视背景上的共享文字样式。
 abstract final class FilmTextStyles {
   static TextStyle metadata(ThemeData theme, TextStyle style) =>
@@ -30,4 +32,21 @@ abstract final class FilmTextStyles {
     color: Colors.white.withValues(alpha: .82),
     shadows: shadows,
   );
+
+  static ButtonStyle? overviewAction(BuildContext context) {
+    if (Theme.of(context).brightness != Brightness.dark) return null;
+    return ButtonStyle(
+      foregroundColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return null;
+        final active =
+            states.contains(WidgetState.hovered) ||
+            states.contains(WidgetState.pressed) ||
+            states.contains(WidgetState.focused);
+        return active ? const Color(0xE6FFFFFF) : const Color(0x80FFFFFF);
+      }),
+      animationDuration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : AppTheme.hoverDuration,
+    );
+  }
 }
