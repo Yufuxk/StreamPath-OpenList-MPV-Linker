@@ -376,7 +376,7 @@ void main() {
       expect(selection.size, source.bytes.length);
     }
   });
-  test('完整成品逐字节一致，缓存命中不访问远端并保留逻辑进度', () async {
+  test('完整成品逐字节一致，附件补查失败仍复用缓存视频及进度', () async {
     final service = await open();
     final selection = await plan(service);
     await service.enqueue([selection]);
@@ -415,8 +415,7 @@ void main() {
       identity: 'account-a',
       baseUrl: source.base,
       persistent: (path) => 'https://nas.invalid/$path',
-      remote: () async =>
-          throw StateError('Offline cache must not resolve remote source'),
+      remote: () async => throw AppException.network('Offline fixture'),
     );
     final preparer = VideoEntryPreparer(
       source: offline,
@@ -455,7 +454,7 @@ void main() {
     await service.delete('bundle-a');
     expect(await File(hit.path).exists(), isFalse);
   });
-  test('离线缓存缺字幕和字体时只读快照，不访问远程来源', () async {
+  test('离线缓存缺字幕和字体时，字体补查失败仍从快照播放', () async {
     final service = await open();
     final selection = await plan(service);
     await service.enqueue([selection]);
@@ -477,8 +476,7 @@ void main() {
       identity: 'account-a',
       baseUrl: source.base,
       persistent: (path) => 'https://nas.invalid/$path',
-      remote: () async =>
-          throw StateError('Offline cache must not resolve remote source'),
+      remote: () async => throw AppException.network('Offline fixture'),
     );
     final preparer = VideoEntryPreparer(
       source: offline,
@@ -508,6 +506,95 @@ void main() {
     expect(prepared.localFontDirectory, isNull);
     expect(source.offsets.length, requests);
   });
+
+  test(
+    'cached video discovers new fonts through a distinct logical cache origin',
+    () async {
+      final overrides = HttpOverrides.current;
+      HttpOverrides.global = null;
+      addTearDown(() => HttpOverrides.global = overrides);
+      final cache = await open();
+      final selection = await plan(cache);
+      await cache.enqueue([selection]);
+      await cache.setPlaybackSuspended(false);
+      await _until(() => cache.complete(selection.bundle));
+      final requests = <String>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        final path = request.uri.path;
+        requests.add('${request.method} $path');
+        if (request.method == 'GET') {
+          request.response.add([1, 2]);
+        } else {
+          final root = path.endsWith('/show');
+          request.response.statusCode = HttpStatus.multiStatus;
+          request.response.write('''
+<d:multistatus xmlns:d="DAV:"><d:response>
+<d:href>${root ? '/actual/show/Fonts/' : '/actual/show/Fonts/Example.ttf'}</d:href>
+<d:propstat><d:prop><d:getcontentlength>2</d:getcontentlength></d:prop>
+<d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+</d:response></d:multistatus>
+''');
+        }
+        await request.response.close();
+      });
+      final cachedSource = VideoCacheSource(
+        cache,
+        const MediaSourceDescriptor(
+          sourceId: 'source-a',
+          kind: MediaSourceKind.webdav,
+          displayName: 'test',
+        ),
+        identity: 'account-a',
+        baseUrl: 'https://cache.invalid/folder/',
+        persistent: (path) => 'https://cache.invalid/folder/$path',
+        remote: () async => WebDavMediaSourceAdapter(
+          WebDAVService(
+            client: WebDavClient(
+              baseUrl: 'http://127.0.0.1:${server.port}/actual',
+            ),
+          ),
+        ),
+      );
+      final preparer = VideoEntryPreparer(
+        source: cachedSource,
+        config: const PlayerConfig(name: 'mpv', executable: 'mpv'),
+        subtitleMatcher: const SubtitleMatcher(),
+        fontMatcher: const WebDavFontMatcher(),
+        titles: const {},
+        cached: (path) async => (await cache.lookup(
+          'source-a',
+          path,
+          identity: 'account-a',
+        ))?.prepared(),
+      );
+      final prepared = await preparer.prepare(
+        const VideoQueueVersion(path: 'show/video.mkv', name: 'video.mkv'),
+      );
+      expect(prepared.entry.url, selection.files.first.destination);
+      final font = prepared.remoteFonts?.files.single;
+      expect(font?.name, 'Example.ttf');
+      final file = File(
+        p.join(p.dirname(selection.files.first.destination), 'probe.ttf'),
+      );
+      expect(
+        await cachedSource.service.downloadFile(
+          font!.url,
+          file,
+          maxBytes: 2,
+          timeout: const Duration(seconds: 2),
+        ),
+        2,
+      );
+      expect(await file.readAsBytes(), [1, 2]);
+      expect(requests, [
+        'PROPFIND /actual/show',
+        'PROPFIND /actual/show/Fonts',
+        'GET /actual/show/Fonts/Example.ttf',
+      ]);
+    },
+  );
 
   test('缓存目录快照支持显式刷新，来源不可用时回退快照', () async {
     final service = await open();

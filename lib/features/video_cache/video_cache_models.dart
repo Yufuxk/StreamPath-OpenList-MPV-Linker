@@ -112,7 +112,7 @@ class CachedPlaybackTarget {
             ),
         ],
       ),
-      localFontDirectory: fonts.isEmpty
+      localFontDirectory: fonts.isEmpty || !fonts.every(files.containsKey)
           ? null
           : p.dirname(files[fonts.first]!.destination),
     );

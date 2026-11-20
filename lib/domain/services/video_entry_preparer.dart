@@ -28,6 +28,7 @@ class VideoEntryPreparer {
     required this.titles,
     Map<String, List<MediaDirectoryEntry>>? directories,
     this.cached,
+    this.fontDirectoryLoader,
   }) {
     if (directories != null) _directories.addAll(directories);
   }
@@ -38,7 +39,10 @@ class VideoEntryPreparer {
   final Map<String, String> titles;
   final Future<PreparedVideoItem?> Function(String path)? cached;
   final _directories = <String, List<MediaDirectoryEntry>>{};
-  final _fonts = <String, PreparedVideoItem>{};
+  final _fonts = <(String, bool), Future<PreparedVideoItem>>{};
+  final Future<List<MediaDirectoryEntry>> Function(String path)?
+  fontDirectoryLoader;
+  static const _noFonts = PreparedVideoItem(entry: MediaEntry(url: ''));
   String? sharedLocalFonts;
   WebDavFontDirectory? sharedRemoteFonts;
   bool get local => source.descriptor.kind == MediaSourceKind.local;
@@ -48,13 +52,11 @@ class VideoEntryPreparer {
     List<MediaDirectoryEntry>? siblings,
     String? startPath,
   }) async {
-    if (!config.sharePlaylistFonts) return;
-    if (startPath != null) {
-      final hit = await cached?.call(startPath);
-      if (hit != null &&
-          (hit.localFontDirectory != null || hit.remoteFonts != null)) {
-        return;
-      }
+    if (!config.sharePlaylistFonts || !config.subtitleInjectionEnabled) return;
+    final hit = startPath == null ? null : await cached?.call(startPath);
+    if (hit != null &&
+        (hit.localFontDirectory != null || hit.remoteFonts != null)) {
+      return;
     }
     final List<MediaDirectoryEntry> files;
     try {
@@ -74,33 +76,47 @@ class VideoEntryPreparer {
         .where((e) => e.isVideo || !local && e.isPlayable)
         .firstOrNull;
     if (video == null) return;
-    final fonts = await _fontsAt(rootPath, video, files);
+    final fonts = await fontsAt(
+      rootPath,
+      video,
+      files,
+      refreshParent: hit != null,
+    );
     sharedLocalFonts = fonts.localFontDirectory;
     sharedRemoteFonts = fonts.remoteFonts;
   }
 
-  /// 字体属于可选资源，目录读取或文件校验失败只跳过本次注入。
-  Future<PreparedVideoItem> _fontsAt(
+  /// 同一父目录共用查找，只有成功的枚举可以在队列内复用。
+  Future<PreparedVideoItem> fontsAt(
     String parent,
     MediaDirectoryEntry video,
-    List<MediaDirectoryEntry> siblings,
-  ) async {
-    if (_fonts[parent] case final cached?) return cached;
-    try {
-      return _fonts[parent] = await fontsFor(video, siblings);
-    } on AppException {
-      return _fonts[parent] = const PreparedVideoItem(
-        entry: MediaEntry(url: ''),
-      );
-    } on FilmCatalogException {
-      return _fonts[parent] = const PreparedVideoItem(
-        entry: MediaEntry(url: ''),
-      );
-    } on FileSystemException {
-      return _fonts[parent] = const PreparedVideoItem(
-        entry: MediaEntry(url: ''),
+    List<MediaDirectoryEntry> siblings, {
+    bool refreshParent = false,
+  }) {
+    PreparedVideoItem unavailable() {
+      _fonts.remove((parent, refreshParent));
+      if (local) return _noFonts;
+      return PreparedVideoItem(
+        entry: _noFonts.entry,
+        remoteFonts: WebDavFontDirectory.unavailable(parent),
       );
     }
+
+    return _fonts.putIfAbsent((parent, refreshParent), () async {
+      try {
+        final current = refreshParent && !local
+            ? await (source as WebDavMediaSourceAdapter).service
+                  .fetchFontDirectory(parent)
+            : siblings;
+        return await fontsFor(video, current);
+      } on AppException {
+        return unavailable();
+      } on FilmCatalogException {
+        return unavailable();
+      } on FileSystemException {
+        return unavailable();
+      }
+    });
   }
 
   Future<PreparedVideoItem> prepare(VideoQueueVersion version) async {
@@ -140,7 +156,7 @@ class VideoEntryPreparer {
       final subtitle =
           hit?.entry.subtitle ?? await subtitleFor(video, siblings);
       final fonts = hit == null || enrichFonts
-          ? await _fontsAt(parent, video, siblings)
+          ? await fontsAt(parent, video, siblings, refreshParent: enrichFonts)
           : null;
       if (hit != null) {
         // 缓存有效资源优先；新查找只补空缺，不能覆盖缓存路径。
@@ -191,13 +207,34 @@ class VideoEntryPreparer {
         remoteFonts: fonts?.remoteFonts ?? sharedRemoteFonts,
       );
     } on AppException {
-      if (hit != null) return hit;
+      if (hit != null) {
+        return enrichFonts && !local
+            ? PreparedVideoItem(
+                entry: hit.entry,
+                remoteFonts: WebDavFontDirectory.unavailable(parent),
+              )
+            : hit;
+      }
       rethrow;
     } on FilmCatalogException {
-      if (hit != null) return hit;
+      if (hit != null) {
+        return enrichFonts && !local
+            ? PreparedVideoItem(
+                entry: hit.entry,
+                remoteFonts: WebDavFontDirectory.unavailable(parent),
+              )
+            : hit;
+      }
       rethrow;
     } on FileSystemException {
-      if (hit != null) return hit;
+      if (hit != null) {
+        return enrichFonts && !local
+            ? PreparedVideoItem(
+                entry: hit.entry,
+                remoteFonts: WebDavFontDirectory.unavailable(parent),
+              )
+            : hit;
+      }
       rethrow;
     }
   }
@@ -226,33 +263,34 @@ class VideoEntryPreparer {
     MediaDirectoryEntry video,
     List<MediaDirectoryEntry> siblings,
   ) async {
-    if (!config.subtitleInjectionEnabled) {
-      return const PreparedVideoItem(entry: MediaEntry(url: ''));
-    }
+    if (!config.subtitleInjectionEnabled) return _noFonts;
     if (!local) {
       final service = (source as WebDavMediaSourceAdapter).service;
-      final match = fontMatcher.findBestFor(
+      AppException? listingError;
+      for (final match in fontMatcher.candidatesFor(
         video,
         siblings,
         baseUrl: service.baseUrl,
-      );
-      if (match == null) {
-        return const PreparedVideoItem(entry: MediaEntry(url: ''));
+      )) {
+        try {
+          final files =
+              await (fontDirectoryLoader ?? service.fetchFontDirectory)(
+                match.requestPath,
+              );
+          final fonts = fontMatcher.withDirectFontFiles(
+            match,
+            files,
+            baseUrl: service.baseUrl,
+          );
+          if (fonts.files.isNotEmpty) {
+            return PreparedVideoItem(entry: _noFonts.entry, remoteFonts: fonts);
+          }
+        } on AppException catch (error) {
+          listingError ??= error;
+        }
       }
-      try {
-        final files = await service.fetchDirectory(match.requestPath);
-        final fonts = fontMatcher.withDirectFontFiles(
-          match,
-          files,
-          baseUrl: service.baseUrl,
-        );
-        return PreparedVideoItem(
-          entry: const MediaEntry(url: ''),
-          remoteFonts: fonts.files.isEmpty ? null : fonts,
-        );
-      } on AppException {
-        return const PreparedVideoItem(entry: MediaEntry(url: ''));
-      }
+      if (listingError != null) throw listingError;
+      return _noFonts;
     }
     final candidates =
         siblings
@@ -304,6 +342,6 @@ class VideoEntryPreparer {
         );
       }
     }
-    return const PreparedVideoItem(entry: MediaEntry(url: ''));
+    return _noFonts;
   }
 }

@@ -35,7 +35,29 @@ class WebDavFontDirectory {
     required this.requestPath,
     required this.entryKey,
     this.files = const [],
-  });
+  }) : _resolve = null,
+       isUnavailable = false;
+
+  const WebDavFontDirectory.deferred(String parent, this._resolve)
+    : name = '',
+      requestPath = parent,
+      entryKey = 'pending:$parent',
+      files = const [],
+      isUnavailable = false;
+
+  const WebDavFontDirectory.unavailable(String parent)
+    : name = '',
+      requestPath = parent,
+      entryKey = 'unavailable:$parent',
+      files = const [],
+      _resolve = null,
+      isUnavailable = true;
+
+  final bool isUnavailable;
+  final Future<WebDavFontDirectory?> Function()? _resolve;
+
+  Future<WebDavFontDirectory?> resolve() async =>
+      _resolve == null ? this : _resolve();
 
   final String name;
   final String requestPath;
@@ -64,6 +86,15 @@ class WebDavFontMatcher {
     List<MediaDirectoryEntry> siblings, {
     required String baseUrl,
   }) {
+    final candidates = candidatesFor(media, siblings, baseUrl: baseUrl);
+    return candidates.isEmpty ? null : candidates.first;
+  }
+
+  Iterable<WebDavFontDirectory> candidatesFor(
+    MediaDirectoryEntry media,
+    List<MediaDirectoryEntry> siblings, {
+    required String baseUrl,
+  }) {
     final matches = <({MediaDirectoryEntry entry, int score, String path})>[];
     for (final entry in siblings) {
       if (!entry.isDirectory || entry.isSelfEntry) continue;
@@ -76,7 +107,6 @@ class WebDavFontMatcher {
       if (requestPath == null) continue;
       matches.add((entry: entry, score: score, path: requestPath));
     }
-    if (matches.isEmpty) return null;
     matches.sort((left, right) {
       final byScore = right.score.compareTo(left.score);
       if (byScore != 0) return byScore;
@@ -88,11 +118,12 @@ class WebDavFontMatcher {
         right.entry.name.toLowerCase(),
       );
     });
-    final match = matches.first;
-    return WebDavFontDirectory(
-      name: match.entry.name,
-      requestPath: match.path,
-      entryKey: match.entry.entryKey,
+    return matches.map(
+      (match) => WebDavFontDirectory(
+        name: match.entry.name,
+        requestPath: match.path,
+        entryKey: match.entry.entryKey,
+      ),
     );
   }
 

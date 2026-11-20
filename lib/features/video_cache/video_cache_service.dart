@@ -287,19 +287,23 @@ class VideoCacheService {
     for (final bundle in candidates) {
       var valid = true;
       final selected = <String, VideoCacheFile>{};
+      final fonts =
+          (bundle['fonts'] as List?)?.cast<String>().toSet() ??
+          const <String>{};
       for (final id in (bundle['files'] as List).cast<String>()) {
         final file = files[id]!;
         final local = File(file.destination);
         try {
-          if (!await local.exists() || await local.length() != file.size) {
-            valid = false;
-            break;
+          if (await local.exists() && await local.length() == file.size) {
+            selected[id] = file;
+            continue;
           }
         } on FileSystemException {
-          valid = false;
-          break;
+          // 保留仍可播放的主文件，缺失的字体可以按需补查。
         }
-        selected[id] = file;
+        if (fonts.contains(id)) continue;
+        valid = false;
+        break;
       }
       if (valid) return CachedPlaybackTarget(bundle, selected);
     }

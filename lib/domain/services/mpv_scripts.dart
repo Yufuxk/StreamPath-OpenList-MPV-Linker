@@ -97,6 +97,8 @@ end)
     List<String?> directories,
     Directory base, {
     required String sessionId,
+    ({String path, Set<int> positions, int? initialPosition})? deferredFonts,
+    List<String> playlistUrls = const [],
   }) async {
     final values = directories
         .map((path) => path == null ? 'nil' : _luaQuote(path))
@@ -104,13 +106,21 @@ end)
     final script =
         '''
 local FONT_DIRS = {$values}
+${_deferredFontsLua(deferredFonts)}
+local PATHS = {${playlistUrls.map(_luaQuote).join(', ')}}
 local OPTION = "sub-fonts-dir"
 local _, option_error = mp.get_property(OPTION)
 if option_error then return end
 
-mp.add_hook("on_load", 5, function()
+mp.add_hook("on_load", 5, function(hook)
     local pos = mp.get_property_number("playlist-pos", -1)
+    if #PATHS > 0 then
+        local list = mp.get_property_native("playlist") or {}
+        if #list ~= #PATHS then return end
+        for i, item in ipairs(list) do if item.filename ~= PATHS[i] then return end end
+    end
     local directory = FONT_DIRS[pos + 1]
+    ${deferredFonts == null ? '' : 'if defer_fonts(hook, pos, directory) then return end'}
     if directory then
         mp.set_property("file-local-options/" .. OPTION, directory)
     end
@@ -121,6 +131,60 @@ end)
       _sessionFileName('streampath-font-directory', 'lua', sessionId),
       script,
     );
+  }
+
+  static String _deferredFontsLua(
+    ({String path, Set<int> positions, int? initialPosition})? deferred,
+  ) {
+    if (deferred == null) return '';
+    return '''
+local font_utils = require "mp.utils"
+local font_mailbox = ${_luaQuote(deferred.path)}
+local font_pending = {${deferred.positions.map((pos) => '[$pos] = true').join(', ')}}
+local first_font_position = ${deferred.initialPosition ?? 'nil'}
+local font_serial = 0
+local cancel_pending_fonts
+mp.observe_property("playback-abort", "bool", function(_, aborted)
+    if aborted and cancel_pending_fonts then cancel_pending_fonts() end
+end)
+local function defer_fonts(hook, pos, fallback)
+    local skip = first_font_position == pos
+    first_font_position = nil
+    if skip or not font_pending[pos] or mp.get_property("sub-fonts-dir", nil) == nil then return false end
+    local request = io.open(font_mailbox .. '.request', 'w')
+    if not request then return false end
+    font_serial = font_serial + 1
+    request:write(tostring(font_serial) .. ':' .. tostring(pos))
+    request:close()
+    hook:defer()
+    local deadline = mp.get_time() + 30
+    local acknowledge_by = mp.get_time() + 2
+    local acknowledged = false
+    local timer
+    local function finish(directory)
+        cancel_pending_fonts = nil
+        timer:kill()
+        local path = directory or fallback
+        if path then mp.set_property("file-local-options/sub-fonts-dir", path) end
+        hook:cont()
+    end
+    cancel_pending_fonts = function() finish(nil) end
+    timer = mp.add_periodic_timer(0.1, function()
+        local response = io.open(font_mailbox .. '.response', 'r')
+        if response then
+            local result = font_utils.parse_json(response:read('*a'))
+            response:close()
+            if result and result.serial == font_serial then
+                if not result.pending then finish(result.path); return end
+                acknowledged = true
+            end
+        end
+        local now = mp.get_time()
+        if now >= deadline or (not acknowledged and now >= acknowledge_by) then finish(nil) end
+    end)
+    return true
+end
+''';
   }
 
   // ── 单集外挂字幕注入 ───────────────────────────────────────
@@ -423,6 +487,7 @@ end
     required String sessionId,
     List<int>? initialPlaylistIds,
     int? queueGeneration,
+    ({String path, Set<int> positions, int? initialPosition})? deferredFonts,
   }) async {
     final matchEntryId = queueGeneration != null;
     final paths = <String>[];
@@ -460,6 +525,7 @@ local SUBS = {}
 local SUB_TITLES = {}
 local LANGS = {}
 local FONT_DIRS = {}
+${_deferredFontsLua(deferredFonts)}
 local MODE = "${autoSelect ? 'select' : 'auto'}"
 ${titles.join('\n')}
 ${subs.join('\n')}
@@ -484,10 +550,11 @@ local function owns_playlist()
     owned_ids = identity
     return true
 end
-mp.add_hook("on_load", 5, function()
+mp.add_hook("on_load", 5, function(hook)
     if not owns_playlist() then return end
     local pos = ${matchEntryId ? '0' : 'mp.get_property_number("playlist-pos", -1)'}
     local directory = FONT_DIRS[pos]
+    ${deferredFonts == null ? '' : 'if defer_fonts(hook, pos, directory) then return end'}
     if directory and mp.get_property("sub-fonts-dir", nil) ~= nil then
         mp.set_property("file-local-options/sub-fonts-dir", directory)
     end

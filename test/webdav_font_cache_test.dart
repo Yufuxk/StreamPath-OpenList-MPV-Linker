@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/domain/services/webdav_font_cache.dart';
 import 'package:streampath/domain/services/webdav_font_localizer.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
@@ -83,6 +84,11 @@ void main() {
     expect(downloads, 1);
     expect(reports.last.fromCache, isTrue);
 
+    await second!.files.single.writeAsBytes([4, 3, 2, 1]);
+    final repaired = await load('second');
+    expect(await repaired!.files.single.readAsBytes(), [1, 2, 3, 4]);
+    expect(downloads, 2);
+
     final otherSource = await cache.localize(
       source: source,
       sourceId: 'profile-b',
@@ -95,20 +101,20 @@ void main() {
       timeout: const Duration(seconds: 30),
       enabled: true,
     );
-    expect(downloads, 2);
+    expect(downloads, 3);
     expect(otherSource?.directory.path, isNot(first?.directory.path));
 
     await cache.prune(
       () async => {WebDavFontCache.sessionKey('profile-a', 'second')},
     );
-    expect(await first!.directory.exists(), isTrue);
+    expect(await repaired.directory.exists(), isTrue);
     expect(await otherSource!.directory.exists(), isFalse);
     final orphan = Directory(
       '${base.path}${Platform.pathSeparator}streampath-fonts-orphan',
     );
     await orphan.create();
     await cache.prune(() async => <String>{});
-    expect(await first.directory.exists(), isFalse);
+    expect(await repaired.directory.exists(), isFalse);
     expect(await orphan.exists(), isFalse);
   });
 
@@ -148,6 +154,146 @@ void main() {
     expect(downloads, 2);
     expect(second?.directory.path, isNot(first?.directory.path));
   });
+
+  test(
+    'partial cache retries only failed or damaged files and protects active generations',
+    () async {
+      final source = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Fonts',
+        entryKey: 'folder',
+        files: [
+          for (var i = 0; i < 5; i++)
+            WebDavFontFile(name: '$i.ttf', url: '$i', size: 2, etag: 'v1'),
+        ],
+      );
+      final cache = WebDavFontCache(directory: base);
+      final calls = <String>[];
+      final progress = <WebDavFontLocalizationProgress>[];
+      var offline = true;
+      Future<WebDavFontLocalizationResult?> load(String session) =>
+          cache.localize(
+            source: source,
+            sourceId: 'source',
+            retentionSessionId: session,
+            sessionBase: base,
+            sessionId: session,
+            enabled: true,
+            maxFiles: 256,
+            maxBytes: 1024,
+            timeout: const Duration(seconds: 2),
+            mediaPaths: ['show/E01.mkv'],
+            onProgress: progress.add,
+            loader: (url, {required timeout, required maxBytes}) async {
+              calls.add(url);
+              if (url == '3' && offline) {
+                throw AppException.network('Fixture offline');
+              }
+              return [int.parse(url), 42];
+            },
+          );
+      final partial = (await load('partial'))!;
+      expect(partial.summary.complete, isFalse);
+      expect(partial.summary.succeeded, 4);
+      expect(partial.summary.failed, 1);
+      expect(partial.summary.issues, {WebDavFontIssue.network: 1});
+      expect(calls.where((url) => url == '3'), hasLength(2));
+      expect(progress.last.completedFiles, 4);
+      expect(progress.last.fromCache, isFalse);
+      expect(
+        await cache.forCachedMedia(
+          sourceId: 'source',
+          mediaPath: 'show/E01.mkv',
+          retentionSessionId: 'offline',
+        ),
+        isNull,
+      );
+
+      offline = false;
+      calls.clear();
+      final complete = (await load('complete'))!;
+      expect(calls, ['3']);
+      expect(complete.summary.cacheHits, 4);
+      expect(complete.summary.complete, isTrue);
+      await complete.files[1].writeAsBytes([99, 99]);
+      calls.clear();
+      final repaired = (await load('repaired'))!;
+      expect(calls, ['1']);
+      expect(repaired.summary.cacheHits, 4);
+      final fallback = await cache.forCachedMedia(
+        sourceId: 'source',
+        mediaPath: 'show/E01.mkv',
+        retentionSessionId: 'offline',
+      );
+      expect(fallback?.directory.path, repaired.directory.path);
+      expect(
+        await cache.forCachedMedia(
+          sourceId: 'other',
+          mediaPath: 'show/E01.mkv',
+          retentionSessionId: 'offline',
+        ),
+        isNull,
+      );
+      await cache.prune(
+        () async => {WebDavFontCache.sessionKey('source', 'offline')},
+        activePaths: () => {complete.directory.path},
+      );
+      expect(await complete.directory.exists(), isTrue);
+      expect(await partial.directory.exists(), isFalse);
+      expect(await repaired.directory.exists(), isTrue);
+      await cache.prune(() async => {});
+      expect(await complete.directory.exists(), isFalse);
+      expect(await repaired.directory.exists(), isFalse);
+    },
+  );
+
+  test(
+    'weak validators allow cache hits then refresh only weak fonts',
+    () async {
+      var now = DateTime(2026, 11, 20);
+      final cache = WebDavFontCache(directory: base, now: () => now);
+      final calls = <String>[];
+      const source = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Fonts',
+        entryKey: 'folder',
+        files: [
+          WebDavFontFile(name: 'weak.ttf', url: 'weak', size: 1),
+          WebDavFontFile(
+            name: 'strong.ttf',
+            url: 'strong',
+            size: 1,
+            etag: 'v1',
+          ),
+        ],
+      );
+      Future<WebDavFontLocalizationResult?> load() => cache.localize(
+        source: source,
+        sourceId: 'source',
+        retentionSessionId: 'session',
+        sessionBase: base,
+        sessionId: 'session',
+        enabled: true,
+        maxFiles: 256,
+        maxBytes: 1024,
+        timeout: const Duration(seconds: 2),
+        loader: (url, {required timeout, required maxBytes}) async {
+          calls.add(url);
+          return [now.day];
+        },
+      );
+      final first = (await load())!;
+      calls.clear();
+      now = now.add(const Duration(days: 6));
+      expect((await load())?.directory.path, first.directory.path);
+      expect(calls, isEmpty);
+      now = now.add(const Duration(days: 1));
+      final refreshed = (await load())!;
+      expect(calls, ['weak']);
+      expect(await refreshed.files[0].readAsBytes(), [27]);
+      expect(await refreshed.files[1].readAsBytes(), [20]);
+    },
+  );
 
   test('并发清理在字体准备完成后读取最新续播引用', () async {
     const source = WebDavFontDirectory(

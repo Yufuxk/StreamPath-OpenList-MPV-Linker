@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:streampath/core/errors/app_exception.dart';
 import 'package:streampath/domain/services/webdav_font_localizer.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
 
@@ -89,7 +90,9 @@ void main() {
       base: base,
       sessionId: 'partial',
       loader: (url, {required maxBytes, required timeout}) async {
-        if (url.endsWith('bad.ttf')) throw StateError('download failed');
+        if (url.endsWith('bad.ttf')) {
+          throw AppException.network('download failed');
+        }
         return [1];
       },
     );
@@ -134,6 +137,51 @@ void main() {
     expect(await result!.files.single.readAsBytes(), [0, 1, 2, 3]);
   });
 
+  test(
+    'transient failure retries while limit, format and success remain distinct',
+    () async {
+      const source = WebDavFontDirectory(
+        name: 'Fonts',
+        requestPath: 'Fonts',
+        entryKey: 'folder',
+        files: [
+          WebDavFontFile(name: 'retry.ttf', url: 'retry', size: 1),
+          WebDavFontFile(
+            name: 'too-large.ttf',
+            url: 'large',
+            size: WebDavFontLocalizer.maxFontBytes + 1,
+          ),
+          WebDavFontFile(name: 'unknown.zip', url: 'unknown', size: 1),
+          WebDavFontFile(name: 'truncated.ttf', url: 'truncated', size: 2),
+        ],
+      );
+      final calls = <String>[];
+      final result = (await const WebDavFontLocalizer().localize(
+        source: source,
+        base: base,
+        sessionId: 'retry',
+        loader: (url, {required maxBytes, required timeout}) async {
+          calls.add(url);
+          if (url == 'retry' &&
+              calls.where((value) => value == url).length == 1) {
+            throw const SocketException('Temporary disconnect');
+          }
+          return [1];
+        },
+      ))!;
+      expect(calls, unorderedEquals(['retry', 'retry', 'truncated']));
+      expect(result.summary.succeeded, 1);
+      expect(result.summary.skipped, 2);
+      expect(result.summary.failed, 1);
+      expect(result.summary.issues, {
+        WebDavFontIssue.limit: 1,
+        WebDavFontIssue.format: 1,
+        WebDavFontIssue.invalidSize: 1,
+      });
+      expect(await result.directory.list().length, 1);
+    },
+  );
+
   test('没有任何可用字体时不留空目录', () async {
     const source = WebDavFontDirectory(
       name: 'Fonts',
@@ -153,7 +201,7 @@ void main() {
       base: base,
       sessionId: 'empty',
       loader: (url, {required maxBytes, required timeout}) =>
-          throw StateError('download failed'),
+          throw AppException.network('download failed'),
     );
 
     expect(result, isNull);

@@ -274,6 +274,26 @@ class _ImplicitQueueEntry {
   }
 }
 
+class _PendingFontPlaylist {
+  _PendingFontPlaylist(this.path, this.items, {this.initialPosition});
+
+  final String path;
+  final Map<int, PreparedVideoItem> items;
+  final int? initialPosition;
+
+  ({String path, Set<int> positions, int? initialPosition}) get script => (
+    path: path,
+    positions: items.keys.toSet(),
+    initialPosition: initialPosition,
+  );
+
+  List<String> get artifacts => [
+    '$path.request',
+    '$path.response',
+    '$path.response.tmp',
+  ];
+}
+
 class _PlayerSessionRuntime {
   _PlayerSessionRuntime({
     required this.sessionId,
@@ -356,6 +376,7 @@ class _PlayerSessionRuntime {
   WebDavFontBytesLoader? webDavFontLoader;
   WebDavFontFileLoader? webDavFontFileLoader;
   final List<String> artifactPaths;
+  final persistentFontPaths = <String>{};
 
   /// 本次播放会话按 URL 复用的字幕本地化结果（失败结果同样缓存）。
   final Map<String, Future<SubtitleItem?>> subtitleLocalizations = {};
@@ -498,7 +519,25 @@ class ExternalPlayerService {
   Future<void> pruneWebDavFontCache(
     Future<Set<String>> Function() loadActiveSessionKeys, {
     Set<String> preservedPaths = const {},
-  }) => _fontCache.prune(loadActiveSessionKeys, preservedPaths: preservedPaths);
+  }) => _fontCache.prune(
+    () async => {
+      ...await loadActiveSessionKeys(),
+      for (final runtime in _sessions.values)
+        WebDavFontCache.sessionKey(runtime.profileId, runtime.sessionId),
+    },
+    preservedPaths: preservedPaths,
+    activePaths: () => {
+      for (final runtime in _sessions.values) ...[
+        ...runtime.persistentFontPaths,
+        ...runtime.artifactPaths.where(
+          (path) => p.basename(path).startsWith('streampath-fonts-'),
+        ),
+      ],
+      for (final paths in _preparingFontPaths.values) ...paths,
+    },
+  );
+
+  final _preparingFontPaths = <int, Set<String>>{};
 
   Future<void> pruneWebDavSubtitleCache(
     Future<Set<String>> Function() loadActiveSessionIds,
@@ -794,6 +833,8 @@ class ExternalPlayerService {
         }
       }
       rethrow;
+    } finally {
+      _preparingFontPaths.remove(ownershipGeneration);
     }
   }
 
@@ -839,6 +880,10 @@ class ExternalPlayerService {
         '${DateTime.now().microsecondsSinceEpoch}_$launchNumber';
     final artifactSessionId = '${resolvedSessionId}__e$launchEpoch';
     final artifactPaths = <String>{};
+    final persistentFontPaths = <String>{};
+    final deferredFontLists = <_PendingFontPlaylist>[];
+    _PendingFontPlaylist? currentDeferredFonts;
+    _PendingFontPlaylist? nextDeferredFonts;
     Future<void> ensureOwned() async {
       if (_ownsLaunch(resolvedSessionId, ownershipGeneration)) return;
       await _deleteLaunchArtifacts(
@@ -1024,6 +1069,7 @@ class ExternalPlayerService {
           : entries;
       List<String?> seasonFontPaths = List.filled(resourceEntries.length, null);
       if (subtitleInjectionEnabled) {
+        _preparingFontPaths[ownershipGeneration] = persistentFontPaths;
         final fontPaths = List<String?>.filled(resourceEntries.length, null);
         if (localFontDirectories != null) {
           for (
@@ -1044,49 +1090,92 @@ class ExternalPlayerService {
             fontPaths[entries.length + i] = nextSeason.localFontDirectories[i];
           }
         }
-        final sources = <WebDavFontDirectory?>[
-          ...(webDavFontsByEntry ??
-              List<WebDavFontDirectory?>.filled(entries.length, webDavFonts)),
-          if (hasNextSeason) ...nextSeason!.webDavFontsByEntry,
+        final sources = [
+          for (var i = 0; i < entries.length; i++)
+            (webDavFontsByEntry == null
+                ? webDavFonts
+                : webDavFontsByEntry.elementAtOrNull(i)),
+          if (hasNextSeason)
+            for (var i = 0; i < nextSeason!.entries.length; i++)
+              nextSeason.webDavFontsByEntry.elementAtOrNull(i),
         ];
-        final localizedByKey = <String, String>{};
+        final mediaPathsByKey = <String, Set<String>>{};
+        for (var i = 0; i < sources.length; i++) {
+          final key = sources[i]?.entryKey;
+          final path = resourceEntries[i].catalogPath;
+          if (key != null && path != null) {
+            mediaPathsByKey.putIfAbsent(key, () => {}).add(path);
+          }
+        }
+        final localizedByKey = <String, WebDavFontLocalizationResult?>{};
+        final offlineFontPaths = <String, String?>{};
         var remainingFiles = WebDavFontLocalizer.maxFontFiles;
         var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
-        final deadline = DateTime.now().add(const Duration(seconds: 30));
-        if (webDavFontLoader != null) {
-          for (
-            var i = 0;
-            i < resourceEntries.length && i < sources.length;
-            i++
-          ) {
-            final source = sources[i];
-            if (source == null || source.files.isEmpty) continue;
-            if (localizedByKey[source.entryKey] case final String path) {
-              fontPaths[i] = path;
-              continue;
-            }
-            final remaining = deadline.difference(DateTime.now());
+        final timer = Stopwatch()..start();
+        final order = [
+          playlistStart,
+          for (var i = 0; i < sources.length; i++)
+            if (i != playlistStart) i,
+        ];
+        for (final i in order) {
+          final source = sources[i];
+          if (fontPaths[i] != null) continue;
+          final entry = resourceEntries[i];
+          if (source == null) continue;
+          if (webDavFontLoader == null) continue;
+          if (!localizedByKey.containsKey(source.entryKey)) {
+            final remaining =
+                (i == playlistStart
+                    ? const Duration(seconds: 30)
+                    : const Duration(seconds: 2)) -
+                timer.elapsed;
             if (remaining <= Duration.zero ||
                 remainingFiles <= 0 ||
                 remainingBytes <= 0) {
-              break;
+              continue;
             }
-            try {
-              final localized = await _fontCache.localize(
-                source: source,
-                sourceId: launchContext.profileId,
-                retentionSessionId: resolvedSessionId,
-                sessionBase: scriptBase!,
-                sessionId: '${artifactSessionId}_$i',
-                loader: webDavFontLoader,
-                fileLoader: webDavFontFileLoader,
-                maxFiles: remainingFiles,
-                maxBytes: remainingBytes,
-                timeout: remaining,
-                enabled: config.webDavFontCacheEnabled,
-                onProgress: onFontProgress,
-              );
-              if (localized == null) continue;
+            final resolveStarted = timer.elapsed;
+            final resolved = await source.resolve().timeout(
+              remaining,
+              onTimeout: () => null,
+            );
+            if (resolved == null) continue;
+            if (resolved.isUnavailable) {
+              if (config.webDavFontCacheEnabled && entry.catalogPath != null) {
+                final path = entry.catalogPath!;
+                if (!offlineFontPaths.containsKey(path)) {
+                  final fallback = await _offlineFonts(
+                    launchContext.profileId,
+                    resolvedSessionId,
+                    path,
+                    persistentFontPaths,
+                  );
+                  offlineFontPaths[path] = fallback?.directory.path;
+                }
+                fontPaths[i] = offlineFontPaths[path];
+              }
+              if (i == playlistStart && fontPaths[i] == null) _warnAboutFonts();
+              continue;
+            }
+            if (resolved.files.isEmpty) continue;
+            final localized = await _prepareRemoteFonts(
+              source: resolved,
+              profileId: launchContext.profileId,
+              sessionId: resolvedSessionId,
+              base: scriptBase!,
+              id: '${artifactSessionId}_$i',
+              loader: webDavFontLoader,
+              fileLoader: webDavFontFileLoader,
+              maxFiles: remainingFiles,
+              maxBytes: remainingBytes,
+              timeout: remaining - (timer.elapsed - resolveStarted),
+              enabled: config.webDavFontCacheEnabled,
+              mediaPaths: mediaPathsByKey[source.entryKey] ?? const {},
+              onProgress: onFontProgress,
+              retainPaths: persistentFontPaths,
+            );
+            localizedByKey[source.entryKey] = localized;
+            if (localized != null) {
               if (!localized.persistent) {
                 artifactPaths.addAll(localized.files.map((file) => file.path));
                 artifactPaths.add(localized.directory.path);
@@ -1095,35 +1184,63 @@ class ExternalPlayerService {
               for (final file in localized.files) {
                 remainingBytes -= await file.length();
               }
-              localizedByKey[source.entryKey] = localized.directory.path;
-              fontPaths[i] = localized.directory.path;
-              await ensureOwned();
-            } catch (_) {
-              // 字体准备失败不阻断视频播放。
             }
+            await ensureOwned();
           }
-          for (
-            var i = 0;
-            i < resourceEntries.length && i < sources.length;
-            i++
-          ) {
-            final key = sources[i]?.entryKey;
-            if (key != null) fontPaths[i] ??= localizedByKey[key];
+          fontPaths[i] = localizedByKey[source.entryKey]?.directory.path;
+        }
+        final sharedFontPath = webDavFontsByEntry == null || webDavFonts == null
+            ? null
+            : localizedByKey[webDavFonts.entryKey]?.directory.path;
+        if (sharedFontPath != null) {
+          for (var i = 0; i < entries.length; i++) {
+            fontPaths[i] ??= sharedFontPath;
           }
-          final sharedFontPath =
-              webDavFontsByEntry != null && webDavFonts != null
-              ? localizedByKey[webDavFonts.entryKey]
-              : null;
-          if (sharedFontPath != null) {
-            for (var i = 0; i < entries.length; i++) {
-              fontPaths[i] ??= sharedFontPath;
+        }
+        if (!implicit && webDavFontLoader != null) {
+          _PendingFontPlaylist? pending(int start, int end, {int? initial}) {
+            final items = <int, PreparedVideoItem>{};
+            for (var i = start; i < end; i++) {
+              final source = sources[i];
+              if (source != null &&
+                  !(source.isUnavailable && fontPaths[i] != null) &&
+                  localizedByKey[source.entryKey]?.summary.complete != true) {
+                items[i - start] = PreparedVideoItem(
+                  entry: resourceEntries[i],
+                  remoteFonts: source,
+                );
+              }
             }
+            if (items.isEmpty || end - start == 1 && initial != null) {
+              return null;
+            }
+            final playlist = _PendingFontPlaylist(
+              p.join(
+                scriptBase!.path,
+                'streampath-font-request-${MpvScripts.safeSessionToken(artifactSessionId)}_$start',
+              ),
+              items,
+              initialPosition: initial,
+            );
+            artifactPaths.addAll(playlist.artifacts);
+            deferredFontLists.add(playlist);
+            return playlist;
+          }
+
+          currentDeferredFonts = pending(
+            0,
+            entries.length,
+            initial: playlistStart,
+          );
+          if (hasNextSeason) {
+            nextDeferredFonts = pending(entries.length, sources.length);
           }
         }
         seasonFontPaths = fontPaths;
         if (!seasonTransition &&
             !implicit &&
-            fontPaths.any((path) => path != null)) {
+            (currentDeferredFonts != null ||
+                fontPaths.any((path) => path != null))) {
           final fontScript = fontPaths.length == 1 && fontPaths.first != null
               ? await MpvScripts.ensureFontDirectory(
                   fontPaths.first!,
@@ -1134,6 +1251,10 @@ class ExternalPlayerService {
                   fontPaths,
                   scriptBase!,
                   sessionId: artifactSessionId,
+                  deferredFonts: currentDeferredFonts?.script,
+                  playlistUrls: currentDeferredFonts == null
+                      ? const []
+                      : watchLaterUrls,
                 );
           await ensureOwned();
           artifactPaths.add(fontScript);
@@ -1238,6 +1359,7 @@ class ExternalPlayerService {
           autoSelect: subtitleAutoSelectEnabled,
           sessionId: '${artifactSessionId}_current',
           queueGeneration: implicit ? 0 : null,
+          deferredFonts: currentDeferredFonts?.script,
         );
         artifactPaths.add(currentResources);
         args.add('--script=$currentResources');
@@ -1251,6 +1373,7 @@ class ExternalPlayerService {
             subtitleInjectionEnabled: subtitleInjectionEnabled,
             autoSelect: subtitleAutoSelectEnabled,
             sessionId: '${artifactSessionId}_next',
+            deferredFonts: nextDeferredFonts?.script,
           );
           artifactPaths.add(nextResources);
           args.add('--script=$nextResources');
@@ -1582,10 +1705,12 @@ class ExternalPlayerService {
       localFontDirectories: localFontDirectories,
       webDavFontLoader: webDavFontLoader,
       webDavFontFileLoader: webDavFontFileLoader,
-      artifactPaths: (seasonTransition || implicit)
+      artifactPaths:
+          (seasonTransition || implicit || deferredFontLists.isNotEmpty)
           ? List<String>.of(artifactPaths)
           : List<String>.unmodifiable(artifactPaths),
     );
+    runtime.persistentFontPaths.addAll(persistentFontPaths);
     runtime.subtitleLocalizations.addAll(subtitleLocalizations);
     if (seasonTransition || implicit) {
       runtime
@@ -1622,14 +1747,20 @@ class ExternalPlayerService {
           .items[implicitPlan.index]
           .versions
           .firstWhere((v) => v.path == first.catalogPath);
-      implicitPlan.prepared[first.catalogPath!] = PreparedVideoItem(
-        entry: first,
-        localFontDirectory: localFontDirectories?.firstOrNull,
-        remoteFonts: webDavFontsByEntry?.firstOrNull,
-      );
+      if (webDavFontsByEntry?.firstOrNull?.isUnavailable != true) {
+        implicitPlan.prepared[first.catalogPath!] = PreparedVideoItem(
+          entry: first,
+          localFontDirectory: localFontDirectories?.firstOrNull,
+          remoteFonts: webDavFontsByEntry?.firstOrNull,
+        );
+      }
     }
     if (implicit) await _writeSeasonEntries(runtime);
     _sessions[resolvedSessionId] = runtime;
+    _preparingFontPaths.remove(ownershipGeneration);
+    for (final fonts in deferredFontLists) {
+      unawaited(_watchDeferredFonts(runtime, fonts, scriptBase!));
+    }
     if (implicit) unawaited(_watchImplicitQueue(runtime));
     _lastSessionId = resolvedSessionId;
     // 第二阶段：播放中动态监控（内存压力/网络异常/卡顿记录）。
@@ -2817,24 +2948,40 @@ class ExternalPlayerService {
           ? null
           : (rawPosition.floor() - 2).clamp(0, 1 << 31).toInt();
       try {
-        runtime.implicitPlan?.index = entryIndex;
-        final result = await _launchWithContext(
-          entries: runtime.implicitPlan == null
-              ? runtime.entries
-              : [runtime.entries[entryIndex]],
-          implicitPlan: runtime.implicitPlan,
-          launchContext: launchContext,
-          sessionId: runtime.sessionId,
-          playlistStart: runtime.implicitPlan == null ? entryIndex : 0,
-          resumeSeconds: resumeSeconds,
-          automaticRecovery: true,
-          ownershipGeneration: runtime.ownershipGeneration,
-          webDavFonts: runtime.webDavFonts,
-          webDavFontsByEntry: runtime.webDavFontsByEntry,
-          localFontDirectories: runtime.localFontDirectories,
-          webDavFontLoader: runtime.webDavFontLoader,
-          webDavFontFileLoader: runtime.webDavFontFileLoader,
-        );
+        final implicitPlan = runtime.implicitPlan;
+        implicitPlan?.index = entryIndex;
+        final current = runtime.entries[entryIndex];
+        final prepared = implicitPlan?.prepared[current.catalogPath];
+        final PlayerLaunchResult result;
+        try {
+          result = await _launchWithContext(
+            entries: implicitPlan == null ? runtime.entries : [current],
+            implicitPlan: implicitPlan,
+            launchContext: launchContext,
+            sessionId: runtime.sessionId,
+            playlistStart: runtime.implicitPlan == null ? entryIndex : 0,
+            resumeSeconds: resumeSeconds,
+            automaticRecovery: true,
+            ownershipGeneration: runtime.ownershipGeneration,
+            webDavFonts: implicitPlan == null ? runtime.webDavFonts : null,
+            webDavFontsByEntry: implicitPlan == null
+                ? runtime.webDavFontsByEntry
+                : [
+                    prepared != null
+                        ? prepared.remoteFonts
+                        : current.catalogPath == null
+                        ? null
+                        : WebDavFontDirectory.unavailable(current.catalogPath!),
+                  ],
+            localFontDirectories: implicitPlan == null
+                ? runtime.localFontDirectories
+                : [prepared?.localFontDirectory],
+            webDavFontLoader: runtime.webDavFontLoader,
+            webDavFontFileLoader: runtime.webDavFontFileLoader,
+          );
+        } finally {
+          _preparingFontPaths.remove(runtime.ownershipGeneration);
+        }
         if (!_isRecoveryCurrent(runtime, state)) {
           await terminateLaunch(result);
           return true;
@@ -3324,26 +3471,19 @@ class ExternalPlayerService {
           isAvailable: plan.isAvailable,
           cached: plan.prepared,
         );
-        var prepared = ready;
-        final fonts = await _queuedFontDirectory(
-          runtime,
-          prepared,
-          await _scriptBase(),
-          '${runtime.artifactSessionId}_prepare${generation + 1}_$next',
-        );
-        if (fonts != null) {
-          prepared = PreparedVideoItem(
-            entry: prepared.entry,
-            localFontDirectory: fonts,
-          );
-        }
+        final prepared = ready;
         if (!_queueControlEnabled ||
             !identical(_sessions[runtime.sessionId], runtime) ||
             plan.index != index ||
             runtime.queueGeneration != generation) {
           return;
         }
-        plan.prepared[version.path] = prepared;
+        if (prepared.localFontDirectory != null ||
+            prepared.remoteFonts != null &&
+                !prepared.remoteFonts!.isUnavailable ||
+            !runtime.launchContext!.player.subtitleInjectionEnabled) {
+          plan.prepared[version.path] = prepared;
+        }
         if (runtime.rollingQueue) {
           final appended = await _selectImplicitEntry(
             runtime,
@@ -3360,41 +3500,218 @@ class ExternalPlayerService {
     }
   }
 
+  Future<WebDavFontLocalizationResult?> _offlineFonts(
+    String profileId,
+    String sessionId,
+    String path,
+    Set<String> retainPaths,
+  ) async {
+    try {
+      return await _fontCache.forCachedMedia(
+        sourceId: profileId,
+        mediaPath: path,
+        retentionSessionId: sessionId,
+        retainPaths: retainPaths,
+      );
+    } on FileSystemException {
+      _warnAboutFonts();
+      return null;
+    }
+  }
+
+  void _warnAboutFonts() => onCacheWarning?.call('外挂字体未准备完整，部分字幕可能使用替代字体');
+
+  Future<WebDavFontLocalizationResult?> _prepareRemoteFonts({
+    required WebDavFontDirectory source,
+    required String profileId,
+    required String sessionId,
+    required Directory base,
+    required String id,
+    required WebDavFontBytesLoader loader,
+    required WebDavFontFileLoader? fileLoader,
+    required int maxFiles,
+    required int maxBytes,
+    required Duration timeout,
+    required bool enabled,
+    required Iterable<String> mediaPaths,
+    required Set<String> retainPaths,
+    void Function(WebDavFontLocalizationProgress)? onProgress,
+  }) async {
+    try {
+      WebDavFontSummary? summary;
+      final result = await _fontCache.localize(
+        source: source,
+        sourceId: profileId,
+        retentionSessionId: sessionId,
+        sessionBase: base,
+        sessionId: id,
+        loader: loader,
+        fileLoader: fileLoader,
+        enabled: enabled,
+        maxFiles: maxFiles,
+        maxBytes: maxBytes,
+        timeout: timeout,
+        mediaPaths: mediaPaths,
+        retainPaths: retainPaths,
+        onProgress: (progress) {
+          summary = progress.summary ?? summary;
+          onProgress?.call(progress);
+        },
+      );
+      if (summary case final outcome? when !outcome.complete) {
+        debugPrint(
+          'External fonts: expected=${outcome.expected} '
+          'succeeded=${outcome.succeeded} failed=${outcome.failed} '
+          'skipped=${outcome.skipped} cacheHits=${outcome.cacheHits} issues=${outcome.issues}',
+        );
+        _warnAboutFonts();
+      }
+      return result;
+    } on FileSystemException {
+      _warnAboutFonts();
+      return null;
+    }
+  }
+
   Future<String?> _queuedFontDirectory(
     _PlayerSessionRuntime runtime,
     PreparedVideoItem prepared,
     Directory base,
-    String id,
-  ) async {
-    String? fonts = prepared.localFontDirectory;
-    if (prepared.remoteFonts case final source?) {
-      final loader = runtime.webDavFontLoader;
-      if (loader != null) {
-        final result = await _fontCache.localize(
-          source: source,
-          sourceId: runtime.profileId,
-          retentionSessionId: runtime.sessionId,
-          sessionBase: base,
-          sessionId: id,
-          loader: loader,
-          fileLoader: runtime.webDavFontFileLoader,
-          enabled: runtime.launchContext!.player.webDavFontCacheEnabled,
-          maxFiles: WebDavFontLocalizer.maxFontFiles,
-          maxBytes: WebDavFontLocalizer.maxSessionBytes,
-          timeout: const Duration(seconds: 30),
-        );
-        if (result != null) {
-          fonts = result.directory.path;
-          if (!result.persistent) {
-            runtime.artifactPaths.addAll([
-              ...result.files.map((f) => f.path),
-              result.directory.path,
-            ]);
+    String id, {
+    WebDavFontBytesLoader? bytesLoader,
+    WebDavFontFileLoader? fileLoader,
+  }) async {
+    final config =
+        runtime.launchContext?.player ?? _configStore.current.toPlayerConfig();
+    if (!config.subtitleInjectionEnabled) return null;
+    if (prepared.localFontDirectory case final path?) return path;
+    WebDavFontDirectory? source;
+    try {
+      source = await prepared.remoteFonts?.resolve();
+    } on TimeoutException {
+      _warnAboutFonts();
+    }
+    final loader = bytesLoader ?? runtime.webDavFontLoader;
+    final path = prepared.entry.catalogPath;
+    final result = source != null && !source.isUnavailable && loader != null
+        ? await _prepareRemoteFonts(
+            source: source,
+            profileId: runtime.profileId,
+            sessionId: runtime.sessionId,
+            base: base,
+            id: id,
+            loader: loader,
+            fileLoader: fileLoader ?? runtime.webDavFontFileLoader,
+            enabled: config.webDavFontCacheEnabled,
+            maxFiles: WebDavFontLocalizer.maxFontFiles,
+            maxBytes: WebDavFontLocalizer.maxSessionBytes,
+            timeout: const Duration(seconds: 30),
+            mediaPaths: [?path],
+            retainPaths: runtime.persistentFontPaths,
+          )
+        : config.webDavFontCacheEnabled &&
+              source?.isUnavailable == true &&
+              path != null
+        ? await _offlineFonts(
+            runtime.profileId,
+            runtime.sessionId,
+            path,
+            runtime.persistentFontPaths,
+          )
+        : null;
+    if (result == null) {
+      if (source?.isUnavailable == true) _warnAboutFonts();
+      return null;
+    }
+    if (result.persistent) {
+      runtime.persistentFontPaths.add(result.directory.path);
+    } else {
+      runtime.artifactPaths.addAll([
+        ...result.files.map((file) => file.path),
+        result.directory.path,
+      ]);
+    }
+    return result.directory.path;
+  }
+
+  /// MPV 只为当前加载的条目请求延迟字体，旧响应由序号隔离。
+  Future<void> _watchDeferredFonts(
+    _PlayerSessionRuntime runtime,
+    _PendingFontPlaylist playlist,
+    Directory base, {
+    WebDavFontBytesLoader? loader,
+    WebDavFontFileLoader? fileLoader,
+  }) async {
+    final request = File('${playlist.path}.request');
+    final response = File('${playlist.path}.response');
+    final temp = File('${response.path}.tmp');
+    final requestFormat = RegExp(r'^(\d+):(\d+)$');
+    var handled = 0;
+    List<String> previousTemporaryFonts = const [];
+    bool active() =>
+        _queueControlEnabled &&
+        identical(_sessions[runtime.sessionId], runtime);
+    Future<void> respond(Map<String, Object?> data) async {
+      await temp.writeAsString(jsonEncode(data), flush: true);
+      await temp.rename(response.path);
+    }
+
+    Future<void> cleanTemporaryFonts() async {
+      if (previousTemporaryFonts.isEmpty) return;
+      await _deleteLaunchArtifacts(
+        sessionId: runtime.sessionId,
+        launchEpoch: runtime.launchEpoch,
+        artifactSessionId: runtime.artifactSessionId,
+        artifactPaths: previousTemporaryFonts,
+      );
+      runtime.artifactPaths.removeWhere(previousTemporaryFonts.contains);
+    }
+
+    while (active()) {
+      try {
+        final raw = await request.exists() ? await request.readAsString() : '';
+        final match = requestFormat.firstMatch(raw);
+        if (match != null) {
+          final serial = int.parse(match[1]!);
+          final item = playlist.items[int.parse(match[2]!)];
+          if (serial > handled && item != null && active()) {
+            handled = serial;
+            await respond({'serial': serial, 'pending': true});
+            await cleanTemporaryFonts();
+            final id = '${p.basename(playlist.path)}_$serial';
+            final path = await _queuedFontDirectory(
+              runtime,
+              item,
+              base,
+              id,
+              bytesLoader: loader,
+              fileLoader: fileLoader,
+            );
+            previousTemporaryFonts =
+                path == null || runtime.persistentFontPaths.contains(path)
+                ? const []
+                : runtime.artifactPaths
+                      .where(
+                        (artifact) =>
+                            p.equals(path, artifact) ||
+                            p.isWithin(path, artifact),
+                      )
+                      .toList();
+            if (!identical(_sessions[runtime.sessionId], runtime)) {
+              await cleanTemporaryFonts();
+              return;
+            }
+            await respond({'serial': serial, 'path': path});
           }
         }
+      } on FileSystemException {
+        // Lua 有自身截止时间，交换文件不可用时仍继续播放。
+        if (active()) _warnAboutFonts();
+      }
+      if (active()) {
+        await Future<void>.delayed(const Duration(milliseconds: 150));
       }
     }
-    return fonts;
   }
 
   /// 缓存来源没有可嵌入的凭据时，按播放会话复用同源字幕本地副本。
@@ -3916,7 +4233,9 @@ class ExternalPlayerService {
         localFontDirectory: prepared.localFontDirectory,
         remoteFonts: prepared.remoteFonts,
       );
-      plan.prepared[version.path] = prepared;
+      if (prepared.remoteFonts?.isUnavailable != true) {
+        plan.prepared[version.path] = prepared;
+      }
       final entry = prepared.entry;
       if (entry.progressTarget == null &&
           ['http', 'https'].contains(Uri.tryParse(entry.url)?.scheme)) {
@@ -4108,6 +4427,7 @@ class ExternalPlayerService {
             },
         ],
         'artifacts': runtime.artifactPaths,
+        'fontCachePaths': runtime.persistentFontPaths.toList(),
         'stageNumber': runtime.seasonStageNumber,
         'queueFile': runtime.queueFilePath,
         'queueGeneration': runtime.queueGeneration,
@@ -4164,6 +4484,9 @@ class ExternalPlayerService {
     }
     runtime.artifactPaths.addAll(
       (json['artifacts'] as List? ?? const []).whereType<String>(),
+    );
+    runtime.persistentFontPaths.addAll(
+      (json['fontCachePaths'] as List? ?? const []).whereType<String>(),
     );
     runtime.queueFilePath = json['queueFile'] as String?;
     runtime.queueGeneration = (json['queueGeneration'] as num?)?.toInt() ?? 0;
@@ -4261,52 +4584,30 @@ class ExternalPlayerService {
           ? season.localFontDirectories[index]
           : null,
     );
-    final localized = <String, String>{};
-    if (loader != null) {
-      var remainingFiles = WebDavFontLocalizer.maxFontFiles;
-      var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
-      final deadline = DateTime.now().add(const Duration(seconds: 30));
-      for (var i = 0; i < seasonEntries.length; i++) {
-        if (i >= season.webDavFontsByEntry.length) break;
-        final source = season.webDavFontsByEntry[i];
-        if (source == null || source.files.isEmpty) continue;
-        if (localized[source.entryKey] case final path?) {
-          fontPaths[i] = path;
-          continue;
-        }
-        final remaining = deadline.difference(DateTime.now());
-        if (remaining <= Duration.zero ||
-            remainingFiles <= 0 ||
-            remainingBytes <= 0) {
-          break;
-        }
-        final result = await _fontCache.localize(
-          source: source,
-          sourceId: runtime.profileId,
-          retentionSessionId: sessionId,
-          sessionBase: base,
-          sessionId: '${stageId}_$i',
-          loader: loader,
-          fileLoader: fileLoader,
-          maxFiles: remainingFiles,
-          maxBytes: remainingBytes,
-          timeout: remaining,
-          enabled: _configStore.current.webDavFontCacheEnabled,
-        );
-        if (result == null) continue;
-        if (!result.persistent) {
-          runtime.artifactPaths.addAll(result.files.map((file) => file.path));
-          runtime.artifactPaths.add(result.directory.path);
-        }
-        remainingFiles -= result.files.length;
-        for (final file in result.files) {
-          remainingBytes -= await file.length();
-        }
-        localized[source.entryKey] = result.directory.path;
-        fontPaths[i] = result.directory.path;
-      }
-    }
     final config = _configStore.current;
+    final pendingFonts = config.subtitleInjectionEnabled && loader != null
+        ? <int, PreparedVideoItem>{
+            for (
+              var i = 0;
+              i < seasonEntries.length && i < season.webDavFontsByEntry.length;
+              i++
+            )
+              if (fontPaths[i] == null && season.webDavFontsByEntry[i] != null)
+                i: PreparedVideoItem(
+                  entry: seasonEntries[i],
+                  remoteFonts: season.webDavFontsByEntry[i],
+                ),
+          }
+        : <int, PreparedVideoItem>{};
+    final deferredFonts = pendingFonts.isEmpty
+        ? null
+        : _PendingFontPlaylist(
+            p.join(
+              base.path,
+              'streampath-font-request-${MpvScripts.safeSessionToken(stageId)}',
+            ),
+            pendingFonts,
+          );
     final resources = await MpvScripts.ensureSeasonResources(
       seasonEntries,
       fontPaths,
@@ -4316,8 +4617,24 @@ class ExternalPlayerService {
       subtitleInjectionEnabled: config.subtitleInjectionEnabled,
       autoSelect: config.subtitleAutoSelectEnabled,
       sessionId: stageId,
+      deferredFonts: deferredFonts?.script,
     );
-    runtime.artifactPaths.addAll([playlist, resources]);
+    runtime.artifactPaths.addAll([
+      playlist,
+      resources,
+      ...?deferredFonts?.artifacts,
+    ]);
+    if (deferredFonts != null) {
+      unawaited(
+        _watchDeferredFonts(
+          runtime,
+          deferredFonts,
+          base,
+          loader: loader,
+          fileLoader: fileLoader,
+        ),
+      );
+    }
     final launchContext = runtime.launchContext;
     final controller = MpvSessionController(pipeName: runtime.ipcPipeName!);
     try {

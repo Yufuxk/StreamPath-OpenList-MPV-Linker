@@ -225,11 +225,18 @@ class VideoCachePlanner {
         subtitleMatcher: subtitleMatcher,
         fontMatcher: fontMatcher,
         titles: const {},
+        fontDirectoryLoader: (path) async => _directories[path] ??= await source
+            .service
+            .fetchFontDirectory(path),
       );
-      final matchedFonts = await preparer.fontsFor(mainEntry, siblings);
-      if (matchedFonts.remoteFonts case final remote?) {
+      final matchedFonts = await preparer.fontsAt(
+        resource.parentPath,
+        mainEntry,
+        siblings,
+      );
+      if (matchedFonts.remoteFonts case final remote?
+          when remote.files.isNotEmpty) {
         directoryPaths.add(remote.requestPath);
-        await directory(remote.requestPath);
         for (final font in remote.files) {
           final file = _directories[remote.requestPath]!
               .where((e) => e.name == font.name)

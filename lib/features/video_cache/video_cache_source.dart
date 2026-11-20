@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import '../../core/errors/app_exception.dart';
+import '../../core/utils/url_utils.dart' as url_utils;
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
@@ -8,6 +9,7 @@ import '../../data/models/web_dav_file.dart';
 import '../../data/remote/webdav_client.dart';
 import '../../domain/repositories/media_directory_source.dart';
 import '../../domain/services/native_storage_source.dart';
+import '../../domain/services/special_video_playlist_collector.dart';
 import '../../domain/services/webdav_media_source_adapter.dart';
 import '../../domain/services/webdav_service.dart';
 import 'video_cache_models.dart';
@@ -148,6 +150,27 @@ class _CachedWebDav extends WebDAVService {
   Future<List<WebDavFile>> fetchCatalogDirectory(String path) =>
       fetchDirectory(path);
   @override
+  Future<List<WebDavFile>> fetchFontDirectory(String path) async {
+    final source = await remote() as WebDavMediaSourceAdapter;
+    final entries = await source.service.fetchFontDirectory(path);
+    if (url_utils.isSameOrigin(baseUrl, source.service.baseUrl)) return entries;
+    // 快照与新查到的字体都使用缓存来源的逻辑根地址。
+    return [
+      for (final entry in entries)
+        if (SpecialVideoPlaylistCollector.directChildPath(source, path, entry)
+            case final child?)
+          WebDavFile(
+            name: entry.name,
+            href: fullUrl(child),
+            isDirectory: entry.isDirectory,
+            size: entry.size,
+            etag: entry.etag,
+            lastModifiedHeader: entry.lastModifiedHeader,
+          ),
+    ];
+  }
+
+  @override
   String persistentUrl(String href) => persistent(relative(href));
   @override
   Future<String?> cachedDiscPath(WebDavFile file) async => (await cache.lookup(
@@ -174,6 +197,12 @@ class _CachedWebDav extends WebDAVService {
         : source.service.fetchStrmUrl(entry as WebDavFile);
   }
 
+  String _attachmentUrl(WebDAVService service, String url) =>
+      !url_utils.isSameOrigin(baseUrl, service.baseUrl) &&
+          url_utils.isSameOrigin(baseUrl, url)
+      ? service.fullUrl(relative(url))
+      : url;
+
   @override
   Future<List<int>> fetchFileBytes(
     String url, {
@@ -188,12 +217,13 @@ class _CachedWebDav extends WebDAVService {
     if (local != null) {
       final file = File(local);
       if (await file.length() > maxBytes) {
-        throw const VideoCacheException('缓存附件超过大小限制');
+        throw AppException.parse('缓存附件超过大小限制', const WebDavDownloadLimit());
       }
       return file.readAsBytes();
     }
-    return (await remote() as WebDavMediaSourceAdapter).service.fetchFileBytes(
-      url,
+    final service = (await remote() as WebDavMediaSourceAdapter).service;
+    return service.fetchFileBytes(
+      _attachmentUrl(service, url),
       maxBytes: maxBytes,
       timeout: timeout,
     );
@@ -213,8 +243,9 @@ class _CachedWebDav extends WebDAVService {
       identity: identity,
     );
     if (local == null) {
-      return (await remote() as WebDavMediaSourceAdapter).service.downloadFile(
-        url,
+      final service = (await remote() as WebDavMediaSourceAdapter).service;
+      return service.downloadFile(
+        _attachmentUrl(service, url),
         destination,
         maxBytes: maxBytes,
         timeout: timeout,
@@ -222,7 +253,9 @@ class _CachedWebDav extends WebDAVService {
       );
     }
     final file = File(local), length = await File(local).length();
-    if (length > maxBytes) throw const VideoCacheException('缓存附件超过大小限制');
+    if (length > maxBytes) {
+      throw AppException.parse('缓存附件超过大小限制', const WebDavDownloadLimit());
+    }
     await file.copy(destination.path);
     onProgress?.call(length);
     return length;

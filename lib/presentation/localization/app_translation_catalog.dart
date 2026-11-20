@@ -423,6 +423,8 @@ const Map<String, String> englishTranslations = <String, String>{
   '正在准备播放列表…': 'Preparing playlist…',
   '正在下载外挂字体…': 'Downloading external fonts…',
   '已使用缓存字体': 'Using cached fonts',
+  '外挂字体未准备完整，部分字幕可能使用替代字体':
+      'Some external fonts could not be prepared. Subtitles may use fallback fonts.',
   '正在启动播放器…': 'Starting player…',
   '缓存 WebDAV 外挂字体': 'Cache WebDAV external fonts',
   '保留续播媒体所需字体，重播时直接使用已下载文件':
@@ -1449,6 +1451,7 @@ const Map<String, String> japaneseTranslations = <String, String>{
   '正在准备播放列表…': 'プレイリストを準備中…',
   '正在下载外挂字体…': '外部フォントをダウンロード中…',
   '已使用缓存字体': 'キャッシュ済みフォントを使用',
+  '外挂字体未准备完整，部分字幕可能使用替代字体': '外部フォントの一部を準備できませんでした。字幕に代替フォントが使われる場合があります。',
   '正在启动播放器…': 'プレーヤーを起動中…',
   '缓存 WebDAV 外挂字体': 'WebDAV 外部フォントをキャッシュ',
   '保留续播媒体所需字体，重播时直接使用已下载文件': '再開可能な動画のフォントを保持し、ダウンロード済みファイルを再利用します。',
@@ -2358,6 +2361,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   '正在准备播放列表…': '正在準備播放清單…',
   '正在下载外挂字体…': '正在下載外掛字體…',
   '已使用缓存字体': '已使用快取字體',
+  '外挂字体未准备完整，部分字幕可能使用替代字体': '外掛字體未準備完整，部分字幕可能使用替代字體',
   '正在启动播放器…': '正在啟動播放器…',
   '缓存 WebDAV 外挂字体': '快取 WebDAV 外掛字體',
   '保留续播媒体所需字体，重播时直接使用已下载文件': '保留續播媒體所需字體，再次播放時直接使用已下載檔案。',

@@ -115,6 +115,26 @@ class WebDAVService implements DirectoryRepository {
     return _parser.parse(xml, requestUrl: fullUrl(path), requireComplete: true);
   }
 
+  /// 字体缓存的清单必须来自完整响应，不能由旧的目录快照代替。
+  final _fontListings = <String, Future<List<WebDavFile>>>{};
+
+  Future<List<WebDavFile>> fetchFontDirectory(String path) =>
+      _fontListings.putIfAbsent(path, () async {
+        try {
+          final xml = await _client.propfindForFonts(
+            path,
+            const Duration(seconds: 3),
+          );
+          return _parser.parse(
+            xml,
+            requestUrl: fullUrl(path),
+            requireComplete: true,
+          );
+        } finally {
+          _fontListings.remove(path);
+        }
+      });
+
   Future<List<WebDavFile>> fetchFastCatalogDirectory(
     String path, {
     required CancelToken cancelToken,

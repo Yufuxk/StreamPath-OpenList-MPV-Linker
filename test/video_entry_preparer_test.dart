@@ -361,6 +361,24 @@ void main() {
     expect(source.fetches, ['show']);
   });
 
+  test('a directory error can recover in the same queue preparer', () async {
+    await writeFile('show/video.mkv');
+    await writeFile('show/Fonts/sample.ttf');
+    addSeasonDirectory('show');
+    source.failures['show/Fonts'] = const FileSystemException('unreadable');
+    final queue = preparer();
+    const version = VideoQueueVersion(
+      path: 'show/video.mkv',
+      name: 'video.mkv',
+    );
+    expect((await queue.prepare(version)).localFontDirectory, isNull);
+    source.failures.clear();
+    expect(
+      (await queue.prepare(version)).localFontDirectory,
+      p.join(root.path, 'show', 'Fonts'),
+    );
+  });
+
   test('不同集数的字体目录互不串用', () async {
     for (final season in ['a', 'b']) {
       await writeFile('$season/video.mkv');

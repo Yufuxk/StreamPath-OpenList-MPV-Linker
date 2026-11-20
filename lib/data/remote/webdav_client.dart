@@ -7,6 +7,10 @@ import 'package:dio/dio.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/url_utils.dart';
 
+class WebDavDownloadLimit {
+  const WebDavDownloadLimit();
+}
+
 /// WebDAV 协议客户端（dio 封装）。
 ///
 /// 只负责协议细节：
@@ -55,6 +59,19 @@ class WebDavClient {
   /// [path] 为相对路径（如 `电影/动作`、`''` 表示根目录）。
   Future<String> propfind(String path, {bool namesOnly = false}) =>
       _propfind(path, namesOnly: namesOnly);
+
+  Future<String> propfindForFonts(String path, Duration timeout) async {
+    final token = CancelToken();
+    final timer = Timer(
+      timeout,
+      () => token.cancel('Directory deadline exceeded'),
+    );
+    try {
+      return await _propfind(path, cancelToken: token);
+    } finally {
+      timer.cancel();
+    }
+  }
 
   Future<String> propfindForTask(String path, CancelToken cancelToken) =>
       _propfind(path, namesOnly: true, cancelToken: cancelToken);
@@ -152,14 +169,21 @@ class WebDavClient {
       final body = response.data;
       if (body == null) return const [];
       if (maxBytes != null && body.contentLength > maxBytes) {
-        throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+        await _cancelStreamBody(body);
+        throw AppException.parse(
+          '文件内容超过 $maxBytes 字节限制',
+          const WebDavDownloadLimit(),
+        );
       }
 
       final bytes = <int>[];
       await for (final chunk in body.stream) {
         bytes.addAll(chunk);
         if (maxBytes != null && bytes.length > maxBytes) {
-          throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+          throw AppException.parse(
+            '文件内容超过 $maxBytes 字节限制',
+            const WebDavDownloadLimit(),
+          );
         }
       }
       return bytes;
@@ -193,7 +217,11 @@ class WebDavClient {
       final body = response.data;
       if (body == null) return 0;
       if (body.contentLength > maxBytes) {
-        throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+        await _cancelStreamBody(body);
+        throw AppException.parse(
+          '文件内容超过 $maxBytes 字节限制',
+          const WebDavDownloadLimit(),
+        );
       }
 
       var received = 0;
@@ -203,7 +231,10 @@ class WebDavClient {
           body.stream.map((chunk) {
             received += chunk.length;
             if (received > maxBytes) {
-              throw AppException.parse('文件内容超过 $maxBytes 字节限制');
+              throw AppException.parse(
+                '文件内容超过 $maxBytes 字节限制',
+                const WebDavDownloadLimit(),
+              );
             }
             onProgress?.call(received);
             return chunk;

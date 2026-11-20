@@ -15,13 +15,33 @@ import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/domain/services/webdav_font_localizer.dart';
 import 'package:streampath/domain/services/webdav_font_matcher.dart';
+import 'package:streampath/features/video_cache/video_cache_models.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 
 import 'helpers/pump_until.dart';
 import 'helpers/shell_test_app_state.dart';
 
-enum _FontState { downloading, cached, absent }
+enum _FontState { downloading, cached, absent, cachedVideo, fallback }
+
+class _FontAppState extends ShellTestAppState {
+  _FontAppState({
+    required super.configStore,
+    required super.playbackHistoryStore,
+    required super.progressService,
+    super.playerService,
+    this.cached,
+  });
+
+  final CachedPlaybackTarget? cached;
+
+  @override
+  Future<CachedPlaybackTarget?> cachedTarget(
+    String source,
+    String path, {
+    bool notifyInvalid = false,
+  }) async => path == 'episode.strm' ? cached : null;
+}
 
 class _ProgressPlayer extends ExternalPlayerService {
   _ProgressPlayer({required super.configStore, required this.fontState});
@@ -31,6 +51,7 @@ class _ProgressPlayer extends ExternalPlayerService {
   bool arrived = false;
   bool hasFontCallback = false;
   int fonts = 0;
+  MediaEntry? selected;
   void Function(String)? reportStage;
 
   @override
@@ -57,8 +78,9 @@ class _ProgressPlayer extends ExternalPlayerService {
     SeasonPlaybackEntries? nextSeason,
     ImplicitVideoPlan? implicitPlan,
   }) async {
+    selected = entries[playlistStart];
     fonts =
-        webDavFontsByEntry?.firstOrNull?.files.length ??
+        webDavFontsByEntry?.elementAtOrNull(playlistStart)?.files.length ??
         webDavFonts?.files.length ??
         0;
     hasFontCallback = onFontProgress != null;
@@ -105,7 +127,14 @@ void main() {
               InternetAddress.loopbackIPv4,
               0,
             );
+            var fontsAvailable = fontState != _FontState.cachedVideo;
+            void addFonts() => fontsAvailable = true;
             server.listen((request) async {
+              if (request.uri.path.contains('/SubtitleFonts')) {
+                request.response.statusCode = HttpStatus.serviceUnavailable;
+                await request.response.close();
+                return;
+              }
               request.response.statusCode = HttpStatus.multiStatus;
               request.response.headers.contentType = ContentType(
                 'application',
@@ -118,9 +147,16 @@ void main() {
                   : _entry('/dav/', 'root', directory: true) +
                         _entry('/dav/episode.strm', 'episode.strm') +
                         _entry('/dav/episode.ass', 'episode.ass') +
-                        (fontState == _FontState.absent
+                        (fontState == _FontState.absent || !fontsAvailable
                             ? ''
-                            : _entry('/dav/Fonts/', 'Fonts', directory: true));
+                            : _entry('/dav/Fonts/', 'Fonts', directory: true)) +
+                        (fontState == _FontState.fallback
+                            ? _entry(
+                                '/dav/SubtitleFonts/',
+                                'SubtitleFonts',
+                                directory: true,
+                              )
+                            : '');
               if (request.method == 'GET' &&
                   request.uri.path.endsWith('.strm')) {
                 request.response.statusCode = HttpStatus.ok;
@@ -153,22 +189,39 @@ void main() {
             final progress = await PlaybackProgressService.open(
               '${temp.path}/progress.db',
             );
-            final app = ShellTestAppState(
+            final app = _FontAppState(
               configStore: config,
               playbackHistoryStore: PlaybackHistoryStore.forPath(
                 '${temp.path}/history.json',
               ),
               playerService: player,
               progressService: progress,
+              cached: fontState == _FontState.cachedVideo
+                  ? CachedPlaybackTarget(
+                      {
+                        'main': 'main',
+                        'progress': 'https://example.test/episode',
+                        'name': 'episode.strm',
+                        'path': 'episode.strm',
+                        'fonts': <String>[],
+                        'audio': <String>[],
+                      },
+                      {
+                        'main': VideoCacheFile({
+                          'destination': '${temp.path}/cached.mkv',
+                        }),
+                      },
+                    )
+                  : null,
             );
             await app.connect(
               baseUrl: 'http://127.0.0.1:${server.port}/dav',
               username: '',
               password: '',
             );
-            return (temp, server, player, progress, app);
+            return (temp, server, player, progress, app, addFonts);
           }))!;
-          final (temp, server, player, progress, app) = fixture;
+          final (temp, server, player, progress, app, addFonts) = fixture;
           var cleaned = false;
           Future<void> cleanup() async {
             if (cleaned) return;
@@ -208,6 +261,7 @@ void main() {
               () => find.text('episode.strm').evaluate().isNotEmpty,
               reason: 'Directory ready',
             );
+            addFonts();
             await tester.runAsync(
               () => tester.tap(find.text('episode.strm').first),
             );
@@ -235,7 +289,16 @@ void main() {
             expect(player.hasFontCallback, isTrue);
             expect(player.reportStage, isNotNull);
             switch (fontState) {
+              case _FontState.cachedVideo:
+                expect(player.selected?.url, endsWith('cached.mkv'));
+                expect(
+                  player.selected?.progressTarget,
+                  'https://example.test/episode',
+                );
+                continue downloading;
+              downloading:
               case _FontState.downloading:
+              case _FontState.fallback:
                 expect(textInDialog('正在下载外挂字体…'), findsOneWidget);
                 expect(textInDialog('progress.ttf'), findsOneWidget);
                 expect(textInDialog('0/1 · 12 KiB / 24 KiB'), findsOneWidget);

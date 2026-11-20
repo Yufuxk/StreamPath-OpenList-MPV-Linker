@@ -109,6 +109,7 @@ void main() {
     PlayerProcessController? processController,
     bool useDefaultWatchLaterDirectory = false,
     WebDavFontCache? fontCache,
+    void Function(String)? onCacheWarning,
     WebDavSubtitleLocalizer? subtitleLocalizer,
   }) async {
     final dir = Directory.systemTemp.createTempSync('sp_launch_');
@@ -147,6 +148,7 @@ void main() {
             : Directory('${dir.path}${Platform.pathSeparator}wl'),
         processController: processController,
         fontCache: fontCache,
+        onCacheWarning: onCacheWarning,
         subtitleLocalizer: subtitleLocalizer,
       ),
       dir,
@@ -632,7 +634,8 @@ void main() {
     test(
       'all font downloads can fail without blocking player launch',
       () async {
-        final (service, dir) = await makeService();
+        final warnings = <String>[];
+        final (service, dir) = await makeService(onCacheWarning: warnings.add);
         addTearDown(() async {
           await service.terminateSession('failed-fonts');
           await dir.delete(recursive: true);
@@ -660,7 +663,8 @@ void main() {
           onFontProgress: reports.add,
           onPreparationStage: stages.add,
         );
-        expect(reports, isNotEmpty);
+        expect(reports.last.summary?.failed, 1);
+        expect(warnings, ['外挂字体未准备完整，部分字幕可能使用替代字体']);
         expect(stages, contains('正在启动播放器…'));
         expect(
           result.args.any((arg) => arg.contains('streampath-font-directory-')),

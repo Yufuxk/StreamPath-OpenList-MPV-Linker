@@ -3088,33 +3088,6 @@ class BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  Future<WebDavFontDirectory?> _resolvedWebDavFontsFor(
-    MediaDirectoryEntry video,
-    List<MediaDirectoryEntry> siblings,
-  ) async {
-    if (_isLocal) return null;
-    final appState = context.read<AppState>();
-    if (!appState.configStore.current.subtitleInjectionEnabled) return null;
-    final service = _service;
-    final match = appState.webDavFontMatcher.findBestFor(
-      video,
-      siblings,
-      baseUrl: service.baseUrl,
-    );
-    if (match == null) return null;
-    try {
-      final entries = await service.fetchDirectory(match.requestPath);
-      final resolved = appState.webDavFontMatcher.withDirectFontFiles(
-        match,
-        entries,
-        baseUrl: service.baseUrl,
-      );
-      return resolved.files.isEmpty ? null : resolved;
-    } on AppException {
-      return null;
-    }
-  }
-
   Future<({String path, int files, int bytes})?> _resolvedLocalFontsFor(
     List<MediaDirectoryEntry> siblings, {
     required int maxFiles,
@@ -3214,7 +3187,8 @@ class BrowserPageState extends State<BrowserPage> {
     String rootPath,
     List<MediaDirectoryEntry> rootEntries,
   ) async {
-    final config = context.read<AppState>().configStore.current;
+    final app = context.read<AppState>();
+    final config = app.configStore.current;
     if (!config.autoSeasonTransitionEnabled) return null;
     final candidate = await const SeasonVideoPlaylistCollector().findNext(
       source: _source,
@@ -3259,6 +3233,13 @@ class BrowserPageState extends State<BrowserPage> {
     final remoteFonts = <WebDavFontDirectory?>[];
     final localCache = <String, ({String path, int files, int bytes})?>{};
     final remoteCache = <String, WebDavFontDirectory?>{};
+    final fontPreparer = VideoEntryPreparer(
+      source: _source,
+      config: config.toPlayerConfig(),
+      subtitleMatcher: app.subtitleMatcher,
+      fontMatcher: app.webDavFontMatcher,
+      titles: const {},
+    );
     var remainingFiles = WebDavFontLocalizer.maxFontFiles;
     var remainingBytes = WebDavFontLocalizer.maxSessionBytes;
     final fontDeadline = DateTime.now().add(const Duration(seconds: 30));
@@ -3313,9 +3294,13 @@ class BrowserPageState extends State<BrowserPage> {
         localFonts.add(localCache[item.parentPath]?.path);
       } else {
         if (!remoteCache.containsKey(item.parentPath)) {
-          remoteCache[item.parentPath] = await _resolvedWebDavFontsFor(
-            video,
-            item.siblings,
+          remoteCache[item.parentPath] = WebDavFontDirectory.deferred(
+            item.parentPath,
+            () async => (await fontPreparer.fontsAt(
+              item.parentPath,
+              video,
+              item.siblings,
+            )).remoteFonts,
           );
         }
         remoteFonts.add(remoteCache[item.parentPath]);
@@ -4283,6 +4268,7 @@ class BrowserPageState extends State<BrowserPage> {
         appState.configStore.current.subtitleInjectionEnabled;
     final activeVideos = <SpecialVideoItem>[];
     final titles = await _videoPlaylistTitles(ordered);
+    final cachedItems = <PreparedVideoItem?>[];
     for (var i = 0; i < ordered.length; i++) {
       final item = ordered[i];
       final v = item.entry;
@@ -4322,6 +4308,8 @@ class BrowserPageState extends State<BrowserPage> {
       }
       if (item.path == targetPath) clickedIndex = entries.length;
       activeVideos.add(item);
+      final cachedItem = cached?.prepared();
+      cachedItems.add(cachedItem);
       entries.add(
         MediaEntry(
           url: url,
@@ -4329,7 +4317,7 @@ class BrowserPageState extends State<BrowserPage> {
           title: titles[i],
           catalogPath: item.path,
           externalAudioTracks:
-              cached?.prepared().entry.externalAudioTracks ??
+              cachedItem?.entry.externalAudioTracks ??
               (!_isLocal
                   ? const ExternalAudioMatcher().matchFor(
                       v,
@@ -4338,7 +4326,7 @@ class BrowserPageState extends State<BrowserPage> {
                     )
                   : const []),
           subtitle:
-              cached?.prepared().entry.subtitle ??
+              cachedItem?.entry.subtitle ??
               (subtitleInjectionEnabled
                   ? await _resolvedSubtitleFor(v, item.siblings)
                   : null),
@@ -4374,14 +4362,34 @@ class BrowserPageState extends State<BrowserPage> {
     if (subtitleInjectionEnabled) {
       report?.call('正在查找外挂字体…', null);
       final remoteCache = <String, WebDavFontDirectory?>{};
+      final fontPreparer = VideoEntryPreparer(
+        source: _source,
+        config: config.toPlayerConfig(),
+        subtitleMatcher: appState.subtitleMatcher,
+        fontMatcher: appState.webDavFontMatcher,
+        titles: const {},
+      );
       final localCache = <String, ({String path, int files, int bytes})?>{};
       var remainingLocalFiles = WebDavFontLocalizer.maxFontFiles;
       var remainingLocalBytes = WebDavFontLocalizer.maxSessionBytes;
       final localFontDeadline = DateTime.now().add(const Duration(seconds: 30));
-      for (final item in activeVideos) {
-        final cached = await appState.cachedTarget(_sourceId, item.path);
-        if (cached != null) {
-          localFonts.add(cached.prepared().localFontDirectory);
+      if (!_isLocal) {
+        final start = activeVideos[playStart];
+        final cached = cachedItems[playStart];
+        if (cached?.localFontDirectory == null) {
+          remoteCache[start.parentPath] = (await fontPreparer.fontsAt(
+            start.parentPath,
+            start.entry,
+            start.siblings,
+            refreshParent: cached != null,
+          )).remoteFonts;
+        }
+      }
+      for (final (index, item) in activeVideos.indexed) {
+        final cached = cachedItems[index];
+        final cachedFonts = cached?.localFontDirectory;
+        if (cachedFonts != null) {
+          localFonts.add(cachedFonts);
           remoteFonts.add(null);
           continue;
         }
@@ -4398,11 +4406,18 @@ class BrowserPageState extends State<BrowserPage> {
             remainingLocalBytes -= fonts?.bytes ?? 0;
           }
           localFonts.add(localCache[item.parentPath]?.path);
+          remoteFonts.add(null);
         } else {
+          localFonts.add(null);
           if (!remoteCache.containsKey(item.parentPath)) {
-            remoteCache[item.parentPath] = await _resolvedWebDavFontsFor(
-              item.entry,
-              item.siblings,
+            remoteCache[item.parentPath] = WebDavFontDirectory.deferred(
+              item.parentPath,
+              () async => (await fontPreparer.fontsAt(
+                item.parentPath,
+                item.entry,
+                item.siblings,
+                refreshParent: cached != null,
+              )).remoteFonts,
             );
           }
           remoteFonts.add(remoteCache[item.parentPath]);
