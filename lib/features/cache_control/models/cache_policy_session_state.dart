@@ -13,6 +13,7 @@ class CachePolicySessionState {
     this.result,
     this.tsOnly = false,
     this.tsRuntime = false,
+    this.usedDirectoryMetadata = false,
   });
 
   /// 会话标识（与播放器会话一一对应）。
@@ -33,6 +34,9 @@ class CachePolicySessionState {
 
   /// TS 已进入小窗口缓存阶段；用于时长回填后继续保持 TS 上限。
   final bool tsRuntime;
+
+  /// 起播容量来自目录快照，可在 MPV 打开后用实际大小核对。
+  final bool usedDirectoryMetadata;
 
   /// 是否应启动播放中动态监控（正常注入且非 TS 直链）。
   bool get shouldMonitor => injected && !tsOnly && result != null;

@@ -25,7 +25,8 @@ abstract class CachePolicyProvider {
   ///
   /// [url] 为播放起点媒体地址（HEAD 探测用）；[authHeader] 为完整认证
   /// 头值（如 `Basic xxx`）；[userArgs] 为播放器参数模板（用于判断
-  /// 用户是否已手动配置缓存参数）。
+  /// 用户是否已手动配置缓存参数）。[sourceMetadata] 为已枚举的同一资源，
+  /// 有有效容量时直接用于策略，省去起播前的网络探测。
   /// 计算并返回本次播放应注入的缓存参数。
   ///
   /// [sessionId] 用于记录本次会话的策略状态（见 [sessionState]），
@@ -35,6 +36,7 @@ abstract class CachePolicyProvider {
     required String sessionId,
     required String url,
     String? authHeader,
+    MediaProbeResult? sourceMetadata,
     List<String> userArgs = const [],
     bool runtimeTs = false,
   });
@@ -59,6 +61,7 @@ abstract class CachePolicyProvider {
     String url,
     double durationSec, {
     String? resolution,
+    int? observedFileSizeBytes,
   });
 
   /// 启动播放中动态监控（第二阶段：内存压力/网络异常/卡顿记录）。
@@ -262,6 +265,7 @@ class CachePolicyService implements CachePolicyProvider {
     required String sessionId,
     required String url,
     String? authHeader,
+    MediaProbeResult? sourceMetadata,
     List<String> userArgs = const [],
     bool runtimeTs = false,
   }) async {
@@ -330,10 +334,15 @@ class CachePolicyService implements CachePolicyProvider {
         _recordSessionState(_sessionStates[sessionId]!);
         return tsArgs;
       }
+      final usedDirectoryMetadata = sourceMetadata?.ok == true;
+      if (usedDirectoryMetadata) {
+        PlaybackStartupTrace.current?.mark('mediaSizeFromDirectory');
+      }
       final result = await buildPolicy(
         url: url,
         authHeader: authHeader,
         config: config,
+        sourceMetadata: sourceMetadata,
       );
       if (result.skipped) {
         _log('Skipped: policy result is skipped');
@@ -361,6 +370,7 @@ class CachePolicyService implements CachePolicyProvider {
         url: url,
         injected: true,
         result: result,
+        usedDirectoryMetadata: usedDirectoryMetadata,
       );
       _recordSessionState(_sessionStates[sessionId]!);
       return result.args;
@@ -390,6 +400,7 @@ class CachePolicyService implements CachePolicyProvider {
     String? authHeader,
     CachePolicyConfig? config,
     int? knownFileSizeBytes,
+    MediaProbeResult? sourceMetadata,
     double? bitrateMbps,
     MediaTier? tier,
     String? resolution,
@@ -398,12 +409,16 @@ class CachePolicyService implements CachePolicyProvider {
     final cfg = config ?? await _store.load();
     if (!cfg.enabled) return const CachePolicyResult(skipped: true);
     int? size = knownFileSizeBytes;
-    MediaProbeResult? currentProbe;
+    MediaProbeResult? currentProbe = sourceMetadata?.ok == true
+        ? sourceMetadata
+        : null;
     if (size == null) {
-      final probe = await _mediaProbe.probeContentLength(
-        url: url,
-        authHeader: authHeader,
-      );
+      final probe =
+          currentProbe ??
+          await _mediaProbe.probeContentLength(
+            url: url,
+            authHeader: authHeader,
+          );
       currentProbe = probe;
       size = probe.ok ? probe.contentLengthBytes : null;
     }
@@ -547,6 +562,7 @@ class CachePolicyService implements CachePolicyProvider {
     String url,
     double durationSec, {
     String? resolution,
+    int? observedFileSizeBytes,
   }) {
     if (!durationSec.isFinite || durationSec <= 0) return;
     PlaybackStartupTrace.current?.mark('durationRecorded', {
@@ -571,6 +587,7 @@ class CachePolicyService implements CachePolicyProvider {
         config: config,
         authHeader: authHeader,
         resolution: resolution,
+        observedFileSizeBytes: observedFileSizeBytes,
       ),
     );
   }
@@ -583,6 +600,7 @@ class CachePolicyService implements CachePolicyProvider {
     required CachePolicyConfig? config,
     required String? authHeader,
     String? resolution,
+    int? observedFileSizeBytes,
   }) async {
     try {
       final store = _metadataStore;
@@ -596,8 +614,14 @@ class CachePolicyService implements CachePolicyProvider {
       // 写入）不得视为同一文件——已可能跨文件替换，需重写补全大小。
       // 当前大小**未知**（本次 HEAD 失败）：无法比较，视为同一文件，
       // 保留已验证数据（避免把旧大小/码率一并清空的误伤）。
-      final currentSize = _knownSizes[hash];
-      final probe = _knownProbes[hash];
+      final expectedSize = expectedState.usedDirectoryMetadata
+          ? expectedState.result?.fileSizeBytes
+          : _knownSizes[hash];
+      final currentSize = observedFileSizeBytes ?? expectedSize;
+      final sizeChanged = currentSize != expectedSize;
+      final probe = sizeChanged
+          ? MediaProbeResult(contentLengthBytes: currentSize)
+          : _knownProbes[hash];
       final sameValidator = existing == null || probe == null
           ? true
           : (existing.etag == null ||
@@ -618,6 +642,7 @@ class CachePolicyService implements CachePolicyProvider {
           (existing!.durationSec! - durationSec).abs() <= 0.5;
       if (existing != null &&
           existing.hasDuration &&
+          !sizeChanged &&
           sameFile &&
           durationUnchanged &&
           !resolutionChanged) {
@@ -629,6 +654,7 @@ class CachePolicyService implements CachePolicyProvider {
         authHeader: authHeader,
         config: config,
         knownFileSizeBytes: currentSize ?? existing?.fileSize,
+        sourceMetadata: sizeChanged ? probe : null,
         resolution: resolution ?? existing?.resolution,
         durationSec: durationSec,
       );

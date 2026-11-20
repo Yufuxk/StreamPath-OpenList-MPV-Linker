@@ -1,6 +1,7 @@
 import 'playback_media_entry.dart';
 import 'external_audio_track.dart';
 import 'subtitle_item.dart';
+import 'web_dav_file.dart';
 
 /// 播放列表条目：视频、匹配的外挂字幕与音轨、显示标题。
 class MediaEntry implements PlaybackMediaEntry, PlaybackProgressTarget {
@@ -11,6 +12,7 @@ class MediaEntry implements PlaybackMediaEntry, PlaybackProgressTarget {
     this.subtitle,
     this.externalAudioTracks = const [],
     this.progressTarget,
+    this.webDavFile,
   });
 
   /// 视频流地址（干净 URL，认证由服务注入）。
@@ -31,4 +33,7 @@ class MediaEntry implements PlaybackMediaEntry, PlaybackProgressTarget {
   final SubtitleItem? subtitle;
 
   final List<ExternalAudioTrack> externalAudioTracks;
+
+  /// 与 [url] 指向同一资源的原始 WebDAV 目录项，供起播缓存策略复用。
+  final WebDavFile? webDavFile;
 }

@@ -211,6 +211,7 @@ class VideoEntryPreparer {
           catalogPath: version.path,
           title: title ?? version.name,
           subtitle: subtitle,
+          webDavFile: video is WebDavFile && !video.isStrm ? video : null,
           externalAudioTracks: local
               ? const []
               : const ExternalAudioMatcher().matchFor(

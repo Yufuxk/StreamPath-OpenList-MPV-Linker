@@ -66,6 +66,50 @@ void main() {
     expect(logs.join('\n'), contains('Injected: --cache=yes --cache-secs=120'));
   });
 
+  test('目录大小免探测，MPV 实际大小变化后更新策略及元数据', () async {
+    await store.save(CachePolicyConfig.defaults());
+    final probe = _DelayedSecondProbe();
+    final service = makeService(probe: probe);
+    final hash = MediaMetadataStore.urlHashOf(url);
+    await metadataStore.write(
+      MediaMetadata(
+        urlHash: hash,
+        fileSize: 1000000,
+        etag: '"old"',
+        durationSec: 120,
+        updatedAt: DateTime.now(),
+      ),
+    );
+    final args = await service.buildCacheArgs(
+      sessionId: 'directory',
+      url: url,
+      sourceMetadata: const MediaProbeResult(
+        contentLengthBytes: 1000000,
+        etag: '"old"',
+      ),
+    );
+    expect(args, isNotEmpty);
+    expect(probe.authHeaders, isEmpty);
+    expect(service.sessionState('directory')!.usedDirectoryMetadata, isTrue);
+
+    final updated = Completer<CachePolicyResult>();
+    service.onPolicyReady = (_, _, result) => updated.complete(result);
+    service.recordDuration(
+      'directory',
+      url,
+      240,
+      observedFileSizeBytes: 2000000,
+    );
+    expect(
+      (await updated.future.timeout(const Duration(seconds: 5))).fileSizeBytes,
+      2000000,
+    );
+    final metadata = await metadataStore.read(hash);
+    expect(metadata?.fileSize, 2000000);
+    expect(metadata?.etag, isNull);
+    expect(probe.authHeaders, isEmpty);
+  });
+
   test('小文件全量缓存日志不套用普通媒体的可达秒数公式', () async {
     await store.save(CachePolicyConfig.defaults());
     final service = makeService(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:streampath/data/models/connection_config.dart';
 import 'package:streampath/data/models/media_entry.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
+import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/domain/services/external_player_service.dart';
 import 'package:streampath/features/cache_control/cache_policy_service.dart';
 import 'package:streampath/features/cache_control/models/cache_policy_config.dart';
@@ -159,6 +161,77 @@ void main() {
       '$restartSerial\n30.0\n';
 
   group('缓存参数注入集成', () {
+    test('起播复用同源目录大小，并隔离异源探测认证', () async {
+      final provider = _RecordingProvider();
+      final (service, _) = await makeService(cachePolicy: provider);
+      const file = WebDavFile(
+        name: '01.mp4',
+        href: '/dav/01.mp4',
+        isDirectory: false,
+        size: 1000000,
+        etag: '"revision"',
+      );
+      for (final target in [
+        'http://origin/dav/01.mp4',
+        'http://other/01.mp4',
+      ]) {
+        final result = await service.launch(
+          entries: [MediaEntry(url: target, webDavFile: file)],
+          webDavSourceUrl: 'http://origin/dav/',
+          username: 'test',
+          password: 'credential',
+        );
+        await service.waitForExitSync(result.sessionId);
+      }
+      expect(provider.sourceMetadataCalls.first?.contentLengthBytes, file.size);
+      expect(provider.sourceMetadataCalls.first?.etag, file.etag);
+      expect(provider.sourceMetadataCalls.last, isNull);
+      expect(provider.authCalls, [startsWith('Basic '), isNull]);
+    });
+
+    test('缓存策略接收本次 MPV 打开的实际容量', () async {
+      final observedSizes = <int?>[];
+      final provider = _RecordingProvider(
+        observedSizes: observedSizes,
+        fixedResult: const CachePolicyResult(
+          skipped: false,
+          cacheSecs: 60,
+          demuxerMaxBytes: 1000000,
+        ),
+      );
+      final (service, _) = await makeService(
+        cachePolicy: provider,
+        keepAlive: true,
+      );
+      const target = 'http://origin/dav/01.mp4';
+      final result = await service.launch(
+        entries: const [
+          MediaEntry(
+            url: target,
+            webDavFile: WebDavFile(
+              name: '01.mp4',
+              href: '/dav/01.mp4',
+              isDirectory: false,
+              size: 1000000,
+            ),
+          ),
+        ],
+        webDavSourceUrl: 'http://origin/dav/',
+      );
+      final path = result.statusFilePath!;
+      await File('$path.media.json').writeAsString(
+        jsonEncode({
+          'epoch': result.launchEpoch,
+          'path': target,
+          'size': 2000000,
+        }),
+      );
+      await File(path).writeAsString(statusText(url: target));
+      await waitUntil(() => observedSizes.isNotEmpty);
+      expect(observedSizes, [2000000]);
+      await service.waitForExitSync(result.sessionId);
+    });
+
     test('未接入缓存系统时参数与原来完全一致（零影响）', () async {
       final (service, _) = await makeService();
       final result = await service.launch(
@@ -989,6 +1062,7 @@ class _ThrowingProvider implements CachePolicyProvider {
     required String sessionId,
     required String url,
     String? authHeader,
+    MediaProbeResult? sourceMetadata,
     List<String> userArgs = const [],
     bool runtimeTs = false,
   }) async {
@@ -1005,6 +1079,7 @@ class _ThrowingProvider implements CachePolicyProvider {
     String url,
     double durationSec, {
     String? resolution,
+    int? observedFileSizeBytes,
   }) {}
 
   @override
@@ -1048,6 +1123,7 @@ class _DelayedTrackProvider implements CachePolicyProvider {
     required String sessionId,
     required String url,
     String? authHeader,
+    MediaProbeResult? sourceMetadata,
     List<String> userArgs = const [],
     bool runtimeTs = false,
   }) async {
@@ -1085,6 +1161,7 @@ class _DelayedTrackProvider implements CachePolicyProvider {
     String url,
     double durationSec, {
     String? resolution,
+    int? observedFileSizeBytes,
   }) {}
 
   @override
@@ -1120,6 +1197,7 @@ class _DelayedTrackProvider implements CachePolicyProvider {
 class _RecordingProvider implements CachePolicyProvider {
   _RecordingProvider({
     this.durations,
+    this.observedSizes,
     this.recordedUrls,
     this.monitorCalls,
     this.fixedResult,
@@ -1127,6 +1205,7 @@ class _RecordingProvider implements CachePolicyProvider {
 
   /// 收到的时长上报记录。
   final List<double>? durations;
+  final List<int?>? observedSizes;
 
   /// recordDuration 收到的 URL（切集关联验证用）。
   final List<String>? recordedUrls;
@@ -1139,6 +1218,8 @@ class _RecordingProvider implements CachePolicyProvider {
 
   /// 每次 buildCacheArgs 收到的 userArgs（切集沿用用户参数验证用）。
   final List<List<String>> userArgCalls = [];
+  final List<MediaProbeResult?> sourceMetadataCalls = [];
+  final List<String?> authCalls = [];
 
   /// 注入当前会话状态的固定策略结果（null 表示跳过注入）。
   final CachePolicyResult? fixedResult;
@@ -1150,17 +1231,21 @@ class _RecordingProvider implements CachePolicyProvider {
     required String sessionId,
     required String url,
     String? authHeader,
+    MediaProbeResult? sourceMetadata,
     List<String> userArgs = const [],
     bool runtimeTs = false,
   }) async {
     buildCalls++;
     userArgCalls.add(userArgs);
+    sourceMetadataCalls.add(sourceMetadata);
+    authCalls.add(authHeader);
     final result = fixedResult;
     _states[sessionId] = CachePolicySessionState(
       sessionId: sessionId,
       url: url,
       injected: result != null,
       result: result,
+      usedDirectoryMetadata: sourceMetadata?.ok == true,
     );
     return const [
       '--cache=yes',
@@ -1179,7 +1264,9 @@ class _RecordingProvider implements CachePolicyProvider {
     String url,
     double durationSec, {
     String? resolution,
+    int? observedFileSizeBytes,
   }) {
+    observedSizes?.add(observedFileSizeBytes);
     durations?.add(durationSec);
     recordedUrls?.add(url);
   }

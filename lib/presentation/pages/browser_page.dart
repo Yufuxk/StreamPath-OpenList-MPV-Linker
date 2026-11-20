@@ -3331,6 +3331,7 @@ class BrowserPageState extends State<BrowserPage> {
           url: url,
           title: titles[i],
           catalogPath: item.path,
+          webDavFile: video is WebDavFile && !video.isStrm ? video : null,
           externalAudioTracks: !_isLocal
               ? const ExternalAudioMatcher().matchFor(
                   video,
@@ -4366,6 +4367,7 @@ class BrowserPageState extends State<BrowserPage> {
           progressTarget: cached?.progressTarget,
           title: titles[i],
           catalogPath: item.path,
+          webDavFile: cached == null && v is WebDavFile && !v.isStrm ? v : null,
           externalAudioTracks:
               cachedItem?.entry.externalAudioTracks ??
               (!_isLocal

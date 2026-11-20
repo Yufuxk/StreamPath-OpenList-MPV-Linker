@@ -15,6 +15,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/media_source.dart';
 import '../../data/models/subtitle_item.dart';
 import '../../data/models/playback_media_entry.dart';
 import '../../data/models/app_language.dart';
@@ -22,6 +23,7 @@ import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import '../../features/cache_control/cache_policy_service.dart';
+import '../../features/cache_control/providers/media_probe.dart';
 import '../../features/cache_control/models/cache_policy_result.dart';
 import '../../features/cache_control/models/cache_policy_session_state.dart';
 import '../../features/cache_control/utils/container_rules.dart';
@@ -1534,11 +1536,30 @@ class ExternalPlayerService {
       if (!launchContext.isLocal &&
           entries[playlistStart].progressTarget == null &&
           _cachePolicy != null) {
+        trace?.mark('cachePolicyRequested');
         try {
+          final startEntry = entries[playlistStart];
+          final sameOrigin = isSameOrigin(
+            launchContext.serverUrl,
+            startEntry.url,
+          );
+          final file = startEntry.webDavFile;
+          final sourceMetadata =
+              sameOrigin &&
+                  file != null &&
+                  file.sourceKind == MediaSourceKind.webdav &&
+                  file.size > 0
+              ? MediaProbeResult(
+                  contentLengthBytes: file.size,
+                  etag: file.etag,
+                  lastModified: file.lastModifiedHeader,
+                )
+              : null;
           final cacheArgs = await _cachePolicy.buildCacheArgs(
             sessionId: resolvedSessionId,
-            url: entries[playlistStart].url,
-            authHeader: authHeader,
+            url: startEntry.url,
+            authHeader: sameOrigin ? authHeader : null,
+            sourceMetadata: sourceMetadata,
             userArgs: userArgs,
             runtimeTs:
                 isTsContainerUrl(entries[playlistStart].url) &&
@@ -2080,11 +2101,16 @@ class ExternalPlayerService {
           final resolution = lines.length > 12 && lines[12].trim().isNotEmpty
               ? lines[12].trim()
               : null;
+          final observedSize = currentState?.usedDirectoryMetadata == true
+              ? await _readOpenedMediaSize(runtime, file.path, lastTrackUrl)
+              : null;
+          if (!_isRuntimeCurrent(runtime, currentGeneration)) continue;
           policy.recordDuration(
             sessionId,
             lastTrackUrl,
             duration,
             resolution: resolution,
+            observedFileSizeBytes: observedSize,
           );
         }
       } catch (e) {
@@ -2093,6 +2119,30 @@ class ExternalPlayerService {
       }
       if (!await _shouldContinueRuntimeWork(runtime)) return;
     }
+  }
+
+  Future<int?> _readOpenedMediaSize(
+    _PlayerSessionRuntime runtime,
+    String statusPath,
+    String url,
+  ) async {
+    try {
+      final value = jsonDecode(
+        await File('$statusPath.media.json').readAsString(),
+      );
+      if (value is Map &&
+          value['epoch'] == runtime.launchEpoch &&
+          value['path'] is String &&
+          _sameTrack(value['path'] as String, url)) {
+        final size = value['size'];
+        if (size is num && size.isFinite && size >= 1) return size.toInt();
+      }
+    } on FileSystemException {
+      // MPV 原子替换媒体快照期间可能尚不可读。
+    } on FormatException {
+      _logCache('Invalid MPV media snapshot');
+    }
+    return null;
   }
 
   /// 播放列表切集：重新计算新集的缓存参数并推送 mpv。
@@ -2125,7 +2175,9 @@ class ExternalPlayerService {
       await policy.buildCacheArgs(
         sessionId: sessionId,
         url: track,
-        authHeader: _authHeaders[sessionId],
+        authHeader: isSameOrigin(runtime.launchContext?.serverUrl ?? '', track)
+            ? _authHeaders[sessionId]
+            : null,
         // 沿用用户手动缓存参数（与首集一致：尊重手动配置）。
         userArgs: userArgs,
       );
@@ -2193,7 +2245,9 @@ class ExternalPlayerService {
       await policy.buildCacheArgs(
         sessionId: runtime.sessionId,
         url: track,
-        authHeader: _authHeaders[runtime.sessionId],
+        authHeader: isSameOrigin(runtime.launchContext?.serverUrl ?? '', track)
+            ? _authHeaders[runtime.sessionId]
+            : null,
         userArgs: userArgs,
         runtimeTs: true,
       );
@@ -3817,6 +3871,7 @@ class ExternalPlayerService {
     return MediaEntry(
       url: entry.url,
       progressTarget: entry.progressTarget,
+      webDavFile: entry.webDavFile,
       title: entry.title,
       catalogPath: entry.catalogPath,
       subtitle: localized,
