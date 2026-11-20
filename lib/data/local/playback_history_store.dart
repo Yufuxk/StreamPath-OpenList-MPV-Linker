@@ -145,6 +145,24 @@ class PlaybackHistoryStore {
   /// 新增或更新一个会话。达到上限且 [history] 是新 ID 时返回 false。
   Future<bool> upsert(PlaybackHistory history) => _enqueue(() async {
     await _loadAll();
+    return _upsert(history);
+  });
+
+  /// 在同一次排队操作中读取并更新记录，避免覆盖并发提交的启动身份。
+  Future<PlaybackHistory?> updateSession(
+    String sessionId,
+    PlaybackHistory? Function(PlaybackHistory current) update,
+  ) => _enqueue(() async {
+    await _loadAll();
+    final current = _cached.where((h) => h.sessionId == sessionId).firstOrNull;
+    if (current == null) return null;
+    final updated = update(current);
+    if (updated == null) return null;
+    if (!identical(updated, current)) await _upsert(updated);
+    return updated;
+  });
+
+  Future<bool> _upsert(PlaybackHistory history) async {
     final record = history.copyWith(updatedAt: _now());
     final records = [..._cached];
     final index = records.indexWhere((e) => e.sessionId == record.sessionId);
@@ -168,7 +186,7 @@ class PlaybackHistoryStore {
       // 记录失败不阻塞播放。
     }
     return true;
-  });
+  }
 
   /// 删除指定会话；其余会话保持不变。
   Future<void> remove(String sessionId) => _enqueue(() async {

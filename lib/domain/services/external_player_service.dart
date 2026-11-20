@@ -208,16 +208,22 @@ enum PlaybackRecoveryStage { preparing, relaunched, failed }
 /// MPV 播放失败自动恢复状态，供界面更新提示和新进程身份。
 class PlaybackRecoveryEvent {
   const PlaybackRecoveryEvent({
+    required this.player,
     required this.sessionId,
+    required this.launchEpoch,
     required this.stage,
     required this.message,
     this.launchResult,
+    this.previousSeasonPlaylistPath,
   });
 
+  final ExternalPlayerService player;
   final String sessionId;
+  final String launchEpoch;
   final PlaybackRecoveryStage stage;
   final String message;
   final PlayerLaunchResult? launchResult;
+  final String? previousSeasonPlaylistPath;
 }
 
 class _ImplicitQueueEntry {
@@ -384,6 +390,7 @@ class _PlayerSessionRuntime {
   String? seasonMarkerFilePath;
   String? currentSeasonPlaylistPath;
   int? currentStageLength;
+  final Map<String, SeasonPlaybackEntries> recoverySeasons = {};
   int seasonStageNumber = 1;
   bool? restoredExternalAudioInjectionEnabled;
   AppLanguage? restoredExternalAudioLanguage;
@@ -830,6 +837,7 @@ class ExternalPlayerService {
           _launchOwnership[resolvedSessionId] = existing.ownershipGeneration;
         } else if (_sessions[resolvedSessionId] == null) {
           _launchOwnership.remove(resolvedSessionId);
+          _recoveryStates.remove(resolvedSessionId);
         }
       }
       rethrow;
@@ -945,6 +953,14 @@ class ExternalPlayerService {
         isMpv && !implicit && config.autoSeasonTransitionEnabled;
     final hasNextSeason =
         seasonTransition && nextSeason != null && nextSeason.entries.isNotEmpty;
+    final recoverySeason = seasonTransition
+        ? SeasonPlaybackEntries(
+            entries: entries,
+            localFontDirectories: localFontDirectories ?? const [],
+            webDavFontsByEntry: webDavFontsByEntry ?? const [],
+          )
+        : null;
+    final recoveryNextSeason = hasNextSeason ? nextSeason : null;
     final listMode =
         isMpv && (implicit || entries.length > 1 || seasonTransition);
     // 缓存来源的 WebDAV 客户端不带来源凭据，同源字幕必须先取回本地；
@@ -1716,6 +1732,12 @@ class ExternalPlayerService {
     );
     runtime.persistentFontPaths.addAll(persistentFontPaths);
     runtime.subtitleLocalizations.addAll(subtitleLocalizations);
+    if (recoverySeason != null) {
+      runtime.recoverySeasons[playlistPath!] = recoverySeason;
+      if (nextPlaylistPath != null && recoveryNextSeason != null) {
+        runtime.recoverySeasons[nextPlaylistPath] = recoveryNextSeason;
+      }
+    }
     if (seasonTransition || implicit) {
       runtime
         ..seasonPlanFilePath = seasonPlanFilePath
@@ -2824,8 +2846,8 @@ class ExternalPlayerService {
 
   Future<bool> _tryHandlePlaybackFailure(_PlayerSessionRuntime runtime) async {
     if (!runtime.isMpv || runtime.entries.isEmpty) return false;
-    // 查询未知时不读取失败记录并触发定向终止；等待 tracker 确认 alive。
-    if (runtime.livenessTracker.status != PlayerProcessLiveness.alive) {
+    // 已确认退出的进程仍可能在关闭前写下加载错误。
+    if (runtime.livenessTracker.status == PlayerProcessLiveness.unknown) {
       return false;
     }
     final launchContext = runtime.launchContext;
@@ -2838,10 +2860,6 @@ class ExternalPlayerService {
         !identical(_sessions[runtime.sessionId], runtime)) {
       return true;
     }
-    if (runtime.livenessTracker.status != PlayerProcessLiveness.alive) {
-      return false;
-    }
-
     final failure = await _readNextPlaybackFailure(runtime);
     if (!_ownsLaunch(runtime.sessionId, runtime.ownershipGeneration) ||
         !identical(_sessions[runtime.sessionId], runtime)) {
@@ -2854,36 +2872,34 @@ class ExternalPlayerService {
     }
     state.recovering = true;
 
-    // 媒体失败后 MPV 可能自动跳到下一集。先定向结束旧进程并保存失败
-    // 位置，确保后台刷新期间不会播放错误的列表项。
-    final termination = await _stopRuntimeForRecovery(runtime);
-    if (!_isRecoveryCurrent(runtime, state)) return true;
-    if (!termination.isSafeToRelaunch) {
-      state.recovering = false;
-      _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
-          sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.failed,
-          message: '无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程',
-        ),
-      );
-      return true;
-    }
-
     final entryIndex = _failureEntryIndex(runtime, failure);
     final entry = runtime.entries[entryIndex];
+    var stopped = false;
     while (state.attempts < 3) {
       state.attempts++;
       final attempt = state.attempts;
       _emitPlaybackRecovery(
-        PlaybackRecoveryEvent(
-          sessionId: runtime.sessionId,
-          stage: PlaybackRecoveryStage.preparing,
-          message: attempt == 3
-              ? '前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…'
-              : '检测到 MPV 播放失败，正在恢复链接（$attempt/3）…',
-        ),
+        runtime,
+        PlaybackRecoveryStage.preparing,
+        attempt == 3
+            ? '前两次恢复未解决播放错误，正在安全重启本机 OpenList/AList（3/3）…'
+            : '检测到 MPV 播放失败，正在恢复链接（$attempt/3）…',
       );
+
+      if (!stopped) {
+        final termination = await _stopRuntimeForRecovery(runtime);
+        if (!_isRecoveryCurrent(runtime, state)) return true;
+        if (!termination.isSafeToRelaunch) {
+          state.recovering = false;
+          _emitPlaybackRecovery(
+            runtime,
+            PlaybackRecoveryStage.failed,
+            '无法确认旧 MPV 仍属于当前播放会话，已停止自动恢复且未终止进程',
+          );
+          return true;
+        }
+        stopped = true;
+      }
 
       var serverRestarted = false;
       if (attempt == 3) {
@@ -2895,11 +2911,9 @@ class ExternalPlayerService {
         if (!restart.success) {
           state.recovering = false;
           _emitPlaybackRecovery(
-            PlaybackRecoveryEvent(
-              sessionId: runtime.sessionId,
-              stage: PlaybackRecoveryStage.failed,
-              message: '第三次自动恢复失败：${restart.message}，已保留继续播放记录',
-            ),
+            runtime,
+            PlaybackRecoveryStage.failed,
+            '第三次自动恢复失败：${restart.message}，已保留继续播放记录',
           );
           return true;
         }
@@ -2924,11 +2938,9 @@ class ExternalPlayerService {
       if (preparation?.terminal ?? false) {
         state.recovering = false;
         _emitPlaybackRecovery(
-          PlaybackRecoveryEvent(
-            sessionId: runtime.sessionId,
-            stage: PlaybackRecoveryStage.failed,
-            message: '${preparation!.message}，已停止自动恢复并保留继续播放记录',
-          ),
+          runtime,
+          PlaybackRecoveryStage.failed,
+          '${preparation!.message}，已停止自动恢复并保留继续播放记录',
         );
         return true;
       }
@@ -2936,13 +2948,11 @@ class ExternalPlayerService {
         if (attempt < 3) continue;
         state.recovering = false;
         _emitPlaybackRecovery(
-          PlaybackRecoveryEvent(
-            sessionId: runtime.sessionId,
-            stage: PlaybackRecoveryStage.failed,
-            message: preparation == null
-                ? '第三次自动恢复发生异常，已保留继续播放记录'
-                : '第三次自动恢复失败：${preparation.message}，已保留继续播放记录',
-          ),
+          runtime,
+          PlaybackRecoveryStage.failed,
+          preparation == null
+              ? '第三次自动恢复发生异常，已保留继续播放记录'
+              : '第三次自动恢复失败：${preparation.message}，已保留继续播放记录',
         );
         return true;
       }
@@ -2956,20 +2966,48 @@ class ExternalPlayerService {
         implicitPlan?.index = entryIndex;
         final current = runtime.entries[entryIndex];
         final prepared = implicitPlan?.prepared[current.catalogPath];
+        final previousSeason = runtime.recoverySeasons.entries
+            .where(
+              (season) => season.value.entries.any(
+                (item) =>
+                    item.catalogPath == current.catalogPath &&
+                    _sameTrack(item.url, current.url),
+              ),
+            )
+            .firstOrNull;
+        final currentSeason = previousSeason?.value;
+        final nextSeason = previousSeason == null
+            ? null
+            : runtime.recoverySeasons.entries
+                  .skipWhile((season) => season.key != previousSeason.key)
+                  .skip(1)
+                  .firstOrNull
+                  ?.value;
         final PlayerLaunchResult result;
         try {
           result = await _launchWithContext(
-            entries: implicitPlan == null ? runtime.entries : [current],
+            entries: implicitPlan == null
+                ? currentSeason?.entries ?? runtime.entries
+                : [current],
             implicitPlan: implicitPlan,
+            nextSeason: nextSeason,
             launchContext: launchContext,
             sessionId: runtime.sessionId,
-            playlistStart: runtime.implicitPlan == null ? entryIndex : 0,
+            playlistStart: implicitPlan != null
+                ? 0
+                : currentSeason?.entries.indexWhere(
+                        (item) =>
+                            item.catalogPath == current.catalogPath &&
+                            _sameTrack(item.url, current.url),
+                      ) ??
+                      entryIndex,
             resumeSeconds: resumeSeconds,
             automaticRecovery: true,
             ownershipGeneration: runtime.ownershipGeneration,
             webDavFonts: implicitPlan == null ? runtime.webDavFonts : null,
             webDavFontsByEntry: implicitPlan == null
-                ? runtime.webDavFontsByEntry
+                ? currentSeason?.webDavFontsByEntry ??
+                      runtime.webDavFontsByEntry
                 : [
                     prepared != null
                         ? prepared.remoteFonts
@@ -2978,7 +3016,8 @@ class ExternalPlayerService {
                         : WebDavFontDirectory.unavailable(current.catalogPath!),
                   ],
             localFontDirectories: implicitPlan == null
-                ? runtime.localFontDirectories
+                ? currentSeason?.localFontDirectories ??
+                      runtime.localFontDirectories
                 : [prepared?.localFontDirectory],
             webDavFontLoader: runtime.webDavFontLoader,
             webDavFontFileLoader: runtime.webDavFontFileLoader,
@@ -2992,34 +3031,29 @@ class ExternalPlayerService {
         }
         state.recovering = false;
         _emitPlaybackRecovery(
-          PlaybackRecoveryEvent(
-            sessionId: runtime.sessionId,
-            stage: PlaybackRecoveryStage.relaunched,
-            message: serverRestarted
-                ? 'OpenList/AList 已安全重启，播放器已从失败位置恢复'
-                : preparation.storageReloaded
-                ? 'OpenList/AList 存储已刷新，播放器已从失败位置恢复'
-                : '已重新获取播放链接，播放器已从失败位置恢复',
-            launchResult: result,
-          ),
+          runtime,
+          PlaybackRecoveryStage.relaunched,
+          serverRestarted
+              ? 'OpenList/AList 已安全重启，播放器已从失败位置恢复'
+              : preparation.storageReloaded
+              ? 'OpenList/AList 存储已刷新，播放器已从失败位置恢复'
+              : '已重新获取播放链接，播放器已从失败位置恢复',
+          launchResult: result,
+          previousSeasonPlaylistPath: previousSeason?.key,
         );
       } on AppException catch (error) {
         state.recovering = false;
         _emitPlaybackRecovery(
-          PlaybackRecoveryEvent(
-            sessionId: runtime.sessionId,
-            stage: PlaybackRecoveryStage.failed,
-            message: '链接已恢复，但重新启动播放器失败：${error.message}',
-          ),
+          runtime,
+          PlaybackRecoveryStage.failed,
+          '链接已恢复，但重新启动播放器失败：${error.message}',
         );
       } catch (_) {
         state.recovering = false;
         _emitPlaybackRecovery(
-          PlaybackRecoveryEvent(
-            sessionId: runtime.sessionId,
-            stage: PlaybackRecoveryStage.failed,
-            message: '自动恢复过程中出现异常，已保留继续播放记录',
-          ),
+          runtime,
+          PlaybackRecoveryStage.failed,
+          '自动恢复过程中出现异常，已保留继续播放记录',
         );
       }
       return true;
@@ -3047,16 +3081,27 @@ class ExternalPlayerService {
         startOffset: runtime.failureJournalByteOffset,
       );
       runtime.failureJournalByteOffset = chunk.nextOffset;
+      final expectedEpoch = runtime.launchEpoch.isEmpty
+          ? null
+          : runtime.launchEpoch;
       MpvPlaybackFailureRecord? latest;
       for (final line in chunk.lines) {
-        latest =
-            MpvPlaybackFailureRecord.tryParse(
-              line,
-              expectedEpoch: runtime.launchEpoch.isEmpty
-                  ? null
-                  : runtime.launchEpoch,
-            ) ??
-            latest;
+        final failure = MpvPlaybackFailureRecord.tryParse(
+          line,
+          expectedEpoch: expectedEpoch,
+        );
+        if (failure != null) {
+          latest = failure;
+        } else if (latest != null &&
+            runtime.livenessTracker.status == PlayerProcessLiveness.exited &&
+            MpvProgressJournalRecord.tryParse(
+                  line,
+                  expectedEpoch: expectedEpoch,
+                )?.reason !=
+                null) {
+          // 同批日志中后续的正常结束记录优先于更早的读取错误。
+          latest = null;
+        }
       }
       return latest;
     } on FileSystemException {
@@ -3068,12 +3113,16 @@ class ExternalPlayerService {
     _PlayerSessionRuntime runtime,
     MpvPlaybackFailureRecord failure,
   ) {
-    if (failure.path.isNotEmpty) {
+    final pos = failure.playlistPos ?? runtime.currentPlaylistPos ?? 0;
+    final failedPath = stripUserInfo(failure.path);
+    if (failedPath.isNotEmpty) {
+      bool matches(int index) =>
+          _sameTrack(failedPath, stripUserInfo(runtime.entries[index].url));
+      if (pos >= 0 && pos < runtime.entries.length && matches(pos)) return pos;
       for (var index = 0; index < runtime.entries.length; index++) {
-        if (_sameTrack(failure.path, runtime.entries[index].url)) return index;
+        if (matches(index)) return index;
       }
     }
-    final pos = failure.playlistPos ?? runtime.currentPlaylistPos ?? 0;
     if (pos >= 0 && pos < runtime.entries.length) return pos;
     return 0;
   }
@@ -3174,9 +3223,25 @@ class ExternalPlayerService {
     return outcome;
   }
 
-  void _emitPlaybackRecovery(PlaybackRecoveryEvent event) {
+  void _emitPlaybackRecovery(
+    _PlayerSessionRuntime runtime,
+    PlaybackRecoveryStage stage,
+    String message, {
+    PlayerLaunchResult? launchResult,
+    String? previousSeasonPlaylistPath,
+  }) {
     try {
-      onPlaybackRecovery?.call(event);
+      onPlaybackRecovery?.call(
+        PlaybackRecoveryEvent(
+          player: this,
+          sessionId: runtime.sessionId,
+          launchEpoch: runtime.launchEpoch,
+          stage: stage,
+          message: message,
+          launchResult: launchResult,
+          previousSeasonPlaylistPath: previousSeasonPlaylistPath,
+        ),
+      );
     } catch (_) {
       // 界面提示异常不影响恢复链路。
     }
@@ -3186,13 +3251,16 @@ class ExternalPlayerService {
   Future<int?> _syncProgress(
     _PlayerSessionRuntime runtime,
     List<MediaEntry> entries,
-  ) async {
-    if (runtime.progressFilePath != null &&
-        await File(runtime.progressFilePath!).exists()) {
-      final chunk = await const MpvCompleteJsonlReader().read(
-        File(runtime.progressFilePath!),
-      );
-      for (final line in chunk.lines) {
+  ) => _progressSyncCoordinator.run<int?>(
+    sessionId: runtime.sessionId,
+    generation: runtime.progressGeneration,
+    action: () async {
+      final path = runtime.progressFilePath;
+      final journal = path == null ? null : File(path);
+      final chunk = journal == null
+          ? null
+          : await const MpvCompleteJsonlReader().read(journal);
+      for (final line in chunk?.lines ?? const <String>[]) {
         final record = jsonDecode(line) as Map<String, dynamic>;
         if (record['epoch'] == runtime.launchEpoch &&
             (record['outcome'] == 'position' ||
@@ -3200,28 +3268,27 @@ class ExternalPlayerService {
           await _reportJournalProgress(runtime, record);
         }
       }
-    }
-    await _restoreManualVideoResets(runtime);
-    final ps = _progressService;
-    final dir = _watchLaterDir;
-    if (ps == null || dir == null) return null;
-    return _progressSyncCoordinator.run<int?>(
-      sessionId: runtime.sessionId,
-      generation: runtime.progressGeneration,
-      action: () => const MpvPlaybackProgressSynchronizer().sync(
+      await _restoreManualVideoResets(runtime);
+      final ps = _progressService;
+      final dir = _watchLaterDir;
+      if (ps == null || dir == null) return null;
+      final epoch = runtime.launchEpoch;
+      final startedUs = int.tryParse(epoch.split('_').first);
+      return const MpvPlaybackProgressSynchronizer().sync(
         progressService: ps,
         profileId: runtime.profileId,
         watchLaterDirectory: dir,
         entries: entries,
         watchLaterUrls: runtime.watchLaterUrls,
-        journalFile: runtime.progressFilePath == null
+        journalFile: journal,
+        expectedEpoch: epoch.isEmpty ? null : epoch,
+        watchLaterNotBefore: startedUs == null
             ? null
-            : File(runtime.progressFilePath!),
-        expectedEpoch: runtime.launchEpoch.isEmpty ? null : runtime.launchEpoch,
+            : DateTime.fromMicrosecondsSinceEpoch(startedUs),
         ignoreBefore: _manualResets[runtime.profileId] ?? const {},
-      ),
-    );
-  }
+      );
+    },
+  );
 
   Future<Directory> _ensureWatchLaterDir() async {
     final dir =
@@ -4679,6 +4746,7 @@ class ExternalPlayerService {
       return null;
     }
     runtime.entries.addAll(seasonEntries);
+    runtime.recoverySeasons[playlist] = season;
     runtime.watchLaterUrls.addAll(
       seasonEntries.map((entry) => authUrl(entry.url)),
     );
@@ -4702,6 +4770,9 @@ class ExternalPlayerService {
   }) {
     final runtime = _sessions[sessionId];
     if (runtime == null) return;
+    if (runtime.currentSeasonPlaylistPath != playlistPath) {
+      runtime.recoverySeasons.remove(runtime.currentSeasonPlaylistPath);
+    }
     runtime
       ..currentSeasonPlaylistPath = playlistPath
       ..currentStageLength = playlistLength;
@@ -4952,8 +5023,31 @@ class ExternalPlayerService {
     }
   }
 
+  bool isPlaybackRecovering(String sessionId) =>
+      _recoveryStates[sessionId]?.recovering ?? false;
+
   bool videoExitSyncPending(String sessionId) =>
-      _sessions[sessionId]?.exitSyncPending ?? false;
+      isPlaybackRecovering(sessionId) ||
+      (_sessions[sessionId]?.exitSyncPending ?? false);
+
+  /// 在新启动认领先前等待旧代次已经开始的实时进度写入。
+  Future<void> persistVideoLaunchProgress(
+    String sessionId,
+    String? launchEpoch,
+    Future<void> Function() persist,
+  ) async {
+    final runtime = _sessions[sessionId];
+    if (runtime == null || runtime.launchEpoch != (launchEpoch ?? '')) return;
+    await _progressSyncCoordinator.run<void>(
+      sessionId: sessionId,
+      generation: runtime.progressGeneration,
+      action: () async {
+        if (runtime.livenessTracker.status != PlayerProcessLiveness.exited) {
+          await persist();
+        }
+      },
+    );
+  }
 
   /// 只接受进程退出同步确认的 EOF，并绑定原播放代次与队列。
   int? videoExitEofIndex(

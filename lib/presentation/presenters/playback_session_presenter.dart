@@ -22,6 +22,7 @@ class PlaybackUiSession {
   bool deleting = false;
   bool launching = false;
   bool recovering = false;
+  int recoveryRevision = 0;
   final PlaybackActivationGuard activationGuard = PlaybackActivationGuard();
   double? lastReportedPositionSeconds;
   String? lastReportedUrl;

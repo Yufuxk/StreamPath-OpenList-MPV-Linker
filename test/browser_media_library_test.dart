@@ -1502,6 +1502,13 @@ class _TransitionPlayer extends ExternalPlayerService {
   Future<bool> isPlayerRunning([String? sessionId]) async =>
       running || runningSessionIds.contains(sessionId);
 
+  @override
+  Future<void> persistVideoLaunchProgress(
+    String sessionId,
+    String? launchEpoch,
+    Future<void> Function() persist,
+  ) => persist();
+
   Future<int?> Function()? syncJournal;
   int? syncedEof;
   bool deferJournalSync = false;

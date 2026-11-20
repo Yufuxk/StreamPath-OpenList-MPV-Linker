@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/core/errors/app_exception.dart';
+import 'package:streampath/core/utils/app_paths.dart';
 import 'package:streampath/data/local/directory_cache.dart';
 import 'package:streampath/data/local/film_catalog_store.dart';
 import 'package:streampath/data/local/tmdb_credential_store.dart';
@@ -643,6 +644,25 @@ void main() {
       expect(restored.sessionId, sessionId);
       expect(restored.videoIndex, 1);
       expect(restored.playlistRelativePaths[1], 'B/E2.mkv');
+      final statusFile = (await tester.runAsync(
+        () async => File(
+          p.join(
+            (await AppPaths.cacheDirectory()).path,
+            ExternalPlayerService.sessionStatusFileName(
+              restored.sessionId,
+              launchEpoch: restored.launchEpoch,
+            ),
+          ),
+        ),
+      ))!;
+      await pumpUntil(tester, () {
+        try {
+          final lines = statusFile.readAsLinesSync();
+          return lines.length >= 26 && lines[25] == '1';
+        } on FileSystemException {
+          return false;
+        }
+      }, reason: 'The restored MPV has loaded the pending episode');
       await tester.runAsync(() async {
         ipc = MpvSessionController(pipeName: restored.ipcPipeName!);
         expect(await ipc!.connect(), true);

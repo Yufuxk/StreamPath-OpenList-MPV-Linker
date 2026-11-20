@@ -238,6 +238,196 @@ void main() {
     flush: true,
   );
 
+  final realMpv = Platform.environment['STREAMPATH_PATH_MPV'];
+  for (final failurePath in [
+    '/first.mkv',
+    '/middle.mkv',
+    '/last.mkv',
+    '/next.mkv',
+  ]) {
+    test(
+      'real MPV recovers $failurePath and reaches final EOF',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'sp_http_recovery_',
+        );
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final progress = await PlaybackProgressService.open(
+          inMemoryDatabasePath,
+          factory: databaseFactoryFfi,
+        );
+        final provider = _BlockingRecoveryProvider();
+        final relaunched = Completer<PlayerLaunchResult>();
+        final origin = 'http://127.0.0.1:${server.port}';
+        const currentPaths = ['/first.mkv', '/middle.mkv', '/last.mkv'];
+        const nextPath = '/next.mkv';
+        final nextUrl = '$origin$nextPath';
+        var ready = false;
+        var failures = 0;
+        final reads = <String>{};
+        ExternalPlayerService? player;
+        try {
+          final clip = File(p.join(directory.path, 'sample.mkv'));
+          final ffmpeg = await Process.run('ffmpeg', [
+            '-loglevel',
+            'error',
+            '-f',
+            'lavfi',
+            '-i',
+            'color=s=160x90:r=12',
+            '-t',
+            '3',
+            '-c:v',
+            'ffv1',
+            clip.path,
+          ]);
+          expect(ffmpeg.exitCode, 0, reason: '${ffmpeg.stderr}');
+          final bytes = await clip.readAsBytes();
+          server.listen((request) async {
+            if (!ready && request.uri.path == failurePath) {
+              failures++;
+              request.response.statusCode = HttpStatus.serviceUnavailable;
+            } else {
+              reads.add(request.uri.path);
+              request.response.headers.contentType = ContentType(
+                'video',
+                'x-matroska',
+              );
+              request.response.contentLength = bytes.length;
+              request.response.add(bytes);
+            }
+            await request.response.close();
+          });
+          final store = StreamPathConfigStore.forPath(
+            p.join(directory.path, 'config.json'),
+            credentialStore: MemoryProfileCredentialStore({}),
+          );
+          await store.save(
+            configFor(
+              player: PlayerConfig(
+                name: 'MPV',
+                executable: realMpv!,
+                args: const [
+                  '--no-config',
+                  '--vo=null',
+                  '--ao=null',
+                  '--force-window=no',
+                  '--keep-open=no',
+                  '{url}',
+                ],
+                subtitleInjectionEnabled: false,
+                autoSeasonTransitionEnabled: true,
+              ),
+              activeProfileId: 'profile-a',
+            ),
+          );
+          player = ExternalPlayerService(
+            configStore: store,
+            progressService: progress,
+            watchLaterDir: Directory(p.join(directory.path, 'watch-later')),
+            linkRecoveryProvider: provider,
+            serverRestarter: _RecordingRestarter(),
+            onPlaybackRecovery: (event) {
+              if (event.stage == PlaybackRecoveryStage.relaunched) {
+                relaunched.complete(event.launchResult!);
+              } else if (event.stage == PlaybackRecoveryStage.failed) {
+                relaunched.completeError(StateError(event.message));
+              }
+            },
+          );
+          const id = 'real-http-recovery';
+          final first = await player.launch(
+            entries: [
+              for (final track in currentPaths)
+                MediaEntry(
+                  url: '$origin$track',
+                  catalogPath: track.substring(1),
+                ),
+            ],
+            sessionId: id,
+            username: 'fixture',
+            password: 'fixture',
+            webDavSourceUrl: origin,
+            webDavSourceId: 'profile-a',
+            nextSeason: SeasonPlaybackEntries(
+              entries: [MediaEntry(url: nextUrl, catalogPath: 'next.mkv')],
+            ),
+          );
+          await provider.started.future.timeout(const Duration(seconds: 25));
+          expect(failures, greaterThan(0));
+          reads.clear();
+          ready = true;
+          provider.response.complete(
+            const OpenListRecoveryResult(
+              outcome: OpenListRecoveryOutcome.ready,
+              storageReloaded: false,
+              message: 'HTTP fixture is ready',
+            ),
+          );
+          final replacement = await relaunched.future.timeout(
+            const Duration(seconds: 15),
+          );
+          expect(replacement.launchEpoch, isNot(first.launchEpoch));
+          if (failurePath == nextPath) {
+            expect(replacement.nextSeasonPlaylistPath, isNull);
+          } else {
+            expect(replacement.nextSeasonPlaylistPath, isNotNull);
+            expect(
+              replacement.nextSeasonPlaylistPath,
+              isNot(first.nextSeasonPlaylistPath),
+            );
+          }
+          await player.waitForExitSync(
+            id,
+            timeout: const Duration(seconds: 20),
+          );
+          final expectedReads = failurePath == nextPath
+              ? [nextPath]
+              : [
+                  ...currentPaths.skip(currentPaths.indexOf(failurePath)),
+                  nextPath,
+                ];
+          expect(reads.toList(), expectedReads);
+          expect(
+            player.videoExitEofIndex(
+              id,
+              launchEpoch: replacement.launchEpoch,
+              playlistPaths: const ['next.mkv'],
+              playlistLength: 1,
+            ),
+            0,
+          );
+          expect(
+            player.videoExitEofIndex(
+              id,
+              launchEpoch: first.launchEpoch,
+              playlistPaths: const ['first.mkv', 'middle.mkv', 'last.mkv'],
+              playlistLength: currentPaths.length,
+            ),
+            isNull,
+          );
+          expect(
+            await progress.getResumeProgress(
+              '$origin$failurePath',
+              profileId: 'profile-a',
+            ),
+            isNull,
+          );
+          expect(
+            await progress.getResumeProgress(nextUrl, profileId: 'profile-a'),
+            isNull,
+          );
+        } finally {
+          await player?.terminateSession('real-http-recovery');
+          await server.close(force: true);
+          await progress.close();
+          await directory.delete(recursive: true);
+        }
+      },
+      skip: !Platform.isWindows || realMpv == null,
+    );
+  }
+
   test('连接成功后的识别不依赖恢复开关，未填后台时使用 WebDAV 地址', () async {
     final directory = Directory.systemTemp.createTempSync(
       'capture_after_connect_',

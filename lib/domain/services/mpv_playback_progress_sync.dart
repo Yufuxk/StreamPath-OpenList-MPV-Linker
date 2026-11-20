@@ -246,6 +246,7 @@ class MpvPlaybackProgressSynchronizer {
     List<String> watchLaterUrls = const [],
     File? journalFile,
     String? expectedEpoch,
+    DateTime? watchLaterNotBefore,
     Map<String, DateTime> ignoreBefore = const {},
   }) async {
     final indexedUrls = <String>{};
@@ -341,10 +342,13 @@ class MpvPlaybackProgressSynchronizer {
         record = watchLaterIndex.recordFor(entry.url);
       }
       final cutoff = ignoreBefore[stripUserInfo(entry.persistentTarget)];
-      if (cutoff != null &&
-          (record == null ||
-              !(await record.file.lastModified()).isAfter(cutoff))) {
-        continue;
+      if (record != null && (cutoff != null || watchLaterNotBefore != null)) {
+        final modifiedAt = await record.file.lastModified();
+        if ((cutoff != null && !modifiedAt.isAfter(cutoff)) ||
+            (watchLaterNotBefore != null &&
+                modifiedAt.isBefore(watchLaterNotBefore))) {
+          continue;
+        }
       }
       final start = record?.startSeconds;
       if (start == null) continue;
