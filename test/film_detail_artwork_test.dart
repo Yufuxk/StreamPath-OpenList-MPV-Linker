@@ -533,6 +533,60 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('详情折叠简介略过末尾空行并保留完整段落', (tester) async {
+    await prepare(tester, count: 1);
+    final original = works.single;
+    const overview = '第一段。\n\n第二段。\n\u00a0\n第三段。\n\n最后一段。';
+    await tester.runAsync(() async {
+      await catalog.store.setPreference('spoiler_protection', false);
+      await catalog.store.refreshWork(
+        FilmWork(
+          id: original.id,
+          type: original.type,
+          tmdbId: original.tmdbId,
+          title: original.title,
+          originalTitle: original.originalTitle,
+          overview: overview,
+          language: original.language,
+          posterPath: original.posterPath,
+          backdropPath: original.backdropPath,
+          metadata: original.metadata,
+        ),
+      );
+    });
+    await tester.pumpWidget(
+      frame(
+        FilmDetailPage(
+          catalog: catalog,
+          workId: original.id,
+          onOpenItem: (_) async {},
+        ),
+      ),
+    );
+    await settle(tester);
+
+    final text = find.text(overview);
+    final expand = find.widgetWithText(TextButton, '展开简介');
+    await tester.ensureVisible(expand);
+    await settle(tester);
+    expect(tester.widget<Text>(text).maxLines, 3);
+    expect(tester.getTopLeft(expand).dy, tester.getBottomLeft(text).dy);
+    final foldedHeight = tester.getSize(text).height;
+
+    await tester.tap(expand);
+    await settle(tester);
+    expect(tester.widget<Text>(text).maxLines, isNull);
+    expect(tester.widget<Text>(text).data, overview);
+    expect(tester.getSize(text).height, greaterThan(foldedHeight));
+
+    final collapse = find.widgetWithText(TextButton, '收起简介');
+    await tester.ensureVisible(collapse);
+    await settle(tester);
+    await tester.tap(collapse);
+    await settle(tester);
+    expect(tester.getSize(text).height, foldedHeight);
+  });
+
   testWidgets('演职人员头像复用封面悬停放大，文字不动且命中区不随缩放扩大', (tester) async {
     await prepare(tester, count: 1);
     final original = works.single;

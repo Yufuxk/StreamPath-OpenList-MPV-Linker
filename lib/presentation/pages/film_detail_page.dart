@@ -430,21 +430,40 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   Widget _overview(FilmWork work, FilmCatalogController catalog) =>
       LayoutBuilder(
         builder: (context, constraints) {
+          const overviewMaxLines = 4;
           final style = Theme.of(
             context,
           ).textTheme.bodyMedium!.merge(FilmTextStyles.overview);
           final painter = TextPainter(
             text: TextSpan(text: work.overview, style: style),
-            maxLines: 4,
+            maxLines: overviewMaxLines,
             textDirection: Directionality.of(context),
             textScaler: MediaQuery.textScalerOf(context),
             locale: Localizations.localeOf(context),
           )..layout(maxWidth: constraints.maxWidth);
           final overflows = painter.didExceedMaxLines;
+          var foldedLines = overviewMaxLines;
+          if (overflows && !_expandedOverview) {
+            final lines = painter.computeLineMetrics();
+            while (foldedLines > 1) {
+              final line = lines[foldedLines - 1];
+              final position = painter.getPositionForOffset(
+                Offset(
+                  line.left + line.width / 2,
+                  line.baseline - line.ascent / 2,
+                ),
+              );
+              final lineText = painter
+                  .getLineBoundary(position)
+                  .textInside(work.overview);
+              if (lineText.trim().isNotEmpty) break;
+              foldedLines--;
+            }
+          }
           painter.dispose();
           final text = Text(
             work.overview,
-            maxLines: _expandedOverview ? null : 4,
+            maxLines: _expandedOverview ? null : foldedLines,
             overflow: TextOverflow.clip,
             style: style,
           );
