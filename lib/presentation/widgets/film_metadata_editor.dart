@@ -18,6 +18,7 @@ import 'directory_scroll_view.dart';
 import 'film_artwork.dart';
 import 'film_segmented_control.dart';
 import 'glass_dialog.dart';
+import 'section_switcher.dart';
 import 'sp_controls.dart';
 import 'sp_dialog.dart';
 import 'sp_menu.dart';
@@ -104,7 +105,9 @@ class _MetadataEditorState extends State<_MetadataEditor> {
   final _changes = <String, dynamic>{};
   final _restore = <String>{};
   final _candidates = <String, List<Map<String, dynamic>>>{};
+  final _tabOffsets = List<double>.filled(3, 0);
   int _tab = 0;
+  bool _animateTab = true;
   late String _image = widget.image ?? 'poster_path';
   String _language = '*';
   String? _error, _imageError;
@@ -334,6 +337,7 @@ class _MetadataEditorState extends State<_MetadataEditor> {
       }
       if (_fieldErrors.isNotEmpty) {
         _tab = 0;
+        _animateTab = false;
         throw const FilmCatalogException('invalidMetadata');
       }
       validateFilmMetadata(values);
@@ -422,12 +426,13 @@ class _MetadataEditorState extends State<_MetadataEditor> {
     });
     for (final key in ['poster_path', 'backdrop_path', 'logo_path']) {
       final rows = _candidates.putIfAbsent(key, () => []);
+      final paths = {for (final row in rows) row['path']};
       final saved =
           snapshot.values[key.replaceFirst('_path', '_candidates')] as List? ??
           [];
       for (final item in saved.whereType<Map>()) {
         final path = item['path'] ?? item['file_path'];
-        if (path is String && !rows.any((e) => e['path'] == path)) {
+        if (path is String && paths.add(path)) {
           rows.add({
             ...Map<String, dynamic>.from(item),
             'path': path,
@@ -534,14 +539,11 @@ class _MetadataEditorState extends State<_MetadataEditor> {
     }
   }
 
-  Widget _images() {
+  Widget _images({required bool hasVisibleCandidates}) {
     final rows = _candidates[_image] ?? [];
     final languages =
         rows.map((r) => r['language'] as String? ?? '').toSet().toList()
           ..sort();
-    final visible = rows
-        .where((r) => _language == '*' || (r['language'] ?? '') == _language)
-        .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -613,7 +615,8 @@ class _MetadataEditorState extends State<_MetadataEditor> {
           onChanged: (value) => setState(() => _language = value!),
         ),
         const SizedBox(height: 12),
-        if (!_loadingImages && visible.isEmpty) Text(tr('暂无候选图片，可导入本地文件或网址')),
+        if (!_loadingImages && !hasVisibleCandidates)
+          Text(tr('暂无候选图片，可导入本地文件或网址')),
       ],
     );
   }
@@ -666,8 +669,7 @@ class _MetadataEditorState extends State<_MetadataEditor> {
         : 2 / 3;
   }
 
-  Widget _imageRow(int start) {
-    final visible = _visibleCandidates;
+  Widget _imageRow(List<Map<String, dynamic>> visible, int start) {
     final color = Theme.of(context).colorScheme.primary;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -730,75 +732,94 @@ class _MetadataEditorState extends State<_MetadataEditor> {
 
   Widget _editorBody(
     ScrollController controller,
+    int tab,
     FilmWork? work,
     FilmResource? r,
   ) {
-    if (_tab == 2) {
+    if (tab == 2) {
+      final visible = _visibleCandidates;
       return ListView.builder(
         controller: controller,
         // 弹窗正文不占用窗口标题栏留出的顶部内边距。
         padding: EdgeInsets.zero,
-        itemCount: 1 + (_visibleCandidates.length + 2) ~/ 3,
-        itemBuilder: (_, index) =>
-            index == 0 ? _images() : _imageRow((index - 1) * 3),
+        itemCount: 1 + (visible.length + 2) ~/ 3,
+        itemBuilder: (_, index) => index == 0
+            ? _images(hasVisibleCandidates: visible.isNotEmpty)
+            : _imageRow(visible, (index - 1) * 3),
       );
     }
+    if (tab == 1) return _classificationBody(controller);
     return ListView(
       controller: controller,
       padding: EdgeInsets.zero,
-      children: _tab == 0
-          ? [
-              for (final key in _basic.where(_supported)) _field(key),
-              SelectableText(
-                '${work?.type.name ?? r?.type.name ?? ''} · TMDB ${work?.tmdbId ?? ''}${r == null ? '' : '\n${r.path}'}${_target.season == null ? '' : '\nS${_target.season} E${_target.episode ?? ''}'}',
-                contextMenuBuilder: buildSPTextSelectionMenu,
-              ),
-            ]
-          : [
-              for (final key in _classification.where(_supported)) _field(key),
-              if (_target.level != FilmMetadataLevel.season) _people(),
-            ],
-    );
-  }
-
-  Widget _people() {
-    final credits = Map<String, dynamic>.from(_values['credits'] as Map? ?? {});
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Wrap(children: [Text(tr('演职员')), _custom('credits')]),
-        for (final kind in ['cast', 'crew']) ...[
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(tr(kind == 'cast' ? '演员' : '导演/编剧及其他人员')),
-          ),
-          for (var i = 0; i < (credits[kind] as List? ?? []).length; i++)
-            _person(credits, kind, i),
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: TextButton(
-              onPressed: () {
-                final list = [...(credits[kind] as List? ?? [])];
-                list.add({
-                  'identity': 'local:${DateTime.now().microsecondsSinceEpoch}',
-                  'name': '',
-                  if (kind == 'cast') 'character': '',
-                  if (kind == 'crew') 'job': '',
-                });
-                _change('credits', {...credits, kind: list});
-              },
-              child: Text(tr('添加人员')),
-            ),
-          ),
-        ],
+        for (final key in _basic.where(_supported)) _field(key),
+        SelectableText(
+          '${work?.type.name ?? r?.type.name ?? ''} · TMDB ${work?.tmdbId ?? ''}${r == null ? '' : '\n${r.path}'}${_target.season == null ? '' : '\nS${_target.season} E${_target.episode ?? ''}'}',
+          contextMenuBuilder: buildSPTextSelectionMenu,
+        ),
       ],
     );
   }
 
-  Widget _person(Map<String, dynamic> credits, String kind, int index) {
-    final list = List<dynamic>.from(credits[kind] as List);
-    final person = Map<String, dynamic>.from(list[index] as Map);
+  Widget _classificationBody(ScrollController controller) {
+    final credits = _values['credits'] as Map? ?? const {};
+    return CustomScrollView(
+      controller: controller,
+      slivers: [
+        SliverList.list(
+          children: [
+            for (final key in _classification.where(_supported)) _field(key),
+            if (_target.level != FilmMetadataLevel.season)
+              Wrap(children: [Text(tr('演职员')), _custom('credits')]),
+          ],
+        ),
+        if (_target.level != FilmMetadataLevel.season)
+          for (final kind in ['cast', 'crew']) ..._people(credits, kind),
+      ],
+    );
+  }
+
+  List<Widget> _people(Map credits, String kind) {
+    final people = credits[kind] as List? ?? const [];
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(tr(kind == 'cast' ? '演员' : '导演/编剧及其他人员')),
+        ),
+      ),
+      SliverList.builder(
+        itemCount: people.length,
+        itemBuilder: (_, index) => _person(credits, kind, people, index),
+      ),
+      SliverToBoxAdapter(
+        child: Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: TextButton(
+            onPressed: () => _change('credits', {
+              ...credits,
+              kind: [
+                ...people,
+                {
+                  'identity': 'local:${DateTime.now().microsecondsSinceEpoch}',
+                  'name': '',
+                  if (kind == 'cast') 'character': '',
+                  if (kind == 'crew') 'job': '',
+                },
+              ],
+            }),
+            child: Text(tr('添加人员')),
+          ),
+        ),
+      ),
+    ];
+  }
+
+  Widget _person(Map credits, String kind, List people, int index) {
+    final person = people[index] as Map;
     void update(String key, String text) {
+      final list = [...people];
       list[index] = {...person, key: text};
       _change('credits', {...credits, kind: list});
     }
@@ -830,6 +851,7 @@ class _MetadataEditorState extends State<_MetadataEditor> {
                 onPressed: index == 0
                     ? null
                     : () {
+                        final list = [...people];
                         final p = list.removeAt(index);
                         list.insert(index - 1, p);
                         _change('credits', {...credits, kind: list});
@@ -837,9 +859,10 @@ class _MetadataEditorState extends State<_MetadataEditor> {
                 child: Text(tr('上移')),
               ),
               TextButton(
-                onPressed: index == list.length - 1
+                onPressed: index == people.length - 1
                     ? null
                     : () {
+                        final list = [...people];
                         final p = list.removeAt(index);
                         list.insert(index + 1, p);
                         _change('credits', {...credits, kind: list});
@@ -848,6 +871,7 @@ class _MetadataEditorState extends State<_MetadataEditor> {
               ),
               TextButton(
                 onPressed: () {
+                  final list = [...people];
                   list.removeAt(index);
                   _change('credits', {...credits, kind: list});
                 },
@@ -954,12 +978,10 @@ class _MetadataEditorState extends State<_MetadataEditor> {
                   alignment: AlignmentDirectional.centerStart,
                   child: FilmSegmentedControl<int>(
                     selected: _tab,
-                    onSelectionChanged: (tab) {
-                      setState(() => _tab = tab);
-                      if (tab == 2 && _candidates.isEmpty) {
-                        unawaited(_loadImages());
-                      }
-                    },
+                    onSelectionChanged: (tab) => setState(() {
+                      _tab = tab;
+                      _animateTab = true;
+                    }),
                     segments: [
                       for (var i = 0; i < 3; i++)
                         ButtonSegment(
@@ -983,9 +1005,30 @@ class _MetadataEditorState extends State<_MetadataEditor> {
                     ? const SizedBox.shrink()
                     : IgnorePointer(
                         ignoring: _busy,
-                        child: DirectoryScrollView(
-                          builder: (controller) =>
-                              _editorBody(controller, work, r),
+                        child: StreamPathSectionSwitcher<int>(
+                          key: ObjectKey(_target),
+                          selected: _tab,
+                          order: const [0, 1, 2],
+                          duration: FilmSegmentedControl.slideDuration,
+                          animate: _animateTab,
+                          shellBuilder: (_, _) => const SizedBox.shrink(),
+                          onSettled: (tab) {
+                            if (tab != 2 || _candidates.isNotEmpty) return;
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted &&
+                                  _tab == 2 &&
+                                  !_busy &&
+                                  _candidates.isEmpty) {
+                                unawaited(_loadImages());
+                              }
+                            });
+                          },
+                          contentBuilder: (_, tab) => _MetadataTabScrollView(
+                            initialOffset: _tabOffsets[tab],
+                            saveOffset: (offset) => _tabOffsets[tab] = offset,
+                            builder: (controller) =>
+                                _editorBody(controller, tab, work, r),
+                          ),
                         ),
                       ),
               ),
@@ -1042,4 +1085,37 @@ class _MetadataEditorState extends State<_MetadataEditor> {
       ),
     );
   }
+}
+
+class _MetadataTabScrollView extends StatefulWidget {
+  const _MetadataTabScrollView({
+    required this.initialOffset,
+    required this.saveOffset,
+    required this.builder,
+  });
+
+  final double initialOffset;
+  final ValueChanged<double> saveOffset;
+  final Widget Function(ScrollController) builder;
+
+  @override
+  State<_MetadataTabScrollView> createState() => _MetadataTabScrollViewState();
+}
+
+class _MetadataTabScrollViewState extends State<_MetadataTabScrollView> {
+  // 正文偏移独立保存，避免输入框内部滚动读取整页偏移。
+  late final ScrollController _controller = ScrollController(
+    initialScrollOffset: widget.initialOffset,
+    keepScrollOffset: false,
+  )..addListener(() => widget.saveOffset(_controller.offset));
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      DirectoryScrollView(controller: _controller, builder: widget.builder);
 }

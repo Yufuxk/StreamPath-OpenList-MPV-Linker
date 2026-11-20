@@ -113,12 +113,13 @@ void main() {
   VideoEntryPreparer preparer({
     PlayerConfig config = _config,
     Future<PreparedVideoItem?> Function(String path)? cached,
+    Map<String, String> titles = const {},
   }) => VideoEntryPreparer(
     source: source,
     config: config,
     subtitleMatcher: const SubtitleMatcher(),
     fontMatcher: const WebDavFontMatcher(),
-    titles: const {},
+    titles: titles,
     cached: cached,
   );
 
@@ -147,6 +148,22 @@ void main() {
     expect(prepared.entry.subtitle, same(cachedSubtitle));
     expect(prepared.entry.externalAudioTracks, [cachedAudio]);
     expect(prepared.localFontDirectory, '/cache/fonts');
+
+    final named =
+        await preparer(
+          cached: (_) async => hit,
+          titles: const {'show/video.mkv': '目录中的作品标题'},
+        ).prepare(
+          const VideoQueueVersion(path: 'show/video.mkv', name: 'video.mkv'),
+        );
+    expect(named.entry.title, '目录中的作品标题');
+    expect(named.entry.url, hit.entry.url);
+    expect(named.entry.progressTarget, hit.entry.progressTarget);
+    expect(named.entry.catalogPath, hit.entry.catalogPath);
+    expect(named.entry.subtitle, same(cachedSubtitle));
+    expect(named.entry.externalAudioTracks, [cachedAudio]);
+    expect(named.localFontDirectory, hit.localFontDirectory);
+    expect(source.fetches, isEmpty);
   });
 
   test('缓存缺字幕时补齐字幕并保留缓存视频、进度、音轨与字体', () async {
@@ -249,12 +266,17 @@ void main() {
     );
     source.failure = const NetworkException('offline');
 
-    final prepared = await preparer(cached: (_) async => hit).prepare(
-      const VideoQueueVersion(path: 'show/video.mkv', name: 'video.mkv'),
-    );
+    final prepared =
+        await preparer(
+          cached: (_) async => hit,
+          titles: const {'show/video.mkv': 'Show·第一季·第1集'},
+        ).prepare(
+          const VideoQueueVersion(path: 'show/video.mkv', name: 'video.mkv'),
+        );
 
-    expect(prepared, same(hit));
     expect(prepared.entry.url, '/cache/video.mkv');
+    expect(prepared.entry.progressTarget, hit.entry.progressTarget);
+    expect(prepared.entry.title, 'Show·第一季·第1集');
     expect(prepared.entry.subtitle, same(cachedSubtitle));
   });
 

@@ -1058,7 +1058,10 @@ class ExternalPlayerService {
     }
     if (isMpv) {
       // 播放列表由 StreamPath 管理；关闭 mpv 常见的 autoload.lua 自动补全。
-      args.add('--script-opts-append=autoload-disabled=yes');
+      args.addAll([
+        '--script-opts-append=autoload-disabled=yes',
+        '--script-opts-append=playlistmanager-prefer_titles=all',
+      ]);
     }
     if (isMpv) args.add('--fullscreen=yes');
     // MPV 使用 URL userinfo 完成源站 Basic 认证。四个实测版本均会在
@@ -1476,6 +1479,7 @@ class ExternalPlayerService {
           progressFile: progressFilePath,
           launchEpoch: launchEpoch,
           queueFile: queueFile,
+          preferPlaylistTitles: true,
         );
         await ensureOwned();
         artifactPaths.add(currentScript);

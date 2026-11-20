@@ -689,8 +689,15 @@ end)
     String? queueFile,
     String? launchEpoch,
     String? reportedPath,
+    bool preferPlaylistTitles = false,
   }) async {
     final resolvedProgressFile = progressFile ?? '$outFile.progress.jsonl';
+    // 旧版 MPV 可能没有这个选项，按属性可用性设置。
+    const playlistTitleOption = '''
+if mp.get_property("osd-playlist-entry") then
+    mp.set_property("osd-playlist-entry", "title")
+end
+''';
     final script =
         '''
 -- StreamPath: 当前播放状态上报 + 命令执行。
@@ -707,6 +714,7 @@ local CMD = ${_luaQuote(cmdFile)}
 local PROGRESS = ${_luaQuote(resolvedProgressFile)}
 local EPOCH = ${_luaQuote(launchEpoch ?? '')}
 local REPORTED_PATH = ${_luaQuote(reportedPath ?? '')}
+${preferPlaylistTitles ? playlistTitleOption : ''}
 
 ${mediaInfoSnapshotLua(outputExpression: 'OUT', pathExpression: 'REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")', epochExpression: 'EPOCH', programmeExpression: 'mp.get_property_number("edition", nil)', programmeTypeExpression: '"edition"')}
 

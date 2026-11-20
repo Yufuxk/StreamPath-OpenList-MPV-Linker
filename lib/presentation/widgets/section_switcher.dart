@@ -10,6 +10,7 @@ class StreamPathSectionSwitcher<T> extends StatefulWidget {
     required this.order,
     required this.contentBuilder,
     required this.shellBuilder,
+    this.duration = const Duration(milliseconds: 220),
     this.retainContent = false,
     this.animate = true,
     this.onSettled,
@@ -18,6 +19,7 @@ class StreamPathSectionSwitcher<T> extends StatefulWidget {
   final T selected;
   final List<T> order;
   final Widget Function(BuildContext, T) contentBuilder, shellBuilder;
+  final Duration duration;
   final bool retainContent, animate;
   final ValueChanged<T>? onSettled;
 
@@ -41,7 +43,7 @@ class _SectionSwitcherState<T> extends State<StreamPathSectionSwitcher<T>>
     _visited.add(_current);
     _animation = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 220),
+      duration: widget.duration,
       value: 1,
     )..addStatusListener(_finished);
   }
@@ -78,6 +80,7 @@ class _SectionSwitcherState<T> extends State<StreamPathSectionSwitcher<T>>
   @override
   void didUpdateWidget(StreamPathSectionSwitcher<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _animation.duration = widget.duration;
     if (widget.selected != oldWidget.selected ||
         (!widget.animate && oldWidget.animate)) {
       if (!widget.animate || MediaQuery.disableAnimationsOf(context)) {

@@ -22,7 +22,10 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/metadata_editor_translations.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
 import 'package:streampath/presentation/widgets/film_metadata_editor.dart';
+import 'package:streampath/presentation/widgets/film_segmented_control.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
+
+import 'helpers/pump_until.dart';
 
 Future<void> settle(WidgetTester tester) async {
   for (var i = 0; i < 10; i++) {
@@ -72,7 +75,7 @@ void main() {
         ))!;
         await tester.runAsync(
           () => store.refreshWork(
-            const FilmWork(
+            FilmWork(
               type: FilmMediaType.movie,
               tmdbId: 77,
               metadataOrigin: 'nfo',
@@ -82,6 +85,13 @@ void main() {
               language: 'zh-CN',
               year: 2020,
               metadata: {
+                if (language == AppLanguage.simplifiedChinese && dark)
+                  'credits': {
+                    'cast': [
+                      for (var i = 0; i < 180; i++)
+                        {'identity': 'fixture:$i', 'name': '演员 $i'},
+                    ],
+                  },
                 'poster_candidates': [
                   {
                     'file_path': '/fixture-poster.png',
@@ -156,7 +166,14 @@ void main() {
             ),
           ),
         );
-        await tester.tap(find.text('Open'));
+        final open = find.text('Open');
+        Future<void> waitForClose() => pumpUntil(
+          tester,
+          () => open.hitTestable().evaluate().isNotEmpty,
+          reason: '编辑器关闭后入口应重新可点击',
+        );
+
+        await tester.tap(open);
         await settle(tester);
         expect(find.byKey(const ValueKey('metadata:title')), findsOneWidget);
         await tester.enterText(
@@ -165,12 +182,12 @@ void main() {
         );
         await tester.pump();
         await tester.tap(find.text(l10n.text('保存')).last);
-        await settle(tester);
+        await waitForClose();
         expect(
           (await tester.runAsync(() => store.work(work.id)))!.title,
           'Edited title',
         );
-        await tester.tap(find.text('Open'));
+        await tester.tap(open);
         await settle(tester);
         await tester.enterText(
           find.byKey(const ValueKey('metadata:title')),
@@ -180,14 +197,96 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.text(l10n.text('保存修改？')), findsOneWidget);
         await tester.tap(find.text(l10n.text('放弃')));
-        await settle(tester);
+        await waitForClose();
         expect(
           (await tester.runAsync(() => store.work(work.id)))!.title,
           'Edited title',
         );
-        await tester.tap(find.text('Open'));
+        await tester.tap(open);
         await settle(tester);
+        if (language == AppLanguage.simplifiedChinese && dark) {
+          final indicator = find.descendant(
+            of: find.byType(FilmSegmentedControl<int>),
+            matching: find.byType(FractionallySizedBox),
+          );
+          final start = tester.getCenter(indicator).dx;
+          await tester.tap(find.text('分类与人员'));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 100));
+          expect(find.byType(CustomScrollView), findsNothing);
+          final moving = tester.getCenter(indicator).dx;
+          await tester.pumpAndSettle();
+          expect(moving, greaterThan(start));
+          expect(moving, lessThan(tester.getCenter(indicator).dx));
+          final scrollable = find
+              .descendant(
+                of: find.byType(CustomScrollView),
+                matching: find.byType(Scrollable),
+              )
+              .first;
+          final page = tester.state<ScrollableState>(scrollable).position;
+          final viewport = tester.getRect(find.byType(CustomScrollView));
+          for (final offset in [3200.0, 6400.0, 1600.0]) {
+            page.jumpTo(offset);
+            await tester.pump();
+            final names = tester
+                .stateList<EditableTextState>(find.byType(EditableText))
+                .map((state) => state.renderEditable)
+                .where(
+                  (render) =>
+                      render.text!.toPlainText().startsWith('演员 ') &&
+                      viewport.overlaps(
+                        render.localToGlobal(Offset.zero) & render.size,
+                      ),
+                );
+            expect(names, isNotEmpty);
+            for (final name in names) {
+              expect(
+                name.offset.pixels,
+                closeTo(0, .01),
+                reason: '输入框文字在滚动到 $offset 的首帧应完整显示',
+              );
+            }
+          }
+          page.jumpTo(0);
+          await tester.pump();
+          final firstPerson = find.byKey(const ValueKey('fixture:0:name:cast'));
+          await tester.scrollUntilVisible(
+            firstPerson,
+            250,
+            scrollable: scrollable,
+          );
+          expect(firstPerson, findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('fixture:179:name:cast')),
+            findsNothing,
+          );
+          await tester.enterText(firstPerson, '编辑演员');
+          final peopleOffset = page.pixels;
+          expect(peopleOffset, greaterThan(0));
+          await tester.tap(find.text('基本资料'));
+          await tester.pumpAndSettle();
+          expect(
+            tester.widget<ListView>(find.byType(ListView)).controller!.offset,
+            0,
+          );
+          await tester.tap(find.text('分类与人员'));
+          await tester.pumpAndSettle();
+          expect(
+            tester.state<ScrollableState>(scrollable).position.pixels,
+            closeTo(peopleOffset, .01),
+          );
+          expect(
+            tester.widget<TextFormField>(firstPerson).initialValue,
+            '编辑演员',
+          );
+          await tester.tap(find.text('基本资料'));
+          await tester.pumpAndSettle();
+        }
         await tester.tap(find.text(l10n.text('图片')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text(l10n.text('本地图片')), findsNothing);
         await settle(tester);
         expect(find.text(l10n.text('本地图片')), findsOneWidget);
         expect(
@@ -218,7 +317,11 @@ void main() {
           });
         }
         await tester.tap(find.text(l10n.text('取消')).last);
-        await settle(tester);
+        if (language == AppLanguage.simplifiedChinese && dark) {
+          await tester.pumpAndSettle();
+          await tester.tap(find.text(l10n.text('放弃')));
+        }
+        await waitForClose();
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.runAsync(catalog.close);
         images.close();

@@ -421,6 +421,9 @@ StreamPath 启动的所有 MPV 会话在参数末尾追加 `--script-opts-append
 字幕／音轨匹配和历史键继续使用真实文件信息。简中／繁中以中文季数显示，日文／英文采用
 各自季集模板；季号 0 统一显示特别篇，片名与原文描述保持原文。新建列表时固定显示名称，
 M3U、单集参数及标题／季资源／音轨身份脚本沿用同一条目标题。
+隐式队列命中离线缓存时，显示标题仍使用本次队列生成的名称，播放地址和进度身份使用缓存条目。
+普通视频的 MPV 列表优先显示标题，状态脚本按运行版本的属性支持情况设置 `osd-playlist-entry=title`，
+`playlistmanager` 使用本次会话的 `prefer_titles=all`。第三方列表脚本按各自的标题规则渲染。
 
 普通视频的 `SpecialVideoPlaylistCollector` 复用 `MediaDirectorySource`，按
 `scanSpecialChildFolders` 与 `scanSpecialSiblingFolders` 两个独立开关，从当前目录或其

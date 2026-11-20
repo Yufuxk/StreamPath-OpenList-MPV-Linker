@@ -139,6 +139,13 @@ void main() {
     '隐式滚动窗口提前挂入下一集且保留用户窗口状态',
     () async {
       final executable = Platform.environment['STREAMPATH_PATH_MPV']!;
+      final options = await Process.run(executable, [
+        '--no-config',
+        '--list-options',
+      ]);
+      final supportsPlaylistDisplayOption = '${options.stdout}'.contains(
+        '--osd-playlist-entry',
+      );
       for (final fullscreen in [true, false]) {
         final dir = await Directory.systemTemp.createTemp('implicit_window_');
         final media = File(p.join(dir.path, 'same.wav'));
@@ -170,6 +177,9 @@ end)
               '--vo=null',
               '--ao=null',
               '--pause=yes',
+              if (supportsPlaylistDisplayOption)
+                '--osd-playlist-entry=filename',
+              '--script-opts-append=playlistmanager-prefer_titles=url',
               '--include=${profile.path}',
               '--script=${observer.path}',
               '--log-file=${p.join(dir.path, 'mpv.log')}',
@@ -231,6 +241,21 @@ end)
           await waitFor(
             () async => await controller!.getProperty('playlist-count') == 2,
           );
+          final playlist = await controller.getProperty('playlist') as List;
+          expect(playlist.map((item) => (item as Map)['title']), [
+            'Episode 0',
+            'Episode 1',
+          ]);
+          expect(playlist.map((item) => (item as Map)['filename']), [
+            media.path,
+            media.path,
+          ]);
+          if (supportsPlaylistDisplayOption) {
+            expect(await controller.getProperty('osd-playlist-entry'), 'title');
+          }
+          final scriptOptions =
+              await controller.getProperty('script-opts') as Map;
+          expect(scriptOptions['playlistmanager-prefer_titles'], 'all');
           expect(await controller.getProperty('pause'), true);
           expect(service.hasPendingVideo('rolling-window'), false);
           if (!fullscreen) {
@@ -1207,6 +1232,7 @@ end)
             sessionId: 'compat_$index',
             progressFile: progress,
             launchEpoch: build.id,
+            preferPlaylistTitles: true,
           );
           final pipe =
               r'\\.\pipe\streampath-compat-'

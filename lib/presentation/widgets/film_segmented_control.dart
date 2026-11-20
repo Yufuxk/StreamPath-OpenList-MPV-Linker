@@ -15,6 +15,8 @@ class FilmSegmentedControl<T> extends StatelessWidget {
     this.compact = false,
   }) : assert(segments.length > 0);
 
+  static const slideDuration = Duration(milliseconds: 300);
+
   /// 每个选项须提供非空 label。
   final List<ButtonSegment<T>> segments;
   final T selected;
@@ -132,7 +134,7 @@ class FilmSegmentedControl<T> extends StatelessWidget {
         Positioned.fill(
           child: IgnorePointer(
             child: AnimatedAlign(
-              duration: const Duration(milliseconds: 300),
+              duration: slideDuration,
               curve: Curves.easeOutCubic,
               alignment: AlignmentDirectional(
                 vertical ? 0 : position,

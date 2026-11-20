@@ -120,7 +120,23 @@ class VideoEntryPreparer {
   }
 
   Future<PreparedVideoItem> prepare(VideoQueueVersion version) async {
-    final hit = await cached?.call(version.path);
+    var hit = await cached?.call(version.path);
+    final title = titles[version.path];
+    if (hit != null && title != null && hit.entry.title != title) {
+      final entry = hit.entry;
+      hit = PreparedVideoItem(
+        entry: MediaEntry(
+          url: entry.url,
+          progressTarget: entry.progressTarget,
+          catalogPath: entry.catalogPath,
+          title: title,
+          subtitle: entry.subtitle,
+          externalAudioTracks: entry.externalAudioTracks,
+        ),
+        localFontDirectory: hit.localFontDirectory,
+        remoteFonts: hit.remoteFonts,
+      );
+    }
     // 缓存条目可能缺少字幕或字体；复用缓存路径，只补查缺失的附属资源。
     final enrichSubtitle =
         config.subtitleInjectionEnabled && hit?.entry.subtitle == null;
@@ -193,7 +209,7 @@ class VideoEntryPreparer {
         entry: MediaEntry(
           url: url,
           catalogPath: version.path,
-          title: titles[version.path] ?? version.name,
+          title: title ?? version.name,
           subtitle: subtitle,
           externalAudioTracks: local
               ? const []
