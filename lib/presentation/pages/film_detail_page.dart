@@ -55,6 +55,7 @@ import '../widgets/film_catalog_tasks.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/film_match_dialog.dart';
 import '../widgets/sp_icons.dart';
+import '../widgets/film_navigation_button.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_technical_info.dart';
 import '../widgets/film_work_menu.dart';
@@ -3170,10 +3171,9 @@ class _FilmPendingPageState extends State<FilmPendingPage>
                                 runSpacing: 12,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  TextButton(
+                                  FilmNavigationBackButton(
                                     onPressed: () =>
                                         Navigator.of(context).pop(),
-                                    child: const AppText('主页'),
                                   ),
                                   const AppText('待整理'),
                                   TextButton(

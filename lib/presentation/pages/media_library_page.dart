@@ -30,6 +30,7 @@ import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 import '../widgets/film_favorites_wall.dart';
+import '../widgets/film_library_layout.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_continue_card.dart';
 import '../widgets/cinematic_states.dart';
@@ -1222,6 +1223,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
         key: ValueKey(record.recordKey),
         catalog: widget.filmCatalog!,
         poster: center,
+        listTile: widget.filmContinueAll && !center,
         record: record,
         positionMs: video?.positionMs ?? iso?.position.inMilliseconds,
         durationMs: video?.durationMs ?? iso?.duration?.inMilliseconds,
@@ -1234,21 +1236,21 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
       );
     }
 
-    if (widget.filmContinueAll || center) {
-      if (center && records.isEmpty) {
+    if (center) {
+      if (records.isEmpty) {
         return _buildFilmCenterEmptyState(
           icon: SPIcons.play,
           title: '还没有可继续播放的内容',
           description: '开始播放影片或光盘后，这里会显示可以继续播放的内容。',
         );
       }
-      final grid = DirectoryScrollView(
+      return DirectoryScrollView(
         builder: (scrollController) => GridView.builder(
           controller: scrollController,
           padding: const EdgeInsets.all(20),
-          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: center ? 220 : 340,
-            mainAxisExtent: center ? 400 : 220,
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 220,
+            mainAxisExtent: 400,
             crossAxisSpacing: 16,
             mainAxisSpacing: 16,
           ),
@@ -1256,7 +1258,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
           itemBuilder: (_, i) => card(i),
         ),
       );
-      if (center) return grid;
+    }
+    if (widget.filmContinueAll) {
       final catalog = widget.filmCatalog!;
       return AnimatedBuilder(
         animation: catalog,
@@ -1272,35 +1275,21 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
                 ),
               ),
             ),
-            Padding(
-              padding: EdgeInsets.only(left: widget.sidebarInset),
-              child: Scaffold(
-                backgroundColor: Colors.transparent,
-                appBar: AppBar(
-                  toolbarHeight: 48,
-                  backgroundColor: Colors.transparent,
-                  shape: const Border(),
-                  automaticallyImplyLeading: false,
-                  title: const AppText('继续播放'),
-                ),
-                body: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: SizedBox(
-                        height: 48,
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: TextButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const AppText('主页'),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(child: grid),
-                  ],
+            Scaffold(
+              backgroundColor: Colors.transparent,
+              appBar: FilmSubpageAppBar(
+                sidebarInset: widget.sidebarInset,
+                title: const AppText('继续播放'),
+              ),
+              body: Padding(
+                padding: EdgeInsets.only(left: widget.sidebarInset),
+                child: DirectoryScrollView(
+                  builder: (scrollController) => ListView.builder(
+                    controller: scrollController,
+                    padding: FilmLibraryListTile.padding,
+                    itemCount: records.length,
+                    itemBuilder: (_, i) => card(i),
+                  ),
                 ),
               ),
             ),

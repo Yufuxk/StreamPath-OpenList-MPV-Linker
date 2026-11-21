@@ -8,6 +8,7 @@ import '../../data/models/film_catalog_item.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_localizations.dart';
 import 'film_artwork.dart';
+import 'film_library_layout.dart';
 import '../theme/app_theme.dart';
 import 'sp_icons.dart';
 import 'film_play_icon.dart';
@@ -24,6 +25,7 @@ class FilmContinueCard extends StatefulWidget {
     this.durationMs,
     this.onMenu,
     this.poster = false,
+    this.listTile = false,
   });
   final FilmCatalogController catalog;
   final MediaLibraryRecord record;
@@ -31,6 +33,7 @@ class FilmContinueCard extends StatefulWidget {
   final VoidCallback onTap;
   final ValueChanged<Offset>? onMenu;
   final bool poster;
+  final bool listTile;
   @override
   State<FilmContinueCard> createState() => _FilmContinueCardState();
 }
@@ -117,61 +120,105 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
     future: _metadata,
     builder: (_, snapshot) {
       final data = snapshot.data ?? {'title': widget.record.item.name};
+      final artwork = FilmWatchOverlay(
+        hoverSurface: !widget.listTile,
+        store: widget.catalog.store,
+        resource: data['resource'] as FilmResource?,
+        canReveal: false,
+        spoilerSensitive: data['spoilerSensitive'] == true,
+        fallbackFraction:
+            widget.positionMs != null && (widget.durationMs ?? 0) > 0
+            ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
+            : null,
+        sourceId: widget.record.item.sourceId,
+        path: widget.record.item.targetPath,
+        child: ClipRect(
+          child: FilmArtwork(
+            cache: widget.catalog.images,
+            path: data['path'] as String?,
+            width: double.infinity,
+            height: double.infinity,
+            borderRadius: 0,
+            placeholder: const SizedBox.shrink(),
+          ),
+        ),
+      );
+      final menu = widget.onMenu;
+      final menuButton = menu == null
+          ? null
+          : Builder(
+              builder: (buttonContext) => IconButton(
+                tooltip: context.l10n.text('更多操作'),
+                icon: Icon(
+                  SPIcons.more,
+                  color: widget.listTile ? null : Colors.white,
+                ),
+                onPressed: () {
+                  final box = buttonContext.findRenderObject()! as RenderBox;
+                  menu(box.localToGlobal(Offset(0, box.size.height)));
+                },
+              ),
+            );
+      final episode = data['season'] == null
+          ? null
+          : '${context.l10n.format('第 {season} 季', {'season': data['season']})} · ${context.l10n.format('第 {episode} 集', {'episode': data['episode']})}${data['episodeTitle'] == null ? '' : ' · ${data['episodeTitle']}'}';
+      final played =
+          (widget.poster || widget.listTile) && widget.positionMs != null
+          ? context.l10n.format('已播放 {time}', {
+              'time': Duration(
+                milliseconds: widget.positionMs!,
+              ).toString().split('.').first,
+            })
+          : null;
+      if (widget.listTile) {
+        final details = [?episode, ?played].join(' · ');
+        return SkeletonLoadBoundary(
+          ready: snapshot.connectionState == ConnectionState.done,
+          child: FilmLibraryListTile(
+            cover: Stack(
+              fit: StackFit.expand,
+              children: [
+                artwork,
+                const Center(
+                  child: SizedBox.square(
+                    dimension: 28,
+                    child: FittedBox(child: FilmPlayIcon()),
+                  ),
+                ),
+              ],
+            ),
+            title: Text(
+              data['title'] as String,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: details.isEmpty
+                ? null
+                : Text(details, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: menuButton,
+            onMenu: menu,
+            onTap: widget.onTap,
+          ),
+        );
+      }
       final cover = FilmPosterHover(
         borderRadius: AppTheme.panelRadius,
         child: Stack(
           fit: StackFit.expand,
           children: [
-            FilmWatchOverlay(
-              hoverSurface: true,
-              store: widget.catalog.store,
-              resource: data['resource'] as FilmResource?,
-              canReveal: false,
-              spoilerSensitive: data['spoilerSensitive'] == true,
-              fallbackFraction:
-                  widget.positionMs != null && (widget.durationMs ?? 0) > 0
-                  ? (widget.positionMs! / widget.durationMs!).clamp(0.0, 1.0)
-                  : null,
-              sourceId: widget.record.item.sourceId,
-              path: widget.record.item.targetPath,
-              child: ClipRect(
-                child: FilmArtwork(
-                  cache: widget.catalog.images,
-                  path: data['path'] as String?,
-                  width: double.infinity,
-                  height: double.infinity,
-                  borderRadius: 0,
-                  placeholder: const SizedBox.shrink(),
-                ),
-              ),
-            ),
+            artwork,
             const Center(child: FilmPlayIcon()),
-            if (widget.onMenu != null)
-              Align(
-                alignment: Alignment.topRight,
-                child: Builder(
-                  builder: (buttonContext) => IconButton(
-                    tooltip: context.l10n.text('更多操作'),
-                    icon: const Icon(SPIcons.more, color: Colors.white),
-                    onPressed: () {
-                      final box =
-                          buttonContext.findRenderObject()! as RenderBox;
-                      widget.onMenu!(
-                        box.localToGlobal(Offset(0, box.size.height)),
-                      );
-                    },
-                  ),
-                ),
-              ),
+            if (menuButton != null)
+              Align(alignment: Alignment.topRight, child: menuButton),
           ],
         ),
       );
       return SkeletonLoadBoundary(
         ready: snapshot.connectionState == ConnectionState.done,
         child: GestureDetector(
-          onSecondaryTapDown: widget.onMenu == null
+          onSecondaryTapDown: menu == null
               ? null
-              : (details) => widget.onMenu!(details.globalPosition),
+              : (details) => menu(details.globalPosition),
           child: Card(
             margin: EdgeInsets.zero,
             color: Colors.transparent,
@@ -197,20 +244,16 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
                             overflow: TextOverflow.ellipsis,
                             style: Theme.of(context).textTheme.titleSmall,
                           ),
-                          if (data['season'] != null)
+                          if (episode != null)
                             Text(
-                              '${context.l10n.format('第 {season} 季', {'season': data['season']})} · ${context.l10n.format('第 {episode} 集', {'episode': data['episode']})}${data['episodeTitle'] == null ? '' : ' · ${data['episodeTitle']}'}',
+                              episode,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
-                          if (widget.poster && widget.positionMs != null)
+                          if (played != null)
                             Text(
-                              context.l10n.format('已播放 {time}', {
-                                'time': Duration(
-                                  milliseconds: widget.positionMs!,
-                                ).toString().split('.').first,
-                              }),
+                              played,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall,

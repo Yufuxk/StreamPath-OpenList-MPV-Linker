@@ -40,10 +40,13 @@ import 'package:streampath/presentation/theme/window_appearance_status.dart';
 import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/widgets/film_artwork_picker.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
+import 'package:streampath/presentation/widgets/film_library_layout.dart';
+import 'package:streampath/presentation/widgets/film_navigation_button.dart';
 import 'package:streampath/presentation/widgets/film_shelf.dart';
 import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.dart';
 import 'package:streampath/presentation/widgets/film_work_menu.dart';
 import 'package:streampath/presentation/widgets/startup_overlay.dart';
+import 'package:streampath/presentation/widgets/sp_back_icon.dart';
 
 import 'helpers/pump_until.dart';
 import 'helpers/shell_test_app_state.dart';
@@ -57,6 +60,24 @@ void main() {
   late FilmCatalogRoot root;
   late List<FilmResource> resources;
   late File picture;
+  Finder expectShowAllArrow(WidgetTester tester, Finder label) {
+    final button = find.ancestor(of: label, matching: find.byType(TextButton));
+    final rotation = find.descendant(
+      of: button,
+      matching: find.byType(RotatedBox),
+    );
+    final icon = find.descendant(
+      of: rotation,
+      matching: find.byType(SPBackIcon),
+    );
+    expect(tester.widget<RotatedBox>(rotation).quarterTurns, 2);
+    expect(tester.getSize(icon), const Size.square(12));
+    final arrowRect = tester.getRect(rotation);
+    final textRect = tester.getRect(label);
+    expect(arrowRect.left - textRect.right, closeTo(4, .01));
+    return icon;
+  }
+
   Future<void> settle(WidgetTester tester) async {
     for (var i = 0; i < 12; i++) {
       await tester.runAsync(
@@ -945,7 +966,10 @@ void main() {
         await prepare(tester);
         if (hasContinue) await seedContinue(tester);
         await tester.pumpWidget(
-          frame(FilmLibraryPage(sidebarInset: 64, onOpenItem: (_) async {})),
+          frame(
+            FilmLibraryPage(sidebarInset: 64, onOpenItem: (_) async {}),
+            scale: hasContinue ? 1 : 2,
+          ),
         );
         await settle(tester);
         final state = tester.state(
@@ -966,7 +990,50 @@ void main() {
         for (var i = 0; i < 3; i++) {
           await selectSource();
           expect(find.byType(FilmContinueCard), findsNothing);
-          await tester.tap(find.text('主页'));
+          final back = find.byType(FilmNavigationBackButton);
+          final height = hasContinue ? 40.0 : 60.0;
+          expect(tester.getSize(back), Size.square(height));
+          final search = find.byKey(const ValueKey('film-library-search'));
+          final playlist = find.byKey(const ValueKey('film-playlists-button'));
+          expect(tester.getSize(search).height, height);
+          expect(tester.getSize(playlist).height, height);
+          ButtonStyle styleOf(Finder container) => tester
+              .widget<OutlinedButton>(
+                find.descendant(
+                  of: container,
+                  matching: find.byType(OutlinedButton),
+                ),
+              )
+              .style!;
+          final backStyle = styleOf(back);
+          final playlistStyle = styleOf(playlist);
+          for (final states in [
+            <WidgetState>{},
+            {WidgetState.hovered},
+            {WidgetState.pressed},
+            {WidgetState.focused},
+          ]) {
+            expect(
+              backStyle.backgroundColor!.resolve(states),
+              playlistStyle.backgroundColor!.resolve(states),
+            );
+            expect(
+              backStyle.side!.resolve(states),
+              playlistStyle.side!.resolve(states),
+            );
+            expect(
+              backStyle.shape!.resolve(states),
+              playlistStyle.shape!.resolve(states),
+            );
+          }
+          expect(find.text('主页'), findsNothing);
+          expect(find.byTooltip('主页'), findsOneWidget);
+          final arrow = find.descendant(
+            of: back,
+            matching: find.byType(SPBackIcon),
+          );
+          expect(tester.getSize(arrow), const Size.square(22));
+          await tester.tap(back);
           await tester.pump();
           expect(
             find.byType(FilmContinueCard),
@@ -992,7 +1059,7 @@ void main() {
             ),
           );
           await settle(tester);
-          await tester.tap(find.text('主页'));
+          await tester.tap(find.byType(FilmNavigationBackButton));
           await tester.pump();
           expect(find.byType(FilmContinueCard), findsNothing);
           expect(find.text('继续播放'), findsNothing);
@@ -1025,28 +1092,47 @@ void main() {
       );
       await settle(tester);
       final libraryHeader = tester.getRect(find.byType(AppBar));
-      final homeHeader = Rect.fromLTWH(
-        libraryHeader.left,
-        libraryHeader.top,
-        libraryHeader.width,
-        48,
-      );
-      final homeTitleLeft = homeHeader.left + AppTheme.pageInset;
+      final homeHeader = Rect.fromLTWH(0, libraryHeader.top, 1280, 48);
       final continueShelf = find.byWidgetPredicate(
         (w) => w is FilmShelf && w.title == '继续播放',
       );
-      await tester.tap(
-        find.descendant(of: continueShelf, matching: find.text('查看全部')),
+      final showAll = find.descendant(
+        of: continueShelf,
+        matching: find.text('查看全部'),
       );
+      final showAllArrow = expectShowAllArrow(tester, showAll);
+      final scheme = Theme.of(tester.element(showAll)).colorScheme;
+      Color? labelColor() =>
+          DefaultTextStyle.of(tester.element(showAll)).style.color;
+      expect(labelColor(), scheme.onSurfaceVariant);
+      expect(IconTheme.of(tester.element(showAllArrow)).color, labelColor());
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: tester.getCenter(showAll));
+      await tester.pumpAndSettle();
+      expect(labelColor(), scheme.onSurface);
+      expect(IconTheme.of(tester.element(showAllArrow)).color, labelColor());
+      await mouse.removePointer();
+      await tester.tap(showAll);
       await settle(tester);
+      expect(find.text('主页'), findsNothing);
+      expect(find.byType(FilmSubpageAppBar), findsOneWidget);
+      final back = find.byType(BackButton);
+      expect(tester.getRect(back).left, greaterThanOrEqualTo(64));
       expect(tester.getRect(find.byType(AppBar)), homeHeader);
-      expect(tester.getTopLeft(find.text('继续播放')).dx, homeTitleLeft);
-      expect(tester.getCenter(find.text('继续播放')).dy, homeHeader.center.dy);
-      expect(tester.getTopLeft(find.byType(FilmContinueCard)).dx, 84);
       expect(
-        tester.widget<FilmContinueCard>(find.byType(FilmContinueCard)).poster,
-        isFalse,
+        tester.getTopLeft(find.text('继续播放')).dx,
+        64 + 56 + AppTheme.pageInset,
       );
+      expect(tester.getCenter(find.text('继续播放')).dy, homeHeader.center.dy);
+      final row = find.byType(FilmLibraryListTile);
+      expect(row, findsOneWidget);
+      expect(tester.getTopLeft(row).dx, 80);
+      expect(find.byType(GridView), findsNothing);
+      final tile = tester.widget<ListTile>(
+        find.descendant(of: row, matching: find.byType(ListTile)),
+      );
+      expect((tile.leading! as SizedBox).width, 96);
+      expect((tile.leading! as SizedBox).height, 54);
       final background = find.byKey(const Key('film-library-background'));
       expect(background, findsOneWidget);
       expect(tester.getRect(background), const Rect.fromLTWH(0, 0, 1280, 900));
@@ -1105,7 +1191,7 @@ void main() {
         );
         expect(tester.getRect(find.byType(AppBar)), homeHeader);
       }
-      await tester.tap(find.text('主页'));
+      await tester.tap(back);
       await tester.pump();
       await settle(tester);
       expect(find.byType(FilmContinueCard), findsOneWidget);

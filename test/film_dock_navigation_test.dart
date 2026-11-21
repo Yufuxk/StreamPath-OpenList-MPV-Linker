@@ -270,8 +270,9 @@ void main() {
     );
     expect(tester.getRect(find.byType(AppBar)), pendingHeader);
     expect(find.byType(BackButton), findsNothing);
-    expect(tester.getTopLeft(find.text('主页')).dx, greaterThanOrEqualTo(80));
-    final pendingHomeY = tester.getCenter(find.text('主页')).dy;
+    final pendingBack = find.byTooltip('返回');
+    expect(tester.getTopLeft(pendingBack).dx, greaterThanOrEqualTo(80));
+    final pendingHomeY = tester.getCenter(pendingBack).dy;
     expect(pendingHomeY, pendingHeader.bottom + 40);
     await saveStartupFrame('pending');
     final customBackground = await tester.runAsync(() async {
@@ -304,7 +305,7 @@ void main() {
     );
     expect(tester.getRect(background), const Rect.fromLTWH(0, 0, 1280, 720));
     await saveStartupFrame('pending-background');
-    await tester.tap(find.text('主页'));
+    await tester.tap(pendingBack);
     await settle();
     expect(find.byType(FilmPendingPage), findsNothing);
     expect(

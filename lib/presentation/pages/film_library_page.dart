@@ -32,6 +32,7 @@ import '../widgets/sp_icons.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/sp_dialog.dart';
 import 'film_detail_page.dart';
+import '../widgets/film_navigation_button.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_work_menu.dart';
 import '../widgets/film_artwork_picker.dart';
@@ -274,6 +275,11 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
     ),
   );
 
+  double _toolbarControlHeight(BuildContext context) {
+    final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
+    return math.max(AppTheme.controlHeight, 20 * scale + 20);
+  }
+
   List<double> _toolbarWidths(BuildContext context, FilmCatalogController c) {
     final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
     double actionWidth(String label, double extra, {TextStyle? style}) {
@@ -305,7 +311,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
               style: Theme.of(context).textTheme.labelSmall,
             ),
       ),
-      if (_browse) actionWidth('主页', 32),
+      if (_browse) _toolbarControlHeight(context),
     ];
   }
 
@@ -318,7 +324,6 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
           AppTheme.controlBarMaxWidth,
         ) -
         26;
-    final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
     var rows = 1;
     var used = 0.0;
     final widths = _toolbarWidths(context, c);
@@ -334,7 +339,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
       }
       used += (used == 0 ? 0 : 12) + itemWidth;
     }
-    return rows * math.max(40, 20 * scale + 20) + (rows - 1) * 12 + 50;
+    return rows * _toolbarControlHeight(context) + (rows - 1) * 12 + 50;
   }
 
   Widget _toolbar(FilmCatalogController c, bool switching) => Builder(
@@ -355,8 +360,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                 final widths = _toolbarWidths(context, c)
                     .map((width) => math.min(width, constraints.maxWidth))
                     .toList();
-                final scale = MediaQuery.textScalerOf(context).scale(13) / 13;
-                final controlHeight = math.max(40.0, 20 * scale + 20);
+                final controlHeight = _toolbarControlHeight(context);
                 return Wrap(
                   spacing: 12,
                   runSpacing: 12,
@@ -373,7 +377,8 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                         SizedBox(
                           key: const ValueKey('film-toolbar-home'),
                           width: widths[6],
-                          child: TextButton(
+                          child: FilmNavigationBackButton.toolbar(
+                            height: controlHeight,
                             onPressed: () {
                               setState(() => _browse = false);
                               c.type = null;
@@ -383,7 +388,6 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                               _search.clear();
                               c.refresh(home: false);
                             },
-                            child: const AppText('主页'),
                           ),
                         ),
                       SizedBox(
@@ -434,6 +438,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       SizedBox(
                         key: const ValueKey('film-toolbar-source'),
                         width: widths[2],
+                        height: controlHeight,
                         child: SPDropdownButtonFormField<int>(
                           menuIcon: SPIcons.folder,
                           key: const ValueKey('film-root-filter'),
@@ -476,6 +481,7 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       SizedBox(
                         key: const ValueKey('film-sort-filter'),
                         width: widths[3],
+                        height: controlHeight,
                         child: Row(
                           children: [
                             Expanded(
@@ -533,9 +539,9 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                               ),
                               iconSize: 16,
                               padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
+                              constraints: BoxConstraints.tightFor(
                                 width: 40,
-                                height: 40,
+                                height: controlHeight,
                               ),
                               style: const ButtonStyle(
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -557,8 +563,9 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       SizedBox(
                         key: const ValueKey('film-playlists-button'),
                         width: widths[4],
+                        height: controlHeight,
                         child: SPButton(
-                          minimumHeight: 40,
+                          minimumHeight: controlHeight,
                           borderRadius: AppTheme.controlRadius,
                           icon: Icon(
                             SPIcons.list,
@@ -593,8 +600,9 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                       SizedBox(
                         key: const ValueKey('film-pending-button'),
                         width: widths[5],
+                        height: controlHeight,
                         child: SPButton(
-                          minimumHeight: 40,
+                          minimumHeight: controlHeight,
                           borderRadius: AppTheme.controlRadius,
                           icon: Icon(
                             SPIcons.folder,

@@ -269,7 +269,7 @@ void main() {
           findsNWidgets(2),
         );
         await settle();
-        await tester.tap(find.text('主页'));
+        await tester.tap(find.byType(BackButton));
         await tester.pumpAndSettle();
         expect(target(), findsOneWidget);
         catalog.homeSections = originalSections;

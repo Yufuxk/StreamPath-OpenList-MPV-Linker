@@ -7,6 +7,7 @@ import '../../data/models/film_collection.dart';
 import '../../data/models/media_library_item.dart';
 import '../controllers/film_catalog_controller.dart';
 import '../localization/app_text.dart';
+import '../widgets/film_navigation_button.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_work_menu.dart';
 import 'package:provider/provider.dart';
@@ -165,9 +166,8 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
                 runSpacing: 12,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  TextButton(
+                  FilmNavigationBackButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const AppText('主页'),
                   ),
                 ],
               ),

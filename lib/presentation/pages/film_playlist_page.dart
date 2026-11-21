@@ -15,6 +15,7 @@ import '../widgets/cinematic_states.dart';
 import '../widgets/film_artwork.dart';
 import '../widgets/film_detail_buttons.dart';
 import '../widgets/film_library_background.dart';
+import '../widgets/film_library_layout.dart';
 import '../widgets/film_playlist_dialog.dart';
 import '../widgets/film_watch_menu.dart';
 import '../widgets/film_metadata_editor.dart';
@@ -432,7 +433,6 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
   Widget build(BuildContext context) => StreamPathTransitionBuilder(
     listenable: widget.catalog,
     builder: (context) {
-      final canPop = Navigator.of(context).canPop();
       return Stack(
         children: [
           Positioned.fill(
@@ -450,22 +450,11 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                 ? const SizedBox.shrink()
                 : Scaffold(
                     backgroundColor: Colors.transparent,
-                    appBar: AppBar(
-                      toolbarHeight: 48,
-                      automaticallyImplyLeading: false,
-                      leadingWidth: canPop ? widget.sidebarInset + 56 : null,
-                      leading: canPop
-                          ? Padding(
-                              padding: EdgeInsets.only(
-                                left: widget.sidebarInset,
-                              ),
-                              child: const BackButton(),
-                            )
-                          : null,
+                    appBar: FilmSubpageAppBar(
+                      sidebarInset: widget.sidebarInset,
                       backgroundColor: widget.playlistId == null
                           ? Colors.transparent
                           : _headerScrimTop(context),
-                      shape: const Border(),
                       title: const AppText('播放列表'),
                       actions: [
                         if (_snapshot case final snapshot?)
@@ -525,68 +514,42 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                                   }
                                   return ListView.builder(
                                     controller: controller,
-                                    padding: const EdgeInsets.fromLTRB(
-                                      16,
-                                      16,
-                                      16,
-                                      0,
-                                    ),
+                                    padding: FilmLibraryListTile.padding,
                                     itemCount: _lists.length,
                                     itemBuilder: (_, i) {
                                       final list = _lists[i];
-                                      return GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onSecondaryTapDown: (details) =>
-                                            _coverMenu(
-                                              list,
-                                              details.globalPosition,
-                                            ),
-                                        child: ListTile(
-                                          key: ValueKey(list.id),
-                                          leading: SizedBox(
-                                            width: 96,
-                                            height: 54,
-                                            child: list.artwork == null
-                                                ? const Icon(SPIcons.list)
-                                                : ClipRRect(
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          8,
-                                                        ),
-                                                    child: FilmWatchOverlay(
-                                                      store:
-                                                          widget.catalog.store,
-                                                      workId:
-                                                          list.artworkWorkId,
-                                                      sourceId: list.sourceId,
-                                                      path: list.artworkPath,
-                                                      spoilerSensitive:
-                                                          list.artworkSensitive,
-                                                      canReveal: false,
-                                                      child: FilmArtwork(
-                                                        cache: widget
-                                                            .catalog
-                                                            .images,
-                                                        path: list.artwork,
-                                                        target:
-                                                            list.artworkTarget,
-                                                        width: 96,
-                                                        height: 54,
-                                                        aspectRatio: 16 / 9,
-                                                      ),
-                                                    ),
-                                                  ),
-                                          ),
-                                          title: Text(list.name),
-                                          subtitle: Text(
-                                            '${list.sourceName} · ${context.l10n.format('成员数量：{count}', {'count': list.count})}${list.readOnly ? ' · ${context.l10n.text('只读镜像')}' : ''}',
-                                          ),
-                                          onTap: () => _open(list.id),
-                                          trailing: SPPopupMenuButton<String>(
-                                            itemBuilder: (_) => _actions(list),
-                                            onSelected: (action) =>
-                                                _manage(list, action),
-                                          ),
+                                      return FilmLibraryListTile(
+                                        key: ValueKey(list.id),
+                                        onMenu: (position) =>
+                                            _coverMenu(list, position),
+                                        cover: list.artwork == null
+                                            ? const Icon(SPIcons.list)
+                                            : FilmWatchOverlay(
+                                                store: widget.catalog.store,
+                                                workId: list.artworkWorkId,
+                                                sourceId: list.sourceId,
+                                                path: list.artworkPath,
+                                                spoilerSensitive:
+                                                    list.artworkSensitive,
+                                                canReveal: false,
+                                                child: FilmArtwork(
+                                                  cache: widget.catalog.images,
+                                                  path: list.artwork,
+                                                  target: list.artworkTarget,
+                                                  width: 96,
+                                                  height: 54,
+                                                  aspectRatio: 16 / 9,
+                                                ),
+                                              ),
+                                        title: Text(list.name),
+                                        subtitle: Text(
+                                          '${list.sourceName} · ${context.l10n.format('成员数量：{count}', {'count': list.count})}${list.readOnly ? ' · ${context.l10n.text('只读镜像')}' : ''}',
+                                        ),
+                                        onTap: () => _open(list.id),
+                                        trailing: SPPopupMenuButton<String>(
+                                          itemBuilder: (_) => _actions(list),
+                                          onSelected: (action) =>
+                                              _manage(list, action),
                                         ),
                                       );
                                     },

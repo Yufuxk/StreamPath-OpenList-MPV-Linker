@@ -2000,7 +2000,7 @@ void main() {
         expect((bar.title! as Text).data, 'Related');
         expect((bar.title! as Text).style, isNull);
         expect(find.text('Related'), findsOneWidget);
-        expect(find.text('主页'), findsOneWidget);
+        expect(find.byTooltip('返回'), findsOneWidget);
         expect(find.text('重命名'), findsNothing);
         expect(find.text('修改图片'), findsNothing);
         expect(find.text('删除合集'), findsNothing);
@@ -2715,7 +2715,7 @@ void main() {
     await settle(tester);
     expect(catalog.sectionId, 'genre:Genre 17');
     expect(catalog.works.map((w) => w.id), [work.id]);
-    await tester.tap(find.text('主页'));
+    await tester.tap(find.byTooltip('主页'));
     await settle(tester);
     await tester.drag(
       shelf,

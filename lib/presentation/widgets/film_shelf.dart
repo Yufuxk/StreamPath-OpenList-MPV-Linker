@@ -17,6 +17,7 @@ import '../../domain/services/film_catalog_image_cache.dart';
 import '../localization/app_text.dart';
 import '../theme/app_theme.dart';
 import 'film_artwork.dart';
+import 'film_navigation_button.dart';
 
 /// 主页支持鼠标拖动，默认最多 15 项；分类入口和演职人员可展示全部。
 class FilmShelf extends StatefulWidget {
@@ -101,10 +102,7 @@ class _FilmShelfState extends State<FilmShelf>
                     ),
               ),
               if (widget.onShowAll != null)
-                TextButton(
-                  onPressed: widget.onShowAll,
-                  child: const AppText('查看全部'),
-                ),
+                FilmShowAllButton(onPressed: widget.onShowAll!),
             ],
           ),
           const SizedBox(height: 12),
