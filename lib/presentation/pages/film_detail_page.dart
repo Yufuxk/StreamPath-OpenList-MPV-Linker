@@ -479,7 +479,10 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                     style: FilmTextStyles.overviewAction(context),
                     onPressed: () =>
                         setState(() => _expandedOverview = !_expandedOverview),
-                    child: AppText(_expandedOverview ? '收起简介' : '展开简介'),
+                    child: FilmOverviewActionLabel(
+                      _expandedOverview ? '收起简介' : '展开简介',
+                      pointsUp: _expandedOverview,
+                    ),
                   )
                 : null,
             child: overflows && !_expandedOverview

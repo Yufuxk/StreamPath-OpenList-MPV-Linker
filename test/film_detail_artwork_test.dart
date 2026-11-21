@@ -49,6 +49,7 @@ import 'package:streampath/presentation/widgets/film_segmented_control.dart';
 import 'package:streampath/presentation/widgets/film_detail_backdrop.dart';
 import 'package:streampath/presentation/widgets/film_detail_back_button.dart';
 import 'package:streampath/presentation/widgets/film_watch_overlay.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/film_certification_badge.dart';
 import 'package:streampath/presentation/widgets/film_play_icon.dart';
@@ -489,7 +490,28 @@ void main() {
     await settle(tester);
     Color? buttonTextColor(String label) =>
         DefaultTextStyle.of(tester.element(find.text(label))).style.color;
+    Finder expectArrow(Finder button, String label, int quarterTurns) {
+      final rotation = find.descendant(
+        of: button,
+        matching: find.byType(RotatedBox),
+      );
+      final arrow = find.descendant(
+        of: rotation,
+        matching: find.byIcon(SPIcons.chevronDown),
+      );
+      expect(tester.widget<RotatedBox>(rotation).quarterTurns, quarterTurns);
+      expect(tester.widget<Icon>(arrow).size, 12);
+      expect(
+        tester.getTopLeft(rotation).dx -
+            tester.getTopRight(find.text(label)).dx,
+        4,
+      );
+      expect(IconTheme.of(tester.element(arrow)).color, buttonTextColor(label));
+      return arrow;
+    }
+
     expect(buttonTextColor('展开简介'), const Color(0x80FFFFFF));
+    final arrow = expectArrow(expand, '展开简介', 0);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: Offset.zero);
     addTearDown(mouse.removePointer);
@@ -497,6 +519,7 @@ void main() {
     await tester.pump();
     await tester.pump(AppTheme.hoverDuration);
     expect(buttonTextColor('展开简介'), const Color(0xE6FFFFFF));
+    expect(IconTheme.of(tester.element(arrow)).color, buttonTextColor('展开简介'));
     await mouse.moveTo(Offset.zero);
     await tester.pumpAndSettle();
     expect(buttonTextColor('展开简介'), const Color(0x80FFFFFF));
@@ -508,12 +531,15 @@ void main() {
       findsNothing,
     );
     final collapse = find.widgetWithText(TextButton, '收起简介');
+    expect(arrow, findsNothing);
     await tester.ensureVisible(collapse);
     await settle(tester);
     expect(buttonTextColor('收起简介'), const Color(0x80FFFFFF));
+    expectArrow(collapse, '收起简介', 2);
     await tester.tap(collapse);
     await settle(tester);
     expect(tester.widget<Text>(find.text(long)).maxLines, 4);
+    expectArrow(expand, '展开简介', 0);
     expect(
       find.ancestor(of: find.text(long), matching: find.byType(ShaderMask)),
       findsOneWidget,

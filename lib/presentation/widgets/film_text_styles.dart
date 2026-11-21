@@ -25,15 +25,17 @@ abstract final class FilmTextStyles {
 
   static ButtonStyle? overviewAction(BuildContext context) {
     if (Theme.of(context).brightness != Brightness.dark) return null;
+    final foreground = WidgetStateProperty.resolveWith<Color?>((states) {
+      if (states.contains(WidgetState.disabled)) return null;
+      final active =
+          states.contains(WidgetState.hovered) ||
+          states.contains(WidgetState.pressed) ||
+          states.contains(WidgetState.focused);
+      return active ? const Color(0xE6FFFFFF) : const Color(0x80FFFFFF);
+    });
     return ButtonStyle(
-      foregroundColor: WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.disabled)) return null;
-        final active =
-            states.contains(WidgetState.hovered) ||
-            states.contains(WidgetState.pressed) ||
-            states.contains(WidgetState.focused);
-        return active ? const Color(0xE6FFFFFF) : const Color(0x80FFFFFF);
-      }),
+      foregroundColor: foreground,
+      iconColor: foreground,
       animationDuration: MediaQuery.disableAnimationsOf(context)
           ? Duration.zero
           : AppTheme.hoverDuration,

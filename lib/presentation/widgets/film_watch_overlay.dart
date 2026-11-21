@@ -17,6 +17,26 @@ import 'sp_icons.dart';
 
 const _progressHeight = 4.0;
 
+class FilmOverviewActionLabel extends StatelessWidget {
+  const FilmOverviewActionLabel(this.label, {super.key, this.pointsUp = false});
+
+  final String label;
+  final bool pointsUp;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Flexible(child: AppText(label)),
+      const SizedBox(width: 4),
+      RotatedBox(
+        quarterTurns: pointsUp ? 2 : 0,
+        child: const Icon(SPIcons.chevronDown, size: 12),
+      ),
+    ],
+  );
+}
+
 class FilmSpoilerScope extends StatefulWidget {
   const FilmSpoilerScope({super.key, required this.child});
   final Widget child;
@@ -296,7 +316,6 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
     final button = TextButton(
       onPressed: reveal,
       style: style.copyWith(
-        iconColor: style.foregroundColor,
         textStyle: WidgetStatePropertyAll(
           Theme.of(context).textTheme.labelLarge?.copyWith(
             fontWeight: FontWeight.w500,
@@ -311,14 +330,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
           ),
         ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Flexible(child: AppText(widget.revealLabel)),
-          const SizedBox(width: 4),
-          const Icon(SPIcons.chevronDown, size: 12),
-        ],
-      ),
+      child: FilmOverviewActionLabel(widget.revealLabel),
     );
     // 橱窗按钮叠在海报上，用柔边暗影托住常态弱文字。
     return widget.revealCentered
