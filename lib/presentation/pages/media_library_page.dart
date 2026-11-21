@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_notice.dart';
+import '../widgets/sp_reorderable.dart';
 
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
@@ -196,6 +197,9 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
   Map<String, PlaybackProgress> _videoContinue = const {};
   Map<String, PlaybackProgress> _audioContinue = const {};
   Map<String, IsoLibraryProgress> _isoContinue = const {};
+  List<String> _filmContinueDisplayOrder = const [];
+  ({int index, List<String> keys})? _filmContinueDrag;
+  Key _filmContinueListKey = UniqueKey();
 
   @override
   void initState() {
@@ -1215,8 +1219,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
       return count > widget.config.normalized.maxContinuePerLane;
     });
     if (center) records.removeWhere((r) => !_matchesFilmQuery(r));
-    Widget card(int i) {
-      final record = records[i];
+    Widget card(MediaLibraryRecord record, {Widget? reorderHandle}) {
       final video = _videoContinue[record.recordKey];
       final iso = _isoContinue[record.recordKey];
       return FilmContinueCard(
@@ -1224,6 +1227,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
         catalog: widget.filmCatalog!,
         poster: center,
         listTile: widget.filmContinueAll && !center,
+        reorderHandle: reorderHandle,
         record: record,
         positionMs: video?.positionMs ?? iso?.position.inMilliseconds,
         durationMs: video?.durationMs ?? iso?.duration?.inMilliseconds,
@@ -1255,12 +1259,26 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
             mainAxisSpacing: 16,
           ),
           itemCount: records.length,
-          itemBuilder: (_, i) => card(i),
+          itemBuilder: (_, i) => card(records[i]),
         ),
       );
     }
     if (widget.filmContinueAll) {
       final catalog = widget.filmCatalog!;
+      final remaining = {
+        for (final record in records) record.recordKey: record,
+      };
+      final displayed = [
+        for (final key in _filmContinueDisplayOrder) ?remaining.remove(key),
+        ...remaining.values,
+      ];
+      final keys = displayed.map((record) => record.recordKey).toList();
+      if (_filmContinueDrag case final drag?
+          when !listEquals(drag.keys, keys)) {
+        // 续播条目变动时取消拖动，避免使用原列表的索引。
+        _filmContinueDrag = null;
+        _filmContinueListKey = UniqueKey();
+      }
       return AnimatedBuilder(
         animation: catalog,
         builder: (context, _) => Stack(
@@ -1284,11 +1302,37 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
               body: Padding(
                 padding: EdgeInsets.only(left: widget.sidebarInset),
                 child: DirectoryScrollView(
-                  builder: (scrollController) => ListView.builder(
-                    controller: scrollController,
+                  builder: (scrollController) => ReorderableListView.builder(
+                    key: _filmContinueListKey,
+                    scrollController: scrollController,
                     padding: FilmLibraryListTile.padding,
-                    itemCount: records.length,
-                    itemBuilder: (_, i) => card(i),
+                    buildDefaultDragHandles: false,
+                    proxyDecorator: spReorderProxy,
+                    itemCount: displayed.length,
+                    itemBuilder: (_, i) => card(
+                      displayed[i],
+                      reorderHandle: SPReorderHandle(
+                        index: i,
+                        tooltip: context.l10n.text('拖动排序'),
+                      ),
+                    ),
+                    onReorderStart: (index) =>
+                        _filmContinueDrag = (index: index, keys: keys),
+                    onReorderEnd: (index) {
+                      final from = _filmContinueDrag?.index;
+                      if (from != null &&
+                          (index == from || index == from + 1)) {
+                        _filmContinueDrag = null;
+                      }
+                    },
+                    onReorderItem: (from, to) {
+                      final order = List.of(keys);
+                      order.insert(to, order.removeAt(from));
+                      setState(() {
+                        _filmContinueDrag = null;
+                        _filmContinueDisplayOrder = order;
+                      });
+                    },
                   ),
                 ),
               ),
@@ -1335,7 +1379,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
           ),
         ),
       ),
-      builder: (_, i) => card(i),
+      builder: (_, i) => card(records[i]),
     );
   }
 

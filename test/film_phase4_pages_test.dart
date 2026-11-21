@@ -47,6 +47,7 @@ import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.da
 import 'package:streampath/presentation/widgets/film_work_menu.dart';
 import 'package:streampath/presentation/widgets/startup_overlay.dart';
 import 'package:streampath/presentation/widgets/sp_back_icon.dart';
+import 'package:streampath/presentation/widgets/sp_reorderable.dart';
 
 import 'helpers/pump_until.dart';
 import 'helpers/shell_test_app_state.dart';
@@ -1198,6 +1199,143 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('继续播放拖动仅修改展开页显示顺序，进度刷新与条目增加保留排序', (tester) async {
+    await prepare(tester);
+    final store = app.filmMediaLibraryStore!;
+    final progress = app.filmProgressService;
+    String progressUrl(MediaLibraryItem item) =>
+        p.normalize(p.join(temp.path, item.targetPath));
+    Future<void> seed(FilmResource resource, String session) async {
+      await store.recordPlayback(
+        resource.playbackItem,
+        playbackSessionId: session,
+      );
+      await progress.saveProgress(
+        url: progressUrl(resource.playbackItem),
+        profileId: root.sourceId,
+        positionMs: 90000,
+        durationMs: 7200000,
+      );
+    }
+
+    Future<List<MediaLibraryRecord>> history() =>
+        store.playbackHistory(root.sourceId, audio: false);
+
+    await tester.runAsync(() async {
+      await seed(resources.first, 'first');
+      await seed(resources.last, 'last');
+    });
+    final original = (await tester.runAsync(history))!;
+    final originalKeys = original.map((record) => record.recordKey).toList();
+    final selected = <String>[];
+    await tester.pumpWidget(
+      frame(
+        FilmLibraryPage(
+          sidebarInset: 64,
+          onOpenItem: (_) async {},
+          onContinueSelected: (record) => selected.add(record.recordKey),
+          onContinueMenu: (_, _) {},
+        ),
+      ),
+    );
+    await settle(tester);
+
+    List<String> visibleOrder() {
+      final cards = tester
+          .widgetList<FilmContinueCard>(find.byType(FilmContinueCard))
+          .toList();
+      double topOf(FilmContinueCard card) =>
+          tester.getTopLeft(find.byKey(card.key!)).dy;
+      cards.sort((a, b) => topOf(a).compareTo(topOf(b)));
+      return cards.map((card) => card.record.recordKey).toList();
+    }
+
+    final shelf = find.byWidgetPredicate(
+      (widget) => widget is FilmShelf && widget.title == '继续播放',
+    );
+    Future<void> openList() async {
+      await tester.tap(find.descendant(of: shelf, matching: find.text('查看全部')));
+      await settle(tester);
+    }
+
+    await openList();
+    expect(visibleOrder(), originalKeys);
+    final handles = find.byType(SPReorderHandle);
+    expect(handles, findsNWidgets(2));
+    expect(find.byTooltip('拖动排序'), findsNWidgets(2));
+    expect(
+      IconTheme.of(tester.element(handles.first)),
+      IconTheme.of(tester.element(find.byType(ReorderableListView))),
+    );
+    expect(
+      tester.getCenter(handles.first).dx,
+      greaterThan(tester.getCenter(find.byTooltip('更多操作').first).dx),
+    );
+    final first = tester.getCenter(handles.first);
+    final second = tester.getCenter(handles.last);
+    final drag = await tester.startGesture(first);
+    await drag.moveBy(const Offset(0, 20));
+    await tester.pump(const Duration(milliseconds: 250));
+    await drag.moveTo(second - const Offset(0, 10));
+    await tester.pump(const Duration(milliseconds: 500));
+    await drag.up();
+    await settle(tester);
+    final reordered = originalKeys.reversed.toList();
+    expect(visibleOrder(), reordered);
+    expect(
+      (await tester.runAsync(history))!.map((record) => record.toJson()),
+      original.map((record) => record.toJson()),
+    );
+    final url = progressUrl(original.first.item);
+    expect(
+      (await tester.runAsync(
+        () => progress.getProgress(url, profileId: root.sourceId),
+      ))!.positionMs,
+      90000,
+    );
+    await tester.tap(find.byKey(ValueKey(reordered.first)));
+    expect(selected, [reordered.first]);
+    await tester.runAsync(() async {
+      await progress.saveProgress(
+        url: url,
+        profileId: root.sourceId,
+        positionMs: 125000,
+        durationMs: 7200000,
+      );
+    });
+    await settle(tester);
+    expect(visibleOrder(), reordered);
+    expect(
+      tester
+          .widget<FilmContinueCard>(find.byKey(ValueKey(originalKeys.first)))
+          .positionMs,
+      125000,
+    );
+
+    final pendingDrag = await tester.startGesture(
+      tester.getCenter(handles.first),
+    );
+    await pendingDrag.moveBy(const Offset(0, 20));
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.runAsync(() => seed(resources[1], 'new'));
+    await settle(tester);
+    final freshKeys = (await tester.runAsync(
+      history,
+    ))!.map((record) => record.recordKey).toList();
+    final added = freshKeys.singleWhere((key) => !reordered.contains(key));
+    await pendingDrag.up();
+    await settle(tester);
+    expect(visibleOrder(), [...reordered, added]);
+
+    await tester.tap(find.byType(BackButton));
+    await settle(tester);
+    expect(visibleOrder(), freshKeys);
+    expect(handles, findsNothing);
+    await openList();
+    expect(visibleOrder(), freshKeys);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'source shading follows the poster while both labels stay still',

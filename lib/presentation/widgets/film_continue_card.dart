@@ -24,6 +24,7 @@ class FilmContinueCard extends StatefulWidget {
     this.positionMs,
     this.durationMs,
     this.onMenu,
+    this.reorderHandle,
     this.poster = false,
     this.listTile = false,
   });
@@ -32,6 +33,7 @@ class FilmContinueCard extends StatefulWidget {
   final int? positionMs, durationMs;
   final VoidCallback onTap;
   final ValueChanged<Offset>? onMenu;
+  final Widget? reorderHandle;
   final bool poster;
   final bool listTile;
   @override
@@ -195,7 +197,16 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
             subtitle: details.isEmpty
                 ? null
                 : Text(details, maxLines: 1, overflow: TextOverflow.ellipsis),
-            trailing: menuButton,
+            trailing: switch (widget.reorderHandle) {
+              final handle? => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ?menuButton,
+                  IconTheme(data: IconTheme.of(context), child: handle),
+                ],
+              ),
+              null => menuButton,
+            },
             onMenu: menu,
             onTap: widget.onTap,
           ),
