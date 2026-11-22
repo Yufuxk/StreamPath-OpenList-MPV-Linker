@@ -166,6 +166,9 @@ struct BlockCacheMetrics {
   std::uint64_t prefetch_in_flight_bytes_peak = 0;
   std::uint64_t prefetch_hit_bytes = 0;
   std::uint64_t prefetch_concurrent_wall_clock_us = 0;
+  std::uint64_t parallel_prefetch_batches = 0;
+  std::uint64_t parallel_prefetch_no_gain = 0;
+  std::uint64_t parallel_prefetch_rejected = 0;
   bool refetch_count_available = true;
 };
 
@@ -199,7 +202,9 @@ class BlockCache {
                       std::size_t recovery_prefetch_batch_blocks = 0,
                       bool stream_prefetch = false,
                       bool compact_extents = false,
-                      std::size_t maximum_stream_batch_blocks = 0);
+                      std::size_t maximum_stream_batch_blocks = 0,
+                      double target_prefetch_bytes_per_second = 0,
+                      std::function<bool(const std::exception_ptr&)> rejects_parallel_prefetch = {});
   ~BlockCache();
   BlockCache(const BlockCache&) = delete;
   BlockCache& operator=(const BlockCache&) = delete;
@@ -272,6 +277,8 @@ class BlockCache {
   const bool stream_prefetch_;
   const bool compact_extents_;
   const std::size_t maximum_stream_batch_blocks_;
+  const double target_prefetch_bytes_per_second_;
+  const std::function<bool(const std::exception_ptr&)> rejects_parallel_prefetch_;
   std::size_t stable_batch_blocks_;
   DiscIoTrace* trace_ = nullptr;
   std::uint64_t reserved_bytes_ = 0;

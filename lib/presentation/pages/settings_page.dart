@@ -4,6 +4,7 @@ import '../widgets/sp_menu.dart';
 import '../../domain/services/app_update_service.dart';
 import '../widgets/app_update_settings_card.dart';
 import '../../data/models/video_playlist_mode.dart';
+import '../../data/models/disc_title_selection_policy.dart';
 import '../widgets/settings_group_card.dart';
 import '../widgets/sp_control_bar.dart';
 import 'dart:async';
@@ -2245,6 +2246,32 @@ class SettingsPageState extends State<SettingsPage> {
                     : (value) => setState(
                         () => _draft.videoPlaylistInsertDecimalEpisodes = value,
                       ),
+              ),
+              const SizedBox(height: 12),
+              SPDropdownButtonFormField<DiscTitleSelectionPolicy>(
+                key: const Key('disc-title-selection-policy'),
+                initialValue: _draft.discTitleSelectionPolicy,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: context.l10n.text('蓝光标题选择策略'),
+                  prefixIcon: const Icon(SPIcons.list),
+                ),
+                items: [
+                  for (final policy in DiscTitleSelectionPolicy.values)
+                    DropdownMenuItem(
+                      value: policy,
+                      child: AppText(switch (policy) {
+                        DiscTitleSelectionPolicy.full => '完整播放列表',
+                        DiscTitleSelectionPolicy.single => '单一播放列表',
+                        DiscTitleSelectionPolicy.adaptive => '智能选择',
+                      }),
+                    ),
+                ],
+                onChanged: (policy) {
+                  if (policy != null) {
+                    setState(() => _draft.discTitleSelectionPolicy = policy);
+                  }
+                },
               ),
               SPToggleTile(
                 key: const Key('external-audio-injection'),

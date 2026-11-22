@@ -1,4 +1,5 @@
 import '../../data/models/web_dav_file.dart';
+import '../../data/models/webdav_bdmv.dart';
 import 'package:path/path.dart' as p;
 import '../../data/remote/webdav_client.dart';
 import 'local_media_source.dart';
@@ -15,8 +16,35 @@ class LocalIsoService extends WebDAVService {
   final LocalMediaSource source;
 
   @override
-  Future<String?> cachedDiscPath(WebDavFile file) =>
-      source.resolveDiscDevice(file.relativePath);
+  Future<String?> cachedDiscPath(WebDavFile file) => source.resolveDiscDevice(
+    file is WebDavBdmv ? file.rootPath : file.relativePath,
+  );
+
+  @override
+  Future<List<WebDavFile>> fetchDirectory(
+    String path, {
+    bool forceRefresh = false,
+  }) async {
+    final entries = await source.fetchDirectory(
+      path,
+      forceRefresh: forceRefresh,
+    );
+    final result = <WebDavFile>[];
+    for (final entry in entries) {
+      if (entry.isSelfEntry) continue;
+      await source.resolve(entry);
+      result.add(
+        WebDavFile(
+          name: entry.name,
+          href: fullUrl(entry.relativePath),
+          isDirectory: entry.isDirectory,
+          size: entry.size,
+          modified: entry.modified,
+        ),
+      );
+    }
+    return result;
+  }
 
   @override
   String persistentUrl(String href) {

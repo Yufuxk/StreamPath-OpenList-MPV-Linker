@@ -144,6 +144,7 @@ class _PlaybackLaunchContext {
         webDavFontCacheEnabled: player.webDavFontCacheEnabled,
         externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
         videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
+        discTitleSelectionPolicy: player.discTitleSelectionPolicy,
         videoPlaylistInsertDecimalEpisodes:
             player.videoPlaylistInsertDecimalEpisodes,
         implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,

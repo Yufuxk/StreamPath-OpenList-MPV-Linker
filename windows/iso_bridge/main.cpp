@@ -1480,6 +1480,28 @@ int read_disc_blocks(void* opaque, void* destination, int lba,
   }
 }
 
+using SelectMainFeature = std::function<std::optional<std::uint32_t>(
+    const std::string&, bool, bool)>;
+
+struct ConfirmedFeature {
+  std::uint32_t playlist;
+  std::uint32_t title_index;
+};
+
+std::string feature_candidate(std::uint32_t playlist, std::uint32_t title_index,
+                              std::uint64_t duration,
+                              std::size_t chapters, std::size_t clips,
+                              bool video, bool alternate, bool possible_episodes = false) {
+  std::ostringstream out;
+  out << "{\"playlist\":" << playlist << ",\"titleIndex\":" << title_index
+      << ",\"durationMs\":" << duration
+      << ",\"chapters\":" << chapters << ",\"clips\":" << clips
+      << ",\"video\":" << (video ? "true" : "false")
+      << ",\"alternate\":" << (alternate ? "true" : "false")
+      << ",\"possibleEpisodes\":" << (possible_episodes ? "true" : "false") << '}';
+  return out.str();
+}
+
 class LibblurayApi final {
  public:
   explicit LibblurayApi(const std::filesystem::path& directory) {
@@ -1575,7 +1597,10 @@ class LibblurayApi final {
   };
 
   std::vector<TitleInfo> enumerate(bridge::BlockCache& cache,
-                                   BlurayMetrics& metrics) const {
+                                   BlurayMetrics& metrics,
+                                   const SelectMainFeature& select_feature = {},
+                                   bool* focused = nullptr,
+                                   std::optional<ConfirmedFeature> confirmed = {}) const {
     const auto started = std::chrono::steady_clock::now();
     ScopeExit record_enumeration([&metrics, started] {
       metrics.record_title_enumeration(static_cast<std::uint64_t>(
@@ -1592,11 +1617,77 @@ class LibblurayApi final {
     if (info->aacs_detected != 0 || info->bdplus_detected != 0) {
       throw BridgeException("encrypted_disc", "Encrypted AACS or BD+ discs are not supported");
     }
-    const std::uint32_t count = bd_get_titles_(disc.get(), TITLES_ALL, 0);
+    decltype(&bd_get_playlist_info) get_playlist_info = nullptr;
+    if (confirmed) {
+      get_playlist_info = reinterpret_cast<decltype(get_playlist_info)>(
+          GetProcAddress(module_, "bd_get_playlist_info"));
+      if (!get_playlist_info) confirmed.reset();
+    }
+    const std::uint32_t count = confirmed ? 1 : bd_get_titles_(disc.get(), TITLES_ALL, 0);
+    std::optional<std::uint32_t> selected_index;
+    using OwnedTitle = std::unique_ptr<BLURAY_TITLE_INFO, FreeTitleInfo>;
+    std::vector<OwnedTitle> candidate_info;
+    if (select_feature && !confirmed) {
+      // 限制候选扫描开销。完整模式仍处理全部标题。
+      std::string candidates;
+      std::map<std::uint32_t, std::uint32_t> indexes;
+      bool complete = count > 0 && count <= 256;
+      for (std::uint32_t index = 0; complete && index < count; ++index) {
+        OwnedTitle title(bd_get_title_info_(disc.get(), index, 0), bd_free_title_info_);
+        disc.rethrow_read_error();
+        if (!title || title->duration == 0 || title->playlist > 99999U ||
+            !indexes.emplace(title->playlist, index).second ||
+            title->clip_count == 0) {
+          complete = false;
+          break;
+        }
+        bool video = true;
+        std::map<std::string, bool> clips;
+        std::vector<std::uint64_t> episode_lengths;
+        bool alternate = title->angle_count > 1;
+        for (std::uint32_t n = 0; n < title->clip_count; ++n) {
+          const auto& clip = title->clips[n];
+          video = video && clip.video_stream_count > 0 && clip.in_time < clip.out_time;
+          if (!clips.emplace(std::string(clip.clip_id, 5), true).second) {
+            alternate = true;
+          } else if (clip.out_time > clip.in_time) {
+            const auto seconds = (clip.out_time - clip.in_time) / 90000;
+            if (seconds >= 15 * 60 && seconds <= 65 * 60) episode_lengths.push_back(seconds);
+          }
+        }
+        std::sort(episode_lengths.begin(), episode_lengths.end());
+        bool possible_episodes = false;
+        for (std::size_t n = 2; n < episode_lengths.size(); ++n) {
+          if (episode_lengths[n] - episode_lengths[n - 2] <= 4 * 60) {
+            possible_episodes = true;
+            break;
+          }
+        }
+        if (!candidates.empty()) candidates += ',';
+        candidates += feature_candidate(title->playlist, title->idx, title->duration / 90U,
+            title->chapter_count, title->clip_count, video, alternate, possible_episodes);
+        candidate_info.push_back(std::move(title));
+      }
+      const auto selected = select_feature(complete ? candidates : "", false,
+          info->bdj_detected || info->num_bdj_titles != 0 ||
+          info->num_unsupported_titles != 0);
+      if (selected) {
+        const auto index = indexes.find(*selected);
+        if (!complete || index == indexes.end()) {
+          throw BridgeException("protocol_error", "Selected Blu-ray playlist is unavailable");
+        }
+        selected_index = index->second;
+      }
+    }
     std::vector<TitleInfo> result;
     std::map<std::uint32_t, bool> seen;
-    for (std::uint32_t index = 0; index < count; ++index) {
-      BLURAY_TITLE_INFO* title = bd_get_title_info_(disc.get(), index, 0);
+    const std::uint32_t end_index = selected_index ? *selected_index + 1 : count;
+    for (std::uint32_t index = selected_index.value_or(0); index < end_index; ++index) {
+      BLURAY_TITLE_INFO* title = confirmed
+          ? get_playlist_info(disc.get(), confirmed->playlist, 0)
+          : index < candidate_info.size()
+              ? candidate_info[index].release()
+              : bd_get_title_info_(disc.get(), index, 0);
       if (title == nullptr) {
         disc.rethrow_read_error();
         continue;
@@ -1606,6 +1697,7 @@ class LibblurayApi final {
             bd_free_title_info_(value);
           });
       if (title->duration == 0 || title->playlist > 99999U ||
+          (confirmed && title->playlist != confirmed->playlist) ||
           !seen.emplace(title->playlist, true).second) {
         continue;
       }
@@ -1614,7 +1706,7 @@ class LibblurayApi final {
         continue;
       }
       TitleInfo converted;
-      converted.title_index = title->idx;
+      converted.title_index = confirmed ? confirmed->title_index : title->idx;
       converted.playlist = title->playlist;
       converted.duration_milliseconds = title->duration / 90U;
       converted.size = bd_get_title_size_(disc.get());
@@ -1661,8 +1753,14 @@ class LibblurayApi final {
               });
     disc.rethrow_read_error();
     if (result.empty()) {
+      if (confirmed) return enumerate(cache, metrics, select_feature, focused);
+      if (selected_index) {
+        // 已确认的候选仍须通过原播放长度与时间线校验。
+        return enumerate(cache, metrics);
+      }
       throw BridgeException("invalid_disc", "No playable Blu-ray title was found");
     }
+    if (selected_index || confirmed) *focused = true;
     return result;
   }
 
@@ -2721,6 +2819,13 @@ void write_cache_phase_metrics(std::ostringstream& output,
   if (retained_bytes.has_value()) {
     output << ",\"retainedBytes\":" << *retained_bytes;
   }
+  if (cache.parallel_prefetch_batches != 0) {
+    output << ",\"parallelPrefetchBatches\":" << cache.parallel_prefetch_batches
+           << ",\"parallelPrefetchFallbacks\":"
+           << cache.parallel_prefetch_no_gain + cache.parallel_prefetch_rejected
+           << ",\"parallelPrefetchNoGain\":" << cache.parallel_prefetch_no_gain
+           << ",\"parallelPrefetchRejected\":" << cache.parallel_prefetch_rejected;
+  }
   output << '}';
 }
 
@@ -3082,7 +3187,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     return 4;
   }
   if (!write_frame(pipe.get(), "{\"type\":\"hello\",\"version\":1,\"pid\":" +
-                                   std::to_string(GetCurrentProcessId()) + ",\"discMenuVersion\":1}")) {
+                                   std::to_string(GetCurrentProcessId()) + ",\"discMenuVersion\":1,\"mainFeatureVersion\":1}")) {
     return 4;
   }
 
@@ -3193,6 +3298,57 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     if (!write_frame(pipe.get(), R"({"type":"metrics","stage":"parsingTitles"})")) {
       return 1;
     }
+    const bool detect_only = json_boolean(*open, "detectOnly").value_or(false);
+    const bool feature_requested = !remote_menu && !detect_only && !catalog_probe_mode &&
+        json_boolean(*open, "mainFeature").value_or(false);
+    bool feature_focused = false;
+    SelectMainFeature select_feature;
+    std::optional<ConfirmedFeature> confirmed_feature;
+    if (feature_requested) {
+      std::string feature_revision;
+      if (structure_identity &&
+          structure_identity->validator_kind == bridge::StructureCacheValidatorKind::strong_etag &&
+          (!folder_source || local_path || std::all_of(folder_source->files.entries.begin(),
+              folder_source->files.entries.end(), [](const auto& item) {
+                return item.directory || item.size == 0 || !item.etag.empty();
+              }))) {
+        std::ostringstream revision;
+        for (const auto byte : structure_identity->validator_digest)
+          revision << std::hex << std::setfill('0') << std::setw(2) << static_cast<unsigned>(byte);
+        feature_revision = revision.str() + ":" + std::to_string(structure_identity->content_length);
+      }
+      const auto confirmed_playlist = json_integer(*open, "confirmedPlaylist");
+      const auto confirmed_index = json_integer(*open, "confirmedTitleIndex");
+      if (!feature_revision.empty() &&
+          json_string(*open, "confirmedRevision") == feature_revision &&
+          confirmed_playlist && *confirmed_playlist >= 0 && *confirmed_playlist <= 99999 &&
+          confirmed_index && *confirmed_index >= 0 && *confirmed_index <= 99999) {
+        confirmed_feature = ConfirmedFeature{
+            static_cast<std::uint32_t>(*confirmed_playlist),
+            static_cast<std::uint32_t>(*confirmed_index)};
+      }
+      select_feature = [&, feature_revision](const std::string& candidates,
+                                             bool from_cache, bool navigation_ambiguous)
+          -> std::optional<std::uint32_t> {
+        const auto payload = "{\"type\":\"titleCandidates\",\"candidates\":[" + candidates +
+            "],\"revision\":" + bridge::json_escape(feature_revision) +
+            ",\"fromCache\":" + (from_cache ? "true" : "false") +
+            ",\"navigationAmbiguous\":" + (navigation_ambiguous ? "true" : "false") + "}";
+        if (!write_frame(pipe.get(), payload))
+          throw BridgeException("protocol_error", "Unable to send Blu-ray candidates");
+        const auto frame = read_frame(pipe.get());
+        const auto reply = frame ? bridge::parse_json_object(*frame) : std::nullopt;
+        if (reply && json_string(*reply, "type") == "shutdown")
+          throw BridgeException("cancelled", "Blu-ray title preparation cancelled");
+        if (!reply || json_string(*reply, "type") != "selectCandidate")
+          throw BridgeException("protocol_error", "Expected Blu-ray candidate selection");
+        const auto playlist = json_integer(*reply, "playlist");
+        if (!playlist) return std::nullopt;
+        if (*playlist < 0 || *playlist > 99999)
+          throw BridgeException("protocol_error", "Invalid Blu-ray candidate");
+        return static_cast<std::uint32_t>(*playlist);
+      };
+    }
     std::vector<TitleInfo> titles;
     std::unique_ptr<bridge::DvdDisc> dvd;
     bool bdj_detected = false;
@@ -3204,7 +3360,6 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
               ? bridge::load_structure_cache(structure_path,
                                              *structure_identity)
               : std::nullopt;
-      const bool detect_only = json_boolean(*open, "detectOnly").value_or(false);
       if (detect_only && cached_titles.has_value()) {
         if (!write_frame(pipe.get(), "{\"type\":\"ready\",\"version\":1,\"port\":1,\"token\":\"" + random_token() +
             "\",\"totalBytes\":" + std::to_string(source->size()) + ",\"titles\":[],\"discType\":\"bluray\"}")) return 0;
@@ -3249,12 +3404,38 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       } else if (cached_titles.has_value()) {
         titles = std::move(*cached_titles);
         bluray_metrics.record_structure_cache_hit();
+        if (select_feature) {
+          const bool known = confirmed_feature &&
+              std::any_of(titles.begin(), titles.end(), [&](const auto& title) {
+                return title.playlist == confirmed_feature->playlist &&
+                    title.title_index == confirmed_feature->title_index;
+              });
+          std::string candidates;
+          if (!known && titles.size() <= 256) {
+            for (const auto& title : titles) {
+              if (!candidates.empty()) candidates += ',';
+              candidates += feature_candidate(title.playlist, title.title_index, title.duration_milliseconds,
+                  title.chapters.size(), title.clips.size(), false, false);
+            }
+          }
+          if (const auto selected = known ? std::optional{confirmed_feature->playlist}
+                                         : select_feature(candidates, true, true)) {
+            const auto title = std::find_if(titles.begin(), titles.end(),
+                [&](const auto& value) { return value.playlist == *selected; });
+            if ((!known && candidates.empty()) || title == titles.end())
+              throw BridgeException("protocol_error", "Selected cached playlist is unavailable");
+            TitleInfo chosen = std::move(*title);
+            titles.clear();
+            titles.push_back(std::move(chosen));
+            feature_focused = true;
+          }
+        }
       } else {
         metadata_cache = std::make_unique<bridge::BlockCache>(
             source, bridge::kIsoDemandBlockSize, kIsoMetadataBlockCount,
             1, bridge::kInitialPlaybackPrefetchBatchBlocks, bridge::kPlaybackPrefetchBatchBlocks, 0, false, bdmv);
-        titles = api.enumerate(*metadata_cache, bluray_metrics);
-        should_write_structure_cache = structure_identity.has_value();
+        titles = api.enumerate(*metadata_cache, bluray_metrics, select_feature, &feature_focused, confirmed_feature);
+        should_write_structure_cache = structure_identity.has_value() && !feature_focused;
       }
     } catch (...) {
       const NetworkMetricsSnapshot current_network = source->metrics();
@@ -3289,6 +3470,14 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
     if (dvd && structure_identity) static_cast<void>(bridge::write_dvd_metadata_cache(
         structure_path, *structure_identity, metadata_handoff));
 
+    const double focused_title_rate = feature_focused && !local_path
+        ? static_cast<double>(titles.front().size) * 1000 /
+            static_cast<double>(titles.front().duration_milliseconds)
+        : 0;
+    // 远程高码率单标题可试双路。完整列表、菜单和本地光盘继续单路。
+    const double target_prefetch_rate = focused_title_rate >= 8 * 1024 * 1024
+        ? focused_title_rate
+        : 0;
     bridge::BlockCache cache(
         source, bridge::kIsoDemandBlockSize, bridge::kIsoBlockCount,
         kIsoDemandBlockScale,
@@ -3299,7 +3488,17 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
         remote_menu ? 0 : bridge::kInitialPlaybackPrefetchBatchBlocks * kIsoDemandBlockScale,
         !remote_menu || virtual_disc, bdmv,
         !dvd && (!remote_menu || virtual_disc)
-            ? (remote_menu ? 24 : 32) * 1024 * 1024 / bridge::kIsoDemandBlockSize : 0);
+            ? (remote_menu ? 24 : 32) * 1024 * 1024 / bridge::kIsoDemandBlockSize : 0,
+        target_prefetch_rate,
+        [](const std::exception_ptr& error) {
+          try {
+            std::rethrow_exception(error);
+          } catch (const BridgeException& e) {
+            return e.http_status() == 429 || e.http_status() == 503;
+          } catch (...) {
+            return false;
+          }
+        });
     cache.set_trace(&disc_io_trace);
     if (metadata_cache != nullptr) {
       cache.restore_handoff(std::move(metadata_handoff));
@@ -3349,6 +3548,10 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
       if (!final_snapshot_written) static_cast<void>(write_snapshot());
     });
     std::string ready = ready_json(port, token, folder_source ? folder_source->files.bytes : source->size(), titles);
+    if (feature_focused) {
+      ready.pop_back();
+      ready += ",\"mainFeatureSelected\":true}";
+    }
     if (dvd && !dvd->unavailable_titles().empty()) {
       ready.pop_back();
       ready += ",\"unavailableDvdTitles\":[";

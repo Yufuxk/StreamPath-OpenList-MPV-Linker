@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
 import 'playback_media_info.dart';
+import 'disc_title_selection_policy.dart';
 import 'special_playlist_mode.dart';
 import 'video_playlist_mode.dart';
 import 'video_window_mode.dart';
@@ -70,6 +71,7 @@ class PlayerConfig {
     this.externalAudioInjectionEnabled = true,
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
     this.videoPlaylistSimpleNaming = true,
+    this.discTitleSelectionPolicy = DiscTitleSelectionPolicy.full,
     this.videoPlaylistInsertDecimalEpisodes = false,
     this.implicitPlaylistWindowSize = defaultImplicitPlaylistWindowSize,
     this.autoSeasonTransitionEnabled = true,
@@ -145,6 +147,7 @@ class PlayerConfig {
   final bool externalAudioInjectionEnabled;
   final VideoPlaylistMode videoPlaylistMode;
   final bool videoPlaylistSimpleNaming;
+  final DiscTitleSelectionPolicy discTitleSelectionPolicy;
   final bool videoPlaylistInsertDecimalEpisodes;
 
   /// 隐式播放列表单次注入的集数上限，含当前集；范围 2～10。
@@ -237,6 +240,7 @@ class PlayerConfig {
     'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
     'videoPlaylistMode': videoPlaylistMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
+    'discTitleSelectionPolicy': discTitleSelectionPolicy.name,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
     'implicitPlaylistWindowSize': implicitPlaylistWindowSize,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
@@ -304,6 +308,9 @@ class PlayerConfig {
       videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
       videoPlaylistSimpleNaming:
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
+      discTitleSelectionPolicy: DiscTitleSelectionPolicy.fromJson(
+        json['discTitleSelectionPolicy'],
+      ),
       videoPlaylistInsertDecimalEpisodes:
           (json['videoPlaylistInsertDecimalEpisodes'] as bool?) ?? false,
       implicitPlaylistWindowSize: implicitPlaylistWindowSizeFromJson(

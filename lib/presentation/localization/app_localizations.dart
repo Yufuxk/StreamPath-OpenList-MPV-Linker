@@ -520,6 +520,14 @@ class AppLocalizations {
       '请选择本地 Blu-ray 的播放方式。菜单失败时不会自动切换模式。':
           '請選擇本機 Blu-ray 的播放方式。選單失敗時不會自動切換模式。',
       '主标题模式': '主標題模式',
+      '蓝光标题选择策略': '藍光標題選擇策略',
+      '完整播放列表': '完整播放清單',
+      '单一播放列表': '單一播放清單',
+      '智能选择': '智慧選擇',
+      '确认蓝光正片': '確認藍光正片',
+      '无法可靠确定唯一正片。多集或多标题内容请选择完整播放列表。': '無法可靠確定唯一正片。多集或多標題內容請選擇完整播放清單。',
+      '选择一个蓝光标题': '選擇一個藍光標題',
+      '播放所选标题': '播放所選標題',
       '蓝光菜单播放': '藍光選單播放',
       '远程蓝光菜单组件尚未通过能力验证，请使用标题模式': '遠端藍光選單元件尚未通過能力驗證，請使用標題模式',
       '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单': '請先安裝隨附的 WinFsp 執行環境，再使用遠端藍光選單',
@@ -848,6 +856,15 @@ class AppLocalizations {
       '请选择本地 Blu-ray 的播放方式。菜单失败时不会自动切换模式。':
           'ローカル Blu-ray の再生方法を選択してください。メニューに失敗してもモードは自動で切り替わりません。',
       '主标题模式': 'メインタイトルモード',
+      '蓝光标题选择策略': 'Blu-ray タイトルの選択方式',
+      '完整播放列表': '完全プレイリスト',
+      '单一播放列表': '単一プレイリスト',
+      '智能选择': 'スマート選択',
+      '确认蓝光正片': 'Blu-ray 本編を確認',
+      '无法可靠确定唯一正片。多集或多标题内容请选择完整播放列表。':
+          '本編を一つに特定できません。複数話や複数タイトルの場合は完全プレイリストを選択してください。',
+      '选择一个蓝光标题': 'Blu-ray タイトルを一つ選択',
+      '播放所选标题': '選択したタイトルを再生',
       '蓝光菜单播放': 'Blu-ray メニューを再生',
       '远程蓝光菜单组件尚未通过能力验证，请使用标题模式': 'リモート Blu-ray メニュー機能は未検証です。タイトルモードをご利用ください',
       '请先安装随附的 WinFsp 运行时，再使用远程蓝光菜单':
@@ -1210,6 +1227,15 @@ class AppLocalizations {
       '请选择本地 Blu-ray 的播放方式。菜单失败时不会自动切换模式。':
           'Choose how to play the local Blu-ray. A menu failure will not switch modes automatically.',
       '主标题模式': 'Main title mode',
+      '蓝光标题选择策略': 'Blu-ray title selection',
+      '完整播放列表': 'Full playlist',
+      '单一播放列表': 'Single playlist',
+      '智能选择': 'Adaptive selection',
+      '确认蓝光正片': 'Confirm the Blu-ray feature',
+      '无法可靠确定唯一正片。多集或多标题内容请选择完整播放列表。':
+          'A single main feature could not be identified reliably. Choose the full playlist for discs with multiple episodes or titles.',
+      '选择一个蓝光标题': 'Select one Blu-ray title',
+      '播放所选标题': 'Play selected title',
       '蓝光菜单播放': 'Play Blu-ray menu',
       '远程蓝光菜单组件尚未通过能力验证，请使用标题模式':
           'Remote Blu-ray menus are not yet verified. Use title mode.',

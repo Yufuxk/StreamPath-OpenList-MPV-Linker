@@ -10,6 +10,7 @@ import '../../data/models/app_language.dart';
 import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
+import '../../data/models/disc_title_selection_policy.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/mpv_menu_shortcuts.dart';
 import '../../data/models/video_window_mode.dart';
@@ -85,6 +86,8 @@ class SettingsConfigDraft {
   bool externalAudioInjectionEnabled = true;
   VideoPlaylistMode videoPlaylistMode = VideoPlaylistMode.implicit;
   bool videoPlaylistSimpleNaming = true;
+  DiscTitleSelectionPolicy discTitleSelectionPolicy =
+      DiscTitleSelectionPolicy.full;
   bool videoPlaylistInsertDecimalEpisodes = false;
   bool autoSeasonTransitionEnabled = true;
   bool allowSeasonGap = false;
@@ -185,6 +188,7 @@ class SettingsConfigDraft {
     externalAudioInjectionEnabled = player.externalAudioInjectionEnabled;
     videoPlaylistMode = player.videoPlaylistMode;
     videoPlaylistSimpleNaming = player.videoPlaylistSimpleNaming;
+    discTitleSelectionPolicy = player.discTitleSelectionPolicy;
     videoPlaylistInsertDecimalEpisodes =
         player.videoPlaylistInsertDecimalEpisodes;
     implicitPlaylistWindowController.text = player.implicitPlaylistWindowSize
@@ -294,6 +298,7 @@ class SettingsConfigDraft {
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
+    discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
     implicitPlaylistWindowSize: int.parse(
       implicitPlaylistWindowController.text.trim(),

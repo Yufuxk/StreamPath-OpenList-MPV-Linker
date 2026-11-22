@@ -5,6 +5,7 @@ import '../../data/local/film_catalog_store.dart';
 import '../widgets/sp_menu.dart';
 import '../../data/models/video_queue.dart';
 import '../../data/models/video_playlist_mode.dart';
+import '../../data/models/disc_title_selection_policy.dart';
 import '../../data/models/film_catalog_item.dart';
 import '../../domain/services/film_video_timeline.dart';
 import '../../domain/services/video_entry_preparer.dart';
@@ -58,6 +59,7 @@ import '../../domain/services/playback_startup_trace.dart';
 import '../../domain/services/external_audio_matcher.dart';
 import '../../domain/services/audio_player_service.dart';
 import '../../domain/services/iso_playback_service.dart';
+import '../../domain/services/main_feature_analyzer.dart';
 import '../../domain/services/local_disc_playback_service.dart';
 import '../../domain/services/local_media_source.dart';
 import '../../domain/services/mpv_idle_completion_marker.dart';
@@ -460,6 +462,8 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               webDavService: widget.webDavService,
               file: widget.file,
               selectTitles: _selectTitles,
+              selectMainFeature: _selectMainFeature,
+              discType: widget.discType,
               subtitles: _subtitles,
               subtitlePreparation: preparation,
               startupClock: widget.startupClock,
@@ -511,6 +515,80 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
       ),
     );
     return selection;
+  }
+
+  Future<MainFeatureChoice?> _selectMainFeature(
+    List<MainFeatureCandidate> candidates,
+  ) async {
+    if (!mounted || _cancelling) return null;
+    final ordered = List<MainFeatureCandidate>.of(candidates)
+      ..sort((a, b) {
+        final byDuration = b.duration.compareTo(a.duration);
+        return byDuration == 0 ? a.playlist.compareTo(b.playlist) : byDuration;
+      });
+    final programmes = ordered.where(
+      (candidate) => candidate.duration >= const Duration(minutes: 10),
+    );
+    final shortlist = (programmes.isEmpty ? ordered : programmes).take(12);
+    int? selected;
+    return showGlassDialog<MainFeatureChoice>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => SPDialog(
+          title: const AppText('确认蓝光正片'),
+          content: SizedBox(
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const AppText('无法可靠确定唯一正片。多集或多标题内容请选择完整播放列表。'),
+                const SizedBox(height: 12),
+                SPDropdownButtonFormField<int>(
+                  initialValue: selected,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('选择一个蓝光标题'),
+                  ),
+                  items: [
+                    for (final candidate in shortlist)
+                      DropdownMenuItem(
+                        value: candidate.playlist,
+                        child: Text(
+                          '${candidate.programmeId}.mpls · '
+                          '${_IsoTitleSelectionDialogState._duration(candidate.duration)}',
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() => selected = value),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const AppText('取消'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.of(
+                dialogContext,
+              ).pop(const MainFeatureChoice.full()),
+              child: const AppText('完整播放列表'),
+            ),
+            FilledButton(
+              onPressed: selected == null
+                  ? null
+                  : () => Navigator.of(
+                      dialogContext,
+                    ).pop(MainFeatureChoice(selected)),
+              child: const AppText('播放所选标题'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _cancel() {
@@ -2420,6 +2498,19 @@ class BrowserPageState extends State<BrowserPage> {
     final resumeSnapshot = continueRecord?.localDiscSession;
     final resumeEdition =
         resumeSnapshot?.currentEdition ?? continueRecord?.discResumeEdition;
+    final titlePolicy = context
+        .read<AppState>()
+        .configStore
+        .current
+        .discTitleSelectionPolicy;
+    if (continueRecord?.item.playbackMode == PlaybackMode.legacyTitle) {
+      await _playLocalDiscTitles(
+        devicePath,
+        displayName,
+        sessionId: continueRecord?.playbackSessionId,
+      );
+      return;
+    }
     final selection = await showDialog<_LocalDiscLaunchSelection>(
       context: context,
       builder: (dialogContext) => SPDialog(
@@ -2440,7 +2531,11 @@ class BrowserPageState extends State<BrowserPage> {
                 mode: LocalDiscLaunchMode.longestTitle,
               ),
             ),
-            child: const AppText('主标题模式'),
+            child: AppText(
+              titlePolicy == DiscTitleSelectionPolicy.full
+                  ? '主标题模式'
+                  : '标题/播放列表模式',
+            ),
           ),
           if (resumeEdition != null)
             OutlinedButton(
@@ -2462,6 +2557,11 @@ class BrowserPageState extends State<BrowserPage> {
       ),
     );
     if (!mounted || selection == null) return;
+    if (selection.mode == LocalDiscLaunchMode.longestTitle &&
+        titlePolicy != DiscTitleSelectionPolicy.full) {
+      await _playLocalDiscTitles(devicePath, displayName);
+      return;
+    }
     try {
       final discRelativePath = _localSource!.discRelativePath(devicePath);
       final subtitles = await _isoSubtitlesForPath(_source, discRelativePath);
@@ -2533,6 +2633,49 @@ class BrowserPageState extends State<BrowserPage> {
     await context.read<AppState>().withMediaPlaybackPriority(
       () => _playRemoteBdmvPrepared(path, sessionId: sessionId),
     );
+  }
+
+  Future<void> _playLocalDiscTitles(
+    String devicePath,
+    String displayName, {
+    String? sessionId,
+  }) async {
+    final source = _localSource!;
+    final relativePath = source.discRelativePath(devicePath);
+    try {
+      final WebDavFile disc;
+      if (p.extension(devicePath).toLowerCase() == '.iso') {
+        final stat = await File(devicePath).stat();
+        disc = StorageMediaEntry(
+          name: displayName,
+          href: relativePath,
+          logicalPath: relativePath,
+          kind: MediaSourceKind.local,
+          isDirectory: false,
+          size: stat.size,
+          modified: stat.modified,
+        );
+      } else {
+        final discovered = await WebDavBdmvService.discover(
+          LocalIsoService(source),
+          relativePath,
+        );
+        disc = WebDavBdmv(
+          name: displayName,
+          href: discovered.href,
+          rootPath: discovered.rootPath,
+          files: discovered.files,
+        );
+      }
+      if (!mounted) return;
+      await _playIsoPrepared(disc, titleOnly: true, sessionId: sessionId);
+    } on AppException catch (error) {
+      if (mounted) _showLibraryError(error.message);
+    } on FileSystemException {
+      if (mounted) _showLibraryError('本地媒体已移动、删除或来源不可用');
+    } on TimeoutException {
+      if (mounted) _showLibraryError('BDMV 目录读取超时');
+    }
   }
 
   Future<void> _playRemoteBdmvPrepared(String path, {String? sessionId}) async {
@@ -2914,6 +3057,10 @@ class BrowserPageState extends State<BrowserPage> {
           updatedAt: now,
           createdAt: existingSession?.history.createdAt ?? now,
           playlistFileNames: [file.name],
+          playlistRelativePaths:
+              _isLocal && (discType == DiscType.bluray || file is WebDavBdmv)
+              ? [path]
+              : const [],
           playerPid: launch.playerIdentity.pid,
           playerExecutablePath: launch.playerIdentity.executablePath,
           playerCreationTime: launch.playerIdentity.creationTime,
@@ -6587,6 +6734,23 @@ class BrowserPageState extends State<BrowserPage> {
     if (!mounted) return;
 
     if (history.kind == PlaybackHistoryKind.iso) {
+      if (_localSource != null && history.playlistRelativePaths.isNotEmpty) {
+        try {
+          final devicePath = await _localSource!.resolveDiscDevice(
+            history.playlistRelativePaths.single,
+          );
+          if (mounted) {
+            await _playLocalDiscTitles(
+              devicePath,
+              history.fileName,
+              sessionId: history.sessionId,
+            );
+          }
+        } on AppException catch (error) {
+          if (mounted) _showLibraryError(error.message);
+        }
+        return;
+      }
       final iso = _files
           .where(
             (file) =>
@@ -6787,6 +6951,24 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
     if (_isLocal && item.kind == MediaLibraryKind.iso) {
+      if (item.playbackMode == PlaybackMode.legacyTitle &&
+          item.discRootPath != null) {
+        try {
+          final devicePath = await _localSource!.resolveDiscDevice(
+            item.discRootPath!,
+          );
+          if (mounted) {
+            await _playLocalDiscTitles(
+              devicePath,
+              item.name,
+              sessionId: resumeSessionId,
+            );
+          }
+        } on AppException catch (error) {
+          if (mounted) _showLibraryError(error.message);
+        }
+        return;
+      }
       final continueRecord = await _findLocalDiscContinueRecord(item);
       if (_isRootLocalDiscItem(item) && await _localSource!.hasDiscAt('')) {
         await _playLocalDisc(

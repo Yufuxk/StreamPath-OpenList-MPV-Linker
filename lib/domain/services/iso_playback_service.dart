@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/app_paths.dart';
 import '../../data/local/stream_path_config_store.dart';
+import '../../data/models/disc_title_selection_policy.dart';
 import '../../data/models/playback_media_info.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/media_source.dart';
@@ -18,6 +19,7 @@ import '../../data/models/web_dav_file.dart';
 import '../../data/models/webdav_bdmv.dart';
 import '../../features/cache_control/iso_cache_coordinator.dart';
 import 'iso_access_provider.dart';
+import 'main_feature_analyzer.dart';
 import 'mpv_scripts.dart';
 import 'iso_player_arguments.dart';
 import 'mpv_watch_later_sync.dart';
@@ -227,6 +229,7 @@ class _IsoRuntime {
     this.cacheSessionId,
     this.performanceTracker,
     this.sharedResumeKey,
+    this.discPolicySourceKey,
     this.playbackMode = PlaybackMode.legacyTitle,
   });
 
@@ -243,6 +246,7 @@ class _IsoRuntime {
   final File? journalFile;
   final String? cacheSessionId;
   final String? sharedResumeKey;
+  final String? discPolicySourceKey;
   final _IsoPerformanceTracker? performanceTracker;
   final PlaybackMode playbackMode;
 }
@@ -464,6 +468,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   Directory? _tempRoot;
   bool _operationActive = false;
   bool _cancelRequested = false;
+  final Map<String, DateTime> _adaptiveSlowMetadata = {};
   Completer<IsoSubtitleContext?>? _subtitleCancellation;
   bool _disposed = false;
   int _sessionSequence = 0;
@@ -504,6 +509,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     required WebDavFile file,
     IsoProgressCallback? onProgress,
     IsoTitleSelector? selectTitles,
+    MainFeatureSelector? selectMainFeature,
+    DiscType discType = DiscType.bluray,
     IsoSubtitleContext? subtitles,
     Future<IsoSubtitleContext?>? subtitlePreparation,
     Stopwatch? startupClock,
@@ -574,11 +581,108 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
       await sessionDirectory.create(recursive: true);
       await _writeBridgeStartingManifest(sessionDirectory, ownerIdentity);
+      final policy = discType == DiscType.bluray
+          ? config.discTitleSelectionPolicy
+          : DiscTitleSelectionPolicy.full;
+      final String? sourceKey = policy == DiscTitleSelectionPolicy.full
+          ? null
+          : sha256
+                .convert(
+                  utf8.encode(
+                    jsonEncode([
+                      webDavService.sourceId,
+                      webDavService.credentialSnapshot.baseUrl,
+                      webDavService.credentialSnapshot.username,
+                    ]),
+                  ),
+                )
+                .toString();
+      final confirmation = sourceKey == null
+          ? null
+          : File(
+              p.join(
+                tempRoot.parent.path,
+                'disc-feature-confirmations',
+                sha256.convert(utf8.encode('$sourceKey:$isoKey')).toString(),
+              ),
+            );
+      final confirmed = confirmation == null
+          ? null
+          : await _loadMainFeature(confirmation);
+      final lastSlowMetadata = _adaptiveSlowMetadata[sourceKey];
+      final trySingle =
+          policy == DiscTitleSelectionPolicy.single ||
+          (policy == DiscTitleSelectionPolicy.adaptive &&
+              (confirmed != null ||
+                  (cachedPath == null &&
+                      lastSlowMetadata != null &&
+                      _now().difference(lastSlowMetadata) <
+                          const Duration(minutes: 30))));
+      MainFeatureProbe? selectFeature;
+      ConfirmedMainFeature? newlyConfirmed;
+      List<MainFeatureCandidate>? featureCandidates;
+      if (trySingle) {
+        selectFeature = (candidates, revision, navigationAmbiguous) async {
+          featureCandidates = candidates;
+          final analysis = MainFeatureAnalyzer.analyze(
+            candidates,
+            navigationAmbiguous: navigationAmbiguous,
+            knownSeries: mediaInfo?.isSeries == true,
+            confirmedPlaylist: confirmed?.revision == revision
+                ? confirmed?.title.playlist
+                : null,
+          );
+          var playlist = analysis.playlist;
+          var reason = analysis.reason;
+          if (analysis.status == MainFeatureStatus.ambiguous &&
+              policy == DiscTitleSelectionPolicy.single &&
+              selectMainFeature != null) {
+            onProgress?.call(
+              IsoPlaybackProgress(
+                phase: IsoPlaybackPhase.selectingTitles,
+                fileName: file.name,
+              ),
+            );
+            final wait = Stopwatch()..start();
+            final choice = await selectMainFeature(candidates);
+            selectionWaitMs += wait.elapsedMilliseconds;
+            if (choice == null) {
+              cancel();
+              return null;
+            }
+            playlist = choice.playlist;
+            reason = playlist == null
+                ? 'user_requested_full'
+                : 'user_confirmed';
+            if (playlist != null && revision != null) {
+              newlyConfirmed = (
+                revision: revision,
+                title: candidates.singleWhere(
+                  (candidate) => candidate.playlist == playlist,
+                ),
+                candidates: candidates,
+              );
+            }
+          }
+          _logTitlePolicy(policy, playlist == null ? 'full' : 'single', reason);
+          return playlist;
+        };
+      } else if (policy == DiscTitleSelectionPolicy.adaptive) {
+        _logTitlePolicy(
+          policy,
+          'full',
+          cachedPath == null
+              ? 'insufficient_source_observations'
+              : 'local_device',
+        );
+      }
       handle = await _accessProvider.prepare(
         webDavService: webDavService,
         file: file,
         sessionDirectory: sessionDirectory,
         structureCachePath: structureCachePath,
+        selectMainFeature: selectFeature,
+        confirmedMainFeature: confirmed,
         onPhase: (phase) {
           onProgress?.call(
             IsoPlaybackProgress(
@@ -606,11 +710,26 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         await handle.cleanup();
         return null;
       }
+      final focused =
+          handle is LoopbackIsoAccessHandle && handle.mainFeatureSelected;
+      if (sourceKey != null && cachedPath == null) {
+        await _observeAdaptiveMetadata(sourceKey, handle.sessionDirectory);
+      }
+      if (trySingle && !focused) {
+        _logTitlePolicy(policy, 'full', 'native_full_catalog');
+      }
+      if (focused && featureCandidates == null) {
+        featureCandidates = confirmed!.candidates;
+        _logTitlePolicy(policy, 'single', 'verified_confirmation_fast_path');
+      }
+      if (focused && newlyConfirmed != null && confirmation != null) {
+        await _saveMainFeature(confirmation, newlyConfirmed!);
+      }
       final performance = _IsoPerformanceTracker(
         sessionDirectory: handle.sessionDirectory,
         clock: performanceClock,
         probeCompletedAtMs: probeCompletedAtMs,
-        titlesReadyAtMs: performanceClock.elapsedMilliseconds,
+        titlesReadyAtMs: performanceClock.elapsedMilliseconds - selectionWaitMs,
         helperExecutablePath: handle.helperIdentity.executablePath,
       );
       await performance.initialize();
@@ -655,14 +774,23 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       await subtitles?.refreshDiscRevision();
       startupTrace?.mark('subtitleDiscoveryJoined');
       final catalog = await _catalog();
-      subtitles?.titleCatalog = probedTitles
-          .map(
-            (title) => <String, dynamic>{
-              'id': title.programmeId,
-              'duration': title.duration.inMilliseconds / 1000,
-            },
-          )
-          .toList();
+      subtitles?.titleCatalog = focused
+          ? featureCandidates!
+                .map(
+                  (title) => <String, dynamic>{
+                    'id': title.programmeId,
+                    'duration': title.duration.inMilliseconds / 1000,
+                  },
+                )
+                .toList()
+          : probedTitles
+                .map(
+                  (title) => <String, dynamic>{
+                    'id': title.programmeId,
+                    'duration': title.duration.inMilliseconds / 1000,
+                  },
+                )
+                .toList();
       final saved = await catalog.load(isoKey);
       final orderedTitles = _applySavedOrder(probedTitles, saved.order);
       final availableIds = orderedTitles
@@ -691,14 +819,14 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
       final selectionClock = Stopwatch()..start();
       startupTrace?.mark('titleSelectionShown');
-      final selection = selectTitles == null
+      final selection = focused || selectTitles == null
           ? IsoTitleSelection.all(orderedTitles)
           : await selectTitles(request);
       if (selection == null || _cancelRequested) {
         await handle.cleanup();
         return null;
       }
-      selectionWaitMs = selectionClock.elapsedMilliseconds;
+      selectionWaitMs += selectionClock.elapsedMilliseconds;
       startupTrace?.mark('titleSelectionConfirmed');
       performance.markSelectionConfirmed();
       final validatedSelection = _validateSelection(
@@ -709,15 +837,17 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       if (selectedTitles.isEmpty) {
         throw AppException.config('至少选择一个光盘标题');
       }
-      await catalog.saveSelection(
-        isoKey,
-        order: validatedSelection.orderedTitles
-            .map((title) => title.programmeId)
-            .toList(growable: false),
-        selected: validatedSelection.selectedProgrammeIds.toList(
-          growable: false,
-        ),
-      );
+      if (!focused) {
+        await catalog.saveSelection(
+          isoKey,
+          order: validatedSelection.orderedTitles
+              .map((title) => title.programmeId)
+              .toList(growable: false),
+          selected: validatedSelection.selectedProgrammeIds.toList(
+            growable: false,
+          ),
+        );
+      }
       IsoCacheSessionPlan? cachePlan;
       final cacheCoordinator = _cacheCoordinator;
       if (cacheCoordinator != null && cachedPath == null) {
@@ -888,6 +1018,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
             ? null
             : p.basename(handle.sessionDirectory.path),
         performanceTracker: performance,
+        discPolicySourceKey: cachedPath == null ? sourceKey : null,
       );
       _runtimes[handle.sessionDirectory.path] = runtime;
       runtimeOwnsSession = true;
@@ -950,6 +1081,111 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       );
     } finally {
       _operationActive = false;
+    }
+  }
+
+  static Future<ConfirmedMainFeature?> _loadMainFeature(File file) async {
+    try {
+      if (!await file.exists()) return null;
+      final data = jsonDecode(await file.readAsString());
+      if (data is! Map<String, dynamic> ||
+          data['version'] != 1 ||
+          data['revision'] is! String ||
+          !RegExp(
+            r'^[0-9a-f]{64}:[0-9]+$',
+          ).hasMatch(data['revision'] as String) ||
+          data['candidates'] is! List) {
+        return null;
+      }
+      final candidates = MainFeatureCandidate.parseInventory(
+        data['candidates'],
+      );
+      if (candidates == null) return null;
+      final title = candidates
+          .where((item) => item.playlist == data['playlist'])
+          .firstOrNull;
+      return title == null
+          ? null
+          : (
+              revision: data['revision'] as String,
+              title: title,
+              candidates: candidates,
+            );
+    } on FileSystemException {
+      _logFeatureStorage('read_failed');
+      return null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static Future<void> _saveMainFeature(
+    File file,
+    ConfirmedMainFeature confirmation,
+  ) async {
+    try {
+      await file.parent.create(recursive: true);
+      final temporary = File('${file.path}.tmp');
+      await temporary.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'revision': confirmation.revision,
+          'playlist': confirmation.title.playlist,
+          'candidates': confirmation.candidates
+              .map((title) => title.toJson())
+              .toList(),
+        }),
+        flush: true,
+      );
+      await temporary.rename(file.path);
+    } on FileSystemException {
+      _logFeatureStorage('write_failed');
+    }
+  }
+
+  static void _logFeatureStorage(String reason) => stderr.writeln(
+    jsonEncode({'event': 'main_feature_confirmation', 'reason': reason}),
+  );
+
+  static void _logTitlePolicy(
+    DiscTitleSelectionPolicy policy,
+    String effective,
+    String reason,
+  ) {
+    stderr.writeln(
+      jsonEncode({
+        'event': 'disc_title_policy',
+        'requested': policy.name,
+        'effective': effective,
+        'reason': reason,
+      }),
+    );
+  }
+
+  Future<void> _observeAdaptiveMetadata(
+    String sourceKey,
+    Directory directory,
+  ) async {
+    final file = File(p.join(directory.path, 'iso-bridge-metrics.json'));
+    try {
+      if (!await file.exists()) return;
+      final metrics = IsoBridgeMetricsSnapshot.tryParse(
+        jsonDecode(await file.readAsString()),
+      );
+      final network = metrics?.metadataNetwork;
+      final requests = network?.requestCount ?? 0;
+      final latency = network?.responseHeaderLatencyMicroseconds ?? 0;
+      if (requests >= 8 &&
+          latency >= requests * 100000 &&
+          metrics!.errorTypes.isEmpty) {
+        _adaptiveSlowMetadata[sourceKey] = _now();
+      } else if (requests >= 8 || metrics?.errorTypes.isNotEmpty == true) {
+        _adaptiveSlowMetadata.remove(sourceKey);
+      }
+    } on FileSystemException {
+      return;
+    } on FormatException {
+      return;
     }
   }
 
@@ -1868,6 +2104,26 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           jsonDecode(await metricsFile.readAsString()),
         );
         final errorCode = metrics?.lastErrorCode;
+        final sourceKey = runtime.discPolicySourceKey;
+        if (sourceKey != null && metrics != null) {
+          final transfer = metrics.playbackNetwork;
+          final bytes = transfer?.remoteBodyBytes ?? 0;
+          final elapsedUs = transfer?.remoteTransferWallClockMicroseconds ?? 0;
+          final title = runtime.titles.firstOrNull;
+          final durationUs = title?.duration.inMicroseconds ?? 0;
+          final sustainedShortfall =
+              title != null &&
+              bytes >= 32 * 1024 * 1024 &&
+              elapsedUs > 0 &&
+              durationUs > 0 &&
+              bytes / elapsedUs < title.streamSize / durationUs;
+          if (errorCode?.isNotEmpty == true ||
+              (metrics.mediaFailureCount ?? 0) > 0 ||
+              metrics.errorTypes.isNotEmpty ||
+              sustainedShortfall) {
+            _adaptiveSlowMetadata.remove(sourceKey);
+          }
+        }
         if (errorCode != null && errorCode.isNotEmpty) {
           return isoBridgePlaybackErrorMessage(errorCode);
         }

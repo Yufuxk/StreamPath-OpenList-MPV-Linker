@@ -601,6 +601,103 @@ void test_stream_prefetch_publication() {
   }
 }
 
+void test_focused_parallel_prefetch_and_rejection() {
+  constexpr std::uint64_t block_bytes = 1024 * 1024;
+  enum class ParallelResponse { fast, rejected, slow_first_trial, slow };
+  class RangeLimit final : public std::runtime_error {
+   public:
+    RangeLimit() : std::runtime_error("simulated concurrent range limit") {}
+  };
+  class Source final : public bridge::BlockSource {
+   public:
+    explicit Source(ParallelResponse response) : response_(response) {}
+    std::uint64_t size() const override { return 464 * block_bytes; }
+    std::vector<std::uint8_t> fetch(std::uint64_t start,
+                                  std::uint64_t end) override {
+      return std::vector<std::uint8_t>(end - start + 1,
+                                      static_cast<std::uint8_t>(start / block_bytes));
+    }
+    void fetch_stream(std::uint64_t start, std::uint64_t end,
+                      const CancellationProbe& cancelled,
+                      const ChunkConsumer& consume) override {
+      const int active = ++active_;
+      struct Release {
+        std::atomic<int>& count;
+        ~Release() { --count; }
+      } release{active_};
+      if (active > 1 && response_ == ParallelResponse::rejected) {
+        ++rejections;
+        throw RangeLimit();
+      }
+      if (active > 1 && (response_ == ParallelResponse::slow ||
+          (response_ == ParallelResponse::slow_first_trial &&
+           !first_trial_delayed_.exchange(true)))) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(125));
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(35));
+      std::vector<std::uint8_t> buffer(block_bytes);
+      for (auto offset = start; offset <= end; offset += block_bytes) {
+        if (cancelled()) throw bridge::FetchCancelled(offset - start);
+        std::fill(buffer.begin(), buffer.end(),
+                  static_cast<std::uint8_t>(offset / block_bytes));
+        consume(buffer.data(), buffer.size());
+      }
+    }
+    std::atomic<int> rejections = 0;
+
+   private:
+    const ParallelResponse response_;
+    std::atomic<bool> first_trial_delayed_ = false;
+    std::atomic<int> active_ = 0;
+  };
+
+  for (const auto response : {ParallelResponse::fast, ParallelResponse::rejected,
+                              ParallelResponse::slow_first_trial, ParallelResponse::slow}) {
+    auto source = std::make_shared<Source>(response);
+    bridge::BlockCache cache(source, block_bytes, 56, 1, 2, 16, 8, true,
+                            false, 32, 4096.0 * block_bytes,
+                            [](const std::exception_ptr& error) {
+      try {
+        std::rethrow_exception(error);
+      } catch (const RangeLimit&) {
+        return true;
+      } catch (...) {
+        return false;
+      }
+    });
+    cache.configure(56, 48, false, true);
+    const auto generation = cache.begin_playback();
+    for (unsigned index = 0; index < 420; ++index) {
+      std::uint8_t byte = 0;
+      expect(cache.read(index * block_bytes, &byte, 1, 48, generation) == 1 &&
+                 byte == static_cast<std::uint8_t>(index),
+             "parallel slices preserve source block identity");
+    }
+    cache.shutdown();
+    const auto metrics = cache.metrics();
+    expect(metrics.cache_capacity_bytes == 56 * block_bytes &&
+               metrics.peak_bytes <= metrics.cache_capacity_bytes,
+           "parallel prefetch shares original cache capacity");
+    if (response == ParallelResponse::rejected) {
+      expect(source->rejections == 1 && metrics.parallel_prefetch_batches == 1 &&
+                 metrics.parallel_prefetch_rejected == 1 &&
+                 metrics.parallel_prefetch_no_gain == 0,
+             "a rejected parallel range is retried once and retires concurrency");
+    } else if (response == ParallelResponse::slow) {
+      expect(metrics.parallel_prefetch_batches == 2 &&
+                 metrics.parallel_prefetch_rejected == 0 &&
+                 metrics.parallel_prefetch_no_gain == 2,
+             "two unproductive trials retire concurrency for the session");
+    } else {
+      const bool needs_retrial = response == ParallelResponse::slow_first_trial;
+      expect(metrics.parallel_prefetch_batches >= (needs_retrial ? 3 : 2) &&
+                 metrics.parallel_prefetch_rejected == 0 &&
+                 metrics.parallel_prefetch_no_gain == (needs_retrial ? 1 : 0),
+             "a verified parallel throughput gain keeps both lanes available");
+    }
+  }
+}
+
 void test_menu_batch_tail_does_not_block_completed_prefix() {
   class TailSource final : public bridge::BlockSource {
    public:
@@ -1801,6 +1898,7 @@ int main() {
     test_cache();
     test_title_recovery_batches();
     test_stream_prefetch_publication();
+    test_focused_parallel_prefetch_and_rejection();
     test_menu_batch_tail_does_not_block_completed_prefix();
     test_metadata_cache_handoff_preserves_hot_blocks_and_refetch_history();
     test_prefetch_and_demand_share_inflight_block();

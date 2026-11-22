@@ -35,17 +35,21 @@ def process_resources(pid):
 
 class Source:
 
-    def __init__(self, root, delay, bandwidth, outage, max_concurrent_requests=0):
+    def __init__(self, root, delay, bandwidth, outage, max_concurrent_requests=0,
+                 per_request_bandwidth=0, max_large_ranges=0):
         self.root = pathlib.Path(root).resolve()
         self.count = 0
         self.bytes = 0
         self.delay = delay / 1000
         self.bandwidth = bandwidth * 1048576
+        self.per_request_bandwidth = per_request_bandwidth * 1048576
         self.lock = threading.Lock()
         self.next = 0
         self.started = time.monotonic()
         self.outage = outage
         self.max_concurrent_requests = max_concurrent_requests
+        self.max_large_ranges = max_large_ranges
+        self.active_large = 0
         self.active = self.peak = self.rejected = 0
         owner = self
 
@@ -68,10 +72,18 @@ class Source:
                 self.serve(False)
 
             def serve(self, head):
+                large = False
+                if owner.max_large_ranges and not head:
+                    value = self.headers.get('Range', '')
+                    start, separator, end = value.removeprefix('bytes=').partition('-')
+                    large = (separator and start.isdecimal() and end.isdecimal()
+                             and int(end) - int(start) + 1 >= 8 * 1048576)
                 with owner.lock:
                     owner.active += 1
+                    owner.active_large += bool(large)
                     owner.peak = max(owner.peak, owner.active)
-                    reject = owner.max_concurrent_requests and owner.active > owner.max_concurrent_requests
+                    reject = ((owner.max_concurrent_requests and owner.active > owner.max_concurrent_requests)
+                              or (large and owner.active_large > owner.max_large_ranges))
                     if reject:
                         owner.rejected += 1
                 try:
@@ -84,6 +96,7 @@ class Source:
                 finally:
                     with owner.lock:
                         owner.active -= 1
+                        owner.active_large -= bool(large)
 
             def serve_range(self, head):
                 path = (owner.root / urllib.parse.unquote(self.path).lstrip('/')).resolve() if owner.root.is_dir() else owner.root
@@ -115,6 +128,7 @@ class Source:
                     self.end_headers()
                     if head:
                         return
+                    next_send = 0
                     with path.open('rb') as f:
                         f.seek(start)
                         remaining = end - start + 1
@@ -127,6 +141,9 @@ class Source:
                             data = f.read(min(65536, remaining))
                             if not data:
                                 raise IOError('Short source read')
+                            if owner.per_request_bandwidth:
+                                next_send = max(time.monotonic(), next_send) + len(data) / owner.per_request_bandwidth
+                                time.sleep(max(0, next_send - time.monotonic()))
                             if owner.bandwidth:
                                 with owner.lock:
                                     owner.next = max(time.monotonic(), owner.next) + len(data) / owner.bandwidth
@@ -223,7 +240,9 @@ class MpvControl(Control):
 def run(args):
     root = pathlib.Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=False)
-    source = Source(args.source, args.delay_ms, args.mibps, args.outage, args.max_concurrent_requests)
+    source = Source(args.source, args.delay_ms, args.mibps, args.outage,
+                    args.max_concurrent_requests, args.per_request_mibps,
+                    args.max_large_ranges)
     player = helper = control = ipc = None
     samples = []
     began = time.monotonic()
@@ -239,6 +258,23 @@ def run(args):
         request = dict(type='open_disc' if args.mode == 'menu' else 'open', version=1, url=source.base + '/disc.iso', origin=source.base, username='', password='', sessionPath=str(session), structureCachePath=str(cache))
         if args.mode == 'menu':
             request.update(mode='disc-menu' if hello.get('discMenuVersion') == 1 else 'hdmv', transport='winfsp')
+        if args.local:
+            request['localPath'] = str(source.root.resolve())
+        if args.single:
+            if hello.get('mainFeatureVersion') != 1:
+                raise RuntimeError('Helper does not support focused discovery')
+            request['mainFeature'] = True
+        if args.confirmation:
+            snapshot = json.loads(pathlib.Path(args.confirmation).read_text(encoding='utf8'))
+            confirmed = next(item for item in snapshot['candidates']
+                             if item['playlist'] == int(args.playlist))
+            revision = snapshot['revision']
+            if not revision:
+                raise RuntimeError('Candidate has no verified source revision')
+            if args.stale_confirmation:
+                revision = '0' * 64 + revision[64:]
+            request.update(confirmedRevision=revision, confirmedPlaylist=confirmed['playlist'],
+                           confirmedTitleIndex=confirmed['titleIndex'])
         if source.root.is_dir():
             request['sourceKind'] = 'bdmv'
         control.send(request)
@@ -248,12 +284,34 @@ def run(args):
             control.send(dict(type='files_end'))
         while True:
             ready = control.receive()
+            if ready['type'] == 'titleCandidates':
+                (root / 'candidates.json').write_text(json.dumps(ready, indent=2), encoding='utf8')
+                reply = dict(type='selectCandidate')
+                if args.single == 'select':
+                    if int(args.playlist) not in [item['playlist'] for item in ready['candidates']]:
+                        raise RuntimeError('Requested candidate is missing')
+                    reply['playlist'] = int(args.playlist)
+                control.send(reply)
+                continue
             if ready['type'] != 'metrics':
                 break
+        if args.confirmation and (root / 'candidates.json').exists() != args.stale_confirmation:
+            raise RuntimeError('Unexpected reuse of confirmed programme')
         prepare_ms = (time.monotonic() - began) * 1000
-        (root / 'ready.json').write_text(json.dumps(ready, indent=2), encoding='utf8')
+        public_ready = {key: value for key, value in ready.items() if key != 'token'}
+        (root / 'ready.json').write_text(json.dumps(public_ready, indent=2), encoding='utf8')
         if ready['type'] != 'ready':
             raise RuntimeError(ready)
+        if args.single == 'select' and not ready.get('mainFeatureSelected'):
+            raise RuntimeError('Helper did not materialize the selected title')
+        if args.mode == 'title':
+            title = (next(title for title in ready['titles']
+                          if (title.get('programmeId') or title.get('mplsId')) == args.playlist)
+                     if args.playlist else max(ready['titles'], key=lambda t: t['durationMs']))
+            programme = title.get('programmeId') or title.get('mplsId')
+            route = (f'dvd/title/{int(programme[10:]):05}.vob'
+                     if programme.startswith('dvd-title-') else f'title/{programme}.m2ts')
+            playback_url = f"http://127.0.0.1:{ready['port']}/{ready['token']}/{route}"
         print(json.dumps(dict(mode=args.mode, prepareMs=round(prepare_ms, 2), metadataRequests=source.count, metadataBytes=source.bytes)), flush=True)
         if args.verify_bytes:
             checks = []
@@ -277,12 +335,11 @@ def run(args):
                             raise RuntimeError('Mounted bytes differ from the read-only source')
                         checks.append(dict(file=original.name, offset=offset, bytes=len(data), sha256=hashlib.sha256(data).hexdigest()))
             else:
-                title = max(ready['titles'], key=lambda t: t['durationMs'])
                 length = title['size']
-                for offset in [0, 3 * 1024 ** 3, max(0, length - 65536)]:
+                tail = max(0, length - 65536)
+                for offset in sorted({0, min(3 * 1024 ** 3, tail), tail}):
                     end = min(length - 1, offset + 65535)
-                    url = f"http://127.0.0.1:{ready['port']}/{ready['token']}/title/{title['mplsId']}.m2ts"
-                    request = urllib.request.Request(url, headers={'Range': f'bytes={offset}-{end}'})
+                    request = urllib.request.Request(playback_url, headers={'Range': f'bytes={offset}-{end}'})
                     with urllib.request.urlopen(request, timeout=60) as response:
                         data = response.read()
                         if response.status != 206 or len(data) != end - offset + 1:
@@ -295,8 +352,9 @@ def run(args):
             control = None
             helper.wait(timeout=15)
             return
-        control.send(dict(type='configure_cache', blockCount=args.cache_blocks, prefetchBlocks=args.prefetch_blocks, **{'cacheSecs': 60} if args.mode == 'menu' else {}))
-        assert control.receive().get('configured') is True
+        if not (args.mode == 'menu' and args.local):
+            control.send(dict(type='configure_cache', blockCount=args.cache_blocks, prefetchBlocks=args.prefetch_blocks, **{'cacheSecs': 60} if args.mode == 'menu' else {}))
+            assert control.receive().get('configured') is True
         env = os.environ.copy()
         if args.runtime:
             runtime = pathlib.Path(args.runtime).resolve()
@@ -313,8 +371,7 @@ def run(args):
         if args.mode == 'menu':
             common += ['--bluray-device=' + ready['discPath'], 'bd://menu']
         else:
-            title = max(ready['titles'], key=lambda t: t['durationMs'])
-            common += ['--start=600', f"http://127.0.0.1:{ready['port']}/{ready['token']}/title/{title['mplsId']}.m2ts"]
+            common += ['--start=600', playback_url]
         with (root / 'mpv.log').open('wb') as log:
             spawn_started = time.monotonic()
             player = subprocess.Popen(common, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -349,6 +406,7 @@ def run(args):
         play_started = spawn_started
         actions = set()
         menu_visible_since = None
+        seek_points = [0.5, 0.1, 0.8, 0.2, 0.96, 0.4]
         while time.monotonic() - play_started < args.seconds and player.poll() is None:
             elapsed = time.monotonic() - play_started
             if args.mode == 'menu':
@@ -359,6 +417,11 @@ def run(args):
             if args.seconds >= 180 and elapsed >= args.seconds / 2 and ('seek' not in actions):
                 actions.add('seek')
                 samples.append(dict(ms=round(elapsed * 1000), command='seek', result=ipc.command('seek', 1200, 'absolute+exact')))
+            if args.seek_stress and seek_points and elapsed >= args.seek_start + 4 * (6 - len(seek_points)):
+                duration = title['durationMs'] / 1000
+                target = round(duration * seek_points.pop(0), 3)
+                samples.append(dict(ms=round(elapsed * 1000), command='seek', target=target,
+                                    result=ipc.command('seek', target, 'absolute+exact')))
             if args.visible and elapsed > args.seconds - 3 and ('screenshot' not in actions):
                 actions.add('screenshot')
                 ipc.command('screenshot-to-file', str(root / 'menu.png'), 'window')
@@ -401,6 +464,11 @@ def run(args):
         metrics = root / 'session' / 'iso-bridge-metrics.json'
         result = dict(mode=args.mode, prepareMs=round(locals().get('prepare_ms', 0), 2), requestedSeconds=args.seconds, measuredPlaybackSeconds=round(locals().get('play_elapsed', 0), 2), delayMs=args.delay_ms, MiBps=args.mibps, serverRequests=source.count, serverBytes=source.bytes, menuObserved=any((s.get('disc-menu-active') is True for s in samples)), mainFeatureObserved=any(((s.get('duration') or 0) > 6000 and (s.get('time-pos') or 0) > 3 and s.get('disc-menu-active') is not True for s in samples)), cachePausedSamples=sum((s.get('paused-for-cache') is True for s in samples)), headless=not args.visible)
         result.update(serverRejected429=source.rejected, serverConcurrentPeak=source.peak)
+        result.update(perRequestMiBps=args.per_request_mibps, maxLargeRanges=args.max_large_ranges)
+        result.update(single=args.single, local=args.local, playlist=args.playlist,
+                      helperExit=helper.poll() if helper is not None else None,
+                      mpvExit=player.poll() if player is not None else None,
+                      seekCommands=sum(row.get('command') == 'seek' for row in samples))
         if 'alignment' in locals():
             entries = [json.loads(line) for line in events.read_text(encoding='utf8').splitlines()]
             result['clockUncertaintyMs'] = round(alignment['uncertaintyMs'], 2)
@@ -421,8 +489,10 @@ if __name__ == '__main__':
     parser.add_argument('--cache')
     parser.add_argument('--delay-ms', type=float, default=20)
     parser.add_argument('--mibps', type=float, default=20)
+    parser.add_argument('--per-request-mibps', type=float, default=0)
     parser.add_argument('--outage', type=float, default=0)
     parser.add_argument('--max-concurrent-requests', type=int, default=0)
+    parser.add_argument('--max-large-ranges', type=int, default=0, help='Limit concurrent Range requests of at least 8 MiB')
     parser.add_argument('--seconds', type=int, default=65)
     parser.add_argument('--cache-blocks', type=int, default=16)
     parser.add_argument('--prefetch-blocks', type=int, default=12)
@@ -430,9 +500,24 @@ if __name__ == '__main__':
     parser.add_argument('--visible', action='store_true')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--verify-bytes', action='store_true')
+    parser.add_argument('--playlist', help='Use this exact programme ID in both benchmark variants')
+    parser.add_argument('--single', choices=['select', 'fallback'])
+    parser.add_argument('--confirmation', help='Reuse the verified revision from a candidates.json snapshot')
+    parser.add_argument('--stale-confirmation', action='store_true')
+    parser.add_argument('--local', action='store_true', help='Use the direct local Bridge source')
+    parser.add_argument('--seek-stress', action='store_true')
+    parser.add_argument('--seek-start', type=float, default=8, help='Seconds before the first stress seek')
     args = parser.parse_args()
     if not args.prepare_only and (not args.mpv):
         parser.error('--mpv is required for playback')
-    if min(args.delay_ms, args.mibps, args.outage, args.max_concurrent_requests) < 0 or args.outage >= 40 or args.seconds <= 0:
+    if min(args.delay_ms, args.mibps, args.per_request_mibps, args.outage, args.max_concurrent_requests,
+           args.max_large_ranges, args.seek_start) < 0 or args.outage >= 40 or args.seconds <= 0:
         parser.error('Invalid shaping or duration')
+    if args.mode == 'menu' and (args.single or args.playlist or args.seek_stress):
+        parser.error('Single, playlist and seek-stress require title mode')
+    if args.single == 'select' and (not args.playlist or not args.playlist.isascii() or
+                                   not args.playlist.isdecimal() or len(args.playlist) != 5):
+        parser.error('Single selection requires a five-digit MPLS ID')
+    if (args.confirmation and args.single != 'select') or (args.stale_confirmation and not args.confirmation):
+        parser.error('Confirmation checks require --single select and a candidate snapshot')
     run(args)

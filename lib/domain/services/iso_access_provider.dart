@@ -12,6 +12,7 @@ import '../../core/errors/app_exception.dart';
 import '../../data/models/web_dav_file.dart';
 import '../../data/models/webdav_bdmv.dart';
 import 'iso_bridge_client.dart';
+import 'main_feature_analyzer.dart';
 import 'player_process_controller.dart';
 import 'webdav_service.dart';
 
@@ -569,6 +570,8 @@ abstract interface class IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   });
 
   void cancel();
@@ -613,6 +616,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
     this.bdjDetected = false,
     this.discType = DiscType.bluray,
     this.unavailableDvdTitles = const [],
+    this.mainFeatureSelected = false,
   });
 
   @override
@@ -634,6 +638,7 @@ class LoopbackIsoAccessHandle implements RemoteDiscAccessHandle {
   final DiscType discType;
   @override
   final List<int> unavailableDvdTitles;
+  final bool mainFeatureSelected;
   bool _attached = false;
   bool _cleaned = false;
 
@@ -772,6 +777,8 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   }) async {
     if (!Platform.isWindows) {
       throw AppException.config('ISO Bridge 仅支持 Windows x64');
@@ -823,6 +830,9 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         throw const IsoBridgeProtocolException('ISO Bridge hello 响应无效');
       }
       final menuMode = hello['discMenuVersion'] == 1 ? 'disc-menu' : 'hdmv';
+      final featureProbe = hello['mainFeatureVersion'] == 1
+          ? selectMainFeature
+          : null;
       final snapshot = webDavService.credentialSnapshot;
       final cachedDisc = await webDavService.cachedDiscPath(file);
       phase = IsoAccessPhase.probingStream;
@@ -834,6 +844,12 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         'version': 1,
         if (mediaProbe) 'mediaProbe': true,
         if (discProbe) 'detectOnly': true,
+        if (featureProbe != null) 'mainFeature': true,
+        if (featureProbe != null && confirmedMainFeature != null) ...{
+          'confirmedRevision': confirmedMainFeature.revision,
+          'confirmedPlaylist': confirmedMainFeature.title.playlist,
+          'confirmedTitleIndex': confirmedMainFeature.title.titleIndex,
+        },
         if (file is WebDavBdmv) 'sourceKind': 'bdmv',
         'localPath': ?cachedDisc,
         'url': webDavService.resolveUrl(file.href),
@@ -855,8 +871,37 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         await client.send({'type': 'files_end'});
       }
       Map<String, dynamic> response;
+      var candidateSelectionReceived = false;
       while (true) {
         response = await client.receive();
+        if (response['type'] == 'titleCandidates' &&
+            featureProbe != null &&
+            !candidateSelectionReceived) {
+          candidateSelectionReceived = true;
+          final candidates = MainFeatureCandidate.parseInventory(
+            response['candidates'],
+          );
+          final revision = response['revision'];
+          final navigation = response['navigationAmbiguous'];
+          if (candidates == null ||
+              revision is! String ||
+              (revision.isNotEmpty &&
+                  !RegExp(r'^[0-9a-f]{64}:[0-9]+$').hasMatch(revision)) ||
+              navigation is! bool) {
+            throw const IsoBridgeProtocolException(
+              'Invalid Blu-ray candidate inventory',
+            );
+          }
+          final playlist = await featureProbe(
+            candidates,
+            revision.isEmpty ? null : revision,
+            navigation,
+          );
+          if (_cancelRequested) throw AppException.network('ISO 流式播放已取消');
+          onPhase?.call(IsoAccessPhase.parsingTitles);
+          await client.send({'type': 'selectCandidate', 'playlist': ?playlist});
+          continue;
+        }
         if (response['type'] != 'metrics') break;
         if (response['stage'] == 'parsingTitles') {
           phase = IsoAccessPhase.parsingTitles;
@@ -907,6 +952,8 @@ class IsoBridgeAccessProvider implements IsoAccessProvider {
         bdjDetected: ready.bdjDetected,
         discType: ready.discType,
         unavailableDvdTitles: ready.unavailableDvdTitles,
+        mainFeatureSelected:
+            featureProbe != null && response['mainFeatureSelected'] == true,
       );
       _activeProcess = null;
       _activeClient = null;

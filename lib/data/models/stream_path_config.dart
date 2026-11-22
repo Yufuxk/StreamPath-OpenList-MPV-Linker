@@ -9,6 +9,7 @@ import 'media_library_config.dart';
 import 'openlist_recovery_config.dart';
 import 'player_config.dart';
 import 'server_profile.dart';
+import 'disc_title_selection_policy.dart';
 import 'special_playlist_mode.dart';
 import 'video_playlist_mode.dart';
 import 'video_window_mode.dart';
@@ -97,6 +98,7 @@ class StreamPathConfig {
     this.externalAudioInjectionEnabled = true,
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
     this.videoPlaylistSimpleNaming = true,
+    this.discTitleSelectionPolicy = DiscTitleSelectionPolicy.full,
     this.videoPlaylistInsertDecimalEpisodes = false,
     this.implicitPlaylistWindowSize =
         PlayerConfig.defaultImplicitPlaylistWindowSize,
@@ -169,6 +171,7 @@ class StreamPathConfig {
   final bool externalAudioInjectionEnabled;
   final VideoPlaylistMode videoPlaylistMode;
   final bool videoPlaylistSimpleNaming;
+  final DiscTitleSelectionPolicy discTitleSelectionPolicy;
   final bool videoPlaylistInsertDecimalEpisodes;
 
   /// 隐式播放列表单次注入的集数上限，含当前集；范围 2～10。
@@ -246,6 +249,7 @@ class StreamPathConfig {
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
+    discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
     implicitPlaylistWindowSize: implicitPlaylistWindowSize,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
@@ -301,6 +305,7 @@ class StreamPathConfig {
       externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
       videoPlaylistMode: player.videoPlaylistMode,
       videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
+      discTitleSelectionPolicy: player.discTitleSelectionPolicy,
       videoPlaylistInsertDecimalEpisodes:
           player.videoPlaylistInsertDecimalEpisodes,
       implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
@@ -468,6 +473,7 @@ class StreamPathConfig {
     externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
     videoPlaylistMode: player.videoPlaylistMode,
     videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
+    discTitleSelectionPolicy: player.discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes:
         player.videoPlaylistInsertDecimalEpisodes,
     implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
@@ -525,6 +531,7 @@ class StreamPathConfig {
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
+    discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
     implicitPlaylistWindowSize: implicitPlaylistWindowSize,
     autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,
@@ -580,6 +587,7 @@ class StreamPathConfig {
     'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
     'videoPlaylistMode': videoPlaylistMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
+    'discTitleSelectionPolicy': discTitleSelectionPolicy.name,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
     'implicitPlaylistWindowSize': implicitPlaylistWindowSize,
     'autoSeasonTransitionEnabled': autoSeasonTransitionEnabled,
@@ -702,6 +710,9 @@ class StreamPathConfig {
       videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
       videoPlaylistSimpleNaming:
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
+      discTitleSelectionPolicy: DiscTitleSelectionPolicy.fromJson(
+        json['discTitleSelectionPolicy'],
+      ),
       videoPlaylistInsertDecimalEpisodes:
           (json['videoPlaylistInsertDecimalEpisodes'] as bool?) ?? false,
       implicitPlaylistWindowSize: implicitPlaylistWindowSizeFromJson(
@@ -783,6 +794,7 @@ class StreamPathConfig {
         externalAudioInjectionEnabled: externalAudioInjectionEnabled,
         videoPlaylistMode: videoPlaylistMode,
         videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
+        discTitleSelectionPolicy: discTitleSelectionPolicy,
         videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
         implicitPlaylistWindowSize: implicitPlaylistWindowSize,
         autoSeasonTransitionEnabled: autoSeasonTransitionEnabled,

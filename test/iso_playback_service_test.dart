@@ -12,6 +12,7 @@ import 'package:streampath/data/models/webdav_bdmv.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
 import 'package:streampath/domain/services/bd_java_runtime.dart';
 import 'package:streampath/domain/services/iso_access_provider.dart';
+import 'package:streampath/domain/services/main_feature_analyzer.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/domain/services/webdav_service.dart';
@@ -219,6 +220,8 @@ class _FakeIsoAccessProvider implements IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   }) async {
     prepareCalled = true;
     this.structureCachePath = structureCachePath;
@@ -249,6 +252,8 @@ class _BlockingIsoAccessProvider implements IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   }) async {
     await onHelperStarted?.call(_helperIdentity);
     entered.complete();
@@ -273,6 +278,8 @@ class _FailingIsoAccessProvider implements IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   }) async {
     onPhase?.call(IsoAccessPhase.startingBridge);
     throw StateError('unsendable isolate context');

@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <sstream>
 
@@ -613,6 +614,12 @@ BlockCacheMetrics combine_sequential_cache_metrics(
   combined.prefetch_concurrent_wall_clock_us =
       metadata.prefetch_concurrent_wall_clock_us +
       playback.prefetch_concurrent_wall_clock_us;
+  combined.parallel_prefetch_batches =
+      metadata.parallel_prefetch_batches + playback.parallel_prefetch_batches;
+  combined.parallel_prefetch_no_gain =
+      metadata.parallel_prefetch_no_gain + playback.parallel_prefetch_no_gain;
+  combined.parallel_prefetch_rejected =
+      metadata.parallel_prefetch_rejected + playback.parallel_prefetch_rejected;
   combined.refetch_count_available = metadata.refetch_count_available &&
                                      playback.refetch_count_available;
   return combined;
@@ -625,7 +632,9 @@ BlockCache::BlockCache(std::shared_ptr<BlockSource> source,
                        std::size_t prefetch_batch_blocks,
                        std::size_t recovery_prefetch_batch_blocks,
                        bool stream_prefetch, bool compact_extents,
-                       std::size_t maximum_stream_batch_blocks)
+                       std::size_t maximum_stream_batch_blocks,
+                       double target_prefetch_bytes_per_second,
+                       std::function<bool(const std::exception_ptr&)> rejects_parallel_prefetch)
     : source_(std::move(source)),
       block_size_(block_size),
       configuration_block_scale_(configuration_block_scale),
@@ -635,6 +644,8 @@ BlockCache::BlockCache(std::shared_ptr<BlockSource> source,
       stream_prefetch_(stream_prefetch),
       compact_extents_(compact_extents),
       maximum_stream_batch_blocks_(maximum_stream_batch_blocks),
+      target_prefetch_bytes_per_second_(target_prefetch_bytes_per_second),
+      rejects_parallel_prefetch_(std::move(rejects_parallel_prefetch)),
       stable_batch_blocks_(prefetch_batch_blocks),
       block_count_(block_count * configuration_block_scale),
       max_read_ahead_blocks_(kMaximumPlaybackReadAheadBlocks *
@@ -1140,12 +1151,24 @@ void BlockCache::schedule_prefetch(std::uint64_t next_offset,
 }
 
 void BlockCache::prefetch_loop() {
+  // 只使用持续完成的大批次判定单路供数，跳过起播和 Seek 的短批次。
+  constexpr std::uint64_t kMeasuredBatchBytes = 16ULL * 1024 * 1024;
+  constexpr std::uint64_t kRetrialSingleBytes = 96ULL * 1024 * 1024;
+  unsigned slow_batches = 0;
+  double single_rate_total = 0;
+  std::uint64_t measured_generation = 0;
+  std::uint64_t bytes_until_retrial = 0;
+  bool retrial_available = true;
+  bool parallel_verified = false;
+  bool parallel_retired = false;
   while (true) {
     std::vector<std::pair<std::uint64_t, std::shared_ptr<Entry>>> batch;
     std::uint64_t generation = 0;
     std::uint64_t fetch_start = 0;
     std::uint64_t fetch_end = 0;
     std::uint64_t in_flight_bytes = 0;
+    bool measure_batch = false;
+    bool parallel = false;
     {
       std::unique_lock lock(mutex_);
       prefetch_ready_.wait(lock,
@@ -1168,11 +1191,22 @@ void BlockCache::prefetch_loop() {
         batch_start = prefetch_next_;
         const bool short_disc_window = protect_read_ahead_ &&
             prefetch_end_ - prefetch_window_start_ <= 2 * initial_prefetch_batch_blocks_;
+        const bool steady_batch = !initial_prefetch_batch_ &&
+            !short_disc_window && !recovery_prefetch_batch_;
+        measure_batch = steady_batch && target_prefetch_bytes_per_second_ > 0 &&
+            !parallel_retired && stream_prefetch_;
+        if (measure_batch && !parallel_verified &&
+            measured_generation != prefetch_generation_) {
+          measured_generation = prefetch_generation_;
+          slow_batches = 0;
+          single_rate_total = 0;
+        }
+        const bool try_parallel = measure_batch && slow_batches >= 2;
         const std::size_t batch_blocks =
             (initial_prefetch_batch_ || short_disc_window)
                 ? initial_prefetch_batch_blocks_
                 : (recovery_prefetch_batch_ ? recovery_prefetch_batch_blocks_
-                                            : stable_batch_blocks_);
+                    : stable_batch_blocks_ * (try_parallel ? 2 : 1));
         const std::uint64_t batch_limit = std::min<std::uint64_t>(
             prefetch_end_, batch_start + batch_blocks);
         batch_count = 0;
@@ -1180,6 +1214,8 @@ void BlockCache::prefetch_loop() {
                entries_.find(batch_start + batch_count) == entries_.end()) {
           ++batch_count;
         }
+        parallel = try_parallel && batch_count >= 2 &&
+            batch_count * block_size_ >= kMeasuredBatchBytes;
         if (has_capacity_for(batch_start, batch_count)) break;
         if (evict_one_locked()) continue;
         space_available_.wait(lock);
@@ -1220,6 +1256,7 @@ void BlockCache::prefetch_loop() {
       prefetch_pending_ = prefetch_next_ < prefetch_end_;
       ++metrics_.requests;
       ++metrics_.prefetch_requests;
+      if (parallel) ++metrics_.parallel_prefetch_batches;
       fetch_start = batch.front().first * block_size_;
       const std::uint64_t last_start = batch.back().first * block_size_;
       const std::uint64_t last_length =
@@ -1233,59 +1270,155 @@ void BlockCache::prefetch_loop() {
     }
 
     std::uint64_t published_bytes = 0;
+    const auto transfer_start = measure_batch ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
     try {
       if (stream_prefetch_) {
-        std::size_t next_entry = 0;
-        std::vector<std::uint8_t> partial;
-        source_->fetch_stream(fetch_start, fetch_end, [this, generation] {
+        const auto cancelled = [this, generation] {
           std::lock_guard lock(mutex_);
           return stopping_ || generation != prefetch_generation_;
-        }, [&](const std::uint8_t* data, std::size_t size) {
-          while (size > 0) {
-            if (next_entry == batch.size()) {
-              throw std::runtime_error("block source returned excess bytes");
+        };
+        const auto fetch_slice = [&](std::size_t next_entry, std::size_t limit,
+                                     std::uint64_t start, std::uint64_t end,
+                                     std::uint64_t& slice_published) {
+          std::vector<std::uint8_t> partial;
+          source_->fetch_stream(start, end, cancelled, [&](const std::uint8_t* data, std::size_t size) {
+            while (size > 0) {
+              if (next_entry == limit) {
+                throw std::runtime_error("block source returned excess bytes");
+              }
+              auto& [index, entry] = batch[next_entry];
+              const auto length = static_cast<std::size_t>(
+                  std::min(block_size_, source_->extent_end(index * block_size_) - index * block_size_));
+              const auto copy = std::min(size, length - partial.size());
+              partial.insert(partial.end(), data, data + copy);
+              data += copy;
+              size -= copy;
+              if (partial.size() != length) continue;
+              std::lock_guard lock(mutex_);
+              if (stopping_ || generation != prefetch_generation_) {
+                throw FetchCancelled(slice_published + partial.size());
+              }
+              // 已验证响应中的完整块立即可用；残块不进入缓存。
+              entry->bytes = std::move(partial);
+              partial.clear();
+              entry->prefetched = true;
+              entry->loading = false;
+              resident_bytes_ += length;
+              published_bytes += length;
+              slice_published += length;
+              metrics_.fetched_bytes += length;
+              metrics_.prefetched_bytes += length;
+              metrics_.prefetch_fetch_bytes += length;
+              metrics_.peak_bytes = std::max(metrics_.peak_bytes, resident_bytes_);
+              if (refetch_count_available_) {
+                try {
+                  if (!fetched_block_indices_.insert(index).second) ++metrics_.refetch_count;
+                } catch (const std::bad_alloc&) {
+                  refetch_count_available_ = false;
+                  fetched_block_indices_.clear();
+                }
+              }
+              ++next_entry;
+              if (trace_ && next_entry == 1) trace_->record("batch_first_block", 0,
+                  index * block_size_, length, generation);
+              entry->ready.notify_all();
+              space_available_.notify_all();
+              entry.reset();
             }
-            auto& [index, entry] = batch[next_entry];
-            const auto length = static_cast<std::size_t>(
-                std::min(block_size_, source_->extent_end(index * block_size_) - index * block_size_));
-            const auto copy = std::min(size, length - partial.size());
-            partial.insert(partial.end(), data, data + copy);
-            data += copy;
-            size -= copy;
-            if (partial.size() != length) continue;
-            std::lock_guard lock(mutex_);
-            if (stopping_ || generation != prefetch_generation_) {
-              throw FetchCancelled(published_bytes + partial.size());
+          });
+          if (next_entry != limit || !partial.empty()) {
+            throw std::runtime_error("block source returned an invalid length");
+          }
+        };
+        if (parallel) {
+          std::uint64_t discarded = 0;
+          std::uint64_t head_published = 0;
+          std::uint64_t tail_published = 0;
+          const auto finish_slice = [&](auto&& fetch, const std::uint64_t& complete) {
+            try {
+              fetch();
+              return std::exception_ptr{};
+            } catch (const FetchCancelled& error) {
+              discarded += error.received_bytes() -
+                  std::min(error.received_bytes(), complete);
+              return std::current_exception();
+            } catch (...) {
+              return std::current_exception();
             }
-            // 已验证响应中的完整块立即可用；残块不进入缓存。
-            entry->bytes = std::move(partial);
-            partial.clear();
-            entry->prefetched = true;
-            entry->loading = false;
-            resident_bytes_ += length;
-            published_bytes += length;
-            metrics_.fetched_bytes += length;
-            metrics_.prefetched_bytes += length;
-            metrics_.prefetch_fetch_bytes += length;
-            metrics_.peak_bytes = std::max(metrics_.peak_bytes, resident_bytes_);
-            if (refetch_count_available_) {
-              try {
-                if (!fetched_block_indices_.insert(index).second) ++metrics_.refetch_count;
-              } catch (const std::bad_alloc&) {
-                refetch_count_available_ = false;
-                fetched_block_indices_.clear();
+          };
+          const auto middle = batch.size() / 2;
+          const auto split = batch[middle].first * block_size_;
+          auto tail = std::async(std::launch::async, [&] {
+            fetch_slice(middle, batch.size(), split, fetch_end, tail_published);
+          });
+          const auto head = finish_slice([&] {
+            fetch_slice(0, middle, fetch_start, split - 1, head_published);
+          }, head_published);
+          const auto tail_error = finish_slice([&] { tail.get(); }, tail_published);
+          if (cancelled()) throw FetchCancelled(published_bytes + discarded);
+          const auto check_error = [&](const std::exception_ptr& error, std::uint64_t complete) {
+            if (error && (complete != 0 || !rejects_parallel_prefetch_ ||
+                          !rejects_parallel_prefetch_(error))) {
+              std::rethrow_exception(error);
+            }
+          };
+          check_error(head, head_published);
+          check_error(tail_error, tail_published);
+          if (head || tail_error) {
+            // 限并发响应在传输正文前失败。只串行补被拒绝的区间。
+            parallel_retired = true;
+            {
+              std::lock_guard lock(mutex_);
+              ++metrics_.parallel_prefetch_rejected;
+            }
+            const auto retry = [&](auto&& fetch, const std::uint64_t& complete) {
+              if (cancelled()) throw FetchCancelled(published_bytes + discarded);
+              const auto error = finish_slice(fetch, complete);
+              if (cancelled()) throw FetchCancelled(published_bytes + discarded);
+              if (error) std::rethrow_exception(error);
+            };
+            if (head) retry([&] {
+              fetch_slice(0, middle, fetch_start, split - 1, head_published);
+            }, head_published);
+            if (tail_error) retry([&] {
+              fetch_slice(middle, batch.size(), split, fetch_end, tail_published);
+            }, tail_published);
+          }
+        } else {
+          std::uint64_t slice_published = 0;
+          fetch_slice(0, batch.size(), fetch_start, fetch_end, slice_published);
+        }
+        if (measure_batch && in_flight_bytes >= kMeasuredBatchBytes &&
+            !parallel_retired && !parallel_verified) {
+          std::lock_guard lock(mutex_);
+          if (!stopping_ && generation == prefetch_generation_) {
+            const auto elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - transfer_start).count();
+            const double rate = static_cast<double>(in_flight_bytes) / elapsed;
+            if (parallel) {
+              parallel_verified = rate >= (single_rate_total / slow_batches) * 1.25;
+              if (!parallel_verified) {
+                ++metrics_.parallel_prefetch_no_gain;
+                // 首次收益不足时，先积累单路供数再允许复测一次。
+                parallel_retired = !retrial_available;
+                retrial_available = false;
+                bytes_until_retrial = kRetrialSingleBytes;
+                slow_batches = 0;
+                single_rate_total = 0;
+              }
+            } else if (bytes_until_retrial != 0) {
+              bytes_until_retrial -= std::min(bytes_until_retrial, in_flight_bytes);
+            } else if (!parallel && slow_batches < 2) {
+              if (rate < target_prefetch_bytes_per_second_) {
+                ++slow_batches;
+                single_rate_total += rate;
+              } else {
+                slow_batches = 0;
+                single_rate_total = 0;
               }
             }
-            ++next_entry;
-            if (trace_ && next_entry == 1) trace_->record("batch_first_block", 0,
-                index * block_size_, length, generation);
-            entry->ready.notify_all();
-            space_available_.notify_all();
-            entry.reset();
           }
-        });
-        if (published_bytes != fetch_end - fetch_start + 1 || !partial.empty()) {
-          throw std::runtime_error("block source returned an invalid length");
         }
       } else {
         auto bytes = source_->fetch(fetch_start, fetch_end, [this, generation] {

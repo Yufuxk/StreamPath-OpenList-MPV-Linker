@@ -17,7 +17,9 @@ import 'package:streampath/data/models/app_language.dart';
 import 'package:streampath/data/models/player_config.dart';
 import 'package:streampath/data/models/playback_history.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
+import 'package:streampath/data/models/disc_title_selection_policy.dart';
 import 'package:streampath/domain/services/iso_access_provider.dart';
+import 'package:streampath/domain/services/main_feature_analyzer.dart';
 import 'package:streampath/domain/services/disc_programme.dart';
 import 'package:streampath/domain/services/remote_menu_playback_service.dart';
 import 'package:streampath/domain/services/iso_playback_service.dart';
@@ -64,6 +66,7 @@ class _BlockingIsoProvider implements IsoAccessProvider {
   Object? prepareError;
   String? preparedCachedPath;
   WebDavCredentialSnapshot? preparedCredentials;
+  List<MainFeatureCandidate>? candidateInventory;
 
   @override
   Future<IsoAccessHandle> prepare({
@@ -73,6 +76,8 @@ class _BlockingIsoProvider implements IsoAccessProvider {
     required String structureCachePath,
     void Function(IsoAccessPhase phase)? onPhase,
     Future<void> Function(PlayerProcessIdentity identity)? onHelperStarted,
+    MainFeatureProbe? selectMainFeature,
+    ConfirmedMainFeature? confirmedMainFeature,
   }) async {
     _sessionDirectory = sessionDirectory;
     preparedFile = file;
@@ -87,6 +92,10 @@ class _BlockingIsoProvider implements IsoAccessProvider {
     await onHelperStarted?.call(_widgetHelperIdentity);
     onPhase?.call(IsoAccessPhase.probingStream);
     if (!entered.isCompleted) entered.complete();
+    final candidates = candidateInventory;
+    if (candidates != null && selectMainFeature != null) {
+      await selectMainFeature(candidates, null, true);
+    }
     if (completeImmediately) {
       sessionDirectory.createSync(recursive: true);
       return dvd
@@ -224,6 +233,7 @@ void main() {
   late Map<int, bool> processAlive;
   bool serveBdmv = false;
   DiscType detectedType = DiscType.bluray;
+  DiscTitleSelectionPolicy titlePolicy = DiscTitleSelectionPolicy.full;
   Completer<DiscType>? discTypeGate;
 
   setUpAll(() {
@@ -234,6 +244,7 @@ void main() {
   setUp(() async {
     serveBdmv = false;
     detectedType = DiscType.bluray;
+    titlePolicy = DiscTitleSelectionPolicy.full;
     discTypeGate = null;
     tempDirectory = Directory.systemTemp.createTempSync(
       'browser_iso_playback_',
@@ -279,7 +290,11 @@ void main() {
         },
       ),
       configLoader: () async =>
-          const PlayerConfig(name: 'MPV', executable: r'C:\Tools\mpv.exe'),
+          PlayerConfig(
+            name: 'MPV',
+            executable: r'C:\Tools\mpv.exe',
+            discTitleSelectionPolicy: titlePolicy,
+          ),
       processStarter: (_, _, {Map<String, String>? environment}) async => _widgetPlayerIdentity.pid,
       ownerIdentityLoader: () async => _widgetOwnerIdentity,
       tempRootProvider: () async => Directory(
@@ -719,6 +734,41 @@ void main() {
     expect(isoRootIsEmpty, isTrue);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('单一模式有歧义时可以回到完整标题列表', (tester) async {
+    tester.view.physicalSize = const Size(1100, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    titlePolicy = DiscTitleSelectionPolicy.single;
+    isoProvider.completeImmediately = true;
+    isoProvider.candidateInventory = [
+      for (final playlist in [0, 1])
+        MainFeatureCandidate(
+          playlist: playlist,
+          duration: const Duration(minutes: 40),
+          chapters: 6,
+          clips: 2,
+          video: true,
+          alternate: false,
+        ),
+    ];
+    await tester.pumpWidget(buildBrowser());
+    await settleBrowser(tester);
+    await tester.tap(find.text('DISC.iso'));
+    await waitForWidget(tester, find.text('确认蓝光正片'));
+    expect(tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '播放所选标题'),
+    ).onPressed, isNull);
+    await tester.tap(find.widgetWithText(OutlinedButton, '完整播放列表'));
+    await waitForWidget(tester, find.byKey(const Key('iso-title-selection-dialog')));
+    await tester.tap(find.widgetWithText(TextButton, '取消播放'));
+    await pumpUntil(
+      tester,
+      () => !isoPlaybackService.isBusy,
+      reason: 'Cancelled selection must release the ISO service',
+    );
   });
 
   testWidgets('远程 BDMV 根目录进入复用 Title 选择并可取消', (tester) async {
