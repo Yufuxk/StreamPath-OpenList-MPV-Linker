@@ -55,12 +55,18 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
   final _scroll = ScrollController();
   List<FilmPlaylist> _lists = [];
   FilmPlaylistSnapshot? _snapshot;
+  List<FilmPlaylistEntry>? _entriesBeforeDrop;
   String? _selected;
-  bool _busy = false, _pending = false, _dragging = false;
+  bool _loading = false, _actionBusy = false;
+  bool _pending = false, _dragging = false;
+  bool _dragProxyBuilt = false;
   bool _loop = false;
   bool _loaded = false;
   String? _error;
   Timer? _reload;
+  bool get _busy => _loading || _actionBusy;
+  bool get _reordering => _dragging || _entriesBeforeDrop != null;
+  bool get _playbackActionsBlocked => _actionBusy || _reordering;
   @override
   void initState() {
     super.initState();
@@ -86,7 +92,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       _pending = true;
       return;
     }
-    _busy = true;
+    _loading = true;
     final ok = await widget.catalog.run(() async {
       if (widget.playlistId == null) {
         _lists = await widget.catalog.store.playlists(
@@ -100,7 +106,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
     });
     if (!mounted) return;
     setState(() {
-      _busy = false;
+      _loading = false;
       _loaded = true;
       _error = ok ? null : widget.catalog.error;
     });
@@ -120,10 +126,10 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
 
   Future<bool> _mutate(Future<void> Function() action) async {
     if (_busy) return false;
-    setState(() => _busy = true);
+    setState(() => _actionBusy = true);
     final ok = await widget.catalog.run(action);
     if (!mounted) return ok;
-    setState(() => _busy = false);
+    setState(() => _actionBusy = false);
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         SPNotice(content: AppText(filmCatalogErrorText(widget.catalog.error!))),
@@ -136,9 +142,10 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
     if (_busy) return;
     final snapshot = _snapshot!;
     final previous = List<FilmPlaylistEntry>.of(snapshot.entries);
-    setState(
-      () => snapshot.entries.insert(to, snapshot.entries.removeAt(from)),
-    );
+    setState(() {
+      _entriesBeforeDrop = previous;
+      snapshot.entries.insert(to, snapshot.entries.removeAt(from));
+    });
     final ok = await _mutate(
       () => widget.catalog.store.reorderPlaylist(
         snapshot.playlist.id,
@@ -154,15 +161,36 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       });
     }
     await _load();
+    if (mounted) setState(() => _entriesBeforeDrop = null);
+  }
+
+  void _beginDrag(int _) {
+    setState(() {
+      _dragProxyBuilt = false;
+      _dragging = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 同一帧内取消时，浮层尚未构建，没有 dispose 回调。
+      if (!_dragProxyBuilt) _finishDrag();
+    });
+  }
+
+  void _finishDrag() {
+    if (!mounted || !_dragging) return;
+    setState(() => _dragging = false);
+    if (_pending) {
+      _pending = false;
+      _changed();
+    }
   }
 
   Future<void> _play(int index) async {
-    if (_busy) return;
+    if (_busy || _reordering) return;
     await _start(entryId: _snapshot!.entries[index].id);
   }
 
   Future<void> _playAll({bool shuffle = false}) async {
-    if (_busy) return;
+    if (_busy || _reordering) return;
     await _start(shuffle: shuffle);
   }
 
@@ -277,7 +305,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final local = overlay.globalToLocal(position);
-    setState(() => _busy = true);
+    setState(() => _actionBusy = true);
     final action = await showSPMenu<String>(
       context: context,
       color: AppTheme.dropdownMenuColor(Theme.of(context)),
@@ -358,7 +386,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       ],
     );
     if (!mounted) return;
-    setState(() => _busy = false);
+    setState(() => _actionBusy = false);
     if (action == null) {
       await _load();
       return;
@@ -595,16 +623,19 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                                     0,
                                   ),
                                   buildDefaultDragHandles: false,
-                                  proxyDecorator: spReorderProxy,
-                                  onReorderItem: _reorder,
-                                  onReorderStart: (_) => _dragging = true,
-                                  onReorderEnd: (_) {
-                                    _dragging = false;
-                                    if (_pending) {
-                                      _pending = false;
-                                      _changed();
-                                    }
+                                  proxyDecorator: (child, index, animation) {
+                                    _dragProxyBuilt = true;
+                                    return _PlaylistDragProxy(
+                                      onRemoved: _finishDrag,
+                                      child: spReorderProxy(
+                                        child,
+                                        index,
+                                        animation,
+                                      ),
+                                    );
                                   },
+                                  onReorderItem: _reorder,
+                                  onReorderStart: _beginDrag,
                                   itemCount: snapshot.entries.length,
                                   itemBuilder: (_, i) => _row(snapshot, i),
                                 );
@@ -646,7 +677,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
     final works =
         entries.map((e) => e.workId).whereType<int>().toSet().length +
         entries.where((e) => e.workId == null).length;
-    final cover = entries
+    final cover = (_entriesBeforeDrop ?? entries)
         .where((e) => (e.artwork ?? '').isNotEmpty)
         .firstOrNull;
     final meta = [
@@ -654,7 +685,8 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       context.l10n.format('{count} 项', {'count': entries.length}),
       context.l10n.format('{count} 部作品', {'count': works}),
     ].join(' · ');
-    final playable = available > 0 && !_busy;
+    final actionsBlocked = _playbackActionsBlocked;
+    final playable = available > 0 && !actionsBlocked;
     final info = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -715,75 +747,93 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
           ),
         ],
         const SizedBox(height: 14),
-        Wrap(
-          spacing: AppTheme.controlGap,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            FilmDetailPlayButton(
-              buttonKey: const Key('playlist-play-all'),
-              label: const AppText('全部播放'),
-              onPressed: playable ? () => _playAll() : null,
-            ),
-            SPButton(
-              controlKey: const Key('playlist-shuffle'),
-              minimumHeight: 44,
-              icon: Icon(
-                SPIcons.shuffle,
-                size: 16,
-                color: theme.colorScheme.primary,
+        _playbackActions(
+          Wrap(
+            spacing: AppTheme.controlGap,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              FilmDetailPlayButton(
+                buttonKey: const Key('playlist-play-all'),
+                label: const AppText('全部播放'),
+                onPressed: playable ? () => _playAll() : null,
               ),
-              label: const AppText('随机播放'),
-              onPressed: playable ? () => _playAll(shuffle: true) : null,
-            ),
-            Semantics(
-              toggled: _loop,
-              child: SPButton(
-                controlKey: const Key('playlist-loop'),
-                kind: _loop ? SPButtonKind.tonal : SPButtonKind.secondary,
+              SPButton(
+                controlKey: const Key('playlist-shuffle'),
                 minimumHeight: 44,
                 icon: Icon(
-                  SPIcons.repeat,
+                  SPIcons.shuffle,
                   size: 16,
-                  color: _loop
-                      ? theme.colorScheme.onPrimaryContainer
+                  color: actionsBlocked
+                      ? theme.colorScheme.onSurface.withValues(alpha: .38)
                       : theme.colorScheme.primary,
                 ),
-                label: const AppText('循环播放'),
-                onPressed: _busy ? null : () => setState(() => _loop = !_loop),
+                label: const AppText('随机播放'),
+                onPressed: playable ? () => _playAll(shuffle: true) : null,
               ),
-            ),
-          ],
+              Semantics(
+                toggled: _loop,
+                child: SPButton(
+                  controlKey: const Key('playlist-loop'),
+                  kind: _loop ? SPButtonKind.tonal : SPButtonKind.secondary,
+                  minimumHeight: 44,
+                  icon: Icon(
+                    SPIcons.repeat,
+                    size: 16,
+                    color: actionsBlocked
+                        ? theme.colorScheme.onSurface.withValues(alpha: .38)
+                        : _loop
+                        ? theme.colorScheme.onPrimaryContainer
+                        : theme.colorScheme.primary,
+                  ),
+                  label: const AppText('循环播放'),
+                  onPressed: actionsBlocked
+                      ? null
+                      : () {
+                          if (!_busy) setState(() => _loop = !_loop);
+                        },
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );
     Widget artwork() {
       final item = cover;
       final path = item?.artwork;
+      final target = item?.display['artworkTarget'] as String? ?? 'w342';
       return ClipRRect(
         key: const Key('playlist-header-cover'),
         borderRadius: BorderRadius.circular(12),
-        child: item == null || path == null || path.isEmpty
-            ? ColoredBox(
-                color: theme.colorScheme.surfaceContainerHigh,
-                child: const Icon(SPIcons.list, size: 32),
-              )
-            : FilmWatchOverlay(
-                store: widget.catalog.store,
-                resource: item.resource,
-                workId: item.workId,
-                sourceId: snapshot.playlist.sourceId,
-                path: item.queueItem.versions.first.path,
-                spoilerSensitive: item.display['episodeArtwork'] == true,
-                showStatus: false,
-                canReveal: false,
-                child: FilmArtwork(
-                  cache: widget.catalog.images,
-                  path: path,
-                  target: item.display['artworkTarget'] as String? ?? 'w342',
-                  aspectRatio: 16 / 9,
-                ),
-              ),
+        child: AnimatedSwitcher(
+          duration: AppTheme.hoverDuration,
+          child: KeyedSubtree(
+            key: ValueKey((item?.id, path, target)),
+            child: item == null || path == null || path.isEmpty
+                ? ColoredBox(
+                    color: theme.colorScheme.surfaceContainerHigh,
+                    child: const Icon(SPIcons.list, size: 32),
+                  )
+                : FilmWatchOverlay(
+                    store: widget.catalog.store,
+                    resource: item.resource,
+                    workId: item.workId,
+                    sourceId: snapshot.playlist.sourceId,
+                    path: item.queueItem.versions.first.path,
+                    spoilerSensitive: item.display['episodeArtwork'] == true,
+                    showStatus: false,
+                    canReveal: false,
+                    child: FilmArtwork(
+                      cache: widget.catalog.images,
+                      path: path,
+                      target: target,
+                      aspectRatio: 16 / 9,
+                      showCachedImmediately: true,
+                    ),
+                  ),
+          ),
+        ),
       );
     }
 
@@ -820,6 +870,22 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
       ),
     );
   }
+
+  Widget _playbackActions(Widget child) => AnimatedSwitcher(
+    duration: AppTheme.hoverDuration,
+    layoutBuilder: (current, previous) => Stack(
+      alignment: Alignment.topLeft,
+      children: [
+        for (final fading in previous)
+          ExcludeSemantics(
+            key: fading.key,
+            child: ExcludeFocus(child: IgnorePointer(child: fading)),
+          ),
+        ?current,
+      ],
+    ),
+    child: KeyedSubtree(key: ValueKey(_reordering), child: child),
+  );
 
   Widget _row(FilmPlaylistSnapshot snapshot, int index) {
     final entry = snapshot.entries[index];
@@ -927,7 +993,9 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                 ),
                 IconButton(
                   tooltip: context.l10n.text('播放此文件'),
-                  onPressed: _busy ? null : () => _play(index),
+                  onPressed: _playbackActionsBlocked
+                      ? null
+                      : () => _play(index),
                   icon: const Icon(SPIcons.play),
                 ),
                 if (!snapshot.playlist.readOnly) ...[
@@ -954,7 +1022,7 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
                   ),
                   SPReorderHandle(
                     index: index,
-                    enabled: !_busy,
+                    enabled: !_busy && !_reordering,
                     tooltip: context.l10n.text('拖动排序'),
                   ),
                 ],
@@ -964,6 +1032,29 @@ class _FilmPlaylistPageState extends State<FilmPlaylistPage>
         ),
       ),
     );
+  }
+}
+
+class _PlaylistDragProxy extends StatefulWidget {
+  const _PlaylistDragProxy({required this.child, required this.onRemoved});
+
+  final Widget child;
+  final VoidCallback onRemoved;
+
+  @override
+  State<_PlaylistDragProxy> createState() => _PlaylistDragProxyState();
+}
+
+class _PlaylistDragProxyState extends State<_PlaylistDragProxy> {
+  @override
+  Widget build(BuildContext context) => widget.child;
+
+  @override
+  void dispose() {
+    // 浮层移除后才结束拖动，无移动或取消也走同一收尾路径。
+    final onRemoved = widget.onRemoved;
+    WidgetsBinding.instance.addPostFrameCallback((_) => onRemoved());
+    super.dispose();
   }
 }
 

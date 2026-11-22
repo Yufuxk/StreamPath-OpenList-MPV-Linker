@@ -198,7 +198,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
   Map<String, PlaybackProgress> _videoContinue = const {};
   Map<String, PlaybackProgress> _audioContinue = const {};
   Map<String, IsoLibraryProgress> _isoContinue = const {};
-  bool _savingFilmContinueOrder = false;
+  List<String>? _pendingFilmContinueOrder;
   ({int index, List<String> keys})? _filmContinueDrag;
   Key _filmContinueListKey = UniqueKey();
 
@@ -1270,9 +1270,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     }
     final catalog = widget.filmCatalog!;
     final remaining = {for (final record in records) record.recordKey: record};
+    final order =
+        _pendingFilmContinueOrder ??
+        catalog.store.continueDisplayOrder(catalog.sourceId);
     final displayed = [
-      for (final key in catalog.store.continueDisplayOrder(catalog.sourceId))
-        ?remaining.remove(key),
+      for (final key in order) ?remaining.remove(key),
       ...remaining.values,
     ];
     if (widget.filmContinueAll) {
@@ -1318,7 +1320,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
                       reorderHandle: SPReorderHandle(
                         index: i,
                         tooltip: context.l10n.text('拖动排序'),
-                        enabled: !_savingFilmContinueOrder,
+                        enabled: _pendingFilmContinueOrder == null,
                       ),
                     ),
                     onReorderStart: (index) =>
@@ -1392,7 +1394,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     order.insert(to, order.removeAt(from));
     setState(() {
       _filmContinueDrag = null;
-      _savingFilmContinueOrder = true;
+      _pendingFilmContinueOrder = order;
     });
     try {
       await catalog.store.setContinueDisplayOrder(catalog.sourceId, order);
@@ -1400,7 +1402,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
       debugPrint('Could not save film resume display order: $error');
       _showError('无法保存继续播放顺序');
     } finally {
-      if (mounted) setState(() => _savingFilmContinueOrder = false);
+      if (mounted) setState(() => _pendingFilmContinueOrder = null);
     }
   }
 

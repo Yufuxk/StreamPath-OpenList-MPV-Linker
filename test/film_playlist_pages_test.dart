@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
@@ -1041,39 +1042,176 @@ void main() {
         _fixture,
       ))!;
       try {
+        await tester.runAsync(() async {
+          final tv = (await catalog.store.resources()).firstWhere(
+            (resource) => resource.type == FilmMediaType.tv,
+          );
+          await catalog.store.saveSeason(tv.workId!, 1, 'en', {
+            'episodes': [
+              for (final i in [1, 2])
+                {'episode_number': i, 'still_path': '/drag-cover-$i.png'},
+            ],
+          });
+          await catalog.images.directory.create(recursive: true);
+          for (final (i, color) in [(1, Colors.indigo), (2, Colors.orange)]) {
+            final recorder = ui.PictureRecorder();
+            Canvas(recorder).drawPaint(Paint()..color = color);
+            final picture = recorder.endRecording();
+            final image = await picture.toImage(96, 54);
+            final bytes = (await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            ))!;
+            image.dispose();
+            picture.dispose();
+            final name = FilmCatalogImageCache.cacheKey(
+              '/drag-cover-$i.png',
+              'w300',
+            );
+            await File(
+              '${catalog.images.directory.path}/$name.img',
+            ).writeAsBytes(bytes.buffer.asUint8List());
+          }
+        });
         final initial = (await tester.runAsync(
           () => catalog.store.playlistSnapshot(id),
         ))!;
+        const renderKey = Key('playlist-landing-frame');
         await tester.pumpWidget(
-          _frame(
-            app,
-            FilmPlaylistPage(
-              catalog: catalog,
-              playlistId: id,
-              onPlay: (_, _, {bool loop = false}) async {},
+          RepaintBoundary(
+            key: renderKey,
+            child: _frame(
+              app,
+              FilmPlaylistPage(
+                catalog: catalog,
+                playlistId: id,
+                onPlay: (_, _, {bool loop = false}) async {},
+              ),
             ),
           ),
         );
         await _settle(tester);
         final handle = find.byType(ReorderableDragStartListener).first;
+        final playAll = find.byKey(const Key('playlist-play-all'));
+        final cover = find.byKey(const Key('playlist-header-cover'));
+        String? artworkPath() => tester
+            .widget<FilmArtwork>(
+              find.descendant(of: cover, matching: find.byType(FilmArtwork)),
+            )
+            .path;
+        final originalCover = artworkPath();
+        expect(originalCover, '/drag-cover-1.png');
+        final cancelled = await tester.startGesture(tester.getCenter(handle));
+        await cancelled.moveBy(const Offset(0, 20));
+        await cancelled.cancel();
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(tester.widget<FilledButton>(playAll).onPressed, isNotNull);
+
         final drag = await tester.startGesture(tester.getCenter(handle));
         await drag.moveBy(const Offset(0, 20));
-        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 80));
+        expect(playAll, findsNWidgets(2));
+        expect(tester.widgetList<FilledButton>(playAll).last.onPressed, isNull);
+        await tester.pump(const Duration(milliseconds: 170));
         await drag.moveBy(const Offset(0, 200));
         await tester.pump(const Duration(milliseconds: 500));
+        expect(tester.widget<FilledButton>(playAll).onPressed, isNull);
+        expect(artworkPath(), originalCover);
         await drag.up();
+        await tester.pump(const Duration(milliseconds: 125));
+        expect(tester.widget<FilledButton>(playAll).onPressed, isNull);
+        expect(artworkPath(), originalCover);
+        final coverArtwork = find.descendant(
+          of: cover,
+          matching: find.byType(FilmArtwork),
+        );
+        var crossfaded = false;
+        for (var frame = 0; frame < 45; frame++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 16)),
+          );
+          await tester.pump(const Duration(milliseconds: 16));
+          if (coverArtwork.evaluate().length == 2) {
+            expect(
+              tester
+                  .widgetList<FilmArtwork>(coverArtwork)
+                  .map((art) => art.path),
+              ['/drag-cover-1.png', '/drag-cover-2.png'],
+            );
+            crossfaded = true;
+            break;
+          }
+        }
+        expect(crossfaded, isTrue);
+        final db = (await tester.runAsync(
+          () => databaseFactoryFfi.openDatabase(catalog.store.path),
+        ))!;
+        late Completer<void> allowRead;
+        late Future<void> transaction;
+        await tester.runAsync(() async {
+          final transactionStarted = Completer<void>();
+          allowRead = Completer<void>();
+          transaction = db.transaction((_) async {
+            transactionStarted.complete();
+            await allowRead.future;
+          });
+          await transactionStarted.future;
+        });
+        try {
+          catalog.store.notifyListeners();
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(renderKey),
+          );
+          final rect = tester.getRect(playAll.last);
+          final point = boundary.globalToLocal(
+            Offset(rect.left + 10, rect.top + 10),
+          );
+          var previousBlue = 0;
+          final blueSamples = <int>[];
+          var stayedEnabled = true;
+          for (var frame = 0; frame < 21; frame++) {
+            await tester.pump(const Duration(milliseconds: 16));
+            final blue = (await tester.runAsync(() async {
+              final image = await boundary.toImage(pixelRatio: 1);
+              final bytes = (await image.toByteData())!;
+              final sample = bytes.getUint8(
+                (point.dy.floor() * image.width + point.dx.floor()) * 4 + 2,
+              );
+              image.dispose();
+              return sample;
+            }))!;
+            blueSamples.add(blue);
+            expect(
+              blue,
+              greaterThanOrEqualTo(previousBlue - 4),
+              reason:
+                  'button fill should only brighten after drop: $blueSamples',
+            );
+            previousBlue = blue;
+            stayedEnabled &=
+                tester.widget<FilledButton>(playAll.last).onPressed != null;
+          }
+          expect(previousBlue, greaterThan(180), reason: '$blueSamples');
+          expect(stayedEnabled, isTrue);
+        } finally {
+          await tester.runAsync(() async {
+            allowRead.complete();
+            await transaction;
+          });
+        }
         await _settle(tester);
+        expect(tester.widget<FilledButton>(playAll).onPressed, isNotNull);
+        expect(artworkPath(), '/drag-cover-2.png');
         expect(
           (await tester.runAsync(
             () => catalog.store.playlistSnapshot(id),
           ))!.entries.map((e) => e.title),
           ['Series', 'Movie', 'Series'],
         );
-        final db = await tester.runAsync(
-          () => databaseFactoryFfi.openDatabase(catalog.store.path),
-        );
         await tester.runAsync(
-          () => db!.execute(
+          () => db.execute(
             "CREATE TRIGGER fail_playlist_reorder BEFORE UPDATE OF position ON film_playlist_items BEGIN SELECT RAISE(ABORT,'fixture'); END",
           ),
         );
@@ -1084,6 +1222,7 @@ void main() {
           view.onReorderItem!(0, 2);
         });
         await _settle(tester);
+        expect(artworkPath(), '/drag-cover-2.png');
         final first = initial.entries[1].id;
         expect(
           tester.getTopLeft(find.byKey(ValueKey(first))).dy,
@@ -1092,7 +1231,7 @@ void main() {
           ),
         );
         await tester.runAsync(() async {
-          await db!.execute('DROP TRIGGER fail_playlist_reorder');
+          await db.execute('DROP TRIGGER fail_playlist_reorder');
         });
         await tester.pumpWidget(const SizedBox.shrink());
         await _settle(tester);

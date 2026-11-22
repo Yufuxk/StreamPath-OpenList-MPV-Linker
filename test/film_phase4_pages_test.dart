@@ -1285,8 +1285,13 @@ void main() {
     await drag.moveTo(second - const Offset(0, 10));
     await tester.pump(const Duration(milliseconds: 500));
     await drag.up();
-    await settle(tester);
     final reordered = originalKeys.reversed.toList();
+    for (var frame = 0; frame < 20; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      if (frame < 16) continue;
+      expect(visibleOrder(), reordered, reason: '落位后第 ${frame + 1} 帧');
+    }
+    await settle(tester);
     expect(visibleOrder(), reordered);
     expect(
       (await tester.runAsync(history))!.map((record) => record.toJson()),
