@@ -12,7 +12,7 @@
 // 原生视频容器不负责启动、结束或恢复媒体会话。
 class MpvWindowHost {
  public:
-  MpvWindowHost(flutter::BinaryMessenger* messenger, HWND root,
+  MpvWindowHost(flutter::BinaryMessenger* messenger, HWND root, HWND flutter_view,
                 std::function<bool(bool)> fullscreen,
                 std::function<bool()> is_fullscreen);
   ~MpvWindowHost();
@@ -30,9 +30,12 @@ class MpvWindowHost {
     bool menu_installed = false;
     HWND player = nullptr;
   };
+  static LRESULT CALLBACK FlutterViewProc(HWND window, UINT message,
+      WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data);
   void Handle(const flutter::MethodCall<flutter::EncodableValue>& call,
               std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   HWND root_;
+  HWND flutter_view_;
   std::function<bool(bool)> fullscreen_;
   std::function<bool()> is_fullscreen_;
   std::map<int64_t, Surface> surfaces_;

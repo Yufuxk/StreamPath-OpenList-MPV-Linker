@@ -7,7 +7,49 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from embedded_mpv_probe import k
+from embedded_mpv_probe import k, u
+
+
+def activate_test_window(hwnd, pid):
+    u.GetForegroundWindow.restype = w.HWND
+    u.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
+    u.GetAncestor.argtypes = [w.HWND, w.UINT]
+    u.GetAncestor.restype = w.HWND
+    u.WindowFromPoint.argtypes = [w.POINT]
+    u.WindowFromPoint.restype = w.HWND
+    u.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
+    u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+    u.mouse_event.argtypes = [w.DWORD, w.DWORD, w.DWORD, w.DWORD, c.c_size_t]
+    owner = w.DWORD()
+    u.GetWindowThreadProcessId(hwnd, c.byref(owner))
+    if owner.value != pid:
+        raise RuntimeError('Keyboard test window does not belong to the host')
+    if u.GetForegroundWindow() == hwnd:
+        return
+    # 只有命中本次验收窗口时才发送激活点击。
+    bounds = w.RECT()
+    cursor = w.POINT()
+    flags = 0x13  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    if not u.GetCursorPos(c.byref(cursor)):
+        raise c.WinError(c.get_last_error())
+    try:
+        u.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)
+        if not u.GetWindowRect(hwnd, c.byref(bounds)):
+            raise c.WinError(c.get_last_error())
+        point = w.POINT((bounds.left + bounds.right) // 2,
+                        (bounds.top + bounds.bottom) // 2)
+        if u.GetAncestor(u.WindowFromPoint(point), 2) != hwnd:
+            raise RuntimeError('Keyboard test window is covered')
+        if not u.SetCursorPos(point.x, point.y):
+            raise c.WinError(c.get_last_error())
+        u.mouse_event(0x0002, 0, 0, 0, 0)
+        u.mouse_event(0x0004, 0, 0, 0, 0)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and u.GetForegroundWindow() != hwnd:
+            time.sleep(.02)
+    finally:
+        u.SetCursorPos(cursor.x, cursor.y)
+        u.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--app', required=True)
@@ -22,8 +64,18 @@ env = dict(os.environ, STREAMPATH_PATH_MPV=args.mpv,
     STREAMPATH_EMBED_ACCEPTANCE_DIR=str(output),
     STREAMPATH_EMBED_ACCEPTANCE_MEDIA=str(Path(args.media).resolve()))
 with (output/'stdout.log').open('w') as stdout, (output/'stderr.log').open('w') as stderr:
+    keyboard_window = output / 'keyboard-window.txt'
+    keyboard_window.unlink(missing_ok=True)
     app = subprocess.Popen([str(Path(args.app).resolve())], env=env,
         stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+    deadline = time.monotonic() + 40
+    while app.poll() is None and time.monotonic() < deadline:
+        if keyboard_window.exists():
+            hwnd = keyboard_window.read_text(encoding='utf-8')
+            if hwnd.endswith('\n'):
+                activate_test_window(int(hwnd), app.pid)
+                break
+        time.sleep(.05)
     app.wait(timeout=90)
 result = json.loads((output/'result.json').read_text(encoding='utf-8'))
 handle = None

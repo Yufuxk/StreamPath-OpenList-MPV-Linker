@@ -13,6 +13,8 @@ constexpr UINT kMenuStop = 0x1f20;
 constexpr UINT kMenuSeparator = 0x1f30;
 constexpr UINT kMenuFullscreen = 0x1f40;
 constexpr UINT_PTR kSurfaceSubclassId = 1;
+constexpr UINT_PTR kFlutterViewSubclassId = 1;
+constexpr UINT kRestorePlayerFocus = WM_APP + 63;
 
 // 顶部标题栏与窗口边缘命中交给父窗口，视频区保留给 MPV 子窗口。
 bool DelegatesToHostFrame(HWND root, LPARAM lparam, bool fullscreen) {
@@ -130,9 +132,12 @@ void SyncPlayerWindowState(HWND root, HWND player, bool fullscreen) {
 }  // namespace
 
 MpvWindowHost::MpvWindowHost(flutter::BinaryMessenger* messenger, HWND root,
+    HWND flutter_view,
     std::function<bool(bool)> fullscreen, std::function<bool()> is_fullscreen)
-    : root_(root), fullscreen_(std::move(fullscreen)),
+    : root_(root), flutter_view_(flutter_view), fullscreen_(std::move(fullscreen)),
       is_fullscreen_(std::move(is_fullscreen)) {
+  SetWindowSubclass(flutter_view_, FlutterViewProc, kFlutterViewSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this));
   channel_ = std::make_unique<flutter::MethodChannel<Value>>(
       messenger, "streampath/mpv_window", &flutter::StandardMethodCodec::GetInstance());
   channel_->SetMethodCallHandler([this](const auto& call, auto result) {
@@ -141,7 +146,24 @@ MpvWindowHost::MpvWindowHost(flutter::BinaryMessenger* messenger, HWND root,
 }
 
 MpvWindowHost::~MpvWindowHost() {
+  RemoveWindowSubclass(flutter_view_, FlutterViewProc, kFlutterViewSubclassId);
   channel_->SetMethodCallHandler(nullptr);
+}
+
+LRESULT CALLBACK MpvWindowHost::FlutterViewProc(
+    HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+    UINT_PTR subclass_id, DWORD_PTR ref_data) {
+  auto* host = reinterpret_cast<MpvWindowHost*>(ref_data);
+  if (message == WM_SETFOCUS && !host->surfaces_.empty()) {
+    // 等当前焦点消息处理完毕，再将键盘焦点交还给可见的播放器。
+    PostMessage(window, kRestorePlayerFocus, 0, 0);
+  } else if (message == kRestorePlayerFocus) {
+    if (GetFocus() == window) host->Focus();
+    return 0;
+  } else if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(window, FlutterViewProc, subclass_id);
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
 }
 
 void MpvWindowHost::NotifyWindowState() {
@@ -159,12 +181,14 @@ void MpvWindowHost::NotifyWindowState() {
 }
 
 bool MpvWindowHost::Focus() {
-  for (auto& entry : surfaces_) {
-    auto& surface = entry.second;
-    if (IsWindowVisible(surface.window) &&
-        OwnedWindow(surface.player, surface.pid)) {
+  if (GetForegroundWindow() != root_ || IsIconic(root_)) return false;
+  for (const auto& entry : surfaces_) {
+    const auto& surface = entry.second;
+    if (OwnedWindow(surface.player, surface.pid) &&
+        GetParent(surface.player) == surface.window &&
+        IsWindowVisible(surface.player)) {
       SetFocus(surface.player);
-      return true;
+      return GetFocus() == surface.player;
     }
   }
   return false;

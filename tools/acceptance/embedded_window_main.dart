@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:ui' show ViewFocusDirection, ViewFocusState;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
@@ -44,7 +45,7 @@ Future<void> main() async {
     ),
   );
   WidgetsBinding.instance.addPostFrameCallback(
-    (_) => unawaited(_verify(directory, executable, coordinator)),
+    (_) => unawaited(_verify(directory, executable, coordinator, navigation)),
   );
 }
 
@@ -52,6 +53,7 @@ Future<void> _verify(
   Directory directory,
   String executable,
   MpvWindowCoordinator coordinator,
+  MpvPlaybackNavigation navigation,
 ) async {
   final result = <String, Object?>{};
   PlayerLaunchResult? launched;
@@ -258,29 +260,100 @@ Future<void> _verify(
     );
     result['parent_matches'] = GetParent(window) == launch.host;
     result['input_enabled'] = IsWindowEnabled(window) != 0;
-    final gui = calloc<GUITHREADINFO>();
-    try {
-      gui.ref.cbSize = sizeOf<GUITHREADINFO>();
-      final thread = GetWindowThreadProcessId(window, nullptr);
-      result['keyboard_focus'] =
-          GetGUIThreadInfo(thread, gui) != 0 && gui.ref.hwndFocus == window;
-      if (result['keyboard_focus'] != true) {
-        throw StateError('MPV keyboard focus was not restored');
+    int keyboardFocus() {
+      final gui = calloc<GUITHREADINFO>();
+      try {
+        gui.ref.cbSize = sizeOf<GUITHREADINFO>();
+        return GetGUIThreadInfo(0, gui) != 0 ? gui.ref.hwndFocus : 0;
+      } finally {
+        free(gui);
       }
-    } finally {
-      free(gui);
     }
+
+    await File(
+      p.join(directory.path, 'keyboard-window.txt'),
+    ).writeAsString('$root\n');
+    await waitFor(
+      () async => GetForegroundWindow() == root && keyboardFocus() == window,
+      'foreground keyboard focus',
+    );
+    result['keyboard_focus'] = true;
     result['vo'] = await connection.getProperty('current-vo');
     result['input_default_bindings'] = await connection.getProperty(
       'input-default-bindings',
     );
-    SendMessage(window, WM_KEYDOWN, VK_F23, 1);
-    SendMessage(window, WM_KEYUP, VK_F23, 0xc0000001);
-    await waitFor(
-      () async => await connection.getProperty('speed') == 1.5,
-      'native key input',
-    );
+    void pressF23() {
+      final input = calloc<INPUT>(2);
+      try {
+        input[0].type = input[1].type = INPUT_KEYBOARD;
+        input[0].ki.wVk = input[1].ki.wVk = VK_F23;
+        input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        if (SendInput(2, input, sizeOf<INPUT>()) != 2) {
+          throw StateError('Could not inject keyboard input');
+        }
+      } finally {
+        free(input);
+      }
+    }
+
+    Future<void> verifyShortcut(String description) async {
+      await connection.setProperty('speed', 1.0);
+      if (GetForegroundWindow() != root) {
+        throw StateError('Acceptance window lost foreground: $description');
+      }
+      pressF23();
+      await waitFor(
+        () async => await connection.getProperty('speed') == 1.5,
+        description,
+      );
+    }
+
+    await verifyShortcut('native key input');
     result['native_key_input'] = true;
+    final dispatcher = WidgetsBinding.instance.platformDispatcher;
+    dispatcher.requestViewFocusChange(
+      viewId: dispatcher.implicitView!.viewId,
+      state: ViewFocusState.focused,
+      direction: ViewFocusDirection.forward,
+    );
+    // 等原生窗口处理在前台发出的 Flutter 焦点请求。
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    result['foreground_after_flutter_focus_request'] =
+        GetForegroundWindow() == root;
+    result['mpv_focus_after_flutter_focus_request'] = keyboardFocus() == window;
+    await verifyShortcut('native key input after Flutter focus request');
+    if (keyboardFocus() != window) {
+      throw StateError('Player lost focus after Flutter focus request');
+    }
+
+    final dialog = showDialog<void>(
+      context: navigation.navigatorKey.currentContext!,
+      builder: (_) => const AlertDialog(content: TextField(autofocus: true)),
+    );
+    await waitFor(
+      () async => IsWindowVisible(launch.host) == 0,
+      'video hidden behind the Flutter dialog',
+    );
+    dispatcher.requestViewFocusChange(
+      viewId: dispatcher.implicitView!.viewId,
+      state: ViewFocusState.focused,
+      direction: ViewFocusDirection.forward,
+    );
+    await waitFor(
+      () async =>
+          IsChild(root, keyboardFocus()) != 0 &&
+          IsChild(launch.host, keyboardFocus()) == 0,
+      'Flutter dialog retains keyboard focus',
+    );
+    navigation.navigatorKey.currentState!.pop();
+    await dialog;
+    await waitFor(
+      () async => keyboardFocus() == window,
+      'player regains focus after Flutter dialog closes',
+    );
+    await verifyShortcut('native key input after Flutter dialog closes');
+    result['dialog_focus_restore'] = true;
     for (var i = 0; i < 3; i++) {
       await connection.command(['cycle', 'fullscreen']);
       await waitFor(() async => !coordinator.fullscreen, 'exit fullscreen $i');
@@ -373,6 +446,12 @@ Future<void> _verify(
       () async => IsIconic(GetAncestor(launch.host, GA_ROOT)) != 0,
       'minimize',
     );
+    final focusedWhileMinimized = await MpvWindowCoordinator.channel
+        .invokeMethod<bool>('focus', {'host': launch.host});
+    if (focusedWhileMinimized != false || IsIconic(root) == 0) {
+      throw StateError('Focus request activated the minimized player');
+    }
+    result['minimized_focus_ignored'] = true;
     await MpvWindowCoordinator.channel.invokeMethod<void>('minimize', {
       'host': launch.host,
       'enabled': false,

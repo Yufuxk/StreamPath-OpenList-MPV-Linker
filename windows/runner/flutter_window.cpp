@@ -255,9 +255,10 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
-  SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  const HWND flutter_view = flutter_controller_->view()->GetNativeWindow();
+  SetChildContent(flutter_view);
   mpv_window_ = std::make_unique<MpvWindowHost>(
-      flutter_controller_->engine()->messenger(), GetHandle(),
+      flutter_controller_->engine()->messenger(), GetHandle(), flutter_view,
       [this](bool enabled) { return SetFullscreen(enabled); },
       [this]() { return fullscreen_; });
 
