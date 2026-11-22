@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseException;
 import '../widgets/sp_icons.dart';
 import '../widgets/sp_dialog.dart';
 import '../widgets/sp_notice.dart';
@@ -197,7 +198,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
   Map<String, PlaybackProgress> _videoContinue = const {};
   Map<String, PlaybackProgress> _audioContinue = const {};
   Map<String, IsoLibraryProgress> _isoContinue = const {};
-  List<String> _filmContinueDisplayOrder = const [];
+  bool _savingFilmContinueOrder = false;
   ({int index, List<String> keys})? _filmContinueDrag;
   Key _filmContinueListKey = UniqueKey();
 
@@ -969,12 +970,16 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
 
   @override
   Widget build(BuildContext context) {
-    if (widget.filmCatalog != null && !widget.filmCenter) {
+    final catalog = widget.filmCatalog;
+    if (catalog != null && !widget.filmCenter) {
       return IgnorePointer(
         ignoring: _sourcePending,
         child: ExcludeFocus(
           excluding: _sourcePending,
-          child: _buildFilmContinue(),
+          child: ListenableBuilder(
+            listenable: catalog.store.continueDisplayOrderChanges,
+            builder: (context, _) => _buildFilmContinue(),
+          ),
         ),
       );
     }
@@ -1263,15 +1268,14 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
         ),
       );
     }
+    final catalog = widget.filmCatalog!;
+    final remaining = {for (final record in records) record.recordKey: record};
+    final displayed = [
+      for (final key in catalog.store.continueDisplayOrder(catalog.sourceId))
+        ?remaining.remove(key),
+      ...remaining.values,
+    ];
     if (widget.filmContinueAll) {
-      final catalog = widget.filmCatalog!;
-      final remaining = {
-        for (final record in records) record.recordKey: record,
-      };
-      final displayed = [
-        for (final key in _filmContinueDisplayOrder) ?remaining.remove(key),
-        ...remaining.values,
-      ];
       final keys = displayed.map((record) => record.recordKey).toList();
       if (_filmContinueDrag case final drag?
           when !listEquals(drag.keys, keys)) {
@@ -1314,6 +1318,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
                       reorderHandle: SPReorderHandle(
                         index: i,
                         tooltip: context.l10n.text('拖动排序'),
+                        enabled: !_savingFilmContinueOrder,
                       ),
                     ),
                     onReorderStart: (index) =>
@@ -1325,14 +1330,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
                         _filmContinueDrag = null;
                       }
                     },
-                    onReorderItem: (from, to) {
-                      final order = List.of(keys);
-                      order.insert(to, order.removeAt(from));
-                      setState(() {
-                        _filmContinueDrag = null;
-                        _filmContinueDisplayOrder = order;
-                      });
-                    },
+                    onReorderItem: (from, to) =>
+                        _saveFilmContinueDisplayOrder(keys, from, to),
                   ),
                 ),
               ),
@@ -1343,7 +1342,7 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
     }
     return FilmShelf(
       title: '继续播放',
-      count: records.length,
+      count: displayed.length,
       height: FilmContinueCard.landscapeHeight,
       itemWidth: FilmContinueCard.landscapeWidth,
       onShowAll: () => Navigator.of(context).push(
@@ -1379,8 +1378,30 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
           ),
         ),
       ),
-      builder: (_, i) => card(records[i]),
+      builder: (_, i) => card(displayed[i]),
     );
+  }
+
+  Future<void> _saveFilmContinueDisplayOrder(
+    List<String> keys,
+    int from,
+    int to,
+  ) async {
+    final catalog = widget.filmCatalog!;
+    final order = List.of(keys);
+    order.insert(to, order.removeAt(from));
+    setState(() {
+      _filmContinueDrag = null;
+      _savingFilmContinueOrder = true;
+    });
+    try {
+      await catalog.store.setContinueDisplayOrder(catalog.sourceId, order);
+    } on DatabaseException catch (error) {
+      debugPrint('Could not save film resume display order: $error');
+      _showError('无法保存继续播放顺序');
+    } finally {
+      if (mounted) setState(() => _savingFilmContinueOrder = false);
+    }
   }
 
   bool _matchesFilmQuery(MediaLibraryRecord record) =>

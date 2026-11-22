@@ -481,6 +481,7 @@ const Map<String, String> englishTranslations = <String, String>{
   '字幕绑定已保存；节目已变化，请刷新后重试应用':
       'Binding saved. The program changed; refresh and retry applying it.',
   '字幕绑定保存失败': 'Could not save the subtitle binding',
+  '无法保存继续播放顺序': 'Could not save the Continue Watching order',
   '字幕资源准备失败，视频继续播放': 'Subtitle preparation failed. Video playback continues.',
   '字幕绑定已保存；播放器暂不可用': 'Binding saved. The player is temporarily unavailable.',
   '重试应用字幕': 'Retry applying subtitles',
@@ -1504,6 +1505,7 @@ const Map<String, String> japaneseTranslations = <String, String>{
   '字幕绑定已保存并应用': '字幕の割り当てを保存して適用しました',
   '字幕绑定已保存；节目已变化，请刷新后重试应用': '割り当てを保存しました。番組が変更されたため、更新後に再適用してください。',
   '字幕绑定保存失败': '字幕の割り当てを保存できませんでした',
+  '无法保存继续播放顺序': '「続きから再生」の表示順を保存できませんでした',
   '字幕资源准备失败，视频继续播放': '字幕を準備できませんでした。映像の再生は続行します。',
   '字幕绑定已保存；播放器暂不可用': '割り当てを保存しました。プレーヤーは現在利用できません。',
   '重试应用字幕': '字幕の適用を再試行',
@@ -2418,6 +2420,7 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   '字幕绑定已保存并应用': '字幕綁定已儲存並套用',
   '字幕绑定已保存；节目已变化，请刷新后重试应用': '字幕綁定已儲存；節目已變更，請重新整理後重試套用',
   '字幕绑定保存失败': '字幕綁定儲存失敗',
+  '无法保存继续播放顺序': '無法儲存繼續播放順序',
   '字幕资源准备失败，视频继续播放': '字幕資源準備失敗，影片繼續播放',
   '字幕绑定已保存；播放器暂不可用': '字幕綁定已儲存；播放器暫時無法使用',
   '重试应用字幕': '重試套用字幕',

@@ -68,6 +68,35 @@ void main() {
       },
     },
   );
+  test('continue display orders survive closing the catalog', () async {
+    expect(store.continueDisplayOrder(null), isEmpty);
+    const order = [
+      'session\u0000local:fixture\u0000video\u0000second',
+      'first',
+    ];
+    await store.setContinueDisplayOrder(null, order);
+    await store.setContinueDisplayOrder(root.sourceId, ['first']);
+
+    final path = store.path;
+    await store.close();
+    store = await FilmCatalogStore.open(path);
+    expect(store.continueDisplayOrder(null), order);
+    expect(store.continueDisplayOrder(root.sourceId), ['first']);
+    expect(store.continueDisplayOrder('unrelated'), isEmpty);
+  });
+
+  test('restoring a catalog backup reloads continue display order', () async {
+    final backup = '${temp.path}/backup.db';
+    await store.setContinueDisplayOrder(null, ['second', 'first']);
+    await store.backupTo(backup);
+    await store.setContinueDisplayOrder(null, ['first', 'second']);
+    await store.setContinueDisplayOrder(root.sourceId, ['first']);
+
+    await store.restoreBackup(backup);
+    expect(store.continueDisplayOrder(null), ['second', 'first']);
+    expect(store.continueDisplayOrder(root.sourceId), isEmpty);
+  });
+
   test(
     'subtree missing never changes siblings and cancellation preserves previous availability',
     () async {

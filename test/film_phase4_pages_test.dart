@@ -1200,7 +1200,7 @@ void main() {
     },
   );
 
-  testWidgets('继续播放拖动仅修改展开页显示顺序，进度刷新与条目增加保留排序', (tester) async {
+  testWidgets('继续播放拖动顺序在影视主页与展开页共享，媒体中心沿用原顺序', (tester) async {
     await prepare(tester);
     final store = app.filmMediaLibraryStore!;
     final progress = app.filmProgressService;
@@ -1245,9 +1245,14 @@ void main() {
       final cards = tester
           .widgetList<FilmContinueCard>(find.byType(FilmContinueCard))
           .toList();
-      double topOf(FilmContinueCard card) =>
-          tester.getTopLeft(find.byKey(card.key!)).dy;
-      cards.sort((a, b) => topOf(a).compareTo(topOf(b)));
+      Offset positionOf(FilmContinueCard card) =>
+          tester.getTopLeft(find.byKey(card.key!));
+      cards.sort((a, b) {
+        final first = positionOf(a);
+        final second = positionOf(b);
+        final vertical = first.dy.compareTo(second.dy);
+        return vertical == 0 ? first.dx.compareTo(second.dx) : vertical;
+      });
       return cards.map((card) => card.record.recordKey).toList();
     }
 
@@ -1330,10 +1335,31 @@ void main() {
 
     await tester.tap(find.byType(BackButton));
     await settle(tester);
-    expect(visibleOrder(), freshKeys);
+    expect(visibleOrder(), [...reordered, added]);
     expect(handles, findsNothing);
     await openList();
+    expect(visibleOrder(), [...reordered, added]);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      frame(
+        FilmMediaCenterPage(
+          onOpenItem: (_) {},
+          onOpenLegacyItem: (_) {},
+          onContinueSelected: (_) {},
+          onContinueMenu: (_, _) {},
+        ),
+      ),
+    );
+    await settle(tester);
+    await tester.tap(find.text('继续播放'));
+    await settle(tester);
     expect(visibleOrder(), freshKeys);
+    expect(handles, findsNothing);
+
+    await tester.pumpWidget(frame(FilmLibraryPage(onOpenItem: (_) async {})));
+    await settle(tester);
+    expect(visibleOrder(), [...reordered, added]);
     expect(tester.takeException(), isNull);
   });
 

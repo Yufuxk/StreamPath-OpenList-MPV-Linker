@@ -54,6 +54,10 @@ class FilmCatalogStore extends ChangeNotifier {
   Listenable get watchChanges => _watchChanges;
   final _dataChanges = ChangeNotifier();
   Listenable get dataChanges => _dataChanges;
+  static const _continueDisplayOrderPrefix = 'continue_display_order:';
+  final _continueDisplayOrders = <String, List<String>>{};
+  final _continueDisplayOrderChanges = ChangeNotifier();
+  Listenable get continueDisplayOrderChanges => _continueDisplayOrderChanges;
   final _presentationChanges = ChangeNotifier();
   Listenable get presentationChanges => _presentationChanges;
   bool _presentationPending = false;
@@ -710,6 +714,7 @@ class FilmCatalogStore extends ChangeNotifier {
         await store.preference('show_poster_content_count') == true;
     store.featuredLogoAdaptiveSize =
         await store.preference('featured_logo_adaptive_size') == true;
+    await store._loadContinueDisplayOrders();
     await store._loadExtraRules();
     store.startExtraBackfill();
     return store;
@@ -725,6 +730,7 @@ class FilmCatalogStore extends ChangeNotifier {
     _watchChanges.dispose();
     _dataChanges.dispose();
     _presentationChanges.dispose();
+    _continueDisplayOrderChanges.dispose();
     super.dispose();
   }
 
@@ -1910,6 +1916,44 @@ class FilmCatalogStore extends ChangeNotifier {
       'value_json': jsonEncode(sections.map((s) => s.toJson()).toList()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
     notifyListeners();
+  }
+
+  List<String> continueDisplayOrder(String? sourceId) =>
+      _continueDisplayOrders['$_continueDisplayOrderPrefix${sourceId ?? ''}'] ??
+      const [];
+
+  Future<void> _loadContinueDisplayOrders() async {
+    final rows = await _db.query(
+      'catalog_preferences',
+      where: 'key GLOB ?',
+      whereArgs: ['$_continueDisplayOrderPrefix*'],
+    );
+    _continueDisplayOrders
+      ..clear()
+      ..addEntries(
+        rows.map((row) {
+          final order = jsonDecode(row['value_json'] as String) as List;
+          return MapEntry(
+            row['key'] as String,
+            List<String>.unmodifiable(order),
+          );
+        }),
+      );
+    _continueDisplayOrderChanges.notifyListeners();
+  }
+
+  Future<void> setContinueDisplayOrder(
+    String? sourceId,
+    List<String> recordKeys,
+  ) async {
+    final key = '$_continueDisplayOrderPrefix${sourceId ?? ''}';
+    final order = List<String>.unmodifiable(recordKeys);
+    await _db.insert('catalog_preferences', {
+      'key': key,
+      'value_json': jsonEncode(order),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    _continueDisplayOrders[key] = order;
+    _continueDisplayOrderChanges.notifyListeners();
   }
 
   Future<List<FilmWork>> artworkWorks() async => (await _db.query(

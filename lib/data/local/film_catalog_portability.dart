@@ -124,6 +124,7 @@ extension FilmCatalogPortability on FilmCatalogStore {
         await preference('show_poster_content_count') == true;
     featuredLogoAdaptiveSize =
         await preference('featured_logo_adaptive_size') == true;
+    await _loadContinueDisplayOrders();
     await _loadExtraRules();
     startExtraBackfill();
     _changed();
@@ -547,7 +548,11 @@ extension FilmCatalogPortability on FilmCatalogStore {
           );
         }
         for (final row in rows('catalog_preferences')) {
-          if (row['key'] == 'extra_rules') continue;
+          final key = row['key'] as String;
+          if (key == 'extra_rules' ||
+              key.startsWith(FilmCatalogStore._continueDisplayOrderPrefix)) {
+            continue;
+          }
           await txn.insert(
             'catalog_preferences',
             row,
