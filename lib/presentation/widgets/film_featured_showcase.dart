@@ -420,7 +420,11 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
           foreground: metadataColor,
           child: Text(
             '★ ${score.toStringAsFixed(1)}',
-            style: dark ? null : const TextStyle(fontWeight: FontWeight.w700),
+            style: dark
+                ? null
+                : TextStyle(
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w700),
+                  ),
           ),
         ),
       if (work?.year != null)
@@ -473,7 +477,7 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
       style: TextStyle(
         fontSize: titleSize,
         height: 1.2,
-        fontWeight: FontWeight.w700,
+        fontWeight: AppTheme.fontWeight(context, FontWeight.w700),
         color: _foreground(context),
         shadows: FilmFeaturedShowcase.textShadows,
       ),
@@ -709,7 +713,10 @@ class _FilmFeaturedShowcaseState extends State<FilmFeaturedShowcase>
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: AppTheme.fontWeight(
+                          context,
+                          FontWeight.w600,
+                        ),
                         color: _foreground(context),
                       ),
                     ),

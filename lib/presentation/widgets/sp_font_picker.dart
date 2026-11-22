@@ -73,7 +73,7 @@ class _SPFontPickerState extends State<SPFontPicker> {
                   '软件字体',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     fontSize: 13,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
                   ),
                 ),
               ),

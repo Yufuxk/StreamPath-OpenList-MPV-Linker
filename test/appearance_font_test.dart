@@ -14,7 +14,12 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('界面字体随外观配置往返，旧配置沿用系统默认字体', () {
-    const selected = AppearanceConfig(fontFamily: 'Microsoft YaHei UI');
+    const selected = AppearanceConfig(
+      fontFamily: 'Microsoft YaHei UI',
+      fontWeightOffset: 1,
+    );
+    expect(AppearanceConfig.fromJson(selected.toJson()).fontWeightOffset, 1);
+    expect(AppearanceConfig.fromJson({'style': 'classic'}).fontWeightOffset, 0);
     expect(
       AppearanceConfig.fromJson(selected.toJson()).fontFamily,
       'Microsoft YaHei UI',
@@ -27,6 +32,17 @@ void main() {
       ).textTheme.bodyMedium!.fontFamily,
       selected.fontFamily,
     );
+  });
+
+  test('五档整体调整标题、正文和辅助文字的字重', () {
+    for (final theme in [AppTheme.dark, AppTheme.light]) {
+      for (var offset = -2; offset <= 2; offset++) {
+        final text = theme(fontWeightOffset: offset).textTheme;
+        expect(text.titleLarge!.fontWeight, FontWeight.values[5 + offset]);
+        expect(text.bodyMedium!.fontWeight, FontWeight.values[4 + offset]);
+        expect(text.bodySmall!.fontWeight, FontWeight.values[3 + offset]);
+      }
+    }
   });
 
   testWidgets('只改界面字体不会重设窗口材质', (tester) async {
@@ -43,6 +59,11 @@ void main() {
       isTrue,
     );
     expect(controller.config.fontFamily, 'Microsoft YaHei UI');
+    expect(
+      await controller.apply(controller.config.copyWith(fontWeightOffset: -1)),
+      isTrue,
+    );
+    expect(controller.config.fontWeightOffset, -1);
   });
 
   testWidgets('启动时恢复旧 GDI 字样对应的 DirectWrite 字体族', (tester) async {
@@ -92,12 +113,19 @@ void main() {
       expect(renderedStyle('公共正文').fontFamily, 'Segoe UI');
       expect(pill.fontFamily, 'Segoe UI');
 
-      final custom = theme(fontFamily: 'PingFang SC');
+      final custom = theme(fontFamily: 'PingFang SC', fontWeightOffset: 1);
       await tester.pumpWidget(app(custom));
       await tester.pumpAndSettle();
       expect(renderedStyle('公共正文').fontFamily, 'PingFang SC');
       expect(custom.snackBarTheme.contentTextStyle!.fontFamily, 'PingFang SC');
-      expect(renderedStyle('剧情'), pill.copyWith(fontFamily: 'PingFang SC'));
+      expect(renderedStyle('公共正文').fontWeight, FontWeight.w600);
+      expect(
+        renderedStyle('剧情'),
+        pill.copyWith(
+          fontFamily: 'PingFang SC',
+          fontWeight: FontWeight(pill.fontWeight!.value + 100),
+        ),
+      );
       expect(renderedStyle('TV-14'), badge);
     }
   });

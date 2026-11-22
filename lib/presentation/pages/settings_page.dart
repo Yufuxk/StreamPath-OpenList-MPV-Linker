@@ -412,6 +412,7 @@ class SettingsPageState extends State<SettingsPage> {
           previousAppearance.material != appearance.material ||
           previousAppearance.glassOpacity != appearance.glassOpacity ||
           previousAppearance.fontFamily != appearance.fontFamily ||
+          previousAppearance.fontWeightOffset != appearance.fontWeightOffset ||
           previousAppearance.accentColor != appearance.accentColor;
       final currentConfig = appState.configStore.current;
       final profileId = _selectedProfileId ?? ServerProfile.newId();
@@ -748,6 +749,8 @@ class SettingsPageState extends State<SettingsPage> {
           previousAppearance.material != defaultAppearance.material ||
           previousAppearance.glassOpacity != defaultAppearance.glassOpacity ||
           previousAppearance.fontFamily != defaultAppearance.fontFamily ||
+          previousAppearance.fontWeightOffset !=
+              defaultAppearance.fontWeightOffset ||
           previousAppearance.accentColor != defaultAppearance.accentColor;
 
       if (appearanceChanged &&
@@ -1821,9 +1824,9 @@ class SettingsPageState extends State<SettingsPage> {
               Expanded(
                 child: AppText(
                   '索引更新进度',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w700),
+                  ),
                 ),
               ),
               IconButton(
@@ -1882,7 +1885,7 @@ class SettingsPageState extends State<SettingsPage> {
                   key: const Key('openlist-index-progress-status'),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: statusColor,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
                   ),
                 ),
                 AppText(
@@ -3351,6 +3354,10 @@ class SettingsPageState extends State<SettingsPage> {
   ) {
     final glassSelected = _interfaceStyle == InterfaceStyle.glass;
     final opacityPercent = (_glassOpacity * 100).round();
+    const weightLabels = ['更细', '较细', '默认', '较粗', '更粗'];
+    String weightLabel(double value) => context.l10n.text(
+      weightLabels[value.round() - AppearanceConfig.minFontWeightOffset],
+    );
     final capabilities = appearanceController.capabilities;
     final result = appearanceController.lastResult;
     final capabilityError = appearanceController.capabilityError;
@@ -3402,6 +3409,37 @@ class SettingsPageState extends State<SettingsPage> {
                     '保存后应用于软件界面；缺少字形时由系统字体补齐。',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Expanded(child: AppText('软件字重')),
+                      Text(
+                        weightLabel(
+                          _draft.interfaceFontWeightOffset.toDouble(),
+                        ),
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                    ],
+                  ),
+                  Semantics(
+                    label: context.l10n.text('软件字重'),
+                    child: Slider(
+                      key: const Key('interface-font-weight-slider'),
+                      min: AppearanceConfig.minFontWeightOffset.toDouble(),
+                      max: AppearanceConfig.maxFontWeightOffset.toDouble(),
+                      divisions:
+                          AppearanceConfig.maxFontWeightOffset -
+                          AppearanceConfig.minFontWeightOffset,
+                      value: _draft.interfaceFontWeightOffset.toDouble(),
+                      label: weightLabel(
+                        _draft.interfaceFontWeightOffset.toDouble(),
+                      ),
+                      semanticFormatterCallback: weightLabel,
+                      onChanged: (value) => _mutateAppearanceSection(
+                        () => _draft.interfaceFontWeightOffset = value.round(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -4033,9 +4071,9 @@ class _DiagnosticResultRow extends StatelessWidget {
             children: [
               AppText(
                 item.label,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
+                ),
               ),
               const SizedBox(height: 2),
               AppText(
@@ -4069,7 +4107,7 @@ class _SettingsLabeledField extends StatelessWidget {
               label,
               style: theme.textTheme.bodySmall?.copyWith(
                 fontSize: 13,
-                fontWeight: FontWeight.w600,
+                fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
@@ -4143,7 +4181,10 @@ class _SettingsNavigationButton extends StatelessWidget {
                     color: selected
                         ? scheme.onPrimary
                         : scheme.onSurfaceVariant,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    fontWeight: AppTheme.fontWeight(
+                      context,
+                      selected ? FontWeight.w700 : FontWeight.w500,
+                    ),
                   ),
                 ),
               ],
@@ -4186,7 +4227,7 @@ class _AppearanceStatusRow extends StatelessWidget {
             value,
             key: valueKey,
             style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
+              fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
             ),
           ),
         ),

@@ -239,9 +239,9 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
             : '',
         isExpanded: true,
         expands: expands,
-        style: Theme.of(
-          context,
-        ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+          fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
+        ),
         dropdownColor: AppTheme.dropdownMenuColor(Theme.of(context)),
         borderRadius: AppTheme.dropdownBorderRadius,
         decoration: const InputDecoration(isDense: true),

@@ -273,7 +273,7 @@ class _HomePageState extends State<HomePage> {
             AppText(
               '连接服务器',
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
+                fontWeight: AppTheme.fontWeight(context, FontWeight.w700),
                 letterSpacing: -0.3,
               ),
             ),

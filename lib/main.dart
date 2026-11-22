@@ -391,6 +391,7 @@ class _StreamPathAppState extends State<StreamPathApp> {
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
+              fontWeightOffset: appearance.fontWeightOffset,
               accentColor: appearance.accentColor,
             ),
             darkTheme: AppTheme.dark(
@@ -398,6 +399,7 @@ class _StreamPathAppState extends State<StreamPathApp> {
               glassOpacity: appearance.glassOpacity,
               windowBackdrop: actualBackdrop,
               fontFamily: appearance.fontFamily,
+              fontWeightOffset: appearance.fontWeightOffset,
               accentColor: appearance.accentColor,
             ),
             builder: (context, navigator) => AppBackground(

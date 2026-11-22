@@ -309,7 +309,12 @@ class _FilmLibraryManagePageState extends State<FilmLibraryManagePage>
                             context,
                           ).formatDecimal(count),
                           style: Theme.of(context).textTheme.displaySmall
-                              ?.copyWith(fontWeight: FontWeight.w600),
+                              ?.copyWith(
+                                fontWeight: AppTheme.fontWeight(
+                                  context,
+                                  FontWeight.w600,
+                                ),
+                              ),
                         ),
                       ),
                       const SizedBox(height: 8),

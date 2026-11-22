@@ -82,9 +82,10 @@ class FilmSegmentedControl<T> extends StatelessWidget {
                 shape: shape,
                 textStyle: TextStyle(
                   fontSize: 12,
-                  fontWeight: selectedSegment
-                      ? FontWeight.w600
-                      : FontWeight.w500,
+                  fontWeight: AppTheme.fontWeight(
+                    context,
+                    selectedSegment ? FontWeight.w600 : FontWeight.w500,
+                  ),
                 ),
               ).copyWith(
                 side: WidgetStateProperty.resolveWith(

@@ -10,6 +10,15 @@ import 'accent_color_controller.dart';
 
 /// StreamPath 的轻量桌面主题。
 abstract final class AppTheme {
+  static FontWeight fontWeight(BuildContext context, FontWeight base) =>
+      _offsetFontWeight(
+        base,
+        Theme.of(context).extension<_InterfaceFontWeight>()?.offset ?? 0,
+      );
+
+  static FontWeight _offsetFontWeight(FontWeight base, int offset) =>
+      FontWeight((base.value + offset * 100).clamp(100, 900));
+
   /// 固定主题基础色；系统强调色暂时不参与主题生成。
   static const Color _seedColor = Color(0xFF3B6FE8);
   static const defaultFontFamily = 'Segoe UI';
@@ -125,6 +134,7 @@ abstract final class AppTheme {
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
+    int fontWeightOffset = 0,
     int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.light,
@@ -132,6 +142,7 @@ abstract final class AppTheme {
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
+    fontWeightOffset: fontWeightOffset,
     accentColor: accentColor,
   );
 
@@ -140,6 +151,7 @@ abstract final class AppTheme {
     double glassOpacity = AppearanceConfig.defaultGlassOpacity,
     WindowBackdropType windowBackdrop = WindowBackdropType.systemAcrylic,
     String? fontFamily,
+    int fontWeightOffset = 0,
     int accentColor = defaultAccentColor,
   }) => _build(
     Brightness.dark,
@@ -147,6 +159,7 @@ abstract final class AppTheme {
     glassOpacity: glassOpacity,
     windowBackdrop: windowBackdrop,
     fontFamily: fontFamily,
+    fontWeightOffset: fontWeightOffset,
     accentColor: accentColor,
   );
 
@@ -156,6 +169,7 @@ abstract final class AppTheme {
     required double glassOpacity,
     required WindowBackdropType windowBackdrop,
     required String? fontFamily,
+    required int fontWeightOffset,
     required int accentColor,
   }) {
     final isDark = brightness == Brightness.dark;
@@ -258,30 +272,38 @@ abstract final class AppTheme {
       fontFamily: interfaceFont,
       visualDensity: VisualDensity.standard,
       splashFactory: NoSplash.splashFactory,
-      extensions: [glassTokens],
+      extensions: [glassTokens, _InterfaceFontWeight(fontWeightOffset)],
     );
     final titleColor = isDark ? darkTitleColor : scheme.onSurface;
     final bodyColor = isDark ? darkBodyColor : scheme.onSurface;
     final description = scheme.onSurfaceVariant;
+    FontWeight weight(FontWeight original) =>
+        _offsetFontWeight(original, fontWeightOffset);
+    TextStyle? display(TextStyle? style) => style?.copyWith(
+      color: titleColor,
+      fontWeight: fontWeightOffset == 0
+          ? null
+          : weight(style.fontWeight ?? FontWeight.normal),
+    );
     final desktopTextTheme = base.textTheme.copyWith(
-      displayLarge: base.textTheme.displayLarge?.copyWith(color: titleColor),
-      displayMedium: base.textTheme.displayMedium?.copyWith(color: titleColor),
-      displaySmall: base.textTheme.displaySmall?.copyWith(color: titleColor),
+      displayLarge: display(base.textTheme.displayLarge),
+      displayMedium: display(base.textTheme.displayMedium),
+      displaySmall: display(base.textTheme.displaySmall),
       headlineLarge: base.textTheme.headlineLarge?.copyWith(
         color: titleColor,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       headlineMedium: base.textTheme.headlineMedium?.copyWith(
         color: titleColor,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       headlineSmall: base.textTheme.headlineSmall?.copyWith(
         color: titleColor,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       bodyLarge: base.textTheme.bodyLarge?.copyWith(
         color: bodyColor,
-        fontWeight: FontWeight.w500,
+        fontWeight: weight(FontWeight.w500),
         fontSize: 14,
         height: 20 / 14,
       ),
@@ -289,43 +311,43 @@ abstract final class AppTheme {
         color: titleColor,
         fontSize: 24,
         height: 32 / 24,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       titleMedium: base.textTheme.titleMedium?.copyWith(
         color: titleColor,
         fontSize: 18,
         height: 24 / 18,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       titleSmall: base.textTheme.titleSmall?.copyWith(
         color: titleColor,
         fontSize: 14,
         height: 20 / 14,
-        fontWeight: FontWeight.w600,
+        fontWeight: weight(FontWeight.w600),
       ),
       bodyMedium: base.textTheme.bodyMedium?.copyWith(
         color: bodyColor,
         fontSize: 14,
         height: 20 / 14,
-        fontWeight: FontWeight.w500,
+        fontWeight: weight(FontWeight.w500),
       ),
       bodySmall: base.textTheme.bodySmall?.copyWith(
         color: description,
         fontSize: 12,
         height: 16 / 12,
-        fontWeight: FontWeight.w400,
+        fontWeight: weight(FontWeight.w400),
       ),
       labelLarge: base.textTheme.labelLarge?.copyWith(
         color: bodyColor,
-        fontWeight: FontWeight.w500,
+        fontWeight: weight(FontWeight.w500),
       ),
       labelMedium: base.textTheme.labelMedium?.copyWith(
         color: bodyColor,
-        fontWeight: FontWeight.w500,
+        fontWeight: weight(FontWeight.w500),
       ),
       labelSmall: base.textTheme.labelSmall?.copyWith(
         color: description,
-        fontWeight: FontWeight.w400,
+        fontWeight: weight(FontWeight.w400),
       ),
     );
     final controlBorder = OutlineInputBorder(
@@ -361,7 +383,6 @@ abstract final class AppTheme {
         shape: Border(bottom: BorderSide(color: glassTokens.dividerColor)),
         titleTextStyle: desktopTextTheme.titleLarge?.copyWith(
           color: titleColor,
-          fontWeight: FontWeight.w600,
           letterSpacing: -0.2,
         ),
       ),
@@ -555,6 +576,7 @@ abstract final class AppTheme {
         contentTextStyle: TextStyle(
           color: scheme.onSurface,
           fontFamily: interfaceFont,
+          fontWeight: fontWeightOffset == 0 ? null : weight(FontWeight.normal),
         ),
         elevation: glass ? 8 : 2,
         shape: RoundedRectangleBorder(
@@ -589,10 +611,26 @@ abstract final class AppTheme {
         ),
         textStyle: desktopTextTheme.bodySmall?.copyWith(
           color: scheme.onSurface,
-          fontWeight: FontWeight.w500,
+          fontWeight: weight(FontWeight.w500),
           height: 1.4,
         ),
       ),
     );
   }
+}
+
+class _InterfaceFontWeight extends ThemeExtension<_InterfaceFontWeight> {
+  const _InterfaceFontWeight(this.offset);
+
+  final int offset;
+
+  @override
+  _InterfaceFontWeight copyWith({int? offset}) =>
+      _InterfaceFontWeight(offset ?? this.offset);
+
+  @override
+  _InterfaceFontWeight lerp(_InterfaceFontWeight? other, double t) =>
+      other == null
+      ? this
+      : _InterfaceFontWeight((offset + (other.offset - offset) * t).round());
 }

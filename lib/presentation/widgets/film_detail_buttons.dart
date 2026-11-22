@@ -33,7 +33,7 @@ class _FilmDetailPlayButtonState extends State<FilmDetailPlayButton> {
         ? foreground
         : scheme.onSurface.withValues(alpha: .38);
     final labelStyle = Theme.of(context).textTheme.labelLarge?.copyWith(
-      fontWeight: FontWeight.w500,
+      fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
       letterSpacing: .1,
     );
     return MouseRegion(

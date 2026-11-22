@@ -1814,7 +1814,7 @@ class _SectionHeader extends StatelessWidget {
       label,
       style: Theme.of(context).textTheme.titleSmall?.copyWith(
         color: Theme.of(context).colorScheme.onSurface,
-        fontWeight: FontWeight.w600,
+        fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
       ),
     ),
   );

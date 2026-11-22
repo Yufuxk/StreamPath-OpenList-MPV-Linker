@@ -32,6 +32,7 @@ class AppearanceConfig {
     this.material = WindowMaterialPreference.automatic,
     this.glassOpacity = defaultGlassOpacity,
     this.fontFamily,
+    this.fontWeightOffset = 0,
     this.accentColor = defaultAccentColor,
     this.sidebarMode = SidebarDisplayMode.pinned,
     this.sidebarCompact = false,
@@ -41,6 +42,8 @@ class AppearanceConfig {
   static const double defaultGlassOpacity = 0.60;
   static const double minGlassOpacity = 0.60;
   static const double maxGlassOpacity = 0.95;
+  static const int minFontWeightOffset = -2;
+  static const int maxFontWeightOffset = 2;
 
   final InterfaceStyle style;
 
@@ -51,6 +54,9 @@ class AppearanceConfig {
 
   /// 界面字体；null 表示使用系统推荐的 Segoe UI 系列。
   final String? fontFamily;
+
+  /// 每档为 100 字重，0 沿用各文字样式的默认字重。
+  final int fontWeightOffset;
 
   /// 不透明 ARGB 强调色，与预设列表独立保存。
   final int accentColor;
@@ -67,6 +73,7 @@ class AppearanceConfig {
     'material': material.name,
     'glassOpacity': glassOpacity,
     'fontFamily': fontFamily,
+    'fontWeightOffset': fontWeightOffset,
     'accentColor': accentColor,
     'sidebarMode': sidebarMode.name,
     'sidebarCompact': sidebarCompact,
@@ -94,6 +101,7 @@ class AppearanceConfig {
         .clamp(minGlassOpacity, maxGlassOpacity)
         .toDouble();
     final rawAccent = json['accentColor'];
+    final rawFontWeightOffset = json['fontWeightOffset'];
     return AppearanceConfig(
       style: style,
       material: material,
@@ -107,6 +115,9 @@ class AppearanceConfig {
               (json['fontFamily'] as String).isNotEmpty
           ? json['fontFamily'] as String
           : null,
+      fontWeightOffset: rawFontWeightOffset is int
+          ? rawFontWeightOffset.clamp(minFontWeightOffset, maxFontWeightOffset)
+          : 0,
       sidebarMode: json['sidebarMode'] == SidebarDisplayMode.autoHide.name
           ? SidebarDisplayMode.autoHide
           : SidebarDisplayMode.pinned,
@@ -120,6 +131,7 @@ class AppearanceConfig {
 
   AppearanceConfig copyWith({
     String? fontFamily,
+    int? fontWeightOffset,
     int? accentColor,
     SidebarDisplayMode? sidebarMode,
     bool? sidebarCompact,
@@ -129,6 +141,7 @@ class AppearanceConfig {
     material: material,
     glassOpacity: glassOpacity,
     fontFamily: fontFamily ?? this.fontFamily,
+    fontWeightOffset: fontWeightOffset ?? this.fontWeightOffset,
     accentColor: accentColor ?? this.accentColor,
     sidebarMode: sidebarMode ?? this.sidebarMode,
     sidebarCompact: sidebarCompact ?? this.sidebarCompact,

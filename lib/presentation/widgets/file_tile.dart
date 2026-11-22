@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../theme/app_theme.dart';
 import 'sp_icons.dart';
 
 import '../localization/app_text.dart';
@@ -38,7 +40,7 @@ class FileListHeader extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(
       color: scheme.onSurfaceVariant,
-      fontWeight: FontWeight.w700,
+      fontWeight: AppTheme.fontWeight(context, FontWeight.w700),
       letterSpacing: 0.35,
     );
     return LayoutBuilder(
@@ -150,9 +152,12 @@ class FileTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 15,
-                          fontWeight: file.isSelfEntry
-                              ? FontWeight.normal
-                              : FontWeight.w500,
+                          fontWeight: AppTheme.fontWeight(
+                            context,
+                            file.isSelfEntry
+                                ? FontWeight.normal
+                                : FontWeight.w500,
+                          ),
                         ),
                       ),
                       if (file.isSelfEntry)
@@ -252,7 +257,10 @@ class FileTile extends StatelessWidget {
         file.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
+        ),
       );
     }
     return Column(
@@ -263,7 +271,10 @@ class FileTile extends StatelessWidget {
           file.name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500),
+          style: TextStyle(
+            fontSize: 15,
+            fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
+          ),
         ),
         AppText(
           file.isSelfEntry ? '返回上级目录' : subtitle!,

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../theme/app_theme.dart';
 import 'sp_icons.dart';
 
 import '../localization/app_localizations.dart';
@@ -73,7 +75,10 @@ class _PlaybackBarState extends State<PlaybackBar> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
+                        fontWeight: AppTheme.fontWeight(
+                          context,
+                          FontWeight.bold,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 2),

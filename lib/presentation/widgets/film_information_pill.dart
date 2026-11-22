@@ -21,7 +21,7 @@ class FilmInformationPill extends StatelessWidget {
     final dark = theme.brightness == Brightness.dark;
     final label = theme.textTheme.labelMedium!.copyWith(
       color: foreground,
-      fontWeight: dark ? FontWeight.w400 : null,
+      fontWeight: dark ? AppTheme.fontWeight(context, FontWeight.w400) : null,
       fontFeatures: dark ? const [FontFeature.tabularFigures()] : null,
     );
     return GlassSurface(

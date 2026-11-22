@@ -776,6 +776,41 @@ void main() {
     expect(appearanceDriver.applied, isEmpty);
   });
 
+  testWidgets('软件字重滑块分五档，保存后重新读取仍有效', (tester) async {
+    await tester.pumpWidget(buildSettings(theme: AppTheme.light()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+
+    final slider = find.byKey(const Key('interface-font-weight-slider'));
+    await tester.ensureVisible(slider);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Slider>(slider).divisions, 4);
+    expect(tester.widget<Slider>(slider).label, '默认');
+    await tester.drag(slider, Offset(tester.getSize(slider).width / 2, 0));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Slider>(slider).value, 2);
+    expect(tester.widget<Slider>(slider).label, '更粗');
+    expect(appearanceController.config.fontWeightOffset, 0);
+
+    final save = tester.widget<FilledButton>(
+      find.byKey(const Key('save-settings-button')),
+    );
+    await tester.runAsync(() async {
+      save.onPressed!();
+      for (var i = 0; i < 200; i++) {
+        if (configStore.current.appearance.fontWeightOffset == 2) break;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+    });
+    expect(
+      (await tester.runAsync(configStore.load))!.appearance.fontWeightOffset,
+      2,
+    );
+    expect(appearanceController.config.fontWeightOffset, 2);
+    expect(appearanceDriver.applied, isEmpty);
+  });
+
   testWidgets('各语言在窄屏与宽屏均可访问全部分类且无溢出', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1815,8 +1850,12 @@ void main() {
       style: InterfaceStyle.glass,
       material: WindowMaterialPreference.mica,
       glassOpacity: 0.70,
+      fontWeightOffset: 2,
     );
     await tester.runAsync(() async {
+      await appearanceController.apply(
+        const AppearanceConfig(fontWeightOffset: 2),
+      );
       await configStore.save(
         const StreamPathConfig(
           serverUrl: 'https://example.com/dav',

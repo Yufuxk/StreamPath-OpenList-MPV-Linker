@@ -906,9 +906,9 @@ class _MetadataEditorState extends State<_MetadataEditor> {
               if (snapshot != null) ...[
                 Text(
                   '${tr(level)} · ${snapshot.values['title'] ?? ''}',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(

@@ -287,7 +287,7 @@ class FilmCategoryCard extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     color: Colors.white,
                     fontSize: 22,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
                   ),
                 ),
               ),
@@ -522,7 +522,9 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
                 // 副标题降为更轻的 12px／400 辅助色，拉开与主标题的层级。
                 final titleStyle = defaults
                     .merge(theme.textTheme.titleSmall)
-                    .copyWith(fontWeight: FontWeight.w500);
+                    .copyWith(
+                      fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
+                    );
                 final captionStyle = defaults.merge(theme.textTheme.bodySmall);
                 double textHeight(String text, TextStyle style) {
                   final painter = TextPainter(

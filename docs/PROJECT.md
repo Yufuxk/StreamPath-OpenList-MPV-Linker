@@ -124,6 +124,8 @@ lib/
 `appearance.fontFamily` 可选，空值使用 Segoe UI，缺少的字形由系统字体补齐。Windows runner
 通过 DirectWrite 的系统字体集合枚举字体族，有英文族名时优先作为设置值。启动时解析旧设置中的
 GDI 字体名称，匹配到的字体族用于首次渲染，并随下次保存写入配置。
+`appearance.fontWeightOffset` 记录公共界面字重档位，取值为 −2 至 2，默认 0。每档相对原字重增减 100，
+标题、正文和辅助文字各自按基准调整。分级徽标与专用等宽编辑区域使用各自的字重。
 `AppTheme` 统一公共界面字体、桌面文字层级、控件圆角、轻边界及 Hover/Pressed/Focus
 状态，`SPButton`、`SPTile`、`SPDialog`、`SPNotice` 与 `SPToggleTile` 为常见入口提供一致外观。
 控件圆角为 `AppTheme.controlRadius`（10px），区块为 `panelRadius`（16px），标准高度为 40px，页面水平留白为 24px。单行字段、下拉、按钮使用共享主题；辅助文字、错误及文字放大允许增高。`SPControlBar` 通过 `AppTheme.controlBarTheme` 统一四个主页面的控制栏，`SettingsGroupCard` 使用 16px 分组面板。暗色玻璃的控件描边为白色 10%，面板为 8%；无自定义背景的 Acrylic 控制栏采用旧版 #171D27、10%～20% 不透明度，自定义背景与 Mica 控制栏采用 #1A1C24 冷灰、25%～35% 不透明度；控制栏模糊为 sigma 24，分组面板保留 sigma 16；GlassSurface 先模糊背景再叠加表面颜色，阴影位于裁剪外。SPControlBar 最大宽度 1248px，宽窗为浮动岛，窄窗受页面约束，影视库页头按实际岛宽计算换行。普通列表行不创建模糊。

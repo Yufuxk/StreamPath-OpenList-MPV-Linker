@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
+import '../../presentation/theme/app_theme.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
@@ -415,7 +417,10 @@ class _MpvManagerPageState extends State<MpvManagerPage> {
                                           context,
                                         ).textTheme.labelLarge?.fontFamily,
                                         fontSize: 14,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: AppTheme.fontWeight(
+                                          context,
+                                          FontWeight.w600,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -1471,7 +1476,7 @@ class _ManagerField extends StatelessWidget {
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
               fontSize: 13,
-              fontWeight: FontWeight.w600,
+              fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -1838,7 +1843,10 @@ class _SourceDialogState extends State<_SourceDialog> {
                           maxLines: null,
                           minLines: 20,
                           contextMenuBuilder: buildClipboardHistoryMenu,
-                          style: const TextStyle(fontFamily: 'monospace'),
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w500,
+                          ),
                           decoration: const InputDecoration(
                             border: OutlineInputBorder(),
                           ),

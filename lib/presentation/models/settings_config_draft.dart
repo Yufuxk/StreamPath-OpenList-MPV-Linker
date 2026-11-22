@@ -118,6 +118,7 @@ class SettingsConfigDraft {
   WindowMaterialPreference windowMaterial = WindowMaterialPreference.automatic;
   double glassOpacity = AppearanceConfig.defaultGlassOpacity;
   String? interfaceFontFamily;
+  int interfaceFontWeightOffset = 0;
   int accentColor = AccentColorPreset.blue.argb;
   DirectoryMemoryMode directoryMemoryMode = DirectoryMemoryMode.temporary;
   AppLanguage language = AppLanguage.simplifiedChinese;
@@ -237,6 +238,7 @@ class SettingsConfigDraft {
     windowMaterial = appearance.material;
     glassOpacity = appearance.glassOpacity;
     interfaceFontFamily = appearance.fontFamily;
+    interfaceFontWeightOffset = appearance.fontWeightOffset;
     accentColor = appearance.accentColor;
     directoryMemoryMode = appearance.directoryMemoryMode;
     language = fullConfig.language;
@@ -374,6 +376,7 @@ class SettingsConfigDraft {
     material: windowMaterial,
     glassOpacity: glassOpacity,
     fontFamily: interfaceFontFamily,
+    fontWeightOffset: interfaceFontWeightOffset,
     accentColor: accentColor,
     directoryMemoryMode: directoryMemoryMode,
   );

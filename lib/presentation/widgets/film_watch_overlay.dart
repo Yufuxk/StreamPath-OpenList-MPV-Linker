@@ -318,7 +318,7 @@ class _FilmWatchOverlayState extends State<FilmWatchOverlay> {
       style: style.copyWith(
         textStyle: WidgetStatePropertyAll(
           Theme.of(context).textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w500,
+            fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
             letterSpacing: .3,
             shadows: const [
               Shadow(

@@ -389,7 +389,12 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                       text: '★ ${score.toStringAsFixed(1)}',
                       style: dark
                           ? null
-                          : const TextStyle(fontWeight: FontWeight.w700),
+                          : TextStyle(
+                              fontWeight: AppTheme.fontWeight(
+                                context,
+                                FontWeight.w700,
+                              ),
+                            ),
                     ),
                     TextSpan(
                       text: '  ${context.l10n.text('TMDB')}',
@@ -1107,7 +1112,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
               '剧集列表',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontSize: 18,
-                fontWeight: FontWeight.w600,
+                fontWeight: AppTheme.fontWeight(context, FontWeight.w600),
               ),
             ),
           ),
@@ -1401,7 +1406,10 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                   child: Text(
                                     initials,
                                     style: theme.textTheme.titleLarge?.copyWith(
-                                      fontWeight: FontWeight.w500,
+                                      fontWeight: AppTheme.fontWeight(
+                                        context,
+                                        FontWeight.w500,
+                                      ),
                                       color: theme.colorScheme.onSurfaceVariant,
                                     ),
                                   ),
@@ -1760,8 +1768,11 @@ class _FilmDetailPageState extends State<FilmDetailPage>
                                                                         .darkSecondaryColor,
                                                                   ),
                                                                   fontWeight:
-                                                                      FontWeight
-                                                                          .w400,
+                                                                      AppTheme.fontWeight(
+                                                                        context,
+                                                                        FontWeight
+                                                                            .w400,
+                                                                      ),
                                                                 ),
                                                           ),
                                                         ),
