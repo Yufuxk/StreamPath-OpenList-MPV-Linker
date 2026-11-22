@@ -672,10 +672,12 @@ class WinHttpRangeSource final : public RemoteSource {
   class ActiveRequest final {
    public:
     ActiveRequest(InternetHandle connection, HINTERNET handle,
-                  std::shared_ptr<RequestLifecycleCounters> lifecycle)
+                  std::shared_ptr<RequestLifecycleCounters> lifecycle,
+                  std::uint64_t trace_id)
         : connection_(std::move(connection)),
           handle_(handle),
-          lifecycle_(std::move(lifecycle)) {
+          lifecycle_(std::move(lifecycle)),
+          trace_id_(trace_id) {
       if (handle_ == nullptr) {
         throw BridgeException("network_error",
                               "Unable to create the WebDAV request");
@@ -848,6 +850,7 @@ class WinHttpRangeSource final : public RemoteSource {
         lock.unlock();
         if (this->cancelled() || (cancelled && cancelled())) {
           cancel();
+          if (trace_id_) disc_io_trace.record("http_cancel", trace_id_);
           throw bridge::FetchCancelled(0);
         }
         lock.lock();
@@ -857,8 +860,10 @@ class WinHttpRangeSource final : public RemoteSource {
       lock.unlock();
       if (error != ERROR_SUCCESS) {
         if (this->cancelled() || (cancelled && cancelled())) {
+          if (trace_id_) disc_io_trace.record("http_cancel", trace_id_);
           throw bridge::FetchCancelled(0);
         }
+        if (trace_id_) disc_io_trace.record("http_error", trace_id_, 0, 0, 0, error);
         throw BridgeException("network_error", error_message);
       }
       return bytes;
@@ -894,6 +899,7 @@ class WinHttpRangeSource final : public RemoteSource {
     bool cancelled_ = false;
     bool callback_registered_ = false;
     std::shared_ptr<RequestLifecycleCounters> lifecycle_;
+    const std::uint64_t trace_id_;
     std::array<std::uint8_t, 64U * 1024U> read_buffer_{};
     std::mutex operation_mutex_;
     std::condition_variable operation_ready_;
@@ -906,9 +912,10 @@ class WinHttpRangeSource final : public RemoteSource {
   };
 
   std::shared_ptr<ActiveRequest> track_request(InternetHandle connection,
-                                               HINTERNET handle) {
+                                               HINTERNET handle,
+                                               std::uint64_t trace_id) {
     auto request = std::make_shared<ActiveRequest>(
-        std::move(connection), handle, request_lifecycle_);
+        std::move(connection), handle, request_lifecycle_, trace_id);
     std::lock_guard lock(active_requests_mutex_);
     active_requests_.erase(
         std::remove_if(active_requests_.begin(), active_requests_.end(),
@@ -926,6 +933,9 @@ class WinHttpRangeSource final : public RemoteSource {
     if (lazy_ && !initialized_.load()) initialization_lock.lock();
     if (start > end || end >= size_) {
       throw BridgeException("internal_error", "Requested ISO range is invalid");
+    }
+    if (end - start >= kMaximumIsoRangeBytes) {
+      throw BridgeException("network_error", "The WebDAV request range is too large");
     }
     const auto transfer_started = std::chrono::steady_clock::now();
     record_transfer_started(transfer_started);
@@ -1084,7 +1094,10 @@ class WinHttpRangeSource final : public RemoteSource {
       const auto header_started = std::chrono::steady_clock::now();
       const auto trace_id = disc_io_trace.record("http_start", 0,
           range_start.value_or(0), range_end && range_start ? *range_end - *range_start + 1 : 0);
-      ScopeExit trace_finished([&] { disc_io_trace.record("http_end", trace_id); });
+      std::uint64_t received_bytes = 0;
+      ScopeExit trace_finished([&] {
+        disc_io_trace.record("http_end", trace_id, 0, received_bytes);
+      });
       const ParsedUrl parsed = parse_url(current);
       InternetHandle connection(
           WinHttpConnect(session_.get(), parsed.host.c_str(), parsed.port, 0));
@@ -1097,7 +1110,7 @@ class WinHttpRangeSource final : public RemoteSource {
           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
           parsed.secure ? WINHTTP_FLAG_SECURE : 0);
       auto request_handle =
-          track_request(std::move(connection), raw_request);
+          track_request(std::move(connection), raw_request, trace_id);
       DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
       request_handle->use([&redirect_policy](HINTERNET handle) {
         return WinHttpSetOption(handle, WINHTTP_OPTION_REDIRECT_POLICY,
@@ -1236,6 +1249,7 @@ class WinHttpRangeSource final : public RemoteSource {
             throw bridge::FetchCancelled(body_bytes);
           }
           if (received == 0) break;
+          if (trace_id) received_bytes += received;
           if (lazy_ || !if_range.empty()) {
             remote_transfer_bytes_.fetch_add(received);
           } else {
@@ -1359,6 +1373,7 @@ struct BlurayMetricsSnapshot {
   std::uint64_t terminal_rejected_media_get_count = 0;
   bool structure_cache_hit = false;
   std::vector<MediaGetTiming> media_get_timings;
+  std::uint64_t diagnostic_loopback_bytes = 0;
 };
 
 class BlurayMetrics final {
@@ -1372,6 +1387,10 @@ class BlurayMetrics final {
     title_enumeration_us_.fetch_add(microseconds);
   }
   void record_media_get() { media_get_count_.fetch_add(1); }
+  void record_media_delivery(std::size_t bytes) {
+    if (disc_io_trace.enabled())
+      diagnostic_loopback_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+  }
   void record_persistent_context_reuse() {
     persistent_context_reuse_count_.fetch_add(1);
   }
@@ -1430,6 +1449,7 @@ class BlurayMetrics final {
         terminal_rejected_media_get_count_.load(),
         structure_cache_hit_.load(),
         timings_,
+        diagnostic_loopback_bytes_.load(std::memory_order_relaxed),
     };
   }
 
@@ -1452,6 +1472,7 @@ class BlurayMetrics final {
   std::atomic<DWORD> last_media_failure_http_status_ = 0;
   std::atomic<std::uint64_t> terminal_rejected_media_get_count_ = 0;
   std::atomic<bool> structure_cache_hit_ = false;
+  std::atomic<std::uint64_t> diagnostic_loopback_bytes_ = 0;
 };
 
 int read_disc_blocks(void* opaque, void* destination, int lba,
@@ -2351,6 +2372,7 @@ class LoopbackHttpServer final {
             sent = true;
           }
           if (!send_all(socket.get(), reinterpret_cast<const char*>(bytes.data()), count)) return;
+          bluray_metrics_.record_media_delivery(count);
           if (!timing_recorded) {
             timing.first_body_us = elapsed_us();
             bluray_metrics_.record_media_timing(timing);
@@ -2481,6 +2503,7 @@ class LoopbackHttpServer final {
                           send_length)) {
               return;
             }
+            bluray_metrics_.record_media_delivery(send_length);
             if (!first_body_sent) {
               timing.first_body_us = elapsed_us();
               bluray_metrics_.record_media_timing(timing);
@@ -2819,6 +2842,15 @@ void write_cache_phase_metrics(std::ostringstream& output,
   if (retained_bytes.has_value()) {
     output << ",\"retainedBytes\":" << *retained_bytes;
   }
+  if (disc_io_trace.enabled()) {
+    output << ",\"contiguousReadyBytes\":"
+           << (cache.contiguous_ready_bytes
+                   ? std::to_string(*cache.contiguous_ready_bytes) : "null")
+           << ",\"prefetchQueuedBytes\":" << cache.diagnostic_prefetch_queued_bytes
+           << ",\"prefetchActiveBatchBytes\":" << cache.diagnostic_prefetch_batch_bytes
+           << ",\"parallelPrefetchActive\":"
+           << (cache.diagnostic_parallel_batch_active ? "true" : "false");
+  }
   if (cache.parallel_prefetch_batches != 0) {
     output << ",\"parallelPrefetchBatches\":" << cache.parallel_prefetch_batches
            << ",\"parallelPrefetchFallbacks\":"
@@ -2916,6 +2948,9 @@ std::string metrics_json(
     output << "\"http_protocol\"";
   } else {
     output << "\"transport_or_bridge\"";
+  }
+  if (disc_io_trace.enabled()) {
+    output << ",\"loopbackBodyBytes\":" << bluray.diagnostic_loopback_bytes;
   }
   output << ",\"mediaGetTimings\":[";
   bool first_timing = true;
@@ -3499,7 +3534,7 @@ int run_helper(std::wstring pipe_suffix, DWORD parent_pid) {
             return false;
           }
         });
-    cache.set_trace(&disc_io_trace);
+    if (disc_io_trace.enabled()) cache.set_trace(&disc_io_trace);
     if (metadata_cache != nullptr) {
       cache.restore_handoff(std::move(metadata_handoff));
       metadata_cache.reset();

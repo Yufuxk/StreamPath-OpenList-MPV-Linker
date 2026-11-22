@@ -36,8 +36,11 @@ std::string DiscIoTrace::json() const {
   if (!enabled_) return "null";
   std::lock_guard lock(mutex_);
   std::ostringstream out;
+  const auto capture_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - began_).count();
   out << "{\"version\":1,\"overwritten\":"
-      << (serial_ - events_.size()) << ",\"events\":[";
+      << (serial_ - events_.size()) << ",\"captureUs\":" << capture_us
+      << ",\"events\":[";
   for (std::size_t i = 0; i < events_.size(); ++i) {
     const auto& e = events_[(serial_ - events_.size() + i) % 1024];
     if (i) out << ',';
@@ -693,6 +696,7 @@ std::uint64_t BlockCache::begin_playback() {
     playback_read_error_ = {};
     unread_window_start_ = 0;
     unread_window_end_ = 0;
+    diagnostic_read_cursor_.reset();
     prefetch_pending_ = false;
     prefetch_window_start_ = 0;
     prefetch_next_ = 0;
@@ -724,6 +728,7 @@ void BlockCache::reset_read_ahead() {
       (prefetch_end_ - prefetch_window_start_) * block_size_, prefetch_generation_);
   unread_window_start_ = 0;
   unread_window_end_ = 0;
+  diagnostic_read_cursor_.reset();
   prefetch_pending_ = false;
   prefetch_window_start_ = 0;
   prefetch_next_ = 0;
@@ -825,6 +830,10 @@ std::size_t BlockCache::read(std::uint64_t offset, std::uint8_t* destination,
 
 std::uint64_t BlockCache::contiguous_cached_bytes(std::uint64_t offset) const {
   std::lock_guard lock(mutex_);
+  return contiguous_cached_bytes_locked(offset);
+}
+
+std::uint64_t BlockCache::contiguous_cached_bytes_locked(std::uint64_t offset) const {
   const auto start = offset;
   // 只统计已完成的连续块，遇到空洞或在途块立即停止，不触发读取。
   const auto end = source_->extent_end(offset);
@@ -865,6 +874,16 @@ BlockCacheMetrics BlockCache::metrics() const {
   snapshot.configured_prefetch_blocks =
       max_read_ahead_blocks_ / configuration_block_scale_;
   snapshot.refetch_count_available = refetch_count_available_;
+  if (trace_) {
+    if (diagnostic_read_cursor_) {
+      snapshot.contiguous_ready_bytes =
+          contiguous_cached_bytes_locked(*diagnostic_read_cursor_);
+    }
+    snapshot.diagnostic_prefetch_queued_bytes =
+        prefetch_pending_ ? (prefetch_end_ - prefetch_next_) * block_size_ : 0;
+    snapshot.diagnostic_prefetch_batch_bytes = prefetch_in_flight_bytes_;
+    snapshot.diagnostic_parallel_batch_active = diagnostic_parallel_batch_active_;
+  }
   for (const auto& [index, entry] : entries_) {
     static_cast<void>(index);
     if (!entry->loading && !entry->cancelled && !entry->error &&
@@ -1091,17 +1110,14 @@ void BlockCache::schedule_prefetch(std::uint64_t next_offset,
                                    std::size_t block_count,
                                    std::uint64_t playback_generation,
                                    std::uint64_t extent_end) {
-  if (block_count == 0 || next_offset >= extent_end) return;
+  if (block_count == 0 || (next_offset >= extent_end && !trace_)) return;
   const std::uint64_t total_blocks =
       extent_end / block_size_ +
       (extent_end % block_size_ == 0 ? 0ULL : 1ULL);
   const std::uint64_t start =
       next_offset / block_size_ +
       (next_offset % block_size_ == 0 ? 0ULL : 1ULL);
-  if (start >= total_blocks) return;
-  const std::uint64_t requested = static_cast<std::uint64_t>(block_count);
-  const std::uint64_t end =
-      requested > total_blocks - start ? total_blocks : start + requested;
+  if (start >= total_blocks && !trace_) return;
 
   {
     std::lock_guard lock(mutex_);
@@ -1112,6 +1128,11 @@ void BlockCache::schedule_prefetch(std::uint64_t next_offset,
       ++metrics_.stale_playback_cancellations;
       return;
     }
+    if (trace_) diagnostic_read_cursor_ = next_offset;
+    if (start >= total_blocks) return;
+    const std::uint64_t requested = static_cast<std::uint64_t>(block_count);
+    const std::uint64_t end =
+        requested > total_blocks - start ? total_blocks : start + requested;
     // 当前消费窗口独立于批次调度窗口，避免回退读取改变取消和补充规则。
     if (protect_unread_window_) {
       unread_window_start_ = start;
@@ -1257,6 +1278,7 @@ void BlockCache::prefetch_loop() {
       ++metrics_.requests;
       ++metrics_.prefetch_requests;
       if (parallel) ++metrics_.parallel_prefetch_batches;
+      if (trace_) diagnostic_parallel_batch_active_ = parallel;
       fetch_start = batch.front().first * block_size_;
       const std::uint64_t last_start = batch.back().first * block_size_;
       const std::uint64_t last_length =
@@ -1281,6 +1303,7 @@ void BlockCache::prefetch_loop() {
         const auto fetch_slice = [&](std::size_t next_entry, std::size_t limit,
                                      std::uint64_t start, std::uint64_t end,
                                      std::uint64_t& slice_published) {
+          const auto first_entry = next_entry;
           std::vector<std::uint8_t> partial;
           source_->fetch_stream(start, end, cancelled, [&](const std::uint8_t* data, std::size_t size) {
             while (size > 0) {
@@ -1320,8 +1343,9 @@ void BlockCache::prefetch_loop() {
                 }
               }
               ++next_entry;
-              if (trace_ && next_entry == 1) trace_->record("batch_first_block", 0,
-                  index * block_size_, length, generation);
+              if (trace_ && next_entry == first_entry + 1)
+                trace_->record("batch_first_block", 0, index * block_size_,
+                    length, generation, first_entry != 0);
               entry->ready.notify_all();
               space_available_.notify_all();
               entry.reset();
@@ -1517,6 +1541,7 @@ void BlockCache::prefetch_loop() {
       std::lock_guard lock(mutex_);
       record_prefetch_finished_locked(in_flight_bytes,
                                       std::chrono::steady_clock::now());
+      if (trace_) diagnostic_parallel_batch_active_ = false;
       if (trace_) trace_->record("batch_end", 0, fetch_start,
           published_bytes, generation, generation != prefetch_generation_);
       for (const auto& [index, entry] : batch) {

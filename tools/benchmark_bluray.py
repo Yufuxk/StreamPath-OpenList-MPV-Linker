@@ -1,5 +1,6 @@
 """Read-only Blu-ray benchmark with a local, bounded HTTP source."""
-import argparse, ctypes, hashlib, http.server, json, os, pathlib, struct, subprocess, threading, time, urllib.parse, urllib.request, uuid, msvcrt
+import argparse, csv, ctypes, hashlib, http.server, json, os, pathlib, struct, subprocess, threading, time, urllib.parse, urllib.request, uuid, msvcrt
+from collections import deque
 from ctypes import wintypes
 
 def process_resources(pid):
@@ -36,13 +37,17 @@ def process_resources(pid):
 class Source:
 
     def __init__(self, root, delay, bandwidth, outage, max_concurrent_requests=0,
-                 per_request_bandwidth=0, max_large_ranges=0):
+                 per_request_bandwidth=0, max_large_ranges=0, bandwidth_after=None,
+                 redirect=False, rejection_status=429):
         self.root = pathlib.Path(root).resolve()
         self.count = 0
         self.bytes = 0
         self.delay = delay / 1000
         self.bandwidth = bandwidth * 1048576
         self.per_request_bandwidth = per_request_bandwidth * 1048576
+        self.bandwidth_after = bandwidth_after
+        self.redirect = redirect
+        self.rejection_status = rejection_status
         self.lock = threading.Lock()
         self.next = 0
         self.started = time.monotonic()
@@ -51,6 +56,7 @@ class Source:
         self.max_large_ranges = max_large_ranges
         self.active_large = 0
         self.active = self.peak = self.rejected = 0
+        self.statuses = {}
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -71,6 +77,11 @@ class Source:
             def do_GET(self):
                 self.serve(False)
 
+            def send_response(self, code, message=None):
+                with owner.lock:
+                    owner.statuses[code] = owner.statuses.get(code, 0) + 1
+                super().send_response(code, message)
+
             def serve(self, head):
                 large = False
                 if owner.max_large_ranges and not head:
@@ -88,7 +99,14 @@ class Source:
                         owner.rejected += 1
                 try:
                     if reject:
-                        self.send_response(429)
+                        self.send_response(owner.rejection_status)
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        return
+                    if owner.redirect and not self.path.startswith('/resolved/'):
+                        time.sleep(owner.delay)
+                        self.send_response(302)
+                        self.send_header('Location', '/resolved' + self.path)
                         self.send_header('Content-Length', '0')
                         self.end_headers()
                         return
@@ -99,7 +117,8 @@ class Source:
                         owner.active_large -= bool(large)
 
             def serve_range(self, head):
-                path = (owner.root / urllib.parse.unquote(self.path).lstrip('/')).resolve() if owner.root.is_dir() else owner.root
+                relative = self.path.removeprefix('/resolved').lstrip('/') if owner.redirect else self.path.lstrip('/')
+                path = (owner.root / urllib.parse.unquote(relative)).resolve() if owner.root.is_dir() else owner.root
                 if owner.root.is_dir() and (not path.is_relative_to(owner.root)) or not path.is_file():
                     self.send_error(404)
                     return
@@ -113,7 +132,7 @@ class Source:
                     a, b = value.removeprefix('bytes=').split('-')
                     start = int(a)
                     end = int(b) if b else size - 1
-                    if not 0 <= start <= end < size:
+                    if not 0 <= start <= end < size or end - start + 1 > 32 * 1048576:
                         self.send_error(416)
                         return
                 time.sleep(owner.delay)
@@ -128,6 +147,10 @@ class Source:
                     self.end_headers()
                     if head:
                         return
+                    if not value or not valid:
+                        # Keep the full-object response headers without streaming the fixture.
+                        self.close_connection = True
+                        return
                     next_send = 0
                     with path.open('rb') as f:
                         f.seek(start)
@@ -141,13 +164,19 @@ class Source:
                             data = f.read(min(65536, remaining))
                             if not data:
                                 raise IOError('Short source read')
+                            now = time.monotonic()
+                            bandwidth = owner.bandwidth
+                            if owner.bandwidth_after and now - owner.started >= owner.bandwidth_after[0]:
+                                bandwidth = owner.bandwidth_after[1] * 1048576
+                            send_at = now
                             if owner.per_request_bandwidth:
-                                next_send = max(time.monotonic(), next_send) + len(data) / owner.per_request_bandwidth
-                                time.sleep(max(0, next_send - time.monotonic()))
-                            if owner.bandwidth:
+                                next_send = max(now, next_send) + len(data) / owner.per_request_bandwidth
+                                send_at = next_send
+                            if bandwidth:
                                 with owner.lock:
-                                    owner.next = max(time.monotonic(), owner.next) + len(data) / owner.bandwidth
-                                    send_at = owner.next
+                                    owner.next = max(now, owner.next) + len(data) / bandwidth
+                                    send_at = max(send_at, owner.next)
+                            if send_at > now:
                                 time.sleep(max(0, send_at - time.monotonic()))
                             self.wfile.write(data)
                             with owner.lock:
@@ -171,6 +200,11 @@ class Source:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+    def snapshot(self):
+        with self.lock:
+            return dict(serverRequests=sum(self.statuses.values()), serverBytes=self.bytes,
+                        serverActive=self.active, serverStatuses=self.statuses.copy())
 
 class Control:
 
@@ -220,7 +254,12 @@ class MpvControl(Control):
 
     def command(self, *args):
         self.serial += 1
-        self.file.write(json.dumps(dict(command=args, request_id=self.serial)).encode() + b'\n')
+        try:
+            self.file.write(json.dumps(dict(command=args, request_id=self.serial)).encode() + b'\n')
+        except OSError:
+            if self.process.poll() is not None:
+                return dict(error='closed')
+            raise
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             while b'\n' in self.buffer:
@@ -237,23 +276,120 @@ class MpvControl(Control):
                 time.sleep(0.01)
         return dict(error='timeout')
 
+def write_timeline(root, samples, events, alignment, estimated_mibps):
+    origin = alignment['beforePlayerMs'] + alignment['offsetMs']
+    events = [dict(entry, sessionMs=round(origin + entry.get('ms', 0), 2))
+              for entry in events]
+    pause_windows = []
+    pause = None
+    for entry in events:
+        if entry['event'] != 'cache-pause':
+            continue
+        elapsed = entry['sessionMs'] - alignment['beforePlayerMs']
+        if entry.get('paused') is True and pause is None:
+            pause = elapsed
+        elif entry.get('paused') is False and pause is not None:
+            pause_windows.append(dict(startMs=pause, endMs=elapsed))
+            pause = None
+    if pause is not None:
+        pause_windows.append(dict(startMs=pause, endMs=None))
+
+    fields = ['time', 'media_pos', 'forward_buffer_seconds', 'forward_buffer_bytes',
+              'remote_effective_1s_MiBps', 'remote_effective_MiBps', 'remote_effective_30s_MiBps',
+              'estimated_consumption_MiBps', 'network_requests', 'foreground_wait_ms',
+              'bridge_contiguous_bytes', 'loopback_bytes', 'parallel_active', 'parallel_batches',
+              'paused_for_cache', 'process_alive']
+    history = {width: deque() for width in (1, 5, 30)}
+    with (root / 'timeline.csv').open('w', encoding='utf8', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        for sample in samples:
+            if 'bridgeProcess' not in sample:
+                continue
+            elapsed = sample['ms'] / 1000
+            bridge = sample.get('bridge', {})
+            cache = bridge.get('playbackCache', {})
+            cache_state = sample.get('demuxer-cache-state') or {}
+            row = dict(time=elapsed, media_pos=sample.get('time-pos'),
+                       forward_buffer_seconds=sample.get('demuxer-cache-duration'),
+                       forward_buffer_bytes=cache_state.get('fw-bytes'),
+                       estimated_consumption_MiBps=estimated_mibps,
+                       network_requests=sample['serverRequests'],
+                       bridge_contiguous_bytes=cache.get('contiguousReadyBytes'),
+                       loopback_bytes=bridge.get('loopbackBodyBytes'),
+                       parallel_active=cache.get('parallelPrefetchActive'),
+                       parallel_batches=cache.get('parallelPrefetchBatches', 0) if cache else None,
+                       paused_for_cache=sample.get('paused-for-cache'),
+                       process_alive=sample['processAlive'])
+            waits = cache.get('foregroundLoadingWaitUsTotal')
+            if waits is not None:
+                row['foreground_wait_ms'] = waits / 1000
+            for width, key in zip(history, fields[4:7]):
+                window = history[width]
+                window.append((elapsed, sample['serverBytes']))
+                while len(window) > 1 and window[1][0] <= elapsed - width:
+                    window.popleft()
+                past, past_bytes = window[0]
+                if elapsed - past >= width:
+                    row[key] = round((sample['serverBytes'] - past_bytes) / (1048576 * (elapsed - past)), 3)
+            writer.writerow(row)
+    for window in pause_windows:
+        start = window['startMs'] - 60000
+        end = (window['endMs'] if window['endMs'] is not None else window['startMs']) + 30000
+        window['sampleRange'] = [next((i for i, sample in enumerate(samples) if sample['ms'] >= start), len(samples)),
+                                 next((i for i, sample in enumerate(samples) if sample['ms'] > end), len(samples))]
+        window['eventRange'] = [next((i for i, event in enumerate(events)
+                                      if event['sessionMs'] - alignment['beforePlayerMs'] >= start), len(events)),
+                                next((i for i, event in enumerate(events)
+                                      if event['sessionMs'] - alignment['beforePlayerMs'] > end), len(events))]
+    (root / 'pause-windows.json').write_text(json.dumps(pause_windows, indent=2), encoding='utf8')
+    restarts = [entry for entry in events if entry['event'] == 'playback-restart']
+    seeks = [sample for sample in samples if sample.get('command') == 'seek']
+    seek_recovery_ms = []
+    for index, sample in enumerate(seeks):
+        start = sample['ms'] + alignment['beforePlayerMs']
+        end = seeks[index + 1]['ms'] + alignment['beforePlayerMs'] if index + 1 < len(seeks) else float('inf')
+        if sample['result'].get('error') == 'success':
+            restart = next((entry['sessionMs'] for entry in restarts if start <= entry['sessionMs'] < end), None)
+            if restart is not None:
+                seek_recovery_ms.append(round(restart - start, 2))
+    positions = [sample['time-pos'] for sample in samples if sample.get('time-pos') is not None]
+    return dict(cachePauseWindows=len(pause_windows),
+                closedCachePauseSeconds=round(sum(window['endMs'] - window['startMs']
+                    for window in pause_windows if window['endMs'] is not None) / 1000, 3),
+                openCachePause=pause is not None, seekRecoveryMs=seek_recovery_ms,
+                linearMediaAdvanceSeconds=round(positions[-1] - positions[0], 3)
+                    if positions and not seeks else None)
+
+
 def run(args):
     root = pathlib.Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=False)
+    began = time.monotonic()
     source = Source(args.source, args.delay_ms, args.mibps, args.outage,
                     args.max_concurrent_requests, args.per_request_mibps,
-                    args.max_large_ranges)
+                    args.max_large_ranges, args.bandwidth_after, args.redirect, args.rejection_status)
     player = helper = control = ipc = None
+    attached = False
+    spawn_started = play_elapsed = None
     samples = []
-    began = time.monotonic()
+    latest_bridge = {}
+    trace = None
+    last_trace_serial = missed_trace_events = 0
     try:
         session = root / 'session'
         session.mkdir()
         name = 'streampath_bluray_' + uuid.uuid4().hex
+        helper_env = dict(os.environ)
+        if args.timeline:
+            helper_env['STREAMPATH_DISC_IO_TRACE'] = '1'
+            trace = (root / 'bridge-events.jsonl').open('w', encoding='utf8')
+        helper_spawn = time.monotonic()
         with (root / 'helper.log').open('wb') as log:
-            helper = subprocess.Popen([str(pathlib.Path(args.helper).resolve()), '--pipe=' + name, '--parent-pid=' + str(os.getpid())], stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
+            helper = subprocess.Popen([str(pathlib.Path(args.helper).resolve()), '--pipe=' + name, '--parent-pid=' + str(os.getpid())], env=helper_env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
         control = Control(name, helper)
         hello = control.receive()
+        helper_clock_upper_bound = time.monotonic()
         cache = pathlib.Path(args.cache).resolve() if args.cache else root / 'iso_structure' / ('a' * 64 + '.cache')
         request = dict(type='open_disc' if args.mode == 'menu' else 'open', version=1, url=source.base + '/disc.iso', origin=source.base, username='', password='', sessionPath=str(session), structureCachePath=str(cache))
         if args.mode == 'menu':
@@ -299,9 +435,10 @@ def run(args):
             raise RuntimeError('Unexpected reuse of confirmed programme')
         prepare_ms = (time.monotonic() - began) * 1000
         public_ready = {key: value for key, value in ready.items() if key != 'token'}
+        public_ready.pop('discPath', None)
         (root / 'ready.json').write_text(json.dumps(public_ready, indent=2), encoding='utf8')
         if ready['type'] != 'ready':
-            raise RuntimeError(ready)
+            raise RuntimeError(f"Bridge preparation failed ({ready.get('code', ready['type'])})")
         if args.single == 'select' and not ready.get('mainFeatureSelected'):
             raise RuntimeError('Helper did not materialize the selected title')
         if args.mode == 'title':
@@ -350,7 +487,8 @@ def run(args):
             control.send(dict(type='shutdown'))
             control.close()
             control = None
-            helper.wait(timeout=15)
+            if helper.wait(timeout=15):
+                raise RuntimeError('The Bridge failed to exit after preparation')
             return
         if not (args.mode == 'menu' and args.local):
             control.send(dict(type='configure_cache', blockCount=args.cache_blocks, prefetchBlocks=args.prefetch_blocks, **{'cacheSecs': 60} if args.mode == 'menu' else {}))
@@ -366,17 +504,26 @@ def run(args):
         pipe = 'streampath_bluray_mpv_' + uuid.uuid4().hex
         events = root / 'mpv-events.jsonl'
         probe = root / 'events.lua'
-        probe.write_text("local mp=require 'mp'\nlocal u=require 'mp.utils'\nlocal started=mp.get_time()\nlocal function record(event, observed) local paused=mp.get_property_native('paused-for-cache'); if event=='cache-pause' then paused=observed end; local f=assert(io.open(" + json.dumps(str(events)) + ", 'ab')); f:write(u.format_json({event=event,ms=(mp.get_time()-started)*1000,menu=mp.get_property_native('disc-menu-active'),position=mp.get_property_number('time-pos'),duration=mp.get_property_number('duration'),paused=paused}), '\\n'); f:close() end\nmp.register_script_message('benchmark-clock',function() record('clock') end)\nmp.observe_property('paused-for-cache','bool',function(_, value) record('cache-pause', value) end)\nmp.register_event('file-loaded', function() record('file-loaded') end)\nmp.register_event('playback-restart', function() record('playback-restart') end)\nmp.observe_property('disc-menu-active','bool',function() record('menu') end)\n", encoding='utf8')
+        probe.write_text("local mp=require 'mp'\nlocal u=require 'mp.utils'\nlocal started=mp.get_time()\nlocal function record(event, observed) local paused=mp.get_property_native('paused-for-cache'); if event=='cache-pause' then paused=observed end; local f=assert(io.open(" + json.dumps(str(events)) + ", 'ab')); f:write(u.format_json({event=event,ms=(mp.get_time()-started)*1000,menu=mp.get_property_native('disc-menu-active'),position=mp.get_property_number('time-pos'),duration=mp.get_property_number('duration'),paused=paused}), '\\n'); f:close() end\nmp.register_script_message('benchmark-clock',function() record('clock') end)\nmp.observe_property('paused-for-cache','bool',function(_, value) record('cache-pause', value) end)\nmp.register_event('file-loaded', function() record('file-loaded') end)\nmp.register_event('playback-restart', function() record('playback-restart') end)\nmp.register_event('seek', function() record('seek') end)\nmp.observe_property('disc-menu-active','bool',function() record('menu') end)\n", encoding='utf8')
         common = [args.mpv, '--no-config', '--terminal=yes', '--input-terminal=no', '--vo=gpu-next' if args.visible else '--vo=null', '--ao=null', '--hwdec=auto-safe' if args.visible else '--hwdec=auto-copy', '--idle=no', '--keep-open=no', '--script='+str(probe), '--cache=yes', '--demuxer-max-bytes=' + str(args.mpv_cache_mib * 1048576), '--demuxer-max-back-bytes=0', '--input-ipc-server=' + chr(92) * 2 + '.' + chr(92) + 'pipe' + chr(92) + pipe]
         if args.mode == 'menu':
             common += ['--bluray-device=' + ready['discPath'], 'bd://menu']
         else:
-            common += ['--start=600', playback_url]
+            common += [f'--start={args.start}']
+            if args.title_cache_profile:
+                common.remove('--demuxer-max-back-bytes=0')
+                common += ['--rebase-start-time=yes', '--demuxer-lavf-linearize-timestamps=no',
+                           '--demuxer-lavf-o-add=correct_ts_overflow=1',
+                           '--cache-secs=60', '--demuxer-readahead-secs=60', '--cache-pause=yes',
+                           '--cache-pause-initial=yes', '--cache-pause-wait=3',
+                           '--demuxer-cache-wait=no', '--cache-on-disk=no']
+            common.append(playback_url)
         with (root / 'mpv.log').open('wb') as log:
             spawn_started = time.monotonic()
             player = subprocess.Popen(common, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
         control.send(dict(type='attachPlayer', pid=player.pid))
         assert control.receive().get('attached') is True
+        attached = True
         control.close()
         control = None
         ipc = MpvControl(pipe, player)
@@ -400,6 +547,8 @@ def run(args):
             raise RuntimeError('MPV clock alignment did not complete')
         clock_ack = time.monotonic()
         alignment = dict(beforePlayerMs=(spawn_started - began) * 1000,
+                         beforeHelperMs=(helper_spawn - began) * 1000,
+                         helperClockUpperBoundMs=(helper_clock_upper_bound - began) * 1000,
                          offsetMs=((clock_sent + clock_ack) / 2 - spawn_started) * 1000 - clock_event['ms'],
                          uncertaintyMs=(clock_ack - clock_sent) * 500)
         (root / 'clock.json').write_text(json.dumps(alignment, indent=2), encoding='utf8')
@@ -407,6 +556,8 @@ def run(args):
         actions = set()
         menu_visible_since = None
         seek_points = [0.5, 0.1, 0.8, 0.2, 0.96, 0.4]
+        midpoint_seek = args.midpoint_seek or (
+            args.seconds >= 180 and (args.mode == 'menu' or not args.timeline))
         while time.monotonic() - play_started < args.seconds and player.poll() is None:
             elapsed = time.monotonic() - play_started
             if args.mode == 'menu':
@@ -414,7 +565,7 @@ def run(args):
                     if elapsed >= at and at not in actions:
                         actions.add(at)
                         samples.append(dict(ms=round(elapsed * 1000), command=command, result=ipc.command(*command)))
-            if args.seconds >= 180 and elapsed >= args.seconds / 2 and ('seek' not in actions):
+            if midpoint_seek and elapsed >= args.seconds / 2 and 'seek' not in actions:
                 actions.add('seek')
                 samples.append(dict(ms=round(elapsed * 1000), command='seek', result=ipc.command('seek', 1200, 'absolute+exact')))
             if args.seek_stress and seek_points and elapsed >= args.seek_start + 4 * (6 - len(seek_points)):
@@ -430,9 +581,37 @@ def run(args):
                     if elapsed >= at and at not in actions:
                         actions.add(at)
                         samples.append(dict(ms=round(elapsed * 1000), command=command, result=ipc.command(*command)))
-            row = dict(ms=round(elapsed * 1000), bridgeProcess=process_resources(helper.pid), mpvProcess=process_resources(player.pid))
-            for key in ['disc-menu-active', 'current-edition', 'duration', 'time-pos', 'paused-for-cache', 'demuxer-cache-duration', 'chapter', 'sid', 'aid', 'vo-drop-frame-count', 'decoder-frame-drop-count', 'hwdec-current']:
+            row = dict(ms=round(elapsed * 1000), bridgeProcess=process_resources(helper.pid),
+                       mpvProcess=process_resources(player.pid), processAlive=helper.poll() is None and player.poll() is None,
+                       **source.snapshot())
+            for key in ['disc-menu-active', 'current-edition', 'duration', 'time-pos', 'paused-for-cache',
+                        'demuxer-cache-duration', 'chapter', 'sid', 'aid', 'vo-drop-frame-count',
+                        'decoder-frame-drop-count', 'hwdec-current']:
                 row[key] = ipc.command('get_property', key).get('data')
+            if args.timeline:
+                row['demuxer-cache-state'] = ipc.command('get_property', 'demuxer-cache-state').get('data')
+                row['speed'] = ipc.command('get_property', 'speed').get('data')
+                row['estimated-vf-fps'] = ipc.command('get_property', 'estimated-vf-fps').get('data')
+                if not samples:
+                    row['mpvOptions'] = {key: ipc.command('get_property', 'options/' + key).get('data')
+                                         for key in ('cache-secs', 'demuxer-readahead-secs', 'demuxer-max-bytes',
+                                                     'cache-pause', 'cache-pause-initial', 'cache-pause-wait')}
+                try:
+                    latest_bridge = json.loads((session / 'iso-bridge-metrics.json').read_text(encoding='utf8'))
+                except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+                    pass  # The Bridge may be replacing its snapshot.
+                row['bridge'] = {key: latest_bridge[key] for key in (
+                    'bridge', 'playbackCache', 'playbackNetwork') if key in latest_bridge}
+                row['bridge']['loopbackBodyBytes'] = latest_bridge.get('bluray', {}).get('loopbackBodyBytes')
+                io_trace = latest_bridge.get('ioTrace') or {}
+                row['bridgeTraceCaptureUs'] = io_trace.get('captureUs')
+                for event in io_trace.get('events', []):
+                    serial = event['serial']
+                    if serial <= last_trace_serial:
+                        continue
+                    missed_trace_events += serial - last_trace_serial - 1
+                    last_trace_serial = serial
+                    trace.write(json.dumps(event, separators=(',', ':')) + '\n')
             if row.get('disc-menu-active') is True:
                 menu_visible_since = menu_visible_since if menu_visible_since is not None else elapsed
                 if args.visible and elapsed - menu_visible_since >= 2 and 'menu-screenshot' not in actions:
@@ -441,29 +620,41 @@ def run(args):
             else:
                 menu_visible_since = None
             samples.append(row)
-            time.sleep(0.5)
+            time.sleep(max(0, play_started + elapsed + (1 if args.timeline else 0.5) - time.monotonic()))
         play_elapsed = time.monotonic() - play_started
         if player.poll() is not None and play_elapsed < args.seconds - 2:
             raise RuntimeError('MPV exited before the requested observation window')
         ipc.command('quit')
         ipc.close()
         ipc = None
-        player.wait(timeout=15)
-        helper.wait(timeout=20)
+        player_exit = player.wait(timeout=15)
+        bridge_exit = helper.wait(timeout=20)
+        if player_exit or bridge_exit:
+            raise RuntimeError(f'Playback processes failed ({player_exit}/{bridge_exit})')
     finally:
+        if spawn_started is not None and play_elapsed is None:
+            play_elapsed = time.monotonic() - spawn_started
         if control:
             control.close()
         if ipc:
             ipc.close()
         for proc in [player, helper]:
             if proc and proc.poll() is None:
+                if proc is helper and attached:
+                    try:
+                        proc.wait(timeout=20)
+                        continue
+                    except subprocess.TimeoutExpired:
+                        pass
                 proc.terminate()
                 proc.wait(timeout=10)
         source.close()
+        if trace:
+            trace.close()
         (root / 'samples.json').write_text(json.dumps(samples, indent=2), encoding='utf8')
-        metrics = root / 'session' / 'iso-bridge-metrics.json'
-        result = dict(mode=args.mode, prepareMs=round(locals().get('prepare_ms', 0), 2), requestedSeconds=args.seconds, measuredPlaybackSeconds=round(locals().get('play_elapsed', 0), 2), delayMs=args.delay_ms, MiBps=args.mibps, serverRequests=source.count, serverBytes=source.bytes, menuObserved=any((s.get('disc-menu-active') is True for s in samples)), mainFeatureObserved=any(((s.get('duration') or 0) > 6000 and (s.get('time-pos') or 0) > 3 and s.get('disc-menu-active') is not True for s in samples)), cachePausedSamples=sum((s.get('paused-for-cache') is True for s in samples)), headless=not args.visible)
-        result.update(serverRejected429=source.rejected, serverConcurrentPeak=source.peak)
+        result = dict(mode=args.mode, prepareMs=round(locals().get('prepare_ms', 0), 2), requestedSeconds=args.seconds, measuredPlaybackSeconds=round(play_elapsed or 0, 2), delayMs=args.delay_ms, MiBps=args.mibps, serverRequests=source.count, serverBytes=source.bytes, menuObserved=any((s.get('disc-menu-active') is True for s in samples)), mainFeatureObserved=any(((s.get('duration') or 0) > 6000 and (s.get('time-pos') or 0) > 3 and s.get('disc-menu-active') is not True for s in samples)), cachePausedSamples=sum((s.get('paused-for-cache') is True for s in samples)), headless=not args.visible)
+        result.update(serverRejected429=source.statuses.get(429, 0), serverConcurrentPeak=source.peak,
+                      serverStatuses=source.statuses, missingBridgeTraceEvents=missed_trace_events)
         result.update(perRequestMiBps=args.per_request_mibps, maxLargeRanges=args.max_large_ranges)
         result.update(single=args.single, local=args.local, playlist=args.playlist,
                       helperExit=helper.poll() if helper is not None else None,
@@ -471,6 +662,15 @@ def run(args):
                       seekCommands=sum(row.get('command') == 'seek' for row in samples))
         if 'alignment' in locals():
             entries = [json.loads(line) for line in events.read_text(encoding='utf8').splitlines()]
+            if args.timeline:
+                selected = locals().get('title', {})
+                size, duration_ms = selected.get('size'), selected.get('durationMs')
+                estimated_mibps = round(size * 1000 / duration_ms / 1048576, 3) if size and duration_ms else None
+                result.update(write_timeline(root, samples, entries, alignment, estimated_mibps))
+                result.update(focused=bool(ready.get('mainFeatureSelected')),
+                              estimatedConsumptionMiBps=estimated_mibps,
+                              capAfter=args.bandwidth_after, outageSeconds=args.outage,
+                              redirected=args.redirect, titleCacheProfile=args.title_cache_profile)
             result['clockUncertaintyMs'] = round(alignment['uncertaintyMs'], 2)
             result['cachePauseEvents'] = sum(entry['event'] == 'cache-pause' and entry.get('paused') is True for entry in entries)
             for event, name in [('file-loaded', 'fileLoadedMs'), ('playback-restart', 'playbackRestartMs')]:
@@ -489,11 +689,19 @@ if __name__ == '__main__':
     parser.add_argument('--cache')
     parser.add_argument('--delay-ms', type=float, default=20)
     parser.add_argument('--mibps', type=float, default=20)
+    parser.add_argument('--bandwidth-after', nargs=2, type=float, metavar=('SECONDS', 'MIBPS'),
+                        help='Change aggregate cap after this session age')
     parser.add_argument('--per-request-mibps', type=float, default=0)
     parser.add_argument('--outage', type=float, default=0)
     parser.add_argument('--max-concurrent-requests', type=int, default=0)
     parser.add_argument('--max-large-ranges', type=int, default=0, help='Limit concurrent Range requests of at least 8 MiB')
+    parser.add_argument('--rejection-status', type=int, choices=(429, 503), default=429)
+    parser.add_argument('--redirect', action='store_true')
     parser.add_argument('--seconds', type=int, default=65)
+    parser.add_argument('--timeline', action='store_true', help='Collect synchronized cache and throughput samples')
+    parser.add_argument('--title-cache-profile', action='store_true', help='Use StreamPath title cache and timing arguments')
+    parser.add_argument('--start', type=float, default=600, help='Initial media position in seconds')
+    parser.add_argument('--midpoint-seek', action='store_true')
     parser.add_argument('--cache-blocks', type=int, default=16)
     parser.add_argument('--prefetch-blocks', type=int, default=12)
     parser.add_argument('--mpv-cache-mib', type=int, default=16)
@@ -511,7 +719,7 @@ if __name__ == '__main__':
     if not args.prepare_only and (not args.mpv):
         parser.error('--mpv is required for playback')
     if min(args.delay_ms, args.mibps, args.per_request_mibps, args.outage, args.max_concurrent_requests,
-           args.max_large_ranges, args.seek_start) < 0 or args.outage >= 40 or args.seconds <= 0:
+           args.max_large_ranges, args.seek_start, args.start, *(args.bandwidth_after or (0,))) < 0 or args.outage >= 40 or not 0 < args.seconds <= 3600:
         parser.error('Invalid shaping or duration')
     if args.mode == 'menu' and (args.single or args.playlist or args.seek_stress):
         parser.error('Single, playlist and seek-stress require title mode')

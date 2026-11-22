@@ -24,6 +24,7 @@ namespace streampath::iso_bridge {
 class DiscIoTrace {
  public:
   void enable();
+  bool enabled() const { return enabled_; }
   std::uint64_t record(const char* kind, std::uint64_t id = 0,
                        std::uint64_t offset = 0, std::uint64_t length = 0,
                        std::uint64_t generation = 0,
@@ -169,6 +170,10 @@ struct BlockCacheMetrics {
   std::uint64_t parallel_prefetch_batches = 0;
   std::uint64_t parallel_prefetch_no_gain = 0;
   std::uint64_t parallel_prefetch_rejected = 0;
+  std::optional<std::uint64_t> contiguous_ready_bytes;
+  std::uint64_t diagnostic_prefetch_queued_bytes = 0;
+  std::uint64_t diagnostic_prefetch_batch_bytes = 0;
+  bool diagnostic_parallel_batch_active = false;
   bool refetch_count_available = true;
 };
 
@@ -250,6 +255,7 @@ class BlockCache {
   std::shared_ptr<Entry> block(std::uint64_t index,
                                std::uint64_t playback_generation,
                                bool prefetch = false);
+  std::uint64_t contiguous_cached_bytes_locked(std::uint64_t offset) const;
   void schedule_prefetch(std::uint64_t next_offset, std::size_t block_count,
                          std::uint64_t playback_generation,
                          std::uint64_t extent_end);
@@ -281,6 +287,8 @@ class BlockCache {
   const std::function<bool(const std::exception_ptr&)> rejects_parallel_prefetch_;
   std::size_t stable_batch_blocks_;
   DiscIoTrace* trace_ = nullptr;
+  std::optional<std::uint64_t> diagnostic_read_cursor_;
+  bool diagnostic_parallel_batch_active_ = false;
   std::uint64_t reserved_bytes_ = 0;
   std::exception_ptr playback_read_error_;
   std::size_t block_count_;

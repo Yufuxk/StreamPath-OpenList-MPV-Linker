@@ -828,8 +828,11 @@ void test_playback_prefetch_range_size() {
         streamed += length;
       });
   expect_network(streamed == kMaximumIsoRangeBytes, "large streaming range complete");
+  const auto request_count = server.requests().size();
   expect_bridge_error(
       [&] { source.fetch(0, kMaximumIsoRangeBytes); }, "network_error");
+  expect_network(server.requests().size() == request_count,
+                 "oversized prefetch never reaches the HTTP source");
 }
 
 void test_cancelled_prefetch_skips_webdav_request() {
