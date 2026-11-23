@@ -335,10 +335,19 @@ class _CacheWorker {
             await control.future;
           }
           final file = files[id]!;
-          await validateDestination(file);
-          for (final suffix in ['', '.partial']) {
-            final target = File('${file['destination']}$suffix');
-            if (await target.exists()) await target.delete();
+          final destination = file['destination'] as String;
+          final targets = [File(destination), File('$destination.partial')];
+          final types = await Future.wait(
+            targets.map(
+              (target) =>
+                  FileSystemEntity.type(target.path, followLinks: false),
+            ),
+          );
+          if (types.any((type) => type != FileSystemEntityType.notFound)) {
+            await validateDestination(file);
+            for (final target in targets) {
+              if (await target.exists()) await target.delete();
+            }
           }
           await db.delete('files', where: 'id=?', whereArgs: [id]);
           files.remove(id);

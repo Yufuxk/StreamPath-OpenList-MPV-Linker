@@ -815,6 +815,21 @@ void main() {
     await service.delete('bundle-b');
     expect(await File(selection.files.single.destination).exists(), isFalse);
   });
+  test('缓存目录被移除后仍可删除缓存记录', () async {
+    final service = await open();
+    final selection = await plan(service);
+    await service.enqueue([selection]);
+    await service.setPlaybackSuspended(false);
+    await _until(() => service.complete(selection.bundle));
+
+    final cacheDirectory = Directory(selection.bundle['root'] as String);
+    await cacheDirectory.delete(recursive: true);
+    await service.delete('bundle-a');
+
+    expect(service.bundles, isEmpty);
+    expect(service.files, isEmpty);
+    expect(await cacheDirectory.exists(), isFalse);
+  });
   test('取消保留断点，重试继续下载；缺失成品可重新缓存', () async {
     source.slow = true;
     final service = await open();
