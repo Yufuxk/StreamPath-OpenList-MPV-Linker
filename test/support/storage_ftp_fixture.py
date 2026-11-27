@@ -1,8 +1,9 @@
 import json
 import logging
+import os
 import sys
 
-sys.path.insert(0, sys.argv[2])
+sys.path.insert(0, os.environ.get("PHASE5_TEST_DEPS", sys.argv[2]))
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler, ThrottledDTPHandler
 from pyftpdlib.servers import FTPServer

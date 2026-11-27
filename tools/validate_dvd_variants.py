@@ -70,7 +70,7 @@ def variant(original, mode):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('iso')
-    parser.add_argument('--helper', default='build/dvd-support/native/streampath_iso_bridge.exe')
+    parser.add_argument('--helper', default='build/windows/x64/runner/Release/streampath_iso_bridge.exe')
     parser.add_argument('--player', required=True)
     args = parser.parse_args()
     with open(args.iso, 'rb') as source:

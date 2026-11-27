@@ -748,12 +748,19 @@ HTTP header、cookie、referrer、proxy 和原生续播参数；不使用 `--blu
 先等初始 `playback-restart`，只执行一次 `absolute+exact` seek，并在 seek 已实际发出、目标后的新
 restart、`seeking=false` 且当前位置距目标不超过 2 秒时恢复播放。`IsoCacheCoordinator` 还要观察到
 缓存秒数增长或位置实际推进后才开始采样，并复用现有策略与本地学习核心，以真实
-WebDAV ISO URL 和 Title 码率拆分 Bridge/MPV 总预算；ISO MPV 使用独立 IPC，动态调整不能突破
-总预算和 512 MiB MPV 上限。MPV 对 localhost 测得的速度不进入学习，吞吐由 Bridge 的远端实际
+WebDAV ISO URL 和 Title 码率拆分 Bridge/MPV 总预算；ISO MPV 使用独立 IPC，常规前向上限为
+512 MiB。MPV 对 localhost 测得的速度不进入学习，吞吐由 Bridge 的远端实际
 传输字节/有效传输时间提供。服务关闭磁盘缓存、全量 cache 等待及跨 Title 预取，并强制
 `idle=no` 与 `keep-open=no`，因此播放列表自然完成后 MPV 和等待
 其进程句柄的 helper 会正常退出，不残留 ISO 单任务占用。MPV/helper 命令行、manifest、catalog
 和 metrics 均不含远端 URL、凭据、远端 Token 或签名参数；M3U8 只包含一次性 localhost token。
+
+Title 状态文件在缓存时长之后记录 MPV 的前向字节与总字节，未知值为 `-1`，旧文件保持可读。
+构建参数 `SP_UHD_FORWARD_CACHE_DISC_KEY` 可以为一个经验证的匿名 ISO 键开启 640 MiB 试点，
+默认关闭。试点要求实际命中远程高码率蓝光 Single，现有计划以 512 MiB 起播。稳定播放后以
+连续前向水位及 Bridge 远端字节差分判断供数余量，核对有效后向上限、系统内存与共享预算。
+前向配额经 MPV 读回确认后同步给压力监控。容量调整和普通压力调节串行写入，MPV 继续按自身配置
+保留后向额度和借用。试点决定归档在 Title 性能事件 JSONL 中。
 
 ISO Title 顺序、选择结果和最后 MPLS 只写入 `iso_catalog.json`；各 MPLS 的时间点只写入
 `iso_watch_later/<匿名 ISO 键>/`。匿名键由稳定档案 ID 和去掉 userinfo、query、fragment 的

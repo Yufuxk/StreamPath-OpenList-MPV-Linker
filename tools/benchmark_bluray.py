@@ -1,5 +1,5 @@
-"""Read-only Blu-ray benchmark with a local, bounded HTTP source."""
-import argparse, csv, ctypes, hashlib, http.server, json, os, pathlib, struct, subprocess, threading, time, urllib.parse, urllib.request, uuid, msvcrt
+"""Read-only Blu-ray benchmark with a bounded fixture or a WebDAV ISO."""
+import argparse, csv, ctypes, hashlib, http.server, json, os, pathlib, struct, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid, msvcrt
 from collections import deque
 from ctypes import wintypes
 
@@ -294,12 +294,24 @@ def write_timeline(root, samples, events, alignment, estimated_mibps):
     if pause is not None:
         pause_windows.append(dict(startMs=pause, endMs=None))
 
+    windows = (1, 5, 30)
+    remote_columns = ('remote_effective_1s_MiBps', 'remote_effective_MiBps', 'remote_effective_30s_MiBps')
+    rate_columns = {
+        'remote': remote_columns,
+        'loopback': tuple(f'loopback_{width}s_MiBps' for width in windows),
+        'forward': tuple(f'forward_change_{width}s_MiBps' for width in windows),
+    }
     fields = ['time', 'media_pos', 'forward_buffer_seconds', 'forward_buffer_bytes',
-              'remote_effective_1s_MiBps', 'remote_effective_MiBps', 'remote_effective_30s_MiBps',
+              *remote_columns,
               'estimated_consumption_MiBps', 'network_requests', 'foreground_wait_ms',
               'bridge_contiguous_bytes', 'loopback_bytes', 'parallel_active', 'parallel_batches',
               'paused_for_cache', 'process_alive']
-    history = {width: deque() for width in (1, 5, 30)}
+    for columns in rate_columns.values():
+        for column in columns:
+            if column not in fields:
+                fields.append(column)
+            fields.append(column.removesuffix('MiBps') + 'Mbps')
+    history = {column: deque() for columns in rate_columns.values() for column in columns}
     with (root / 'timeline.csv').open('w', encoding='utf8', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
@@ -324,14 +336,31 @@ def write_timeline(root, samples, events, alignment, estimated_mibps):
             waits = cache.get('foregroundLoadingWaitUsTotal')
             if waits is not None:
                 row['foreground_wait_ms'] = waits / 1000
-            for width, key in zip(history, fields[4:7]):
-                window = history[width]
-                window.append((elapsed, sample['serverBytes']))
-                while len(window) > 1 and window[1][0] <= elapsed - width:
-                    window.popleft()
-                past, past_bytes = window[0]
-                if elapsed - past >= width:
-                    row[key] = round((sample['serverBytes'] - past_bytes) / (1048576 * (elapsed - past)), 3)
+            bridge_time = sample.get('bridgeTraceCaptureUs')
+            if bridge_time is not None:
+                bridge_time /= 1000000
+            elif sample.get('bridgeSnapshotObservedMs') is not None:
+                bridge_time = sample['bridgeSnapshotObservedMs'] / 1000
+            rate_inputs = {
+                'remote': (bridge_time if sample.get('realWebDav') else elapsed, sample['serverBytes']),
+                'loopback': (bridge_time, row['loopback_bytes']),
+                'forward': (elapsed, row['forward_buffer_bytes']),
+            }
+            for domain, (stamp, current_bytes) in rate_inputs.items():
+                if stamp is None or current_bytes is None:
+                    continue
+                for width, key in zip(windows, rate_columns[domain]):
+                    window = history[key]
+                    if window and stamp <= window[-1][0]:
+                        continue
+                    window.append((stamp, current_bytes))
+                    while len(window) > 1 and window[1][0] <= stamp - width:
+                        window.popleft()
+                    past, past_bytes = window[0]
+                    if stamp - past >= width:
+                        rate = (current_bytes - past_bytes) / (stamp - past)
+                        row[key] = round(rate / 1048576, 3)
+                        row[key.removesuffix('MiBps') + 'Mbps'] = round(rate * 8 / 1000000, 3)
             writer.writerow(row)
     for window in pause_windows:
         start = window['startMs'] - 60000
@@ -354,21 +383,23 @@ def write_timeline(root, samples, events, alignment, estimated_mibps):
             if restart is not None:
                 seek_recovery_ms.append(round(restart - start, 2))
     positions = [sample['time-pos'] for sample in samples if sample.get('time-pos') is not None]
+    closed_pauses = [(window['endMs'] - window['startMs']) / 1000
+                     for window in pause_windows if window['endMs'] is not None]
     return dict(cachePauseWindows=len(pause_windows),
-                closedCachePauseSeconds=round(sum(window['endMs'] - window['startMs']
-                    for window in pause_windows if window['endMs'] is not None) / 1000, 3),
+                closedCachePauseSeconds=round(sum(closed_pauses), 3),
+                longestClosedCachePauseSeconds=round(max(closed_pauses, default=0), 3),
                 openCachePause=pause is not None, seekRecoveryMs=seek_recovery_ms,
                 linearMediaAdvanceSeconds=round(positions[-1] - positions[0], 3)
                     if positions and not seeks else None)
 
 
-def run(args):
+def run(args, remote=None):
     root = pathlib.Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=False)
     began = time.monotonic()
-    source = Source(args.source, args.delay_ms, args.mibps, args.outage,
-                    args.max_concurrent_requests, args.per_request_mibps,
-                    args.max_large_ranges, args.bandwidth_after, args.redirect, args.rejection_status)
+    source = None if remote else Source(args.source, args.delay_ms, args.mibps, args.outage,
+                                        args.max_concurrent_requests, args.per_request_mibps,
+                                        args.max_large_ranges, args.bandwidth_after, args.redirect, args.rejection_status)
     player = helper = control = ipc = None
     attached = False
     spawn_started = play_elapsed = None
@@ -376,22 +407,47 @@ def run(args):
     latest_bridge = {}
     trace = None
     last_trace_serial = missed_trace_events = 0
+    preparation_timeout = None
+    stopped_for_budget = False
+    metrics_path = root / 'session' / 'iso-bridge-metrics.json'
+    snapshot_mtime = None
+
+    def record_trace(snapshot):
+        nonlocal last_trace_serial, missed_trace_events
+        if not trace:
+            return
+        for event in (snapshot.get('ioTrace') or {}).get('events', []):
+            serial = event['serial']
+            if serial <= last_trace_serial:
+                continue
+            missed_trace_events += serial - last_trace_serial - 1
+            last_trace_serial = serial
+            trace.write(json.dumps(event, separators=(',', ':')) + '\n')
+
     try:
         session = root / 'session'
         session.mkdir()
         name = 'streampath_bluray_' + uuid.uuid4().hex
         helper_env = dict(os.environ)
         if args.timeline:
-            helper_env['STREAMPATH_DISC_IO_TRACE'] = '1'
-            trace = (root / 'bridge-events.jsonl').open('w', encoding='utf8')
+            if args.trace_off:
+                helper_env.pop('STREAMPATH_DISC_IO_TRACE', None)
+            else:
+                helper_env['STREAMPATH_DISC_IO_TRACE'] = '1'
+                trace = (root / 'bridge-events.jsonl').open('w', encoding='utf8')
         helper_spawn = time.monotonic()
         with (root / 'helper.log').open('wb') as log:
             helper = subprocess.Popen([str(pathlib.Path(args.helper).resolve()), '--pipe=' + name, '--parent-pid=' + str(os.getpid())], env=helper_env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
+        if remote:
+            preparation_timeout = threading.Timer(90, helper.terminate)
+            preparation_timeout.start()
         control = Control(name, helper)
         hello = control.receive()
         helper_clock_upper_bound = time.monotonic()
         cache = pathlib.Path(args.cache).resolve() if args.cache else root / 'iso_structure' / ('a' * 64 + '.cache')
-        request = dict(type='open_disc' if args.mode == 'menu' else 'open', version=1, url=source.base + '/disc.iso', origin=source.base, username='', password='', sessionPath=str(session), structureCachePath=str(cache))
+        connection = remote or dict(url=source.base + '/disc.iso', origin=source.base, username='', password='')
+        request = dict(type='open_disc' if args.mode == 'menu' else 'open', version=1,
+                       sessionPath=str(session), structureCachePath=str(cache), **connection)
         if args.mode == 'menu':
             request.update(mode='disc-menu' if hello.get('discMenuVersion') == 1 else 'hdmv', transport='winfsp')
         if args.local:
@@ -411,10 +467,10 @@ def run(args):
                 revision = '0' * 64 + revision[64:]
             request.update(confirmedRevision=revision, confirmedPlaylist=confirmed['playlist'],
                            confirmedTitleIndex=confirmed['titleIndex'])
-        if source.root.is_dir():
+        if source and source.root.is_dir():
             request['sourceKind'] = 'bdmv'
         control.send(request)
-        if source.root.is_dir():
+        if source and source.root.is_dir():
             for item in source.manifest():
                 control.send(item)
             control.send(dict(type='files_end'))
@@ -434,7 +490,10 @@ def run(args):
         if args.confirmation and (root / 'candidates.json').exists() != args.stale_confirmation:
             raise RuntimeError('Unexpected reuse of confirmed programme')
         prepare_ms = (time.monotonic() - began) * 1000
-        public_ready = {key: value for key, value in ready.items() if key != 'token'}
+        if preparation_timeout:
+            preparation_timeout.cancel()
+        public_ready = {key: value for key, value in ready.items()
+                        if key not in ('token', 'message')}
         public_ready.pop('discPath', None)
         (root / 'ready.json').write_text(json.dumps(public_ready, indent=2), encoding='utf8')
         if ready['type'] != 'ready':
@@ -449,7 +508,9 @@ def run(args):
             route = (f'dvd/title/{int(programme[10:]):05}.vob'
                      if programme.startswith('dvd-title-') else f'title/{programme}.m2ts')
             playback_url = f"http://127.0.0.1:{ready['port']}/{ready['token']}/{route}"
-        print(json.dumps(dict(mode=args.mode, prepareMs=round(prepare_ms, 2), metadataRequests=source.count, metadataBytes=source.bytes)), flush=True)
+        print(json.dumps(dict(mode=args.mode, prepareMs=round(prepare_ms, 2),
+                              metadataRequests=source.count if source else None,
+                              metadataBytes=source.bytes if source else None)), flush=True)
         if args.verify_bytes:
             checks = []
             if args.mode == 'menu':
@@ -505,7 +566,23 @@ def run(args):
         events = root / 'mpv-events.jsonl'
         probe = root / 'events.lua'
         probe.write_text("local mp=require 'mp'\nlocal u=require 'mp.utils'\nlocal started=mp.get_time()\nlocal function record(event, observed) local paused=mp.get_property_native('paused-for-cache'); if event=='cache-pause' then paused=observed end; local f=assert(io.open(" + json.dumps(str(events)) + ", 'ab')); f:write(u.format_json({event=event,ms=(mp.get_time()-started)*1000,menu=mp.get_property_native('disc-menu-active'),position=mp.get_property_number('time-pos'),duration=mp.get_property_number('duration'),paused=paused}), '\\n'); f:close() end\nmp.register_script_message('benchmark-clock',function() record('clock') end)\nmp.observe_property('paused-for-cache','bool',function(_, value) record('cache-pause', value) end)\nmp.register_event('file-loaded', function() record('file-loaded') end)\nmp.register_event('playback-restart', function() record('playback-restart') end)\nmp.register_event('seek', function() record('seek') end)\nmp.observe_property('disc-menu-active','bool',function() record('menu') end)\n", encoding='utf8')
-        common = [args.mpv, '--no-config', '--terminal=yes', '--input-terminal=no', '--vo=gpu-next' if args.visible else '--vo=null', '--ao=null', '--hwdec=auto-safe' if args.visible else '--hwdec=auto-copy', '--idle=no', '--keep-open=no', '--script='+str(probe), '--cache=yes', '--demuxer-max-bytes=' + str(args.mpv_cache_mib * 1048576), '--demuxer-max-back-bytes=0', '--input-ipc-server=' + chr(92) * 2 + '.' + chr(92) + 'pipe' + chr(92) + pipe]
+        common = [args.mpv, '--terminal=yes', '--input-terminal=no', '--idle=no', '--keep-open=no',
+                  '--script=' + str(probe), '--cache=yes',
+                  '--demuxer-max-bytes=' + str(args.mpv_cache_mib * 1048576), '--demuxer-max-back-bytes=0',
+                  '--input-ipc-server=' + chr(92) * 2 + '.' + chr(92) + 'pipe' + chr(92) + pipe]
+        if args.player_config_dir:
+            config_dir = pathlib.Path(args.player_config_dir).resolve()
+            common += ['--config-dir=' + str(config_dir), '--load-scripts=no',
+                       '--log-file=', '--stream-record=',
+                       '--gpu-shader-cache-dir=' + str(config_dir / 'shader-cache'),
+                       '--icc-cache-dir=' + str(config_dir / 'icc-cache')]
+        else:
+            common += ['--no-config', '--load-scripts=no', '--vo=gpu-next' if args.visible else '--vo=null',
+                       '--hwdec=auto-safe' if args.visible else '--hwdec=auto-copy']
+        if args.player_hwdec:
+            common.append('--hwdec=' + args.player_hwdec)
+        if not args.audio_output:
+            common.append('--ao=null')
         if args.mode == 'menu':
             common += ['--bluray-device=' + ready['discPath'], 'bd://menu']
         else:
@@ -514,9 +591,12 @@ def run(args):
                 common.remove('--demuxer-max-back-bytes=0')
                 common += ['--rebase-start-time=yes', '--demuxer-lavf-linearize-timestamps=no',
                            '--demuxer-lavf-o-add=correct_ts_overflow=1',
-                           '--cache-secs=60', '--demuxer-readahead-secs=60', '--cache-pause=yes',
+                           f'--cache-secs={args.cache_secs}', f'--demuxer-readahead-secs={args.cache_secs}', '--cache-pause=yes',
                            '--cache-pause-initial=yes', '--cache-pause-wait=3',
                            '--demuxer-cache-wait=no', '--cache-on-disk=no']
+            if remote:
+                common += ['--resume-playback=no', '--save-position-on-quit=no',
+                           '--prefetch-playlist=no', '--http-proxy=', '--cookies=no']
             common.append(playback_url)
         with (root / 'mpv.log').open('wb') as log:
             spawn_started = time.monotonic()
@@ -573,7 +653,7 @@ def run(args):
                 target = round(duration * seek_points.pop(0), 3)
                 samples.append(dict(ms=round(elapsed * 1000), command='seek', target=target,
                                     result=ipc.command('seek', target, 'absolute+exact')))
-            if args.visible and elapsed > args.seconds - 3 and ('screenshot' not in actions):
+            if args.visible and not remote and elapsed > args.seconds - 3 and ('screenshot' not in actions):
                 actions.add('screenshot')
                 ipc.command('screenshot-to-file', str(root / 'menu.png'), 'window')
             if args.seconds >= 180:
@@ -583,35 +663,56 @@ def run(args):
                         samples.append(dict(ms=round(elapsed * 1000), command=command, result=ipc.command(*command)))
             row = dict(ms=round(elapsed * 1000), bridgeProcess=process_resources(helper.pid),
                        mpvProcess=process_resources(player.pid), processAlive=helper.poll() is None and player.poll() is None,
-                       **source.snapshot())
+                       realWebDav=bool(remote))
+            if source:
+                row.update(source.snapshot())
             for key in ['disc-menu-active', 'current-edition', 'duration', 'time-pos', 'paused-for-cache',
                         'demuxer-cache-duration', 'chapter', 'sid', 'aid', 'vo-drop-frame-count',
-                        'decoder-frame-drop-count', 'hwdec-current']:
+                        'decoder-frame-drop-count', 'hwdec-current', 'raw-input-rate']:
                 row[key] = ipc.command('get_property', key).get('data')
             if args.timeline:
                 row['demuxer-cache-state'] = ipc.command('get_property', 'demuxer-cache-state').get('data')
+                row['stream-pos'] = ipc.command('get_property', 'stream-pos').get('data')
+                row['avsync'] = ipc.command('get_property', 'avsync').get('data')
+                row['pause'] = ipc.command('get_property', 'pause').get('data')
+                if args.player_config_dir:
+                    row['window-minimized'] = ipc.command('get_property', 'window-minimized').get('data')
                 row['speed'] = ipc.command('get_property', 'speed').get('data')
                 row['estimated-vf-fps'] = ipc.command('get_property', 'estimated-vf-fps').get('data')
-                if not samples:
+                if remote and row['raw-input-rate'] is None:
+                    row['raw-input-rate'] = (row['demuxer-cache-state'] or {}).get('raw-input-rate')
+                if remote or not samples:
+                    options = ('cache-secs', 'demuxer-readahead-secs', 'demuxer-max-bytes',
+                               'cache-pause', 'cache-pause-initial', 'cache-pause-wait')
+                    if not samples:
+                        options += ('hwdec', 'vo', 'ao', 'video-sync', 'hr-seek')
                     row['mpvOptions'] = {key: ipc.command('get_property', 'options/' + key).get('data')
-                                         for key in ('cache-secs', 'demuxer-readahead-secs', 'demuxer-max-bytes',
-                                                     'cache-pause', 'cache-pause-initial', 'cache-pause-wait')}
+                                         for key in options}
                 try:
-                    latest_bridge = json.loads((session / 'iso-bridge-metrics.json').read_text(encoding='utf8'))
+                    mtime = metrics_path.stat().st_mtime_ns
+                    latest_bridge = json.loads(metrics_path.read_text(encoding='utf8'))
+                    if mtime != snapshot_mtime:
+                        snapshot_mtime = mtime
+                        snapshot_observed = time.monotonic()
                 except (FileNotFoundError, PermissionError, json.JSONDecodeError):
                     pass  # The Bridge may be replacing its snapshot.
                 row['bridge'] = {key: latest_bridge[key] for key in (
                     'bridge', 'playbackCache', 'playbackNetwork') if key in latest_bridge}
                 row['bridge']['loopbackBodyBytes'] = latest_bridge.get('bluray', {}).get('loopbackBodyBytes')
+                if snapshot_mtime is not None:
+                    row['bridgeSnapshotObservedMs'] = round((snapshot_observed - play_started) * 1000)
+                    row['bridgeSnapshotFileAgeMs'] = round((time.time_ns() - snapshot_mtime) / 1000000)
+                if remote:
+                    network = latest_bridge.get('playbackNetwork', {})
+                    row.update(serverRequests=network.get('requestCount'),
+                               serverBytes=network.get('remoteBodyBytes'))
+                    total = latest_bridge.get('network', {})
+                    stopped_for_budget = (
+                        total.get('remoteBodyBytes', 0) + total.get('probeBodyBytes', 0)
+                        >= args.remote_budget_mib * 1048576)
                 io_trace = latest_bridge.get('ioTrace') or {}
                 row['bridgeTraceCaptureUs'] = io_trace.get('captureUs')
-                for event in io_trace.get('events', []):
-                    serial = event['serial']
-                    if serial <= last_trace_serial:
-                        continue
-                    missed_trace_events += serial - last_trace_serial - 1
-                    last_trace_serial = serial
-                    trace.write(json.dumps(event, separators=(',', ':')) + '\n')
+                record_trace(latest_bridge)
             if row.get('disc-menu-active') is True:
                 menu_visible_since = menu_visible_since if menu_visible_since is not None else elapsed
                 if args.visible and elapsed - menu_visible_since >= 2 and 'menu-screenshot' not in actions:
@@ -619,7 +720,19 @@ def run(args):
                     ipc.command('screenshot-to-file', str(root / 'native-menu.png'), 'window')
             else:
                 menu_visible_since = None
+            row['sampleCompletedMs'] = round((time.monotonic() - play_started) * 1000)
             samples.append(row)
+            if stopped_for_budget:
+                break
+            if args.post_start_seek and 'post-start-seek' not in actions:
+                after, jump = args.post_start_seek
+                position = row.get('time-pos')
+                if position is not None and position >= args.start + after and row['paused-for-cache'] is False:
+                    actions.add('post-start-seek')
+                    target = position + jump
+                    samples.append(dict(ms=round((time.monotonic() - play_started) * 1000),
+                                        command='seek', trigger='post-start', target=target,
+                                        result=ipc.command('seek', target, 'absolute+exact')))
             time.sleep(max(0, play_started + elapsed + (1 if args.timeline else 0.5) - time.monotonic()))
         play_elapsed = time.monotonic() - play_started
         if player.poll() is not None and play_elapsed < args.seconds - 2:
@@ -632,6 +745,8 @@ def run(args):
         if player_exit or bridge_exit:
             raise RuntimeError(f'Playback processes failed ({player_exit}/{bridge_exit})')
     finally:
+        if preparation_timeout:
+            preparation_timeout.cancel()
         if spawn_started is not None and play_elapsed is None:
             play_elapsed = time.monotonic() - spawn_started
         if control:
@@ -648,13 +763,30 @@ def run(args):
                         pass
                 proc.terminate()
                 proc.wait(timeout=10)
-        source.close()
+        if source:
+            source.close()
+        if remote or trace:
+            try:
+                latest_bridge = json.loads(metrics_path.read_text(encoding='utf8'))
+            except FileNotFoundError:
+                pass
         if trace:
+            record_trace(latest_bridge)
             trace.close()
         (root / 'samples.json').write_text(json.dumps(samples, indent=2), encoding='utf8')
-        result = dict(mode=args.mode, prepareMs=round(locals().get('prepare_ms', 0), 2), requestedSeconds=args.seconds, measuredPlaybackSeconds=round(play_elapsed or 0, 2), delayMs=args.delay_ms, MiBps=args.mibps, serverRequests=source.count, serverBytes=source.bytes, menuObserved=any((s.get('disc-menu-active') is True for s in samples)), mainFeatureObserved=any(((s.get('duration') or 0) > 6000 and (s.get('time-pos') or 0) > 3 and s.get('disc-menu-active') is not True for s in samples)), cachePausedSamples=sum((s.get('paused-for-cache') is True for s in samples)), headless=not args.visible)
-        result.update(serverRejected429=source.statuses.get(429, 0), serverConcurrentPeak=source.peak,
-                      serverStatuses=source.statuses, missingBridgeTraceEvents=missed_trace_events)
+        result = dict(mode=args.mode, prepareMs=round(locals().get('prepare_ms', 0), 2), requestedSeconds=args.seconds, measuredPlaybackSeconds=round(play_elapsed or 0, 2), delayMs=args.delay_ms if source else None, MiBps=args.mibps if source else None, serverRequests=source.count if source else None, serverBytes=source.bytes if source else None, menuObserved=any((s.get('disc-menu-active') is True for s in samples)), mainFeatureObserved=any(((s.get('duration') or 0) > 6000 and (s.get('time-pos') or 0) > 3 and s.get('disc-menu-active') is not True for s in samples)), cachePausedSamples=sum((s.get('paused-for-cache') is True for s in samples)), headless=not args.visible)
+        result.update(serverRejected429=source.statuses.get(429, 0) if source else None,
+                      serverConcurrentPeak=source.peak if source else None,
+                      serverStatuses=source.statuses if source else None,
+                      missingBridgeTraceEvents=missed_trace_events if trace else None,
+                      realWebDav=bool(remote), audioOutput=args.audio_output,
+                      stoppedForByteBudget=stopped_for_budget,
+                      playerConfigLoaded=bool(args.player_config_dir))
+        if remote:
+            playback_network = latest_bridge.get('playbackNetwork', {})
+            result.update(serverRequests=playback_network.get('requestCount'),
+                          serverBytes=playback_network.get('remoteBodyBytes'),
+                          terminalError=latest_bridge.get('lastErrorCode'))
         result.update(perRequestMiBps=args.per_request_mibps, maxLargeRanges=args.max_large_ranges)
         result.update(single=args.single, local=args.local, playlist=args.playlist,
                       helperExit=helper.poll() if helper is not None else None,
@@ -681,8 +813,13 @@ def run(args):
         print(json.dumps(result), flush=True)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    for field in ['source', 'helper', 'output']:
+    for field in ['helper', 'output']:
         parser.add_argument('--' + field, required=True)
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument('--source')
+    source_group.add_argument('--remote-stdin', action='store_true',
+                              help='Read URL, origin, username and password as JSON from stdin')
+    parser.add_argument('--remote-budget-mib', type=int, default=0)
     parser.add_argument('--mode', choices=['title', 'menu'], required=True)
     parser.add_argument('--mpv')
     parser.add_argument('--runtime')
@@ -699,13 +836,19 @@ if __name__ == '__main__':
     parser.add_argument('--redirect', action='store_true')
     parser.add_argument('--seconds', type=int, default=65)
     parser.add_argument('--timeline', action='store_true', help='Collect synchronized cache and throughput samples')
+    parser.add_argument('--trace-off', action='store_true', help='Sample counters without recording native events')
     parser.add_argument('--title-cache-profile', action='store_true', help='Use StreamPath title cache and timing arguments')
+    parser.add_argument('--cache-secs', type=int, default=60)
     parser.add_argument('--start', type=float, default=600, help='Initial media position in seconds')
     parser.add_argument('--midpoint-seek', action='store_true')
     parser.add_argument('--cache-blocks', type=int, default=16)
     parser.add_argument('--prefetch-blocks', type=int, default=12)
     parser.add_argument('--mpv-cache-mib', type=int, default=16)
     parser.add_argument('--visible', action='store_true')
+    parser.add_argument('--audio-output', action='store_true')
+    parser.add_argument('--player-config-dir', help='Load player configuration from an isolated directory')
+    parser.add_argument('--player-hwdec', choices=('no', 'auto-safe'),
+                        help='Override only hardware decoding for a player configuration comparison')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--verify-bytes', action='store_true')
     parser.add_argument('--playlist', help='Use this exact programme ID in both benchmark variants')
@@ -715,6 +858,8 @@ if __name__ == '__main__':
     parser.add_argument('--local', action='store_true', help='Use the direct local Bridge source')
     parser.add_argument('--seek-stress', action='store_true')
     parser.add_argument('--seek-start', type=float, default=8, help='Seconds before the first stress seek')
+    parser.add_argument('--post-start-seek', nargs=2, type=float, metavar=('AFTER_MEDIA_SECONDS', 'FORWARD_SECONDS'),
+                        help='Seek once after actual playback has advanced by the given time')
     args = parser.parse_args()
     if not args.prepare_only and (not args.mpv):
         parser.error('--mpv is required for playback')
@@ -723,9 +868,32 @@ if __name__ == '__main__':
         parser.error('Invalid shaping or duration')
     if args.mode == 'menu' and (args.single or args.playlist or args.seek_stress):
         parser.error('Single, playlist and seek-stress require title mode')
+    if args.player_config_dir and not args.visible:
+        parser.error('A custom player config requires visible playback')
+    if args.player_hwdec and not args.player_config_dir:
+        parser.error('A hardware decoding override requires a player configuration comparison')
+    if args.post_start_seek and (args.mode != 'title' or not args.timeline or args.seek_stress or args.midpoint_seek
+                                 or min(args.post_start_seek) <= 0):
+        parser.error('Post-start seek requires a title timeline and positive timing, without other seeks')
     if args.single == 'select' and (not args.playlist or not args.playlist.isascii() or
                                    not args.playlist.isdecimal() or len(args.playlist) != 5):
         parser.error('Single selection requires a five-digit MPLS ID')
     if (args.confirmation and args.single != 'select') or (args.stale_confirmation and not args.confirmation):
         parser.error('Confirmation checks require --single select and a candidate snapshot')
-    run(args)
+    remote = None
+    if args.remote_stdin:
+        if args.mode != 'title' or args.local or args.verify_bytes or not args.timeline or args.remote_budget_mib < 1:
+            parser.error('Remote ISO requires title mode, timeline and a positive byte budget')
+        try:
+            data = json.load(sys.stdin)
+            remote = {key: data[key] for key in ('url', 'origin', 'username', 'password')}
+            if any(not isinstance(value, str) for value in remote.values()):
+                raise ValueError('Connection fields must be strings')
+            target = urllib.parse.urlsplit(remote['url'])
+            origin = urllib.parse.urlsplit(remote['origin'])
+            if (target.scheme not in ('http', 'https') or not target.hostname or target.username is not None
+                    or (target.scheme, target.netloc) != (origin.scheme, origin.netloc)):
+                raise ValueError('Invalid WebDAV origin')
+        except (KeyError, TypeError, ValueError):
+            parser.error('Invalid WebDAV connection input')
+    run(args, remote)

@@ -821,6 +821,8 @@ class CachePolicyService implements CachePolicyProvider {
     return value;
   }
 
+  bool get hasActiveMonitors => _monitors.isNotEmpty;
+
   @override
   Map<String, Object?> diagnosticsSnapshot() => <String, Object?>{
     'activeSessions': _monitors.keys.toList(),

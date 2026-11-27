@@ -230,6 +230,9 @@ Future<void> main() async {
     cacheCoordinator: IsoCacheCoordinator(
       policyService: cachePolicy,
       intelligence: cacheIntelligence,
+      verifiedUhdDiscKey: const String.fromEnvironment(
+        'SP_UHD_FORWARD_CACHE_DISC_KEY',
+      ),
     ),
   );
   try {

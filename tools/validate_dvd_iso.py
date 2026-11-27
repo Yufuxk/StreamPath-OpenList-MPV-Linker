@@ -175,7 +175,7 @@ class Bridge:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('iso')
-    parser.add_argument('--helper', default='build/dvd-support/native/streampath_iso_bridge.exe')
+    parser.add_argument('--helper', default='build/windows/x64/runner/Release/streampath_iso_bridge.exe')
     parser.add_argument('--output', default='build/dvd-support/real')
     parser.add_argument('--mpv-root')
     parser.add_argument('--network', action='store_true')

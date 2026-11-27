@@ -213,7 +213,7 @@ class MpvSessionController {
     Duration retryInterval = const Duration(milliseconds: 250),
   }) async {
     final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
+    while (!_disposed && DateTime.now().isBefore(deadline)) {
       final h = _tryOpenPipe();
       if (h != INVALID_HANDLE_VALUE) {
         _handle = h;

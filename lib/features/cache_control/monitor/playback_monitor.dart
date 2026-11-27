@@ -199,6 +199,9 @@ class PlaybackMonitor {
   void Function(CacheAdjustment adjustment)? _onAdjustment;
   void Function(String message)? _onWarning;
 
+  /// ISO 等待前向上限读回时，跳过仍可能依据旧配额作出的调整。
+  bool deferSample = false;
+
   /// 当前缓存上限（字节）；启动时取策略初值，调整后更新。
   int _demuxerMaxBytes = 0;
 
@@ -341,6 +344,7 @@ class PlaybackMonitor {
     _timer?.cancel();
     _timer = null;
     _statusFilePath = null;
+    deferSample = false;
   }
 
   /// 码率就绪后更新判定基准（如 recordDuration 重算出平均码率后）。
@@ -382,6 +386,19 @@ class PlaybackMonitor {
     _memoryPressureStreak = 0;
     _memoryHealthyStreak = 0;
     _healthyNetworkStreak = 0;
+  }
+
+  /// 同步已读回的前向配额，保留缓存秒数与当前内存压力限制。
+  void confirmDemuxerBudget({
+    required int demuxerMaxBytes,
+    required int memoryBudgetBytes,
+  }) {
+    final previousShared = _sharedMemoryBudget;
+    _policyMemoryBudgetBytes = memoryBudgetBytes;
+    _memoryLimitBytes = _memoryLimitBytes == previousShared
+        ? _sharedMemoryBudget
+        : math.min(_memoryLimitBytes, _sharedMemoryBudget);
+    _demuxerMaxBytes = demuxerMaxBytes;
   }
 
   /// 多会话共享同一内存预算；会话数变化时立即收敛到公平份额。
@@ -458,7 +475,7 @@ class PlaybackMonitor {
       if (file == null) return;
       var sample = await _readStatus(file);
       final memory = await _safeMemory();
-      if (generation != _generation) return; // 迟到采样：丢弃。
+      if (generation != _generation || deferSample) return;
       sample = PlaybackSample(
         timePosSec: sample.timePosSec,
         paused: sample.paused,

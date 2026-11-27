@@ -851,8 +851,18 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       IsoCacheSessionPlan? cachePlan;
       final cacheCoordinator = _cacheCoordinator;
       if (cacheCoordinator != null && cachedPath == null) {
+        final sourceScheme = Uri.tryParse(resolvedIsoUrl)?.scheme;
         cachePlan = await cacheCoordinator.buildSessionPlan(
           logicalSourceUrl: resolvedIsoUrl,
+          remoteSingleDiscKey:
+              focused &&
+                  discType == DiscType.bluray &&
+                  !webDavService.sourceId.startsWith('local:') &&
+                  selectedTitles.length == 1 &&
+                  probedTitles.length == 1 &&
+                  (sourceScheme == 'http' || sourceScheme == 'https')
+              ? isoKey
+              : null,
           titles: selectedTitles
               .map(
                 (title) => IsoCacheTitleContext(
@@ -892,6 +902,9 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final performanceEventsFile = File(
         p.join(handle.sessionDirectory.path, performanceEventsFileName),
       );
+      final metricsFile = File(
+        p.join(handle.sessionDirectory.path, 'iso-bridge-metrics.json'),
+      );
       final statusFile = File(
         p.join(handle.sessionDirectory.path, statusFileName),
       );
@@ -904,6 +917,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         statusFile,
         commandFile,
         performanceEventsFile,
+        metricsFile,
         selectedTitles,
         resumeByProgrammeId,
       );
@@ -1023,9 +1037,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       _runtimes[handle.sessionDirectory.path] = runtime;
       runtimeOwnsSession = true;
       performance.startObservation(
-        metricsFile: File(
-          p.join(handle.sessionDirectory.path, 'iso-bridge-metrics.json'),
-        ),
+        metricsFile: metricsFile,
         eventsFile: performanceEventsFile,
       );
       if (cachePlan != null) {
@@ -1033,15 +1045,20 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
           sessionId: runtime.cacheSessionId!,
           logicalSourceUrl: resolvedIsoUrl,
           statusFilePath: statusFile.path,
-          metricsFilePath: p.join(
-            handle.sessionDirectory.path,
-            'iso-bridge-metrics.json',
-          ),
+          metricsFilePath: metricsFile.path,
           ipcPipeName: ipcPipeName,
           orderedProgrammeIds: selectedTitles
               .map((title) => title.programmeId)
               .toList(growable: false),
           plan: cachePlan,
+          hasOtherDiscPlayback: () =>
+              _runtimes.values.any((other) => !identical(other, runtime)),
+          onCapacityDecision: (decision) => performanceEventsFile
+              .writeAsString(
+                '${jsonEncode({'event': 'cache-capacity-decision', 'time': performanceClock.elapsedMicroseconds / 1000000, 'clock_domain': 'app_elapsed', 'wall_unix_ms': DateTime.now().millisecondsSinceEpoch, ...decision})}\n',
+                mode: FileMode.append,
+              )
+              .then((_) {}),
         );
       }
       try {
@@ -2618,6 +2635,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     File statusFile,
     File commandFile,
     File performanceEventsFile,
+    File metricsFile,
     List<IsoDiscTitle> titles,
     Map<String, IsoTitleResume> resumeByProgrammeId,
   ) async {
@@ -2627,6 +2645,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     final statusTempPath = jsonEncode('${statusFile.path}.tmp');
     final commandPath = jsonEncode(commandFile.path);
     final performanceEventsPath = jsonEncode(performanceEventsFile.path);
+    final metricsPath = jsonEncode(metricsFile.path);
     final titleDataJson = jsonEncode(
       titles
           .map(
@@ -2658,6 +2677,7 @@ local STATUS = $statusPath
 local STATUS_TMP = $statusTempPath
 local COMMAND = $commandPath
 local PERFORMANCE_EVENTS = $performanceEventsPath
+local BRIDGE_METRICS = $metricsPath
 local TITLES = utils.parse_json($titleDataLiteral) or {}
 ${MpvScripts.mediaInfoSnapshotLua(outputExpression: 'STATUS', pathExpression: 'mp.get_property("path", "")', programmeExpression: '(TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).programmeId', programmeTypeExpression: '(string.sub((TITLES[mp.get_property_number("playlist-pos", -1) + 1] or {}).programmeId or "", 1, 10) == "dvd-title-" and "dvd-title" or "mpls")')}
 local resumed = {}
@@ -2696,6 +2716,43 @@ local function sanitize_file_error(value)
     return category
 end
 
+local function cache_pause_snapshot()
+    local state = mp.get_property_native("demuxer-cache-state", {})
+    return {
+        forward_bytes = state["fw-bytes"],
+        total_bytes = state["total-bytes"],
+        input_bytes_per_sec = state["raw-input-rate"],
+        eof = state["eof-cached"],
+        idle = mp.get_property_bool("demuxer-cache-idle"),
+        forward_limit = mp.get_property_native("options/demuxer-max-bytes"),
+        backward_limit = mp.get_property_native("options/demuxer-max-back-bytes"),
+        donate_forward = mp.get_property_bool("options/demuxer-donate-buffer"),
+        target_seconds = mp.get_property_number("options/cache-secs"),
+        recovery_seconds = mp.get_property_number("options/cache-pause-wait"),
+    }
+end
+
+local function bridge_pause_snapshot()
+    local file = io.open(BRIDGE_METRICS, "r")
+    if not file then return nil end
+    local content = file:read("*a")
+    file:close()
+    local snapshot = utils.parse_json(content or "")
+    if type(snapshot) ~= "table" then return nil end
+    local network = snapshot.playbackNetwork or {}
+    local cache = snapshot.playbackCache or {}
+    local bluray = snapshot.bluray or {}
+    return {
+        remote_bytes = network.remoteBodyBytes,
+        requests = network.requestCount,
+        loopback_bytes = bluray.loopbackBodyBytes,
+        foreground_wait_us = cache.foregroundLoadingWaitUsTotal,
+        pending_gap_us = cache.prefetchPendingGapUsTotal,
+        parallel_batches = cache.parallelPrefetchBatches,
+        contiguous_ready_bytes = cache.contiguousReadyBytes,
+    }
+end
+
 local function append_performance_event(name, position_override, end_reason, file_error, paused_override)
     local record = {
         event = name,
@@ -2709,6 +2766,10 @@ local function append_performance_event(name, position_override, end_reason, fil
     }
     if paused_override ~= nil then
         record.paused_for_cache = paused_override
+        record.wall_unix_seconds = os.time()
+        record.pause = mp.get_property_bool("pause")
+        record.mpv_cache = cache_pause_snapshot()
+        record.bridge = bridge_pause_snapshot()
     else
         record.paused_for_cache = mp.get_property_bool("paused-for-cache", false)
     end
@@ -2830,7 +2891,11 @@ local function write_status()
     local cstate = mp.get_property_native("demuxer-cache-state", nil)
     local bof_cached = -1
     local eof_cached = -1
+    local forward_bytes = -1
+    local total_bytes = -1
     if type(cstate) == "table" then
+        forward_bytes = tonumber(cstate["fw-bytes"]) or -1
+        total_bytes = tonumber(cstate["total-bytes"]) or -1
         if cstate["bof-cached"] ~= nil then
             bof_cached = cstate["bof-cached"] and 1 or 0
         end
@@ -2867,7 +2932,8 @@ local function write_status()
         tostring(paused_for_cache) .. "\\n" ..
         tostring(bof_cached) .. "\\n" .. tostring(eof_cached) .. "\\n" ..
         resolution .. "\\n" .. tostring(seeking) .. "\\n" ..
-        tostring(restart_serial) .. "\\n" .. tostring(cache_duration))
+        tostring(restart_serial) .. "\\n" .. tostring(cache_duration) .. "\\n" ..
+        string.format("%.0f\\n%.0f", forward_bytes, total_bytes))
     file:flush()
     file:close()
     os.remove(STATUS)
@@ -3674,7 +3740,7 @@ class _IsoPerformanceTracker {
           if (recordMalformed) _errorTypes.add('FormatException');
           continue;
         }
-        events.add(event);
+        if (event.name != 'cache-capacity-decision') events.add(event);
       }
       return events;
     } on FileSystemException {
@@ -3832,6 +3898,7 @@ class _IsoPerformanceEvent {
     'seek-start',
     'cache-pause-start',
     'cache-pause-end',
+    'cache-capacity-decision',
     'title-eof',
     'end-file',
     'playback-failure',

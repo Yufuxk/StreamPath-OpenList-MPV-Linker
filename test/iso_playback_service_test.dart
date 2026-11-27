@@ -1118,6 +1118,23 @@ void main() {
     expect(script, contains('append_performance_event("stable-playback")'));
     expect(script, contains('append_performance_event("cache-pause-start", nil, nil, nil, value)'));
     expect(script, contains('append_performance_event("cache-pause-end", nil, nil, nil, value)'));
+    expect(script, contains('record.mpv_cache = cache_pause_snapshot()'));
+    expect(script, contains('forward_bytes = state["fw-bytes"]'));
+    expect(script, contains('total_bytes = state["total-bytes"]'));
+    expect(script, contains('forward_bytes = tonumber(cstate["fw-bytes"]) or -1'));
+    expect(script, contains('total_bytes = tonumber(cstate["total-bytes"]) or -1'));
+    expect(
+      script,
+      contains(r'tostring(restart_serial) .. "\n" .. tostring(cache_duration) .. "\n" ..'),
+    );
+    expect(script, contains('options/demuxer-donate-buffer'));
+    expect(script, contains('record.bridge = bridge_pause_snapshot()'));
+    expect(script, contains('remote_bytes = network.remoteBodyBytes'));
+    expect(script, contains('loopback_bytes = bluray.loopbackBodyBytes'));
+    expect(
+      script,
+      contains('foreground_wait_us = cache.foregroundLoadingWaitUsTotal'),
+    );
     expect(script, contains('record["position"] = event_position'));
     expect(
       script,
@@ -1377,6 +1394,8 @@ void main() {
         'playlist_pos': 0,
         'restart_serial': 2,
         'position': 70.2,
+        'mpv_cache': {'forward_bytes': 0, 'donate_forward': true},
+        'bridge': {'remote_bytes': 1048576},
       },
       {
         'event': 'cache-pause-end',
@@ -1444,6 +1463,10 @@ void main() {
       p.join(archive.path, IsoPlaybackService.performanceSummaryFileName),
     ).readAsString();
     final summary = jsonDecode(summaryText) as Map<String, dynamic>;
+    final archivedEvents = await File(
+      p.join(archive.path, IsoPlaybackService.performanceEventsFileName),
+    ).readAsLines();
+    expect(archivedEvents.map(jsonDecode).toList(), events);
     final timings = summary['timings'] as Map<String, dynamic>;
     expect(summary['status'], 'complete');
     expect(timings['openToProbeMs'], isA<int>());
