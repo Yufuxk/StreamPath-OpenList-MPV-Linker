@@ -9,6 +9,7 @@ import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/local/media_library_store.dart';
 import 'package:streampath/data/models/media_library_item.dart';
+import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/core/utils/url_utils.dart';
 import 'package:streampath/domain/services/cache_cleanup_service.dart';
@@ -99,6 +100,41 @@ void main() {
 
     await appState.clearLearningData();
     expect(learningCleaner.called, isTrue);
+  });
+
+  test('从未打开影视库时也检查影视光盘会话身份', () async {
+    final config = StreamPathConfigStore.forPath(
+      p.join(tempDirectory.path, 'config.json'),
+    );
+    final root = Directory(p.join(tempDirectory.path, 'iso_temp'));
+    final session = await Directory(
+      p.join(tempDirectory.path, 'film_iso_temp', 'iso_unknown'),
+    ).create(recursive: true);
+    await File(p.join(session.path, 'disc.iso')).writeAsBytes([1]);
+    await File(
+      p.join(session.path, IsoPlaybackService.manifestFileName),
+    ).writeAsString(jsonEncode({'version': 1, 'state': 'identity-unknown'}));
+    final iso = IsoPlaybackService(
+      configStore: config,
+      tempRootProvider: () async => root,
+    );
+    await iso.initialize();
+    final cleaner = _RecordingCacheCleaner();
+    appState = AppState(
+      configStore: config,
+      playbackHistoryStore: PlaybackHistoryStore.forPath(
+        p.join(tempDirectory.path, 'history.json'),
+      ),
+      progressService: progressService,
+      isoPlaybackService: iso,
+      cacheCleaner: cleaner,
+    );
+
+    await expectLater(
+      appState.clearCache(scope: CacheCleanupScope.playback),
+      throwsA(isA<CacheCleanupBlockedException>()),
+    );
+    expect(cleaner.called, isFalse);
   });
 
   test('全部清理保留媒体中心引用的正式及临时进度与 STRM 记录', () async {
@@ -226,4 +262,219 @@ void main() {
       );
     }
   });
+
+  for (final scope in [CacheCleanupScope.playback, CacheCleanupScope.all]) {
+    test('$scope 清除两套光盘续播进度，保留选集与媒体中心记录', () async {
+      final data = Directory(p.join(tempDirectory.path, 'stream_path_data'));
+      final cache = await Directory(
+        p.join(data.path, 'cache'),
+      ).create(recursive: true);
+      final config = StreamPathConfigStore.forPath(
+        p.join(data.path, 'config.json'),
+      );
+      final store = MediaLibraryStore.forPath(
+        p.join(data.path, 'library', 'media_library.json'),
+      );
+      final localDisc = const MediaLibraryItem(
+        sourceId: 'local:test',
+        sourceKind: MediaSourceKind.local,
+        parentPath: '',
+        name: 'Local.iso',
+        kind: MediaLibraryKind.iso,
+        playbackMode: PlaybackMode.localHdmvMenu,
+      );
+      final localTarget = p.join(data.path, localDisc.name);
+      final normal = IsoPlaybackService(
+        configStore: config,
+        tempRootProvider: () async => Directory(p.join(cache.path, 'iso_temp')),
+      );
+      appState = AppState(
+        configStore: config,
+        playbackHistoryStore: PlaybackHistoryStore.forPath(
+          p.join(cache.path, 'playback_history.json'),
+        ),
+        progressService: progressService,
+        mediaLibraryStore: store,
+        isoPlaybackService: normal,
+        cacheCleaner: CacheCleanupService(
+          dataDirectoryProvider: () async => data,
+          storeClearers: const [],
+          preservedCacheNames: const {
+            'iso_catalog.json',
+            'film_iso_catalog.json',
+            'film_iso_progress_migrated',
+          },
+        ),
+      );
+      final film = IsoPlaybackService(
+        configStore: config,
+        progressPrefix: 'film_',
+        tempRootProvider: () async =>
+            Directory(p.join(cache.path, 'film_iso_temp')),
+      );
+      addTearDown(film.dispose);
+      final marker = File(p.join(cache.path, 'film_iso_progress_migrated'));
+      await marker.writeAsString('1');
+      final samples = [
+        (
+          'https://fixture.test/disc.iso',
+          PlaybackMode.legacyTitle,
+          ['00002', '00001'],
+        ),
+        ('https://fixture.test/BDMV/', PlaybackMode.webdavHdmvMenu, <String>[]),
+        (
+          'https://fixture.test/dvd.iso',
+          PlaybackMode.legacyTitle,
+          ['dvd-title-02', 'dvd-title-01'],
+        ),
+      ];
+      for (final iso in [normal, film]) {
+        final files = <String, String>{};
+        for (final (url, mode, programmes) in samples) {
+          final menu = mode == PlaybackMode.webdavHdmvMenu;
+          await iso.planPortableState(
+            {
+              'selection': {
+                'order': programmes,
+                'selected': programmes,
+                if (!menu) 'lastProgrammeId': programmes.last,
+              },
+              'titles': {
+                if (!menu) programmes.last: {'position': 80, 'duration': 120},
+              },
+              if (menu)
+                'menu': {
+                  'position': 80,
+                  'duration': 120,
+                  'edition': 0,
+                  'editions': 1,
+                  'completed': false,
+                },
+            },
+            profileId: 'fixture',
+            resolvedUrl: url,
+            playbackMode: mode,
+            files: files,
+          );
+        }
+        for (final entry in files.entries) {
+          final file = File(entry.key);
+          await file.parent.create(recursive: true);
+          await file.writeAsString(entry.value);
+        }
+      }
+      final filmRecords = appState.filmMediaLibraryStore!;
+      for (final records in [store, filmRecords]) {
+        await records.toggleFavorite(localDisc);
+        await records.recordPlayback(
+          localDisc,
+          playbackSessionId: 'local-disc',
+          localDiscSession: LocalDiscSessionSnapshot(
+            rootId: 'test',
+            relativePath: localDisc.name,
+            size: 42,
+            modified: DateTime(2026),
+            fingerprint: List.filled(64, 'a').join(),
+            currentEdition: 1,
+            editionCount: 2,
+          ),
+        );
+        await records.importPortable(
+          {
+            'isoHistory': [
+              MediaLibraryRecord(
+                item: const MediaLibraryItem(
+                  sourceId: 'local:test',
+                  sourceKind: MediaSourceKind.local,
+                  parentPath: '',
+                  name: 'Imported.iso',
+                  kind: MediaLibraryKind.iso,
+                ),
+                updatedAt: DateTime(2026),
+                discResumeEdition: 2,
+              ).toJson(),
+            ],
+          },
+          {'playback'},
+        );
+      }
+      final filmProgress = await progressService.forFilmLibrary({});
+      try {
+        for (final db in [progressService, filmProgress]) {
+          await db.saveProgress(
+            url: localTarget,
+            profileId: localDisc.sourceId,
+            positionMs: 8000,
+          );
+          await db.saveTemporaryProgress(
+            url: localTarget,
+            profileId: localDisc.sourceId,
+            positionMs: 9000,
+          );
+        }
+      } finally {
+        await filmProgress.close();
+      }
+
+      await appState.clearCache(scope: CacheCleanupScope.temporary);
+      for (final iso in [normal, film]) {
+        for (final (url, mode, _) in samples) {
+          expect(
+            await iso.getLibraryProgress(
+              profileId: 'fixture',
+              resolvedUrl: url,
+              playbackMode: mode,
+            ),
+            isNotNull,
+          );
+        }
+      }
+      await appState.clearCache(scope: scope);
+      for (final iso in [normal, film]) {
+        for (final (url, mode, programmes) in samples) {
+          final state = await iso.portableState(
+            profileId: 'fixture',
+            resolvedUrl: url,
+            playbackMode: mode,
+          );
+          expect(state['titles'], isEmpty);
+          expect(state['menu'], isNull);
+          final selection = state['selection'] as Map;
+          expect(selection['order'], programmes);
+          expect(selection['selected'], programmes);
+          expect(selection.containsKey('lastProgrammeId'), isFalse);
+          expect(selection.containsKey('lastMplsId'), isFalse);
+        }
+      }
+      expect(await marker.exists(), isTrue);
+      for (final records in [store, filmRecords]) {
+        expect(await records.favorites(localDisc.sourceId), hasLength(1));
+        final history = await records.playbackHistory(
+          localDisc.sourceId,
+          audio: false,
+          iso: true,
+        );
+        expect(history, hasLength(2));
+        expect(
+          history.every((record) => record.discResumeEdition == null),
+          isTrue,
+        );
+        final record = history.singleWhere(
+          (record) => record.item.name == localDisc.name,
+        );
+        expect(record.playbackSessionId, 'local-disc');
+        expect(record.localDiscSession?.relativePath, localDisc.name);
+        expect(record.localDiscSession?.currentEdition, isNull);
+      }
+      for (final db in [progressService, appState.filmProgressService]) {
+        expect(
+          await db.getResumeProgress(
+            localTarget,
+            profileId: localDisc.sourceId,
+          ),
+          isNull,
+        );
+      }
+    });
+  }
 }

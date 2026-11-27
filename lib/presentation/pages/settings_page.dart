@@ -814,12 +814,12 @@ class SettingsPageState extends State<SettingsPage> {
   Future<void> _confirmAndClearCache(CacheCleanupScope scope) async {
     final description = switch (scope) {
       CacheCleanupScope.all =>
-        '清除目录缓存、媒体探测元数据、影视图片、播放进度、底栏继续播放和临时文件。保留媒体中心数据及学习数据。',
+        '清除目录缓存、媒体探测元数据、影视图片、播放进度（含光盘）、底栏继续播放和临时文件。保留媒体中心收藏、历史及学习数据。',
       CacheCleanupScope.directory => '仅清除目录缓存，保留元数据、图片、播放进度及媒体中心数据。',
       CacheCleanupScope.metadata =>
         '仅清除媒体探测元数据、影视图片和蓝光结构缓存，保留影视目录、作品匹配、播放进度及媒体中心数据。',
       CacheCleanupScope.playback =>
-        '仅清除未被媒体中心引用的播放进度和底栏继续播放记录，保留元数据、图片及媒体中心数据。',
+        '清除光盘续播进度、未被媒体中心引用的其他播放进度和底栏继续播放记录。保留光盘选集、媒体中心收藏及历史。',
       CacheCleanupScope.temporary => '仅清除播放器临时文件，保留目录缓存、元数据、图片、播放进度及媒体中心数据。',
     };
     final confirmed = await showGlassDialog<bool>(

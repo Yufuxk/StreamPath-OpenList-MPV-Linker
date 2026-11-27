@@ -17,12 +17,13 @@ import 'package:streampath/data/models/film_catalog_item.dart';
 import 'package:streampath/data/models/film_watch_state.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/data/models/special_playlist_mode.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/video_playlist_mode.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/domain/services/film_video_timeline.dart';
 
-FilmResource resource(int season, int episode, {String? path}) =>
+FilmResource resource(int season, int episode, {String? path, String? extra}) =>
     FilmResource.fromRow({
       'id': episode,
       'root_id': 1,
@@ -43,6 +44,7 @@ FilmResource resource(int season, int episode, {String? path}) =>
       'season_number': season,
       'episode_number': episode,
       'episode_mapping_origin': 'manual',
+      'extra_kind': extra,
     });
 
 void main() {
@@ -240,6 +242,64 @@ void main() {
     ]);
     expect(items[2].versions.length, 2);
     expect(parseAirDate('2024-02-31'), isNull);
+  });
+  test('关联剧集的隐式队列按特典范围选集，显式起播项始终保留', () {
+    final resources = [
+      resource(2, 10),
+      resource(2, 11),
+      resource(2, 12),
+      resource(0, 4, extra: 'ova'),
+      resource(0, 5, extra: 'ncop'),
+      resource(0, 6, extra: 'ncop'),
+      resource(0, 7),
+      resource(0, 8, extra: 'sp'),
+      resource(0, 9, extra: 'other'),
+    ];
+    final seasons = {
+      2: {
+        'episodes': [
+          for (var i = 10; i <= 12; i++)
+            {'episode_number': i, 'air_date': '2008-12-${i + 10}'},
+        ],
+      },
+      0: {
+        'episodes': [
+          {'episode_number': 4, 'air_date': '2008-12-19'},
+          {'episode_number': 9, 'name': 'Bonus episode'},
+        ],
+      },
+    };
+    List<(int?, int?)> order(SpecialPlaylistMode mode, String path) =>
+        buildFilmVideoTimeline(
+          resources,
+          seasons,
+          selectedPath: path,
+          autoSeason: true,
+          allowGap: true,
+          specialPlaylistMode: mode,
+        ).map((i) => (i.season, i.episode)).toList();
+
+    final regular = [(2, 10), (2, 11), (2, 12)];
+    expect(order(SpecialPlaylistMode.ovaOnly, resources.first.path), [
+      (0, 4),
+      ...regular,
+      (0, 8),
+      (0, 9),
+    ]);
+    expect(order(SpecialPlaylistMode.off, resources.first.path), regular);
+    expect(order(SpecialPlaylistMode.off, resources[4].path), [
+      ...regular,
+      (0, 5),
+    ]);
+    expect(order(SpecialPlaylistMode.all, resources.first.path), [
+      (0, 4),
+      ...regular,
+      (0, 5),
+      (0, 6),
+      (0, 7),
+      (0, 8),
+      (0, 9),
+    ]);
   });
   test('关闭切季和禁止缺季限制正季段，S00 按开播季归属', () {
     final resources = [

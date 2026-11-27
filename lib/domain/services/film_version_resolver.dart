@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import '../../data/models/film_catalog_item.dart';
 import '../../data/models/film_version.dart';
 import '../../data/models/media_source.dart';
+import '../../data/models/special_playlist_mode.dart';
 import 'season_video_playlist_collector.dart';
 import 'special_video_playlist_collector.dart';
 import 'film_video_timeline.dart';
@@ -199,6 +200,7 @@ class FilmVersionIndex {
   required bool autoSeason,
   required bool allowGap,
   required bool insertDecimalEpisodes,
+  SpecialPlaylistMode specialPlaylistMode = SpecialPlaylistMode.all,
 }) {
   final selected = FilmVersionIndex(resources).selected(context.selection);
   if (!selected.any((r) => r.sourceId == sourceId && r.path == targetPath)) {
@@ -211,6 +213,7 @@ class FilmVersionIndex {
     autoSeason: autoSeason,
     allowGap: allowGap,
     insertDecimalEpisodes: insertDecimalEpisodes,
+    specialPlaylistMode: specialPlaylistMode,
   );
   final byPath = {for (final r in selected) (r.season, r.episode): r};
   final index = timeline.indexWhere(

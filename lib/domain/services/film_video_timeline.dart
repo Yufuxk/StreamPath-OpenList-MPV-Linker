@@ -1,4 +1,5 @@
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/special_playlist_mode.dart';
 import '../../data/models/video_queue.dart';
 import 'season_video_playlist_collector.dart';
 
@@ -10,14 +11,32 @@ List<VideoQueueItem> buildFilmVideoTimeline(
   required bool autoSeason,
   required bool allowGap,
   bool insertDecimalEpisodes = false,
+  SpecialPlaylistMode specialPlaylistMode = SpecialPlaylistMode.all,
 }) {
-  final ordered = buildFilmVideoOrder(resources, seasons);
+  final listedSpecials = (seasons[0]?['episodes'] as List? ?? const [])
+      .whereType<Map>()
+      .map((row) => row['episode_number'])
+      .whereType<int>()
+      .toSet();
+  final eligible = resources.where((resource) {
+    if (resource.season != 0 || resource.path == selectedPath) return true;
+    return switch (specialPlaylistMode) {
+      SpecialPlaylistMode.off => false,
+      SpecialPlaylistMode.all => true,
+      SpecialPlaylistMode.ovaOnly => switch (resource.extraKind) {
+        'ova' || 'sp' => true,
+        null || 'other' => listedSpecials.contains(resource.episode),
+        _ => false,
+      },
+    };
+  }).toList();
+  final ordered = buildFilmVideoOrder(eligible, seasons);
   final placements = insertDecimalEpisodes
       ? _decimalEpisodePlacements(ordered, seasons)
       : <VideoQueueItem, (int, double)>{};
   final filtered = _filterFilmVideoTimeline(
     ordered,
-    resources,
+    eligible,
     seasons,
     selectedPath: selectedPath,
     autoSeason: autoSeason,

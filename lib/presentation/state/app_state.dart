@@ -2428,11 +2428,14 @@ class AppState extends ChangeNotifier {
     if (await _isoPlaybackService?.hasActivePlayback() ?? false) {
       throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
     }
+    final clearProgress =
+        scope == CacheCleanupScope.all || scope == CacheCleanupScope.playback;
+    if (clearProgress) await initializeFilmPlayback();
     if (await _filmIsoPlaybackService?.hasActivePlayback() ?? false) {
       throw const CacheCleanupBlockedException('请先关闭正在运行的 ISO 播放器，再清理缓存');
     }
     await _releaseStoppedPlaybackSessions();
-    if (scope == CacheCleanupScope.all || scope == CacheCleanupScope.playback) {
+    if (clearProgress) {
       await _clearUnreferencedProgress(_progressService, _mediaLibraryStore);
       if (_audioProgressService case final audio?) {
         await _clearUnreferencedProgress(
@@ -2441,9 +2444,10 @@ class AppState extends ChangeNotifier {
           audio: true,
         );
       }
-      if (_filmProgressService case final film?) {
-        await _clearUnreferencedProgress(film, _filmMediaLibraryStore);
-      }
+      await _clearUnreferencedProgress(
+        _filmProgressService!,
+        _filmMediaLibraryStore,
+      );
     }
     if ((scope == CacheCleanupScope.all ||
             scope == CacheCleanupScope.metadata) &&
@@ -2457,8 +2461,12 @@ class AppState extends ChangeNotifier {
       }
     }
     final result = await cleaner.clear(scope: scope);
-    if (scope == CacheCleanupScope.all || scope == CacheCleanupScope.playback) {
+    if (clearProgress) {
       await _filmPlaybackHistoryStore.clear();
+      await _isoPlaybackService?.clearLastProgrammes();
+      await _filmIsoPlaybackService?.clearLastProgrammes();
+      await _mediaLibraryStore?.clearDiscResume();
+      await _filmMediaLibraryStore?.clearDiscResume();
     }
     notifyListeners();
     return result;
@@ -2508,6 +2516,7 @@ class AppState extends ChangeNotifier {
   Future<bool> _hasRunningPlayback() async {
     if (await _playerService.isPlayerRunning()) return true;
     if (await _filmPlayerService?.anyPlayerRunning() ?? false) return true;
+    if (await _localDiscPlaybackService.anyPlayerRunning()) return true;
     if (await _filmLocalDiscPlaybackService?.anyPlayerRunning() ?? false) {
       return true;
     }

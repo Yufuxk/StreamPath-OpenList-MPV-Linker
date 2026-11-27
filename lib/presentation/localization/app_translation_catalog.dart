@@ -65,14 +65,14 @@ const Map<String, String> englishTranslations = <String, String>{
   "临时文件清理": "Clear temporary files",
   "按类别清理；媒体中心数据由媒体中心原有清理按钮管理。":
       "Clear by category. Manage Media Center data with its existing cleanup buttons.",
-  "清除目录缓存、媒体探测元数据、影视图片、播放进度、底栏继续播放和临时文件。保留媒体中心数据及学习数据。":
-      "Clear directory cache, media probe metadata, film images, playback progress, bottom-bar resume records and temporary files. Keep Media Center and learning data.",
+  "清除目录缓存、媒体探测元数据、影视图片、播放进度（含光盘）、底栏继续播放和临时文件。保留媒体中心收藏、历史及学习数据。":
+      "Clear directory cache, media probe metadata, film images, playback progress including discs, bottom-bar resume records and temporary files. Keep Media Center favorites, history and learning data.",
   "仅清除目录缓存，保留元数据、图片、播放进度及媒体中心数据。":
       "Clear directory cache only. Keep metadata, images, playback progress and Media Center data.",
   "仅清除媒体探测元数据、影视图片和蓝光结构缓存，保留影视目录、作品匹配、播放进度及媒体中心数据。":
       "Clear media probe metadata, film images and Blu-ray structure cache only. Keep the catalog, work matches, playback progress and Media Center data.",
-  "仅清除未被媒体中心引用的播放进度和底栏继续播放记录，保留元数据、图片及媒体中心数据。":
-      "Clear playback progress not referenced by Media Center, and bottom-bar resume records only. Keep metadata, images and Media Center data.",
+  "清除光盘续播进度、未被媒体中心引用的其他播放进度和底栏继续播放记录。保留光盘选集、媒体中心收藏及历史。":
+      "Clear disc resume progress, other playback progress not referenced by Media Center, and bottom-bar resume records. Keep disc title selections, Media Center favorites and history.",
   "仅清除播放器临时文件，保留目录缓存、元数据、图片、播放进度及媒体中心数据。":
       "Clear player temporary files only. Keep directory cache, metadata, images, playback progress and Media Center data.",
   '第 {episode}/{total} 集': 'Episode {episode}/{total}',
@@ -1156,14 +1156,14 @@ const Map<String, String> japaneseTranslations = <String, String>{
   "播放进度清理": "再生進行状況を削除",
   "临时文件清理": "一時ファイルを削除",
   "按类别清理；媒体中心数据由媒体中心原有清理按钮管理。": "種類別に削除します。メディアセンターのデータは既存の専用ボタンで管理します。",
-  "清除目录缓存、媒体探测元数据、影视图片、播放进度、底栏继续播放和临时文件。保留媒体中心数据及学习数据。":
-      "ディレクトリキャッシュ、メディア解析データ、作品画像、再生進行状況、下部の再生再開記録、一時ファイルを削除します。メディアセンターと学習データは保持します。",
+  "清除目录缓存、媒体探测元数据、影视图片、播放进度（含光盘）、底栏继续播放和临时文件。保留媒体中心收藏、历史及学习数据。":
+      "ディレクトリキャッシュ、メディア解析データ、作品画像、ディスクを含む再生進行状況、下部の再生再開記録、一時ファイルを削除します。メディアセンターのお気に入り、履歴、学習データは保持します。",
   "仅清除目录缓存，保留元数据、图片、播放进度及媒体中心数据。":
       "ディレクトリキャッシュのみ削除します。メタデータ、画像、再生進行状況、メディアセンターのデータは保持します。",
   "仅清除媒体探测元数据、影视图片和蓝光结构缓存，保留影视目录、作品匹配、播放进度及媒体中心数据。":
       "メディア解析データ、作品画像、Blu-ray 構造キャッシュのみ削除します。作品一覧、作品の紐付け、再生進行状況、メディアセンターのデータは保持します。",
-  "仅清除未被媒体中心引用的播放进度和底栏继续播放记录，保留元数据、图片及媒体中心数据。":
-      "メディアセンターから参照されていない再生進行状況と下部の再生再開記録のみ削除します。メタデータ、画像、メディアセンターのデータは保持します。",
+  "清除光盘续播进度、未被媒体中心引用的其他播放进度和底栏继续播放记录。保留光盘选集、媒体中心收藏及历史。":
+      "ディスクの再開位置、メディアセンターから参照されていないその他の再生進行状況、下部の再生再開記録を削除します。ディスクのタイトル選択、メディアセンターのお気に入りと履歴は保持します。",
   "仅清除播放器临时文件，保留目录缓存、元数据、图片、播放进度及媒体中心数据。":
       "プレーヤーの一時ファイルのみ削除します。ディレクトリキャッシュ、メタデータ、画像、再生進行状況、メディアセンターのデータは保持します。",
   '第 {episode}/{total} 集': '第 {episode}/{total} 話',
@@ -2097,13 +2097,13 @@ const Map<String, String> traditionalChineseTranslations = <String, String>{
   "播放进度清理": "播放進度清理",
   "临时文件清理": "暫存檔案清理",
   "按类别清理；媒体中心数据由媒体中心原有清理按钮管理。": "依類別清理；媒體中心資料由媒體中心原有清理按鈕管理。",
-  "清除目录缓存、媒体探测元数据、影视图片、播放进度、底栏继续播放和临时文件。保留媒体中心数据及学习数据。":
-      "清除目錄快取、媒體探測中繼資料、影視圖片、播放進度、底欄繼續播放及暫存檔案。保留媒體中心資料及學習資料。",
+  "清除目录缓存、媒体探测元数据、影视图片、播放进度（含光盘）、底栏继续播放和临时文件。保留媒体中心收藏、历史及学习数据。":
+      "清除目錄快取、媒體探測中繼資料、影視圖片、播放進度（含光碟）、底欄繼續播放及暫存檔案。保留媒體中心收藏、歷史及學習資料。",
   "仅清除目录缓存，保留元数据、图片、播放进度及媒体中心数据。": "僅清除目錄快取，保留中繼資料、圖片、播放進度及媒體中心資料。",
   "仅清除媒体探测元数据、影视图片和蓝光结构缓存，保留影视目录、作品匹配、播放进度及媒体中心数据。":
       "僅清除媒體探測中繼資料、影視圖片及藍光結構快取，保留影視目錄、作品匹配、播放進度及媒體中心資料。",
-  "仅清除未被媒体中心引用的播放进度和底栏继续播放记录，保留元数据、图片及媒体中心数据。":
-      "僅清除未被媒體中心引用的播放進度及底欄繼續播放記錄，保留中繼資料、圖片及媒體中心資料。",
+  "清除光盘续播进度、未被媒体中心引用的其他播放进度和底栏继续播放记录。保留光盘选集、媒体中心收藏及历史。":
+      "清除光碟續播進度、未被媒體中心引用的其他播放進度及底欄繼續播放記錄。保留光碟選集、媒體中心收藏及歷史。",
   "仅清除播放器临时文件，保留目录缓存、元数据、图片、播放进度及媒体中心数据。":
       "僅清除播放器暫存檔案，保留目錄快取、中繼資料、圖片、播放進度及媒體中心資料。",
   '第 {episode}/{total} 集': '第 {episode}/{total} 集',

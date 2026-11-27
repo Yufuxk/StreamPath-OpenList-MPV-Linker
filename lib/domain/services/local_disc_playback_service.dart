@@ -133,8 +133,11 @@ class LocalDiscPlaybackService implements IsoLibraryProgressReader {
   final PlayerProcessController _processController;
   bool get hasPlaybackSessions => _sessions.isNotEmpty;
   Future<bool> anyPlayerRunning() async {
-    for (final id in _sessions.keys.toList()) {
-      if (await isPlayerRunning(id)) return true;
+    for (final runtime in _sessions.values.toList()) {
+      if (await runtime.tracker.sample() != PlayerProcessLiveness.exited) {
+        return true;
+      }
+      await _finishExit(runtime);
     }
     return false;
   }

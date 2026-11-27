@@ -67,7 +67,13 @@ class _FilmDetailBackButtonState extends State<FilmDetailBackButton> {
                   tooltip: context.l10n.text('返回'),
                   style: ButtonStyle(
                     backgroundColor: actionStyle.backgroundColor,
-                    side: actionStyle.side,
+                    side: WidgetStatePropertyAll(
+                      // 描边略向内收，避开底色圆周的抗锯齿边缘。
+                      actionStyle.side!.resolve({})!.copyWith(
+                        width: .75,
+                        strokeAlign: -2,
+                      ),
+                    ),
                     shape: const WidgetStatePropertyAll(CircleBorder()),
                   ),
                   icon: const SPBackIcon(),

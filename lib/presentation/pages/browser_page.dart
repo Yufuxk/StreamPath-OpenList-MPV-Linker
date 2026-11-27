@@ -3877,6 +3877,7 @@ class BrowserPageState extends State<BrowserPage> {
         autoSeason: config.autoSeasonTransitionEnabled,
         allowGap: config.allowSeasonGap,
         insertDecimalEpisodes: config.videoPlaylistInsertDecimalEpisodes,
+        specialPlaylistMode: config.specialPlaylistMode,
       );
       items = selected.items;
       filmNextItem = selected.next?.playbackItem.withFilmVersion(
@@ -3904,6 +3905,7 @@ class BrowserPageState extends State<BrowserPage> {
         autoSeason: config.autoSeasonTransitionEnabled,
         allowGap: config.allowSeasonGap,
         insertDecimalEpisodes: config.videoPlaylistInsertDecimalEpisodes,
+        specialPlaylistMode: config.specialPlaylistMode,
       );
     }
     if (!custom &&

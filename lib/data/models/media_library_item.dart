@@ -189,19 +189,22 @@ class LocalDiscSessionSnapshot {
   final int? currentEdition;
   final int? editionCount;
 
-  LocalDiscSessionSnapshot copyWith({int? currentEdition, int? editionCount}) =>
-      LocalDiscSessionSnapshot(
-        rootId: rootId,
-        relativePath: relativePath,
-        size: size,
-        modified: modified,
-        fingerprint: fingerprint,
-        playerPid: playerPid,
-        playerExecutablePath: playerExecutablePath,
-        playerCreationTime: playerCreationTime,
-        currentEdition: currentEdition ?? this.currentEdition,
-        editionCount: editionCount ?? this.editionCount,
-      );
+  LocalDiscSessionSnapshot copyWith({
+    int? currentEdition,
+    int? editionCount,
+    bool clearEdition = false,
+  }) => LocalDiscSessionSnapshot(
+    rootId: rootId,
+    relativePath: relativePath,
+    size: size,
+    modified: modified,
+    fingerprint: fingerprint,
+    playerPid: playerPid,
+    playerExecutablePath: playerExecutablePath,
+    playerCreationTime: playerCreationTime,
+    currentEdition: clearEdition ? null : currentEdition ?? this.currentEdition,
+    editionCount: clearEdition ? null : editionCount ?? this.editionCount,
+  );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'rootId': rootId,
@@ -321,6 +324,7 @@ class MediaLibraryRecord {
     int? strmDurationMs,
     bool clearStrmProgress = false,
     int? discResumeEdition,
+    bool clearDiscResume = false,
   }) => MediaLibraryRecord(
     item: item ?? this.item,
     updatedAt: updatedAt ?? this.updatedAt,
@@ -328,8 +332,14 @@ class MediaLibraryRecord {
     continueDismissed: continueDismissed ?? this.continueDismissed,
     continueCompleted: continueCompleted ?? this.continueCompleted,
     playbackBarDismissed: playbackBarDismissed ?? this.playbackBarDismissed,
-    localDiscSession: localDiscSession ?? this.localDiscSession,
-    discResumeEdition: discResumeEdition ?? this.discResumeEdition,
+    localDiscSession: clearDiscResume
+        ? (localDiscSession ?? this.localDiscSession)?.copyWith(
+            clearEdition: true,
+          )
+        : localDiscSession ?? this.localDiscSession,
+    discResumeEdition: clearDiscResume
+        ? null
+        : discResumeEdition ?? this.discResumeEdition,
     playlistIndex: playlistIndex ?? this.playlistIndex,
     playlistCount: playlistCount ?? this.playlistCount,
     strmPositionMs: clearStrmProgress

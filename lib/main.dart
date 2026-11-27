@@ -179,9 +179,8 @@ Future<void> main() async {
     preservedCacheNames: {
       CacheIntelligenceLearningStore.fileName,
       'iso_catalog.json',
-      'iso_watch_later',
       'film_iso_catalog.json',
-      'film_iso_watch_later',
+      IsoPlaybackService.filmProgressMigrationMarker,
     },
     storeClearers: [() async => cachePolicy.clearRuntimeCache()],
     scopedStoreClearers: {

@@ -336,7 +336,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final destination = await service._catalog();
       final root = await service._rootDirectory();
       final marker = File(
-        p.join(root.parent.path, 'film_iso_progress_migrated'),
+        p.join(root.parent.path, filmProgressMigrationMarker),
       );
       if (!await marker.exists()) {
         final all = await (await _catalog())._readAll();
@@ -367,6 +367,8 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   static const String manifestFileName = 'iso-session.json';
   static const String catalogFileName = 'iso_catalog.json';
   static const String watchLaterDirectoryName = 'iso_watch_later';
+  static const String filmProgressMigrationMarker =
+      'film_iso_progress_migrated';
   static const String statusFileName = 'iso-current.txt';
   static const String commandFileName = 'iso-command.txt';
   static const String performanceSummaryFileName = 'iso-performance.json';
@@ -1606,6 +1608,12 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
   }) => playbackMode == PlaybackMode.webdavHdmvMenu
       ? _getMenuLibraryProgressByKey(isoKey)
       : _getLibraryProgressByKey(isoKey);
+
+  /// 续播文件由缓存清理删除，目录只重置上次播放标题。
+  Future<void> clearLastProgrammes() async {
+    await (await _catalog()).clearLastProgrammes();
+    _notifyLibraryProgressChanged();
+  }
 
   Future<Map<String, dynamic>> portableState({
     required String profileId,
@@ -4099,6 +4107,16 @@ class _IsoCatalogStore {
       order: current.order,
       selected: current.selected,
       lastProgrammeId: mplsId,
+    );
+    await _writeAll(all);
+  }
+
+  Future<void> clearLastProgrammes() async {
+    final all = await _readAll();
+    if (!all.values.any((record) => record.lastProgrammeId != null)) return;
+    all.updateAll(
+      (_, record) =>
+          _IsoCatalogRecord(order: record.order, selected: record.selected),
     );
     await _writeAll(all);
   }

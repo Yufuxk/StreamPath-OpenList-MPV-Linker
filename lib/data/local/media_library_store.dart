@@ -448,6 +448,23 @@ class MediaLibraryStore {
     _notifyChanged();
   });
 
+  Future<void> clearDiscResume() => _enqueue(() async {
+    await _load();
+    if (!_isoHistory.any(
+      (record) =>
+          record.localDiscSession?.currentEdition != null ||
+          record.discResumeEdition != null,
+    )) {
+      return;
+    }
+    final records = [
+      for (final record in _isoHistory) record.copyWith(clearDiscResume: true),
+    ];
+    await _write(isoHistory: records);
+    _isoHistory = records;
+    _notifyChanged();
+  });
+
   Future<void> removePlayback(MediaLibraryItem item) => _enqueue(() async {
     await _load();
     final audio = item.kind == MediaLibraryKind.audio;
