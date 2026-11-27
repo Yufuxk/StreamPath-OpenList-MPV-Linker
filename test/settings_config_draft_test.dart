@@ -10,6 +10,52 @@ import 'package:streampath/features/cache_expiration/models/cache_expiration_con
 import 'package:streampath/presentation/models/settings_config_draft.dart';
 
 void main() {
+  test('目录记忆模式按已保存的配置回显', () {
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    draft.loadFrom(
+      fullConfig: const StreamPathConfig(
+        appearance: AppearanceConfig(
+          directoryMemoryMode: DirectoryMemoryMode.persistent,
+        ),
+      ),
+      appearance: const AppearanceConfig(),
+      cacheConfig: const CachePolicyConfig(),
+      intelligenceConfig: const CacheIntelligenceConfig(),
+      expirationConfig: const CacheExpirationConfig(),
+    );
+    expect(draft.directoryMemoryMode, DirectoryMemoryMode.persistent);
+    expect(
+      draft.buildAppearanceConfig().directoryMemoryMode,
+      DirectoryMemoryMode.persistent,
+    );
+  });
+
+  test('缓存百分比小数回读和保存保留原值', () {
+    final draft = SettingsConfigDraft();
+    addTearDown(draft.dispose);
+    const player = StreamPathConfig();
+    for (final (memory, memoryText, adjustment, adjustmentText) in [
+      (0.1275, '12.75', 0.1075, '10.75'),
+      (0.29, '29', 0.14, '14'),
+      (0.5, '50', 0.05, '5'),
+    ]) {
+      draft.loadFrom(
+        fullConfig: player,
+        appearance: player.appearance,
+        cacheConfig: CachePolicyConfig(memoryBudgetRatio: memory),
+        intelligenceConfig: CacheIntelligenceConfig(
+          maxAdjustmentRatio: adjustment,
+        ),
+        expirationConfig: const CacheExpirationConfig(),
+      );
+      expect(draft.cacheMemoryRatioController.text, memoryText);
+      expect(draft.intelligenceMaxAdjustmentController.text, adjustmentText);
+      expect(draft.buildCachePolicyConfig().memoryBudgetRatio, memory);
+      expect(draft.buildIntelligenceConfig().maxAdjustmentRatio, adjustment);
+    }
+  });
+
   test('强调色草稿保留任意颜色且可恢复默认', () {
     final draft = SettingsConfigDraft();
     addTearDown(draft.dispose);

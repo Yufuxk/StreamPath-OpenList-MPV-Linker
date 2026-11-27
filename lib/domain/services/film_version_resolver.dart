@@ -160,6 +160,22 @@ class FilmVersionIndex {
   final Map<int, String> resourceKeys = {};
   FilmVersionFamily? family(String key) =>
       families.where((f) => f.key == key).firstOrNull;
+
+  FilmVersionSelection selectionForAvailableFamilies(
+    FilmVersionSelection saved,
+  ) {
+    final defaultKey = family(saved.defaultKey)?.key ?? initial().defaultKey;
+    final seasons = {
+      for (final entry in saved.seasons.entries)
+        if (family(entry.value) != null) entry.key: entry.value,
+    };
+    if (defaultKey == saved.defaultKey &&
+        seasons.length == saved.seasons.length) {
+      return saved;
+    }
+    return FilmVersionSelection(defaultKey: defaultKey, seasons: seasons);
+  }
+
   List<FilmResource> selected(FilmVersionSelection selection) =>
       [
         for (final f in families)

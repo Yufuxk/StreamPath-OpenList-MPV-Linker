@@ -8,7 +8,9 @@ import '../../data/models/disc_title_selection_policy.dart';
 import '../widgets/settings_group_card.dart';
 import '../widgets/sp_control_bar.dart';
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import '../../features/mpv_manager/mpv_manager_page.dart';
@@ -23,9 +25,11 @@ import 'package:provider/provider.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/extension_filter.dart';
 import '../../core/utils/file_sort.dart';
+import '../../data/local/film_catalog_store.dart' show FilmCatalogPhase5;
 import '../../data/models/appearance_config.dart';
 import '../../data/models/accent_color_preset.dart';
 import '../../data/models/app_language.dart';
+import '../../data/models/film_directory_exclusions.dart';
 import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
@@ -43,6 +47,8 @@ import '../../domain/services/openlist_recovery_service.dart';
 import '../../features/cache_control/models/cache_intelligence_config.dart';
 import '../../features/cache_control/models/cache_policy_config.dart';
 import '../../features/cache_expiration/models/cache_expiration_config.dart';
+import '../../features/video_cache/video_cache_models.dart';
+import '../../features/video_cache/video_cache_service.dart';
 import '../state/app_state.dart';
 import '../models/settings_config_draft.dart';
 import '../localization/app_localizations.dart';
@@ -144,6 +150,8 @@ class SettingsPageState extends State<SettingsPage> {
   void selectSection(SettingsSection section) => _selectSection(section);
 
   Future<FilmCatalogController>? _filmSettings;
+  ({FilmCatalogController catalog, FilmDirectoryExclusions saved})?
+  _filmExclusions;
   Color get _dropdownMenuColor => AppTheme.dropdownMenuColor(Theme.of(context));
 
   final Map<SettingsSection, GlobalKey<FormState>> _formKeys = {
@@ -350,6 +358,11 @@ class SettingsPageState extends State<SettingsPage> {
           intelligenceConfig: intelligenceConfig,
           expirationConfig: expirationConfig,
         );
+        _draft.videoCacheDirectoryController.text =
+            appState.videoCacheDirectory;
+        if (_filmExclusions case final film?) {
+          _draft.loadFilmDirectoryExclusions(film.saved);
+        }
         _loaded = true;
       });
       if (_selectedSection == SettingsSection.server) {
@@ -400,11 +413,21 @@ class SettingsPageState extends State<SettingsPage> {
       sidebarCompact: sidebarAppearance.sidebarCompact,
     );
     final mediaLibraryConfig = _draft.buildMediaLibraryConfig();
+    final filmExclusions = _filmExclusions;
+    final exclusions = _draft.buildFilmDirectoryExclusions();
 
     setState(() => _saving = true);
     try {
       final appState = context.read<AppState>();
       final appearanceController = context.read<AppearanceController>();
+      final path = _draft.videoCacheDirectoryController.text.trim();
+      final cacheDirectoryChanged = path != appState.videoCacheDirectory;
+      final cacheDirectory = path == appState.defaultVideoCacheDirectory
+          ? null
+          : path;
+      if (cacheDirectoryChanged) {
+        await VideoCacheService.validateDirectory(cacheDirectory);
+      }
       await appState.windowCoordinator?.configure(config);
       final previousAppearance = appearanceController.config;
       final appearanceChanged =
@@ -482,14 +505,47 @@ class SettingsPageState extends State<SettingsPage> {
           !await expirationStore.save(expirationConfig)) {
         throw AppException.storage('基础配置已保存，但缓存过期配置保存失败');
       }
+      if (cacheDirectoryChanged) {
+        try {
+          final cache = await appState.getVideoCache();
+          await cache.saveDirectory(cacheDirectory);
+        } on FileSystemException catch (error) {
+          throw AppException.storage('视频缓存操作失败', error);
+        }
+      }
+      if (filmExclusions != null &&
+          (exclusions.exact != filmExclusions.saved.exact ||
+              !listEquals(exclusions.names, filmExclusions.saved.names))) {
+        final catalog = filmExclusions.catalog;
+        if (!await catalog.run(
+          () => catalog.store.setPreference(
+            'directory_exclusions',
+            exclusions.toJson(),
+          ),
+        )) {
+          throw AppException.storage(filmCatalogErrorText(catalog.error!));
+        }
+        _filmExclusions = (catalog: catalog, saved: exclusions);
+      }
       if (!mounted) return;
       setState(() {
         _profiles = [...savedConfig.profiles];
         _selectedProfileId = profileId;
+        _draft.videoCacheDirectoryController.text =
+            appState.videoCacheDirectory;
+        if (filmExclusions != null) {
+          _draft.loadFilmDirectoryExclusions(exclusions);
+        }
       });
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SPNotice(content: AppText('全部配置已保存')));
+    } on VideoCacheException catch (e) {
+      if (!mounted) return;
+      _selectSection(SettingsSection.cache, animate: false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SPNotice(content: AppText(e.message)));
     } on AppException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -768,6 +824,7 @@ class SettingsPageState extends State<SettingsPage> {
         }
         rethrow;
       }
+      await appState.applyDirectoryMemoryMode();
       try {
         await appState.applyMediaLibraryConfig(previousMediaLibrary);
       } catch (error) {
@@ -1455,9 +1512,13 @@ class SettingsPageState extends State<SettingsPage> {
         builder: () => _observeSectionBuild(
           SettingsSection.films,
           FutureBuilder<FilmCatalogController>(
-            future: _filmSettings ??= context.read<AppState>().getFilmCatalog(),
+            future: _filmSettings ??= _loadFilmSettings(),
             builder: (_, state) => state.hasData
-                ? FilmLibraryManagePage(catalog: state.data!, embedded: true)
+                ? FilmLibraryManagePage(
+                    catalog: state.data!,
+                    embedded: true,
+                    directoryExclusionFields: _buildFilmDirectoryExclusions(),
+                  )
                 : state.hasError
                 ? const AppText('影视目录库操作失败')
                 : const Center(child: CircularProgressIndicator()),
@@ -1503,6 +1564,64 @@ class SettingsPageState extends State<SettingsPage> {
         ),
       ),
     ];
+  }
+
+  Future<FilmCatalogController> _loadFilmSettings() async {
+    final catalog = await context.read<AppState>().getFilmCatalog();
+    final exclusions = await catalog.store.directoryExclusions();
+    if (mounted) {
+      _filmExclusions = (catalog: catalog, saved: exclusions);
+      _draft.loadFilmDirectoryExclusions(exclusions);
+    }
+    return catalog;
+  }
+
+  Widget _buildFilmDirectoryExclusions() {
+    final enabled = !_saving && !_resettingSettings;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextFormField(
+          key: const Key('film-excluded-folders-field'),
+          controller: _draft.excludedFoldersController,
+          enabled: enabled,
+          contextMenuBuilder: buildClipboardHistoryMenu,
+          decoration: InputDecoration(
+            labelText: context.l10n.text('屏蔽文件夹名称'),
+            helperText: context.l10n.text('使用英文逗号分隔，区分大小写；命中后跳过整个子目录'),
+            helperMaxLines: 3,
+            prefixIcon: const Icon(SPIcons.hide),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ValueListenableBuilder<bool>(
+          valueListenable: _draft.exactFolderExclusions,
+          builder: (context, exact, _) => SPDropdownButtonFormField<bool>(
+            key: ValueKey('film-excluded-folders-mode-$exact'),
+            initialValue: exact,
+            menuIcon: SPIcons.manageSearch,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: context.l10n.text('文件夹名称匹配模式'),
+              prefixIcon: const Icon(SPIcons.manageSearch),
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: false,
+                child: AppText('模糊匹配（包含连续关键字）'),
+              ),
+              DropdownMenuItem(
+                value: true,
+                child: AppText('精确匹配（完整名称相同）'),
+              ),
+            ],
+            onChanged: enabled
+                ? (value) => _draft.exactFolderExclusions.value = value!
+                : null,
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _observeSectionBuild(SettingsSection section, Widget child) {
@@ -2755,7 +2874,11 @@ class SettingsPageState extends State<SettingsPage> {
   Widget _buildCachePage() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const VideoCacheSettingsCard(),
+      VideoCacheSettingsCard(
+        directoryController: _draft.videoCacheDirectoryController,
+        defaultDirectory: context.read<AppState>().defaultVideoCacheDirectory,
+        enabled: !_saving && !_resettingSettings,
+      ),
       const SizedBox(height: 16),
       SettingsColumns(
         children: [

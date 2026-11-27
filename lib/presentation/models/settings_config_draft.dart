@@ -11,6 +11,7 @@ import '../../data/models/media_library_config.dart';
 import '../../data/models/openlist_index_config.dart';
 import '../../data/models/openlist_recovery_config.dart';
 import '../../data/models/disc_title_selection_policy.dart';
+import '../../data/models/film_directory_exclusions.dart';
 import '../../data/models/player_config.dart';
 import '../../data/models/mpv_menu_shortcuts.dart';
 import '../../data/models/video_window_mode.dart';
@@ -41,6 +42,9 @@ class SettingsConfigDraft {
   final openListTokenController = TextEditingController();
   final openListIndexUserTokenController = TextEditingController();
   final openListIndexIntervalController = TextEditingController();
+  final videoCacheDirectoryController = TextEditingController();
+  final excludedFoldersController = TextEditingController();
+  final exactFolderExclusions = ValueNotifier(false);
   final cacheMemoryRatioController = TextEditingController();
   final cacheBaseSecsController = TextEditingController();
   final cacheSmallFileController = TextEditingController();
@@ -218,8 +222,9 @@ class SettingsConfigDraft {
         .toString();
     cacheEnabled = cacheConfig.enabled;
     cacheMode = cacheConfig.mode;
-    cacheMemoryRatioController.text = (cacheConfig.memoryBudgetRatio * 100)
-        .toStringAsFixed(0);
+    cacheMemoryRatioController.text = _formatPercentage(
+      cacheConfig.memoryBudgetRatio,
+    );
     cacheBaseSecsController.text = cacheConfig.baseCacheSecs.toString();
     cacheSmallFileController.text = cacheConfig.smallFileThresholdMB.toString();
     cacheBandwidthController.text =
@@ -232,15 +237,16 @@ class SettingsConfigDraft {
     habitLearningEnabled = intelligenceConfig.habitLearningEnabled;
     intelligenceMinSamplesController.text = intelligenceConfig.minSamples
         .toString();
-    intelligenceMaxAdjustmentController.text =
-        (intelligenceConfig.maxAdjustmentRatio * 100).toStringAsFixed(0);
+    intelligenceMaxAdjustmentController.text = _formatPercentage(
+      intelligenceConfig.maxAdjustmentRatio,
+    );
     interfaceStyle = appearance.style;
     windowMaterial = appearance.material;
     glassOpacity = appearance.glassOpacity;
     interfaceFontFamily = appearance.fontFamily;
     interfaceFontWeightOffset = appearance.fontWeightOffset;
     accentColor = appearance.accentColor;
-    directoryMemoryMode = appearance.directoryMemoryMode;
+    directoryMemoryMode = fullConfig.appearance.directoryMemoryMode;
     language = fullConfig.language;
     directoryFreshnessController.text = expirationConfig
         .directoryFreshnessMinutes
@@ -313,6 +319,26 @@ class SettingsConfigDraft {
     defaultSortDirection: defaultSortDirection,
     playerStartupTimeoutSeconds: playerStartupTimeoutSeconds,
   );
+
+  static String _formatPercentage(double ratio) {
+    final percentage = ratio * 100;
+    final rounded = double.parse(percentage.toStringAsPrecision(15));
+    final value = rounded / 100 == ratio ? rounded : percentage;
+    return value.toString().replaceFirst(RegExp(r'\.0$'), '');
+  }
+
+  FilmDirectoryExclusions buildFilmDirectoryExclusions() =>
+      FilmDirectoryExclusions(
+        names: FilmDirectoryExclusions.parseNames(
+          excludedFoldersController.text,
+        ),
+        exact: exactFolderExclusions.value,
+      );
+
+  void loadFilmDirectoryExclusions(FilmDirectoryExclusions exclusions) {
+    excludedFoldersController.text = exclusions.names.join(', ');
+    exactFolderExclusions.value = exclusions.exact;
+  }
 
   CachePolicyConfig buildCachePolicyConfig() {
     final bandwidth = cacheBandwidthController.text.trim();
@@ -407,6 +433,7 @@ class SettingsConfigDraft {
   );
 
   void dispose() {
+    exactFolderExclusions.dispose();
     for (final controller in <TextEditingController>[
       ...menuShortcutControllers,
       nameController,
@@ -424,6 +451,8 @@ class SettingsConfigDraft {
       openListTokenController,
       openListIndexUserTokenController,
       openListIndexIntervalController,
+      videoCacheDirectoryController,
+      excludedFoldersController,
       cacheMemoryRatioController,
       cacheBaseSecsController,
       cacheSmallFileController,

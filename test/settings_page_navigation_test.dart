@@ -49,6 +49,7 @@ import 'package:streampath/presentation/theme/glass_tokens.dart';
 import 'package:streampath/presentation/widgets/directory_wheel_scroll_region.dart';
 import 'package:streampath/presentation/widgets/glass_surface.dart';
 import 'package:streampath/presentation/widgets/sp_controls.dart';
+import 'package:streampath/presentation/widgets/sp_icons.dart';
 import 'package:streampath/presentation/widgets/sp_font_picker.dart';
 import 'package:streampath/presentation/widgets/settings_group_card.dart';
 
@@ -169,13 +170,217 @@ void main() {
   }
 
   Future<void> settleFilmSettings(WidgetTester tester) async {
-    for (var i = 0; i < 8; i++) {
-      await tester.pump();
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
-      );
-    }
+    final namesField = find.byKey(const Key('film-excluded-folders-field'));
+    await pumpUntil(
+      tester,
+      () => namesField.evaluate().isNotEmpty,
+      reason: '影视库偏好需要读回已保存的屏蔽规则',
+    );
+    await tester.pumpAndSettle();
   }
+
+  testWidgets('文件夹屏蔽名称与匹配模式随全部配置保存', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final filmSection = find.byKey(const Key('settings-section-films'));
+    final generalSection = find.byKey(const Key('settings-section-general'));
+    final save = find.byKey(const Key('save-settings-button'));
+    final namesField = find.byKey(const Key('film-excluded-folders-field'));
+    final modeField = find.byType(SPDropdownButtonFormField<bool>);
+    String namesText() =>
+        tester.widget<TextFormField>(namesField).controller!.text;
+    bool? exact() =>
+        tester.widget<SPDropdownButtonFormField<bool>>(modeField).initialValue;
+
+    Future<void> openFilmSettings() async {
+      await tester.tap(filmSection);
+      await settleFilmSettings(tester);
+      await tester.ensureVisible(namesField);
+      await tester.ensureVisible(modeField);
+      await tester.pumpAndSettle();
+    }
+
+    await tester.pumpWidget(buildSettings());
+    await pumpUntil(
+      tester,
+      () => filmSection.evaluate().isNotEmpty,
+      reason: '设置页需要完成加载',
+    );
+    await openFilmSettings();
+    expect(namesText(), isEmpty);
+    expect(exact(), isFalse);
+    expect(find.text('保存文件夹屏蔽'), findsNothing);
+    expect(find.text('保存后，下次扫描或刮削时清理已入库及待整理的屏蔽资源'), findsNothing);
+
+    const input = ' Specials, 特典, ,Specials ';
+    await tester.enterText(namesField, input);
+    await tester.ensureVisible(modeField);
+    await tester.tap(modeField);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('精确匹配（完整名称相同）').last);
+    await tester.pumpAndSettle();
+    await tester.tap(generalSection);
+    await tester.pumpAndSettle();
+
+    final beforeSave = (await tester.runAsync(
+      filmCatalog.store.directoryExclusions,
+    ))!;
+    expect(beforeSave.names, isEmpty);
+    expect(beforeSave.exact, isFalse);
+    await openFilmSettings();
+    expect(namesText(), input);
+    expect(exact(), isTrue);
+
+    await tester.tap(generalSection);
+    await tester.pumpAndSettle();
+    final onPressed = tester.widget<FilledButton>(save).onPressed!;
+    await tester.runAsync(() async => onPressed());
+    await pumpUntil(
+      tester,
+      () => find.text('全部配置已保存').evaluate().isNotEmpty,
+      reason: '全局保存需要先持久化两项屏蔽设置',
+    );
+
+    final saved = (await tester.runAsync(
+      filmCatalog.store.directoryExclusions,
+    ))!;
+    expect(saved.names, ['Specials', '特典']);
+    expect(saved.exact, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(buildSettings());
+    await pumpUntil(
+      tester,
+      () => filmSection.evaluate().isNotEmpty,
+      reason: '重新打开设置页需要完成加载',
+    );
+    await openFilmSettings();
+    expect(namesText(), 'Specials, 特典');
+    expect(exact(), isTrue);
+  });
+
+  testWidgets('视频缓存目录草稿随全部配置保存', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const channel = MethodChannel('streampath/folder_picker');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final manual = Directory('${tempDir.path}/手动目录')..createSync();
+    final selected = Directory('${tempDir.path}/选择目录')..createSync();
+    final cacheConfig = File('${tempDir.path}/config/video_cache.json');
+    final defaultDirectory = appState.defaultVideoCacheDirectory;
+
+    await tester.pumpWidget(buildSettings(theme: AppTheme.dark(glass: true)));
+    final cacheSection = find.byKey(const Key('settings-section-cache'));
+    final generalSection = find.byKey(const Key('settings-section-general'));
+    final save = find.byKey(const Key('save-settings-button'));
+    final field = find.byKey(const Key('video-cache-directory-field'));
+    final picker = find.byTooltip('选择视频缓存目录');
+    final reset = find.widgetWithText(SPButton, '恢复默认目录');
+    final manage = find.widgetWithText(SPButton, '管理视频缓存');
+    String text() => tester.widget<TextFormField>(field).controller!.text;
+    Future<void> open(Finder section) async {
+      await tester.tap(section);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> submit() async {
+      final onPressed = tester.widget<FilledButton>(save).onPressed!;
+      await tester.runAsync(() async => onPressed());
+    }
+
+    await pumpUntil(
+      tester,
+      () => cacheSection.evaluate().isNotEmpty,
+      reason: 'Settings must be loaded before selecting the cache section',
+    );
+    await open(cacheSection);
+    expect(text(), defaultDirectory);
+    expect(find.text('保存目录'), findsNothing);
+    expect(
+      tester.widget<SPButton>(reset).kind,
+      tester.widget<SPButton>(manage).kind,
+    );
+    expect(
+      (tester.widget<SPButton>(reset).icon! as Icon).icon,
+      SPIcons.restore,
+    );
+    expect(
+      (tester.widget<SPButton>(manage).icon! as Icon).icon,
+      SPIcons.settings,
+    );
+
+    await tester.enterText(field, manual.path);
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(appState.videoCacheDirectory, defaultDirectory);
+    expect(cacheConfig.existsSync(), isFalse);
+    await open(generalSection);
+    await open(cacheSection);
+    expect(text(), manual.path);
+    await open(generalSection);
+    await submit();
+    await pumpUntil(
+      tester,
+      () => appState.videoCacheDirectory == manual.path,
+      reason: 'Global save must persist the draft even from another section',
+    );
+    expect(
+      jsonDecode(cacheConfig.readAsStringSync())['directory'],
+      manual.path,
+    );
+
+    await open(cacheSection);
+    await tester.enterText(field, 'relative');
+    await open(generalSection);
+    await submit();
+    await pumpUntil(
+      tester,
+      () => find.text('缓存目录不存在').evaluate().isNotEmpty,
+      reason: 'An invalid cache path must prevent the global save',
+    );
+    expect(text(), 'relative');
+    expect(appState.videoCacheDirectory, manual.path);
+    await tester.pumpAndSettle();
+
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'pickDirectory');
+      return null;
+    });
+    await tester.tap(picker);
+    await tester.pumpAndSettle();
+    expect(text(), 'relative');
+
+    messenger.setMockMethodCallHandler(channel, (_) async => selected.path);
+    await tester.tap(picker);
+    await tester.pumpAndSettle();
+    expect(text(), selected.path);
+    expect(appState.videoCacheDirectory, manual.path);
+    await submit();
+    await pumpUntil(
+      tester,
+      () => appState.videoCacheDirectory == selected.path,
+      reason: 'Global save must persist the folder picked in the draft',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(reset);
+    await tester.pump();
+    expect(text(), defaultDirectory);
+    expect(appState.videoCacheDirectory, selected.path);
+    await submit();
+    await pumpUntil(
+      tester,
+      () => appState.videoCacheDirectory == defaultDirectory,
+      reason: 'Global save must persist the default folder',
+    );
+    expect(jsonDecode(cacheConfig.readAsStringSync())['directory'], isNull);
+  });
 
   testWidgets('切回播放设置时参数文字在首帧保持独立滚动位置', (tester) async {
     tester.view.physicalSize = const Size(1440, 540);
@@ -306,7 +511,6 @@ void main() {
     SettingsPageMemory.select(SettingsSection.films);
     await tester.pumpWidget(buildSettings());
     await settleFilmSettings(tester);
-    await tester.pumpAndSettle();
     Finder card(String title) => find.byWidgetPredicate(
       (w) => w is SettingsGroupCard && w.title == title,
     );
@@ -319,7 +523,6 @@ void main() {
       tester.view.physicalSize = const Size(640, 700);
       await tester.pumpWidget(buildSettings(language: language, textScale: 2));
       await settleFilmSettings(tester);
-      await tester.pumpAndSettle();
       expect(
         tester.getTopLeft(card('全局背景')).dx,
         tester.getTopLeft(card('首页栏目')).dx,
@@ -828,8 +1031,9 @@ void main() {
           await tester.tap(tab);
           if (section == SettingsSection.films) {
             await settleFilmSettings(tester);
+          } else {
+            await tester.pumpAndSettle();
           }
-          await tester.pumpAndSettle();
           expect(
             tester.takeException(),
             isNull,
@@ -865,8 +1069,9 @@ void main() {
         await tester.tap(tab);
         if (section == SettingsSection.films) {
           await settleFilmSettings(tester);
+        } else {
+          await tester.pumpAndSettle();
         }
-        await tester.pumpAndSettle();
         expect(tester.takeException(), isNull, reason: '$scale $section');
       }
     }
@@ -1851,6 +2056,7 @@ void main() {
       material: WindowMaterialPreference.mica,
       glassOpacity: 0.70,
       fontWeightOffset: 2,
+      directoryMemoryMode: DirectoryMemoryMode.persistent,
     );
     await tester.runAsync(() async {
       await appearanceController.apply(
@@ -1865,6 +2071,12 @@ void main() {
           hiddenExtensionsEnabled: false,
           appearance: customAppearance,
         ),
+      );
+      await appState.applyDirectoryMemoryMode();
+      await appState.navigationLocations.remember(
+        sourceId: 'fixture',
+        kind: 'local',
+        path: 'before-reset',
       );
     });
 
@@ -1925,6 +2137,8 @@ void main() {
     await tester.tap(find.byKey(const Key('cancel-reset-settings-button')));
     await tester.pump(const Duration(milliseconds: 500));
     expect(configStore.current.serverUrl, 'https://example.com/dav');
+    expect(appState.navigationLocations.mode, DirectoryMemoryMode.persistent);
+    expect(appState.navigationLocations.file.existsSync(), isTrue);
     expect(cachePolicyStore.current.enabled, isFalse);
     expect(cacheCleaner.clearCalls, 0);
     expect(learningDataCleaner.clearCalls, 0);
@@ -1951,6 +2165,17 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(configStore.current.toJson(), StreamPathConfig.defaults().toJson());
+    expect(appState.navigationLocations.mode, DirectoryMemoryMode.temporary);
+    expect(appState.navigationLocations.file.existsSync(), isFalse);
+    await tester.runAsync(
+      () => appState.navigationLocations.remember(
+        sourceId: 'fixture',
+        kind: 'local',
+        path: 'after-reset',
+      ),
+    );
+    expect(appState.navigationLocations.pathFor('fixture'), 'after-reset');
+    expect(appState.navigationLocations.file.existsSync(), isFalse);
     expect(
       cachePolicyStore.current.toJson(),
       CachePolicyConfig.defaults().toJson(),

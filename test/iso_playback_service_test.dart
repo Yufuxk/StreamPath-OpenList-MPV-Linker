@@ -360,15 +360,19 @@ void main() {
     RemoteMenuPlaybackService? menuService,
     void Function(List<String>)? onLaunch,
     bool shareMenuProgress = false,
+    bool resumeEnabled = true,
   }) => IsoPlaybackService(
     configStore: configStore,
     accessProvider: provider,
     remoteMenuAccessProvider: remoteProvider,
     remoteMenuService: menuService,
     processController: processController,
-    configLoader: () async =>
-        PlayerConfig(name: 'MPV', executable: r'C:\Tools\mpv.exe',
-            menuProgressSharingEnabled: shareMenuProgress),
+    configLoader: () async => PlayerConfig(
+      name: 'MPV',
+      executable: r'C:\Tools\mpv.exe',
+      menuProgressSharingEnabled: shareMenuProgress,
+      resumeEnabled: resumeEnabled,
+    ),
     processStarter: (_, args, {Map<String, String>? environment}) async {
       onLaunch?.call(args);
       return playerIdentity.pid;
@@ -452,6 +456,67 @@ void main() {
         return null;
       },
     );
+  });
+
+  test('ISO 普通打开遵循自动续播开关并保留明确继续播放', () async {
+    final initial = buildService(
+      _FakeIsoAccessProvider(handleFactory: _FakeDvdHandle.new),
+    );
+    addTearDown(initial.dispose);
+    final launch = (await initial.start(
+      webDavService: webDavService,
+      file: isoFile,
+      selectTitles: (request) async => IsoTitleSelection.all(request.titles),
+    ))!;
+    await File(
+      p.join(launch.sessionDirectoryPath, 'iso-progress.jsonl'),
+    ).writeAsString(
+      '${jsonEncode({'outcome': 'position', 'playlist_pos': 1, 'position': 123.5, 'duration': 1260.0})}\n',
+    );
+    alive.updateAll((_, _) => false);
+    await initial.sessionSnapshot(launch.sessionDirectoryPath);
+
+    for (final (automatic, explicit, shouldResume) in [
+      (false, false, false),
+      (false, true, true),
+      (true, false, true),
+    ]) {
+      alive.updateAll((_, _) => true);
+      final service = buildService(
+        _FakeIsoAccessProvider(handleFactory: _FakeDvdHandle.new),
+        resumeEnabled: automatic,
+      );
+      addTearDown(service.dispose);
+      final reopened = (await service.start(
+        webDavService: webDavService,
+        file: isoFile,
+        resumeFromSavedPosition: explicit,
+        selectTitles: (request) async {
+          expect(request.lastProgrammeId, 'dvd-title-02');
+          expect(
+            request.resumeByProgrammeId['dvd-title-02']?.position,
+            const Duration(milliseconds: 123500),
+          );
+          return IsoTitleSelection.all(request.titles);
+        },
+      ))!;
+      expect(
+        reopened.args,
+        contains('--playlist-start=${shouldResume ? 1 : 0}'),
+      );
+      final script = await File(
+        p.join(reopened.sessionDirectoryPath, 'iso-progress.lua'),
+      ).readAsLines();
+      final titles = script.firstWhere(
+        (line) => line.startsWith('local TITLES '),
+      );
+      expect(
+        titles,
+        shouldResume ? contains('123.5') : isNot(contains('123.5')),
+      );
+      alive.updateAll((_, _) => false);
+      await service.sessionSnapshot(reopened.sessionDirectoryPath);
+    }
   });
 
   test('BDMV 菜单复用本次能力检查，直接入口仍重新检查', () async {

@@ -47,6 +47,7 @@ const videoCacheTranslations = <String, List<String>>{
   '收起缓存浮窗': ['收起快取浮窗', 'キャッシュパネルを折りたたむ', 'Collapse cache panel'],
   "视频离线缓存": ["影片離線快取", "動画のオフラインキャッシュ", "Offline video cache"],
   "选择视频缓存目录": ["選擇影片快取目錄", "動画キャッシュフォルダーを選択", "Choose video cache folder"],
+  "默认缓存目录": ["預設快取目錄", "既定のキャッシュフォルダー", "Default cache folder"],
   "本次缓存目录": ["本次快取目錄", "今回の保存先", "Destination for this download"],
   "本次选择不会更改设置中的默认目录。": [
     "本次選擇不會變更設定中的預設目錄。",

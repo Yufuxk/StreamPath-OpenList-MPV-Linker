@@ -11,9 +11,11 @@ import 'package:streampath/data/local/playback_history_store.dart';
 import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/data/models/film_version.dart';
 import 'package:streampath/data/models/local_root_config.dart';
 import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
+import 'package:streampath/data/models/server_profile.dart';
 import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/domain/services/film_version_resolver.dart';
 import 'package:streampath/presentation/controllers/film_catalog_controller.dart';
@@ -21,10 +23,12 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/pages/film_detail_page.dart';
 import 'package:streampath/presentation/state/app_state.dart';
 import 'package:streampath/presentation/theme/app_theme.dart';
+import 'package:streampath/presentation/widgets/cinematic_states.dart';
 import 'package:streampath/presentation/widgets/film_artwork.dart';
 import 'package:streampath/presentation/widgets/film_continue_card.dart';
 import 'package:streampath/presentation/widgets/film_segmented_control.dart';
 import 'package:streampath/presentation/widgets/sp_menu.dart';
+import 'package:streampath/presentation/widgets/transition_content.dart';
 import 'helpers/shell_test_app_state.dart';
 import 'helpers/pump_until.dart';
 
@@ -42,6 +46,215 @@ Future<void> settleVersions(
 }
 
 void main() {
+  for (final removal in ['catalog', 'local', 'webdav']) {
+    testWidgets('详情页重新进入时只展示剩余来源 removal=$removal', (tester) async {
+      tester.view.physicalSize = const Size(1280, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      late Directory dir;
+      late ShellTestAppState app;
+      late PlaybackProgressService progress;
+      late FilmCatalogController catalog;
+      late FilmWork work;
+      late int removedRoot;
+      late FilmVersionFamily remaining;
+      late FilmVersionSelection saved;
+      final isWebDav = removal == 'webdav';
+      final removedSource = isWebDav ? 'removed' : 'local:removed';
+
+      await tester.runAsync(() async {
+        dir = await Directory.systemTemp.createTemp('film_removed_source_');
+        final config = StreamPathConfigStore.forPath('${dir.path}/config.json');
+        await config.save(
+          StreamPathConfig(
+            profiles: [
+              if (isWebDav)
+                const ServerProfile(profileId: 'removed', name: 'Removed'),
+            ],
+            mountedProfileIds: [if (isWebDav) 'removed'],
+            localRoots: [
+              for (final id in ['remaining', if (!isWebDav) 'removed'])
+                LocalRootConfig(
+                  rootId: id,
+                  displayName: id,
+                  path: '${dir.path}/$id',
+                ),
+            ],
+          ),
+        );
+        progress = await PlaybackProgressService.open(
+          '${dir.path}/progress.db',
+        );
+        app = ShellTestAppState(
+          configStore: config,
+          playbackHistoryStore: PlaybackHistoryStore.forPath(
+            '${dir.path}/history.json',
+          ),
+          progressService: progress,
+        );
+        catalog = await app.getFilmCatalog();
+        final store = catalog.store;
+        for (final source in ['local:remaining', removedSource]) {
+          final removing = source == removedSource;
+          final id = await store.addRoot(
+            sourceId: source,
+            kind: removing && isWebDav
+                ? MediaSourceKind.webdav
+                : MediaSourceKind.local,
+            path: 'TV',
+            type: FilmMediaType.tv,
+            name: source,
+          );
+          if (removing) removedRoot = id;
+          final generation = await store.beginScan(id);
+          await store.stage((await store.root(id))!, generation, [
+            for (final episode in removing ? [1] : [1, 2])
+              FilmScanEntry(
+                path: 'TV/Series/S01/E$episode.mkv',
+                parentPath: 'TV/Series/S01',
+                name: 'E$episode.mkv',
+                mediaKind: 'video',
+              ),
+          ]);
+          await store.commitScan(id, generation, cancelled: () => false);
+        }
+        await store.bind(
+          await store.resources(),
+          const FilmWork(
+            type: FilmMediaType.tv,
+            tmdbId: 17,
+            title: 'Removed source fixture',
+            originalTitle: '',
+            overview: '',
+            language: 'zh-CN',
+          ),
+        );
+        final resources = await store.resources();
+        await store.mapEpisodes({
+          for (final resource in resources)
+            resource: (1, int.parse(resource.name[1])),
+        });
+        work = (await store.work(resources.first.workId!))!;
+        final index = FilmVersionIndex(await store.resources());
+        remaining = index.families.singleWhere(
+          (family) => family.sourceId == 'local:remaining',
+        );
+        final removed = index.families.singleWhere(
+          (family) => family.sourceId == removedSource,
+        );
+        saved = removal == 'catalog'
+            ? FilmVersionSelection(
+                defaultKey: remaining.key,
+                seasons: {1: removed.key},
+              )
+            : FilmVersionSelection(defaultKey: removed.key);
+        await store.saveVersionSelection(work.identity, saved);
+      });
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          await app.prepareForClose();
+          await app.closeTestStores();
+          await progress.close();
+          app.dispose();
+          await dir.delete(recursive: true);
+        });
+      });
+
+      final nav = GlobalKey<NavigatorState>();
+      final opened = <MediaLibraryItem>[];
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: MaterialApp(
+            theme: AppTheme.dark().copyWith(platform: TargetPlatform.windows),
+            navigatorKey: nav,
+            home: const Scaffold(),
+          ),
+        ),
+      );
+      void openDetail() => nav.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => StreamPathTransitionContent(
+            shellBuilder: (_) => const StreamPathPageShell(),
+            contentBuilder: (_) => FilmDetailPage(
+              catalog: catalog,
+              initialWork: work,
+              workId: work.id,
+              onOpenItem: (item) async => opened.add(item),
+            ),
+          ),
+        ),
+      );
+
+      final seasonSelector = find.byKey(
+        const Key('film-season-version-selector'),
+      );
+      final workSelector = find.byKey(const Key('film-work-version-selector'));
+      final episodes = find.byType(FilmEpisodeCard);
+      openDetail();
+      await settleVersions(tester);
+      expect(seasonSelector, findsOneWidget);
+      expect(workSelector, findsOneWidget);
+      expect(
+        tester.widget<FilmEpisodeCard>(episodes).resource.sourceId,
+        removedSource,
+      );
+      nav.currentState!.pop();
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => switch (removal) {
+          'local' => app.removeLocalRoot('removed'),
+          'webdav' => app.unmountProfile('removed'),
+          _ => catalog.store.removeRoot(removedRoot),
+        },
+      );
+
+      openDetail();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const Key('film-entry-shell')), findsOneWidget);
+      expect(find.byType(FilmDetailPage), findsNothing);
+      final skeleton = find.descendant(
+        of: find.byKey(const Key('film-skeleton-logo')),
+        matching: find.byType(CinematicSkeleton),
+      );
+      await pumpUntil(
+        tester,
+        () => skeleton.evaluate().isNotEmpty,
+        reason: 'The detail skeleton follows the standard route transition',
+      );
+      void expectNoVersionControls() {
+        expect(seasonSelector, findsNothing);
+        expect(workSelector, findsNothing);
+        expect(find.text('所选版本在本季没有可用剧集'), findsNothing);
+      }
+
+      await settleVersions(tester, afterFrame: expectNoVersionControls);
+      expect(skeleton, findsNothing);
+      final cards = tester.widgetList<FilmEpisodeCard>(episodes).toList();
+      expect(cards.map((card) => card.resource.episode), [1, 2]);
+      expect(cards.map((card) => card.resource.sourceId).toSet(), {
+        'local:remaining',
+      });
+      await cards.first.onOpenItem(cards.first.resource.playbackItem);
+      expect(
+        opened.single.filmVersionContext!.selection.forSeason(1),
+        remaining.key,
+      );
+      expect(
+        (await tester.runAsync(
+          () => catalog.store.versionSelection(work.identity),
+        ))!.toJson(),
+        saved.toJson(),
+      );
+      await tester.runAsync(() => catalog.store.setFavorite(work.id, true));
+      await settleVersions(tester, afterFrame: expectNoVersionControls);
+      expect(episodes, findsNWidgets(2));
+    });
+  }
+
   testWidgets('双层选择持久联动，缺集隐藏，页面封面状态保留，播放目标严格匹配', (tester) async {
     tester.view.physicalSize = const Size(1280, 1200);
     tester.view.devicePixelRatio = 1;
@@ -63,6 +276,11 @@ void main() {
               rootId: 'fixture',
               displayName: 'Fixture',
               path: dir.path,
+            ),
+            LocalRootConfig(
+              rootId: 'other',
+              displayName: 'Other',
+              path: '${dir.path}/other',
             ),
           ],
         ),

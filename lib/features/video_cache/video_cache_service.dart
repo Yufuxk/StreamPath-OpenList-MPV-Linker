@@ -179,11 +179,15 @@ class VideoCacheService {
     return completion.future;
   }
 
-  Future<void> saveDirectory(String? value) async {
+  static Future<void> validateDirectory(String? value) async {
     if (value != null &&
         (!p.isAbsolute(value) || !await Directory(value).exists())) {
       throw const VideoCacheException('缓存目录不存在');
     }
+  }
+
+  Future<void> saveDirectory(String? value) async {
+    await validateDirectory(value);
     await _configFile.parent.create(recursive: true);
     final temporary = File('${_configFile.path}.partial');
     await temporary.writeAsString(

@@ -6,12 +6,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:streampath/core/errors/app_exception.dart';
+import 'package:streampath/data/local/playback_history_store.dart';
+import 'package:streampath/data/local/playback_progress_db.dart';
+import 'package:streampath/data/local/stream_path_config_store.dart';
+import 'package:streampath/data/models/external_audio_track.dart';
 import 'package:streampath/data/models/media_directory_entry.dart';
+import 'package:streampath/data/models/media_entry.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/media_connection.dart';
 import 'package:streampath/data/models/film_catalog_item.dart';
+import 'package:streampath/data/models/server_profile.dart';
+import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/data/models/web_dav_file.dart';
 import 'package:streampath/data/remote/webdav_client.dart';
+import 'package:streampath/domain/services/native_storage_source.dart';
 import 'package:streampath/domain/services/webdav_service.dart';
 import 'package:streampath/domain/services/webdav_media_source_adapter.dart';
 import 'package:streampath/features/video_cache/video_cache_planner.dart';
@@ -24,6 +32,7 @@ import 'package:streampath/features/video_cache/video_cache_models.dart';
 import 'package:streampath/features/video_cache/video_cache_service.dart';
 import 'package:streampath/features/video_cache/video_cache_source.dart';
 import 'package:streampath/domain/repositories/media_directory_source.dart';
+import 'package:streampath/presentation/state/app_state.dart';
 
 Map<String, dynamic> _noSpace(String _) => {
   'available': 0,
@@ -191,10 +200,29 @@ class _FakeRemoteDirectory implements MediaDirectorySource {
   bool get supportsRemoteSearch => true;
 }
 
+class _AudioDirectoryService extends WebDAVService {
+  _AudioDirectoryService(String baseUrl, this.entries)
+    : super(client: WebDavClient(baseUrl: baseUrl));
+
+  final List<WebDavFile> entries;
+  final requests = <String>[];
+
+  @override
+  Future<List<WebDavFile>> fetchDirectory(
+    String path, {
+    bool forceRefresh = false,
+  }) async {
+    expect(forceRefresh, isTrue);
+    requests.add(path);
+    return entries;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late _Source source;
+  late String cacheIdentity;
   VideoCacheService? cache;
   Future<Map<String, dynamic>> resolve(
     String _,
@@ -205,7 +233,7 @@ void main() {
     'url': '${source.base}$path',
     'origin': source.base,
     'headers': <String, String>{},
-    'identity': 'account-a',
+    'identity': cacheIdentity,
     'progress': 'https://nas.invalid/$path',
   };
   Future<VideoCacheService> open({bool noSpace = false}) async =>
@@ -220,7 +248,7 @@ void main() {
     final destination = p.join(
       folder,
       'StreamPathCache',
-      'account-a',
+      cacheIdentity,
       'show',
       'video.mkv',
     );
@@ -230,7 +258,7 @@ void main() {
       'path': 'show/video.mkv',
       'root': folder,
       'destination': destination,
-      'identity': 'account-a',
+      'identity': cacheIdentity,
       'strm': false,
       ...info,
     });
@@ -239,7 +267,7 @@ void main() {
         'id': 'bundle-a',
         'source': 'source-a',
         'sourceKind': 'webdav',
-        'identity': 'account-a',
+        'identity': cacheIdentity,
         'path': 'show/video.mkv',
         'name': 'video.mkv',
         'kind': 'video',
@@ -269,6 +297,7 @@ void main() {
   }
 
   setUp(() async {
+    cacheIdentity = 'account-a';
     root = await Directory.systemTemp.createTemp(
       'streampath-video-cache-test-',
     );
@@ -280,6 +309,192 @@ void main() {
     cache = null;
     await source.server.close(force: true);
     await root.delete(recursive: true);
+  });
+
+  test('影视库缓存宿主读取来源档案凭据且无需先挂载', () async {
+    final store = StreamPathConfigStore.forPath(
+      p.join(root.path, 'config.json'),
+    );
+    final profile = ServerProfile(
+      profileId: 'source-a',
+      name: 'Test WebDAV',
+      serverUrl: source.base,
+      username: 'source-user',
+      password: 'initial-password',
+    );
+    await store.save(
+      const StreamPathConfig()
+          .upsertProfile(profile)
+          .upsertProfile(
+            const ServerProfile(
+              profileId: 'active-other',
+              name: 'Other WebDAV',
+              serverUrl: 'https://other.invalid/dav',
+              username: 'other-user',
+              password: 'other-password',
+            ),
+            activate: true,
+          ),
+    );
+    final service = await open();
+    final progress = await PlaybackProgressService.open(
+      inMemoryDatabasePath,
+      factory: databaseFactoryFfi,
+    );
+    addTearDown(progress.close);
+    final app = AppState(
+      configStore: store,
+      playbackHistoryStore: PlaybackHistoryStore.forPath(
+        p.join(root.path, 'history.json'),
+      ),
+      progressService: progress,
+      videoCacheService: service,
+    );
+    addTearDown(() async {
+      await app.prepareForClose();
+      app.dispose();
+    });
+    cacheIdentity = (await app.videoCacheIdentity(profile.profileId))!;
+    final selection = await plan(service);
+    await service.enqueue([selection]);
+    await service.setPlaybackSuspended(false);
+    await _until(() => service.complete(selection.bundle));
+    final reads = source.offsets.length;
+
+    final playback =
+        await app.videoCacheSource(profile.profileId) as VideoCacheSource;
+    expect(playback.service.credentialSnapshot.baseUrl, source.base);
+    expect(playback.service.credentialSnapshot.username, 'source-user');
+    expect(playback.service.credentialSnapshot.password, 'initial-password');
+    final target = (await playback.fetchDirectory('show')).single;
+    final opened = await playback.resolve(target) as LocalMediaOpenTarget;
+    expect(opened.path, selection.files.single.destination);
+    expect(source.offsets.length, reads);
+    expect(app.mountedService(profile.profileId), isNull);
+
+    await store.save(
+      store.current.upsertProfile(
+        profile.copyWith(password: 'changed-password'),
+        activate: true,
+      ),
+    );
+    expect(playback.service.credentialSnapshot.password, 'changed-password');
+    await store.save(
+      store.current.upsertProfile(
+        profile.copyWith(username: 'another-user'),
+        activate: true,
+      ),
+    );
+    expect(playback.service.credentialSnapshot.username, isEmpty);
+  });
+
+  test('缓存播放合并线上音轨并优先使用本地副本', () async {
+    final service = await open();
+    final video = WebDavFile(
+      name: 'video.mkv',
+      href: '${source.base}show/video.mkv',
+      isDirectory: false,
+    );
+    final audio = [
+      for (final (name, encoded) in [
+        ('video.中文.wav', 'video.%E4%B8%AD%E6%96%87.wav'),
+        (
+          'video.日语 配音.wav',
+          'video.%E6%97%A5%E8%AF%AD%20%E9%85%8D%E9%9F%B3.wav',
+        ),
+      ])
+        WebDavFile(
+          name: name,
+          href: '${source.base}show/$encoded',
+          isDirectory: false,
+        ),
+    ];
+    final origin = _AudioDirectoryService(source.base, [video, ...audio]);
+    var mounted = true;
+    final playback = VideoCacheSource(
+      service,
+      const MediaSourceDescriptor(
+        sourceId: 'source-a',
+        kind: MediaSourceKind.webdav,
+        displayName: 'Test WebDAV',
+      ),
+      identity: cacheIdentity,
+      baseUrl: source.base,
+      persistent: (path) => '${source.base}$path',
+      remote: () async => throw StateError('Unexpected mount'),
+      mountedWebDav: () => mounted ? origin : null,
+    );
+    const version = VideoQueueVersion(
+      path: 'show/video.mkv',
+      name: 'video.mkv',
+    );
+    const cachedAudio = ExternalAudioTrack(
+      name: 'video.中文.wav',
+      url: 'cached/video.中文.wav',
+    );
+    Future<PreparedVideoItem> prepare({
+      bool enabled = true,
+      List<MediaDirectoryEntry>? siblings,
+      List<ExternalAudioTrack> cachedTracks = const [cachedAudio],
+    }) => VideoEntryPreparer(
+      source: playback,
+      config: PlayerConfig(
+        name: 'MPV',
+        executable: 'mpv',
+        subtitleInjectionEnabled: false,
+        externalAudioInjectionEnabled: enabled,
+      ),
+      subtitleMatcher: const SubtitleMatcher(),
+      fontMatcher: const WebDavFontMatcher(),
+      titles: const {},
+      directories: {'show': ?siblings},
+      cached: (_) async => PreparedVideoItem(
+        entry: MediaEntry(
+          url: 'cached/video.mkv',
+          progressTarget: video.href,
+          externalAudioTracks: cachedTracks,
+        ),
+      ),
+    ).prepare(version);
+
+    final fromListedDirectory = await prepare(
+      siblings: [video, ...audio],
+      cachedTracks: const [],
+    );
+    expect(fromListedDirectory.entry.externalAudioTracks, hasLength(2));
+    expect(origin.requests, isEmpty);
+
+    final fromMountedSource = await prepare();
+    expect(fromMountedSource.entry.url, 'cached/video.mkv');
+    expect(fromMountedSource.entry.progressTarget, video.href);
+    expect(
+      {
+        for (final track in fromMountedSource.entry.externalAudioTracks)
+          track.name: track.url,
+      },
+      {cachedAudio.name: cachedAudio.url, audio.last.name: audio.last.href},
+    );
+    expect(origin.requests, ['show']);
+
+    final disabled = await prepare(enabled: false, cachedTracks: const []);
+    expect(disabled.entry.externalAudioTracks, isEmpty);
+    mounted = false;
+    final offline = await prepare();
+    expect(offline.entry.externalAudioTracks, [cachedAudio]);
+    final fromSnapshot = await prepare(
+      siblings: [
+        for (final entry in [video, ...audio])
+          StorageMediaEntry(
+            name: entry.name,
+            href: entry.href,
+            isDirectory: false,
+            kind: MediaSourceKind.webdav,
+            logicalPath: 'show/${entry.name}',
+          ),
+      ],
+    );
+    expect(fromSnapshot.entry.externalAudioTracks, [cachedAudio]);
+    expect(origin.requests, ['show']);
   });
 
   test('拒绝危险路径并保留扩展名', () {

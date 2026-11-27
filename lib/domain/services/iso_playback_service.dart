@@ -518,6 +518,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
     Stopwatch? startupClock,
     DiscStartupTrace? startupTrace,
     PlaybackMediaInfo? mediaInfo,
+    bool resumeFromSavedPosition = false,
   }) async {
     if (_disposed) throw AppException.process('ISO 远程播放测试模块已关闭');
     if (isBusy) {
@@ -913,6 +914,7 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
       final commandFile = File(
         p.join(handle.sessionDirectory.path, commandFileName),
       );
+      final resumePlayback = config.resumeEnabled || resumeFromSavedPosition;
       final progressScript = await _writeProgressScript(
         handle.sessionDirectory,
         journalFile,
@@ -921,14 +923,16 @@ class IsoPlaybackService implements IsoLibraryProgressReader {
         performanceEventsFile,
         metricsFile,
         selectedTitles,
-        resumeByProgrammeId,
+        resumePlayback ? resumeByProgrammeId : const {},
       );
       startupTrace?.mark('sessionFilesReady');
-      final startIndex = _resolvePlaylistStart(
-        selectedTitles,
-        saved.lastProgrammeId,
-        resumeByProgrammeId,
-      );
+      final startIndex = resumePlayback
+          ? _resolvePlaylistStart(
+              selectedTitles,
+              saved.lastProgrammeId,
+              resumeByProgrammeId,
+            )
+          : 0;
       final ipcPipeName =
           r'\\.\pipe\streampath_iso_' +
           _buildPipeToken(handle.sessionDirectory.path);

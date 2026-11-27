@@ -24,9 +24,11 @@ import 'directory_scroll_view.dart';
 import 'film_detail_buttons.dart';
 import 'film_artwork.dart';
 import 'film_watch_menu.dart';
+import 'folder_path_field.dart';
 import 'glass_dialog.dart';
 import 'glass_surface.dart';
 import 'settings_group_card.dart';
+import 'sp_controls.dart';
 import 'sp_dialog.dart';
 import 'sp_icons.dart';
 import 'sp_menu.dart';
@@ -1156,94 +1158,119 @@ class _CacheSummary extends StatelessWidget {
   }
 }
 
-class VideoCacheSettingsCard extends StatelessWidget {
-  const VideoCacheSettingsCard({super.key});
+class VideoCacheSettingsCard extends StatefulWidget {
+  const VideoCacheSettingsCard({
+    super.key,
+    required this.directoryController,
+    required this.defaultDirectory,
+    this.enabled = true,
+  });
+
+  final TextEditingController directoryController;
+  final String defaultDirectory;
+  final bool enabled;
+
+  @override
+  State<VideoCacheSettingsCard> createState() => _VideoCacheSettingsCardState();
+}
+
+class _VideoCacheSettingsCardState extends State<VideoCacheSettingsCard> {
+  bool _selecting = false;
+
+  Future<void> _selectDirectory() async {
+    setState(() => _selecting = true);
+    try {
+      await _action(context, () async {
+        final selected = await WindowsFolderPicker.pickDirectory(
+          title: context.l10n.text('选择视频缓存目录'),
+        );
+        if (mounted && selected != null) {
+          widget.directoryController.text = selected;
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _selecting = false);
+    }
+  }
+
+  Future<void> _openManagement(BuildContext context) =>
+      _action(context, () async {
+        final cache = await context.read<AppState>().getVideoCache();
+        if (!context.mounted) return;
+        await showGlassDialog<void>(
+          context: context,
+          builder: (context) => Theme(
+            data: AppTheme.videoCachePanelTheme(Theme.of(context)),
+            child: SPDialog(
+              title: const AppText('管理视频缓存'),
+              content: SizedBox(
+                width: 620,
+                height: MediaQuery.sizeOf(context).height * .6,
+                child: ValueListenableBuilder<int>(
+                  valueListenable: cache.changes,
+                  builder: (context, _, _) =>
+                      _CacheRows(cache: cache, completed: true),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const AppText('关闭'),
+                ),
+              ],
+            ),
+          ),
+        );
+      });
+
   @override
   Widget build(BuildContext context) => Theme(
     data: AppTheme.videoCachePanelTheme(Theme.of(context)),
     child: Builder(
-      builder: (context) => ValueListenableBuilder<VideoCacheService?>(
-        valueListenable: context.read<AppState>().videoCacheReady,
-        builder: (context, cache, _) {
-          return SettingsGroupCard(
-            icon: SPIcons.download,
-            title: '视频离线缓存',
-            description: '缓存完整视频及匹配附件，播放时优先使用本地文件。',
-            child: cache == null
-                ? _content(context, null)
-                : ValueListenableBuilder<int>(
-                    valueListenable: cache.changes,
-                    builder: (context, _, _) => _content(context, cache),
-                  ),
-          );
-        },
-      ),
-    ),
-  );
-
-  Widget _content(BuildContext context, VideoCacheService? cache) {
-    final app = context.read<AppState>();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SelectableText(cache?.targetDirectory ?? app.videoCacheDirectory),
-        const SizedBox(height: 8),
-        const AppText('普通缓存清理保留视频下载；修改默认目录只影响新任务。'),
-        Wrap(
-          spacing: 8,
+      builder: (context) => SettingsGroupCard(
+        icon: SPIcons.download,
+        title: '视频离线缓存',
+        description: '缓存完整视频及匹配附件，播放时优先使用本地文件。',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextButton(
-              onPressed: () => _action(context, () async {
-                final selected = await WindowsFolderPicker.pickDirectory(
-                  title: context.l10n.text('选择视频缓存目录'),
-                );
-                if (selected != null) {
-                  await (await app.getVideoCache()).saveDirectory(selected);
-                }
-              }),
-              child: const AppText('选择视频缓存目录'),
+            FolderPathField(
+              fieldKey: const Key('video-cache-directory-field'),
+              controller: widget.directoryController,
+              label: context.l10n.text('默认缓存目录'),
+              pickerTooltip: context.l10n.text('选择视频缓存目录'),
+              onPick: _selectDirectory,
+              selecting: _selecting,
+              enabled: widget.enabled,
             ),
-            TextButton(
-              onPressed: () => _action(
-                context,
-                () async => (await app.getVideoCache()).saveDirectory(null),
-              ),
-              child: const AppText('恢复默认目录'),
+            const SizedBox(height: 8),
+            AppText(
+              '普通缓存清理保留视频下载；修改默认目录只影响新任务。',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-            FilledButton(
-              onPressed: () => _action(context, () async {
-                final cache = await app.getVideoCache();
-                if (!context.mounted) return;
-                await showGlassDialog<void>(
-                  context: context,
-                  builder: (context) => Theme(
-                    data: AppTheme.videoCachePanelTheme(Theme.of(context)),
-                    child: SPDialog(
-                      title: const AppText('管理视频缓存'),
-                      content: SizedBox(
-                        width: 620,
-                        height: MediaQuery.sizeOf(context).height * .6,
-                        child: ValueListenableBuilder<int>(
-                          valueListenable: cache.changes,
-                          builder: (context, _, _) =>
-                              _CacheRows(cache: cache, completed: true),
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const AppText('关闭'),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }),
-              child: const AppText('管理视频缓存'),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                SPButton(
+                  onPressed: widget.enabled && !_selecting
+                      ? () => widget.directoryController.text =
+                            widget.defaultDirectory
+                      : null,
+                  icon: const Icon(SPIcons.restore),
+                  label: const Flexible(child: AppText('恢复默认目录')),
+                ),
+                SPButton(
+                  onPressed: () => _openManagement(context),
+                  icon: const Icon(SPIcons.settings),
+                  label: const Flexible(child: AppText('管理视频缓存')),
+                ),
+              ],
             ),
           ],
         ),
-      ],
-    );
-  }
+      ),
+    ),
+  );
 }

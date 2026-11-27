@@ -304,12 +304,6 @@ const filmCatalogTranslations = <String, List<String>>{
     '完全一致（名前全体が同じ）',
     'Exact match (entire name)',
   ],
-  '保存后，下次扫描或刮削时清理已入库及待整理的屏蔽资源': [
-    '儲存後，下次掃描或刮削時清理已入庫及待整理的屏蔽資源',
-    '保存後、次回のスキャンまたはメタデータ取得時に、登録済み・未整理の除外対象を削除',
-    'On the next scan or metadata scrape, remove excluded resources from the library and pending items',
-  ],
-  '保存文件夹屏蔽': ['儲存資料夾屏蔽', 'フォルダー除外を保存', 'Save folder exclusions'],
   "播放列表": ["播放清單", "プレイリスト", "Playlists"],
   '全部播放': ['全部播放', '全再生', 'Play all'],
   '随机播放': ['隨機播放', 'シャッフル再生', 'Shuffle play'],

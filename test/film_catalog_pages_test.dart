@@ -386,7 +386,6 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('已保存 TMDB 凭据'), findsOneWidget);
-    final foldersField = find.byKey(const Key('film-excluded-folders-field'));
     final contentCount = find.byKey(const Key('film-poster-content-count'));
     await tester.ensureVisible(contentCount);
     expect(tester.widget<SwitchListTile>(contentCount).value, isFalse);
@@ -399,35 +398,6 @@ void main() {
     await settle();
     await tester.ensureVisible(contentCount);
     expect(tester.widget<SwitchListTile>(contentCount).value, isTrue);
-    await tester.ensureVisible(foldersField);
-    await tester.enterText(foldersField, ' Specials, 特典, ,Specials ');
-    await tester.ensureVisible(find.byType(SPDropdownButtonFormField<bool>));
-    await tester.tap(find.byType(SPDropdownButtonFormField<bool>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('精确匹配（完整名称相同）').last);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('保存文件夹屏蔽'));
-    await tester.tap(find.text('保存文件夹屏蔽'));
-    await settle();
-    final exclusions = (await tester.runAsync(c.store.directoryExclusions))!;
-    expect(exclusions.names, ['Specials', '特典']);
-    expect(exclusions.exact, isTrue);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpWidget(frame());
-    await settle();
-    await tester.ensureVisible(foldersField);
-    expect(
-      tester.widget<TextFormField>(foldersField).controller!.text,
-      'Specials, 特典',
-    );
-    expect(
-      tester
-          .widget<SPDropdownButtonFormField<bool>>(
-            find.byType(SPDropdownButtonFormField<bool>),
-          )
-          .initialValue,
-      isTrue,
-    );
     expect(tester.takeException(), isNull);
   });
   testWidgets('全部与三个同源目录独立筛选，卡片右键查看来源，影视库内起播和续播', (tester) async {

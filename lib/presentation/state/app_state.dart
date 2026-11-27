@@ -96,8 +96,11 @@ class AppState extends ChangeNotifier {
     return p.basename(config) == 'config' ? p.dirname(config) : config;
   }
 
+  String get defaultVideoCacheDirectory =>
+      videoCache?.defaultDirectory ?? p.join(_videoCacheDataPath, 'video_cache');
+
   String get videoCacheDirectory =>
-      videoCache?.targetDirectory ?? p.join(_videoCacheDataPath, 'video_cache');
+      videoCache?.targetDirectory ?? defaultVideoCacheDirectory;
 
   Future<VideoCacheService> getVideoCache() => _videoCache ??= () async {
     await getMediaConnections();
@@ -381,6 +384,26 @@ class AppState extends ChangeNotifier {
       MediaSourceDescriptor(sourceId: id, kind: kind, displayName: id),
       identity: identity,
       baseUrl: base,
+      playbackCredentials: profile == null
+          ? null
+          : () {
+              final current = _configStore.current.profiles
+                  .where((p) => p.profileId == id)
+                  .firstOrNull;
+              if (current == null ||
+                  current.serverUrl != base ||
+                  current.username != profile.username) {
+                return null;
+              }
+              return WebDavCredentialSnapshot(
+                baseUrl: base,
+                username: current.username,
+                password: current.password,
+              );
+            },
+      mountedWebDav: kind == MediaSourceKind.webdav
+          ? () => mountedService(id)
+          : null,
       persistent: (path) => kind == MediaSourceKind.webdav
           ? resolveHref(base, path)
           : PlaybackProgressService.logicalTarget(id, path),

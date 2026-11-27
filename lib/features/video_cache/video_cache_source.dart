@@ -24,6 +24,8 @@ class VideoCacheSource extends WebDavMediaSourceAdapter {
     required String baseUrl,
     required String Function(String path) persistent,
     required Future<MediaDirectorySource> Function() remote,
+    WebDavCredentialSnapshot? Function()? playbackCredentials,
+    this.mountedWebDav,
   }) : super(
          _CachedWebDav(
            cache,
@@ -32,14 +34,37 @@ class VideoCacheSource extends WebDavMediaSourceAdapter {
            baseUrl,
            persistent,
            remote,
+           playbackCredentials,
          ),
        );
   final MediaSourceDescriptor description;
   final String identity;
+  final WebDAVService? Function()? mountedWebDav;
   @override
   MediaSourceDescriptor get descriptor => description;
   @override
   bool get supportsRemoteSearch => false;
+
+  @override
+  Future<List<MediaDirectoryEntry>> cachedVideoAudioDirectory(
+    String path,
+  ) async {
+    final origin = mountedWebDav?.call();
+    if (origin == null ||
+        origin.baseUrl != service.baseUrl ||
+        origin.credentialSnapshot.username !=
+            service.credentialSnapshot.username) {
+      return const [];
+    }
+    try {
+      return await origin
+          .fetchDirectory(path, forceRefresh: true)
+          .timeout(const Duration(seconds: 2), onTimeout: () => const []);
+    } on AppException {
+      return const [];
+    }
+  }
+
   @override
   Future<MediaOpenTarget> resolve(MediaDirectoryEntry entry) async {
     final cached = service as _CachedWebDav;
@@ -77,6 +102,7 @@ class _CachedWebDav extends WebDAVService {
     String base,
     this.persistent,
     this.remote,
+    this.playbackCredentials,
   ) : super(
         client: WebDavClient(baseUrl: base),
         profileId: descriptor.sourceId,
@@ -86,6 +112,12 @@ class _CachedWebDav extends WebDAVService {
   final String identity;
   final String Function(String path) persistent;
   final Future<MediaDirectorySource> Function() remote;
+  final WebDavCredentialSnapshot? Function()? playbackCredentials;
+
+  @override
+  WebDavCredentialSnapshot get credentialSnapshot =>
+      playbackCredentials?.call() ?? super.credentialSnapshot;
+
   String relative(String href) {
     if (!Uri.parse(href).hasScheme && !href.startsWith('/')) return href;
     final root = Uri.parse(

@@ -35,4 +35,8 @@ class WebDavMediaSourceAdapter implements MediaDirectorySource {
 
   Future<List<MediaDirectoryEntry>> fetchCatalogDirectory(String path) =>
       service.fetchCatalogDirectory(path);
+
+  Future<List<MediaDirectoryEntry>> cachedVideoAudioDirectory(
+    String path,
+  ) async => cachedDirectory(path) ?? const [];
 }

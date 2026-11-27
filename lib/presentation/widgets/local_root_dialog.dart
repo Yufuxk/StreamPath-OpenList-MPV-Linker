@@ -10,6 +10,7 @@ import '../../domain/services/windows_folder_picker.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import 'clipboard_history_menu.dart';
+import 'folder_path_field.dart';
 
 class LocalRootDraft {
   const LocalRootDraft({
@@ -118,27 +119,15 @@ class _LocalRootDialogState extends State<_LocalRootDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            TextFormField(
-              key: const Key('local-root-path-field'),
+            FolderPathField(
+              fieldKey: const Key('local-root-path-field'),
+              pickerKey: const Key('pick-local-root-button'),
               controller: _pathController,
-              contextMenuBuilder: buildClipboardHistoryMenu,
-              decoration: InputDecoration(
-                labelText: context.l10n.text('本地目录'),
-                helperText: context.l10n.text('可直接输入绝对路径，或使用 Windows 目录选择器。'),
-                prefixIcon: const Icon(SPIcons.folder),
-                suffixIcon: IconButton(
-                  key: const Key('pick-local-root-button'),
-                  tooltip: context.l10n.text('选择文件夹'),
-                  onPressed: _selecting ? null : _selectDirectory,
-                  icon: _selecting
-                      ? const SizedBox.square(
-                          dimension: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(SPIcons.folderOpen),
-                ),
-                border: const OutlineInputBorder(),
-              ),
+              label: context.l10n.text('本地目录'),
+              helperText: context.l10n.text('可直接输入绝对路径，或使用 Windows 目录选择器。'),
+              pickerTooltip: context.l10n.text('选择文件夹'),
+              selecting: _selecting,
+              onPick: _selectDirectory,
               validator: (value) {
                 final path = value?.trim() ?? '';
                 if (path.isEmpty) return context.l10n.text('请输入本地目录');

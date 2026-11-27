@@ -214,6 +214,8 @@ void main() {
       );
     });
     final boundary = GlobalKey();
+    final directory = TextEditingController(text: cache.targetDirectory);
+    addTearDown(directory.dispose);
     final referenceScroll = ScrollController();
     addTearDown(referenceScroll.dispose);
     try {
@@ -716,9 +718,14 @@ void main() {
                       ),
                       home: RepaintBoundary(
                         key: boundary,
-                        child: const Scaffold(
+                        child: Scaffold(
                           body: VideoCacheOverlay(
-                            child: Center(child: VideoCacheSettingsCard()),
+                            child: Center(
+                              child: VideoCacheSettingsCard(
+                                directoryController: directory,
+                                defaultDirectory: cache.defaultDirectory,
+                              ),
+                            ),
                           ),
                         ),
                       ),

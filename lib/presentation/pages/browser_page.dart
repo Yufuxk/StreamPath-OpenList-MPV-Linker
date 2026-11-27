@@ -389,6 +389,7 @@ class _IsoStreamingDialog extends StatefulWidget {
     this.precheckedMenuExecutable,
     this.cancelPreparation,
     this.mediaInfo,
+    this.resumeFromSavedPosition = false,
   });
 
   final IsoPlaybackService service;
@@ -404,6 +405,7 @@ class _IsoStreamingDialog extends StatefulWidget {
   final bool cached;
   final String? menuUnavailableReason;
   final PlaybackMediaInfo? mediaInfo;
+  final bool resumeFromSavedPosition;
 
   @override
   State<_IsoStreamingDialog> createState() => _IsoStreamingDialogState();
@@ -469,6 +471,7 @@ class _IsoStreamingDialogState extends State<_IsoStreamingDialog> {
               startupClock: widget.startupClock,
               startupTrace: widget.startupTrace,
               mediaInfo: widget.mediaInfo,
+              resumeFromSavedPosition: widget.resumeFromSavedPosition,
               onProgress: (progress) {
                 if (mounted) setState(() => _progress = progress);
               },
@@ -927,7 +930,10 @@ class BrowserPageState extends State<BrowserPage> {
       }
     }
     if (session != null) {
-      await _resumePlaybackSession(session);
+      await _resumePlaybackSession(
+        session,
+        resumeDiscFromSavedPosition: resumeSessionId != null,
+      );
       return;
     }
     if (_isLocal &&
@@ -2629,9 +2635,17 @@ class BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  Future<void> _playRemoteBdmv(String path, {String? sessionId}) async {
+  Future<void> _playRemoteBdmv(
+    String path, {
+    String? sessionId,
+    bool resumeFromSavedPosition = false,
+  }) async {
     await context.read<AppState>().withMediaPlaybackPriority(
-      () => _playRemoteBdmvPrepared(path, sessionId: sessionId),
+      () => _playRemoteBdmvPrepared(
+        path,
+        sessionId: sessionId,
+        resumeFromSavedPosition: resumeFromSavedPosition,
+      ),
     );
   }
 
@@ -2639,6 +2653,7 @@ class BrowserPageState extends State<BrowserPage> {
     String devicePath,
     String displayName, {
     String? sessionId,
+    bool resumeFromSavedPosition = false,
   }) async {
     final source = _localSource!;
     final relativePath = source.discRelativePath(devicePath);
@@ -2668,7 +2683,12 @@ class BrowserPageState extends State<BrowserPage> {
         );
       }
       if (!mounted) return;
-      await _playIsoPrepared(disc, titleOnly: true, sessionId: sessionId);
+      await _playIsoPrepared(
+        disc,
+        titleOnly: true,
+        sessionId: sessionId,
+        resumeFromSavedPosition: resumeFromSavedPosition,
+      );
     } on AppException catch (error) {
       if (mounted) _showLibraryError(error.message);
     } on FileSystemException {
@@ -2678,7 +2698,11 @@ class BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  Future<void> _playRemoteBdmvPrepared(String path, {String? sessionId}) async {
+  Future<void> _playRemoteBdmvPrepared(
+    String path, {
+    String? sessionId,
+    bool resumeFromSavedPosition = false,
+  }) async {
     if (_preparingBdmv) return;
     final original = _source;
     final startupTrace = DiscStartupTrace();
@@ -2699,6 +2723,7 @@ class BrowserPageState extends State<BrowserPage> {
       await _playIso(
         disc,
         sessionId: sessionId,
+        resumeFromSavedPosition: resumeFromSavedPosition,
         startupTrace: startupTrace,
         menuAvailability: menuAvailability,
       );
@@ -2777,6 +2802,7 @@ class BrowserPageState extends State<BrowserPage> {
     WebDavFile file, {
     String? sessionId,
     bool titleOnly = false,
+    bool resumeFromSavedPosition = false,
     DiscStartupTrace? startupTrace,
     Future<RemoteMenuAvailability>? menuAvailability,
   }) => context.read<AppState>().withMediaPlaybackPriority(
@@ -2784,6 +2810,7 @@ class BrowserPageState extends State<BrowserPage> {
       file,
       sessionId: sessionId,
       titleOnly: titleOnly,
+      resumeFromSavedPosition: resumeFromSavedPosition,
       startupTrace: startupTrace,
       menuAvailability: menuAvailability,
     ),
@@ -2793,6 +2820,7 @@ class BrowserPageState extends State<BrowserPage> {
     WebDavFile file, {
     String? sessionId,
     bool titleOnly = false,
+    bool resumeFromSavedPosition = false,
     DiscType discType = DiscType.bluray,
     DiscStartupTrace? startupTrace,
     Future<RemoteMenuAvailability>? menuAvailability,
@@ -3019,6 +3047,7 @@ class BrowserPageState extends State<BrowserPage> {
         discType: discType,
         menuUnavailableReason: titleOnly ? null : menuReason,
         mediaInfo: mediaInfo,
+        resumeFromSavedPosition: resumeFromSavedPosition,
       );
       final pending = _isoPreparationWindow;
       _isoPreparationWindow = null;
@@ -3134,7 +3163,12 @@ class BrowserPageState extends State<BrowserPage> {
           ),
         );
         if (mounted && returnToTitles == true) {
-          await _playIso(file, sessionId: sessionId, titleOnly: true);
+          await _playIso(
+            file,
+            sessionId: sessionId,
+            titleOnly: true,
+            resumeFromSavedPosition: resumeFromSavedPosition,
+          );
         }
         return;
       }
@@ -3479,7 +3513,7 @@ class BrowserPageState extends State<BrowserPage> {
           title: titles[i],
           catalogPath: item.path,
           webDavFile: video is WebDavFile && !video.isStrm ? video : null,
-          externalAudioTracks: !_isLocal
+          externalAudioTracks: !_isLocal && config.externalAudioInjectionEnabled
               ? const ExternalAudioMatcher().matchFor(
                   video,
                   item.siblings,
@@ -4517,15 +4551,15 @@ class BrowserPageState extends State<BrowserPage> {
           title: titles[i],
           catalogPath: item.path,
           webDavFile: cached == null && v is WebDavFile && !v.isStrm ? v : null,
-          externalAudioTracks:
-              cachedItem?.entry.externalAudioTracks ??
-              (!_isLocal
-                  ? const ExternalAudioMatcher().matchFor(
-                      v,
-                      item.siblings,
-                      baseUrl: _service.baseUrl,
-                    )
-                  : const []),
+          externalAudioTracks: !_isLocal && config.externalAudioInjectionEnabled
+              ? const ExternalAudioMatcher().matchFor(
+                  v,
+                  item.siblings,
+                  baseUrl: _service.baseUrl,
+                  cachedTracks:
+                      cachedItem?.entry.externalAudioTracks ?? const [],
+                )
+              : const [],
           subtitle:
               cachedItem?.entry.subtitle ??
               (subtitleInjectionEnabled
@@ -6661,7 +6695,10 @@ class BrowserPageState extends State<BrowserPage> {
   }
 
   /// 「继续播放」：进入上次目录扫描并复用对应类型的常规播放入口。
-  Future<void> _resumePlaybackSession(PlaybackUiSession session) async {
+  Future<void> _resumePlaybackSession(
+    PlaybackUiSession session, {
+    bool resumeDiscFromSavedPosition = true,
+  }) async {
     final latest = _historyStore.sessions
         .where((history) => history.sessionId == session.history.sessionId)
         .firstOrNull;
@@ -6746,6 +6783,7 @@ class BrowserPageState extends State<BrowserPage> {
               devicePath,
               history.fileName,
               sessionId: history.sessionId,
+              resumeFromSavedPosition: resumeDiscFromSavedPosition,
             );
           }
         } on AppException catch (error) {
@@ -6771,9 +6809,14 @@ class BrowserPageState extends State<BrowserPage> {
           await _playRemoteBdmv(
             [...history.dirCrumbs, iso.name].join('/'),
             sessionId: history.sessionId,
+            resumeFromSavedPosition: resumeDiscFromSavedPosition,
           );
         } else {
-          await _playIso(iso, sessionId: history.sessionId);
+          await _playIso(
+            iso,
+            sessionId: history.sessionId,
+            resumeFromSavedPosition: resumeDiscFromSavedPosition,
+          );
         }
       } else if (iso is LocalMediaEntry) {
         await _playIsoPrepared(
@@ -6789,6 +6832,7 @@ class BrowserPageState extends State<BrowserPage> {
           sessionId: history.sessionId,
           titleOnly: true,
           discType: DiscType.dvd,
+          resumeFromSavedPosition: resumeDiscFromSavedPosition,
         );
       }
       return;
@@ -6964,6 +7008,7 @@ class BrowserPageState extends State<BrowserPage> {
               devicePath,
               item.name,
               sessionId: resumeSessionId,
+              resumeFromSavedPosition: resumeSessionId != null,
             );
           }
         } on AppException catch (error) {
@@ -7004,7 +7049,11 @@ class BrowserPageState extends State<BrowserPage> {
     );
     if (!mounted || item.kind == MediaLibraryKind.directory) return;
     if (!_isLocal && item.discRootPath != null) {
-      await _playRemoteBdmv(item.discRootPath!, sessionId: resumeSessionId);
+      await _playRemoteBdmv(
+        item.discRootPath!,
+        sessionId: resumeSessionId,
+        resumeFromSavedPosition: resumeSessionId != null,
+      );
       return;
     }
     final file = _files.where(item.matches).firstOrNull;
@@ -7025,11 +7074,19 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
     if (item.kind == MediaLibraryKind.iso && file.isDirectory && !_isLocal) {
-      await _playRemoteBdmv(item.targetPath, sessionId: resumeSessionId);
+      await _playRemoteBdmv(
+        item.targetPath,
+        sessionId: resumeSessionId,
+        resumeFromSavedPosition: resumeSessionId != null,
+      );
     } else if (file.isAudio) {
       await _playAudio(file, sessionId: resumeSessionId);
     } else if (file.isIso && file is WebDavFile) {
-      await _playIso(file, sessionId: resumeSessionId);
+      await _playIso(
+        file,
+        sessionId: resumeSessionId,
+        resumeFromSavedPosition: resumeSessionId != null,
+      );
     } else {
       await _playVideo(
         file,

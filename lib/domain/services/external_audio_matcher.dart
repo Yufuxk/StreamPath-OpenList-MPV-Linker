@@ -5,6 +5,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/models/external_audio_track.dart';
 import '../../data/models/media_directory_entry.dart';
 import '../../data/models/media_source.dart';
+import 'native_storage_source.dart';
 
 /// 仅从视频或 STRM 的完整同级目录中发现音轨，不读取音频内容。
 class ExternalAudioMatcher {
@@ -14,18 +15,25 @@ class ExternalAudioMatcher {
     MediaDirectoryEntry video,
     List<MediaDirectoryEntry> siblings, {
     required String baseUrl,
+    List<ExternalAudioTrack> cachedTracks = const [],
   }) {
-    if (video.sourceKind != MediaSourceKind.webdav) return const [];
+    // 缓存目录快照不能证明线上附件仍可读。
+    if (video.sourceKind != MediaSourceKind.webdav ||
+        video is StorageMediaEntry) {
+      return cachedTracks;
+    }
     final videoUrl = resolveHref(baseUrl, video.entryKey);
-    if (!isSameOrigin(baseUrl, videoUrl)) return const [];
+    if (!isSameOrigin(baseUrl, videoUrl)) return cachedTracks;
     final parent = Uri.parse(videoUrl).pathSegments;
     final stem = p.basenameWithoutExtension(video.name).toLowerCase();
-    final matches = <ExternalAudioTrack>[];
+    final matches = <ExternalAudioTrack>[...cachedTracks];
+    final cachedNames = {for (final track in cachedTracks) track.name};
     final urls = <String>{};
     for (final file in siblings) {
       if (file.sourceKind != MediaSourceKind.webdav ||
           file.isDirectory ||
-          !file.isAudio) {
+          !file.isAudio ||
+          cachedNames.contains(file.name)) {
         continue;
       }
       final audioStem = p.basenameWithoutExtension(file.name).toLowerCase();

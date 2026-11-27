@@ -511,13 +511,16 @@ class _FilmDetailPageState extends State<FilmDetailPage>
   Future<void> _loadPreferences() async {
     final generation = ++_preferenceGeneration;
     final favorite = await widget.catalog.store.isFavorite(widget.workId);
-    final selection = _work == null
+    final saved = _work == null
         ? null
         : await widget.catalog.store.versionSelection(
             _work!.identity,
             sourceScope: widget.catalog.sourceId,
           );
     if (!mounted || generation != _preferenceGeneration) return;
+    final selection = saved == null || _versions.families.isEmpty
+        ? null
+        : _versions.selectionForAvailableFamilies(saved);
     final versionChanged =
         selection?.defaultKey != _versionSelection?.defaultKey ||
         !mapEquals(selection?.seasons, _versionSelection?.seasons);
@@ -572,6 +575,22 @@ class _FilmDetailPageState extends State<FilmDetailPage>
     }
   }
 
+  List<FilmResource> _resourcesFromMountedSources(
+    AppState app,
+    List<FilmResource> resources,
+  ) {
+    final configured = {
+      ...app.configStore.current.mountedProfileIds,
+      for (final root in app.localRoots) root.sourceId,
+      for (final connection in app.mediaConnections) connection.id,
+    };
+    final mounted = resources
+        .where((r) => configured.contains(r.sourceId))
+        .toList();
+    // 没有剩余挂载时，沿用原有的不可用资源展示。
+    return mounted.isEmpty ? resources : mounted;
+  }
+
   Future<void> _readDetails({bool playbackOnly = false}) async {
     if (StreamPathTransitionScope.read(context)) return;
     final app = context.read<AppState>();
@@ -586,10 +605,13 @@ class _FilmDetailPageState extends State<FilmDetailPage>
           : await widget.catalog.store.isFavorite(widget.workId);
       final resources = playbackOnly
           ? _resources
-          : await widget.catalog.store.resources(
-              workId: widget.workId,
-              sourceId: widget.catalog.sourceId,
-              enabledOnly: true,
+          : _resourcesFromMountedSources(
+              app,
+              await widget.catalog.store.resources(
+                workId: widget.workId,
+                sourceId: widget.catalog.sourceId,
+                enabledOnly: true,
+              ),
             );
       if (!mounted) return;
       final paths = {
@@ -652,6 +674,8 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             selection,
             sourceScope: widget.catalog.sourceId,
           );
+        } else {
+          selection = versions.selectionForAvailableFamilies(selection);
         }
         final allowed = versions
             .selected(selection)
@@ -1166,6 +1190,7 @@ class _FilmDetailPageState extends State<FilmDetailPage>
             ),
           if (_activeSeason != null &&
               _versionSelection != null &&
+              versionFamilies.isNotEmpty &&
               (versionFamilies.length > 1 ||
                   !versionFamilies.any(
                     (f) =>

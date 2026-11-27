@@ -46,6 +46,9 @@ class VideoEntryPreparer {
   String? sharedLocalFonts;
   WebDavFontDirectory? sharedRemoteFonts;
   bool get local => source.descriptor.kind == MediaSourceKind.local;
+  bool get _webDavAudio =>
+      config.externalAudioInjectionEnabled &&
+      source.descriptor.kind == MediaSourceKind.webdav;
 
   Future<void> prepareSharedFonts(
     String rootPath, {
@@ -60,9 +63,13 @@ class VideoEntryPreparer {
     }
     final List<MediaDirectoryEntry> files;
     try {
-      files =
-          siblings ??
-          (_directories[rootPath] ??= await source.fetchDirectory(rootPath));
+      var directory = siblings ?? _directories[rootPath];
+      if (directory == null && hit != null && _webDavAudio) {
+        final current = await (source as WebDavMediaSourceAdapter)
+            .cachedVideoAudioDirectory(rootPath);
+        if (current.isNotEmpty) directory = current;
+      }
+      files = directory ?? await source.fetchDirectory(rootPath);
     } on AppException {
       // 共享字体是可选资源，目录不可用时不影响当前播放。
       return;
@@ -145,14 +152,21 @@ class VideoEntryPreparer {
         hit != null &&
         hit.localFontDirectory == null &&
         hit.remoteFonts == null;
-    if (hit != null && !enrichSubtitle && !enrichFonts) return hit;
+    if (hit != null && !enrichSubtitle && !enrichFonts && !_webDavAudio) {
+      return hit;
+    }
     final parent = p.posix
         .dirname(version.path)
         .replaceFirst(RegExp(r'^\.$'), '');
     try {
-      final siblings = _directories[parent] ??= await source.fetchDirectory(
-        parent,
-      );
+      var siblings = _directories[parent];
+      if (siblings == null && hit != null && _webDavAudio) {
+        final current = await (source as WebDavMediaSourceAdapter)
+            .cachedVideoAudioDirectory(parent);
+        if (current.isNotEmpty) siblings = _directories[parent] = current;
+        if (siblings == null && !enrichSubtitle && !enrichFonts) return hit;
+      }
+      siblings ??= _directories[parent] = await source.fetchDirectory(parent);
       final video = siblings
           .where(
             (e) =>
@@ -169,6 +183,15 @@ class VideoEntryPreparer {
         if (hit != null) return hit;
         throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
       }
+      final cachedAudio = hit?.entry.externalAudioTracks ?? const [];
+      final audioTracks = _webDavAudio
+          ? const ExternalAudioMatcher().matchFor(
+              video,
+              siblings,
+              baseUrl: (source as WebDavMediaSourceAdapter).service.baseUrl,
+              cachedTracks: cachedAudio,
+            )
+          : cachedAudio;
       final subtitle =
           hit?.entry.subtitle ?? await subtitleFor(video, siblings);
       final fonts = hit == null || enrichFonts
@@ -183,7 +206,7 @@ class VideoEntryPreparer {
             catalogPath: hit.entry.catalogPath ?? version.path,
             title: hit.entry.title,
             subtitle: subtitle,
-            externalAudioTracks: hit.entry.externalAudioTracks,
+            externalAudioTracks: audioTracks,
           ),
           localFontDirectory:
               hit.localFontDirectory ??
@@ -212,13 +235,7 @@ class VideoEntryPreparer {
           title: title ?? version.name,
           subtitle: subtitle,
           webDavFile: video is WebDavFile && !video.isStrm ? video : null,
-          externalAudioTracks: local
-              ? const []
-              : const ExternalAudioMatcher().matchFor(
-                  video,
-                  siblings,
-                  baseUrl: (source as WebDavMediaSourceAdapter).service.baseUrl,
-                ),
+          externalAudioTracks: audioTracks,
         ),
         localFontDirectory: fonts?.localFontDirectory ?? sharedLocalFonts,
         remoteFonts: fonts?.remoteFonts ?? sharedRemoteFonts,
