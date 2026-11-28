@@ -1815,7 +1815,7 @@ void main() {
       store,
       tmdb,
     ).scanSession(root, cancelled: () => false);
-    await session.prepare([
+    final failures = await session.prepare([
       const FilmScanEntry(
         path: 'Movies/Alias.2020.mkv',
         parentPath: 'Movies',
@@ -1824,7 +1824,7 @@ void main() {
       ),
     ]);
     expect(session.matches, isEmpty);
-    expect(session.paused, isFalse);
+    expect(failures, isEmpty);
     expect(adapter.requests, hasLength(3));
     final bad = TmdbMetadataService(
       credentials: _MemoryToken(),
@@ -1887,7 +1887,7 @@ void main() {
         store,
         tmdb,
       ).scanSession(root, cancelled: () => false);
-      await session.prepare([
+      final failures = await session.prepare([
         FilmScanEntry(
           path: 'Movies/${sample.$1}',
           parentPath: 'Movies',
@@ -1896,7 +1896,7 @@ void main() {
         ),
       ]);
       expect(session.matches.length, sample.$4 ? 1 : 0);
-      expect(session.paused, isFalse);
+      expect(failures, isEmpty);
     });
   }
 
@@ -2378,7 +2378,7 @@ void main() {
           ),
       ];
       final session = await matcher.scanSession(root, cancelled: () => false);
-      await session.prepare(entries);
+      final failures = await session.prepare(entries);
       final generation = await store.beginScan(root.id);
       await store.stage(root, generation, entries);
       await store.commitScan(root.id, generation, cancelled: () => false);
@@ -2392,7 +2392,7 @@ void main() {
       expect(resources.map((r) => r.mappingOrigin), everyElement('filename'));
       expect(await store.pendingCount(rootId: root.id), 0);
       expect(session.error, isNull);
-      expect(session.paused, isFalse);
+      expect(failures, isEmpty);
       expect(
         adapter.requests.where((r) => r.path.contains('/season/')),
         hasLength(1),
@@ -2806,7 +2806,7 @@ void main() {
     );
   });
 
-  test('刮削认证失败不阻止递归清单提交，并保留可见错误', () async {
+  test('刮削认证失败不阻止递归清单提交，并上报各条目错误', () async {
     final root = await addRoot();
     final adapter = _ApiAdapter((_) async => {}, status: 401);
     final tmdb = TmdbMetadataService(
@@ -2827,16 +2827,24 @@ void main() {
             ]
           : [_file('$path/C.2020.mkv')],
     );
-    await FilmCatalogScanner(
-      store,
-      remoteInterval: Duration.zero,
-    ).scan(root, WebDavMediaSourceAdapter(dav), onEntries: metadata.prepare);
+    final failures = <String, String>{};
+    await FilmCatalogScanner(store, remoteInterval: Duration.zero).scan(
+      root,
+      WebDavMediaSourceAdapter(dav),
+      onEntries: (entries) async {
+        failures.addAll(await metadata.prepare(entries));
+      },
+    );
     await store.applyMetadata(root.id, metadata.matches);
     expect(await store.resources(), hasLength(3));
     expect(adapter.requests, hasLength(1));
     expect((await store.root(root.id))!.status, 'completed');
     expect((await store.root(root.id))!.lastError, isNull);
-    expect(metadata.error, 'invalidToken');
+    expect(failures, {
+      'Movies/A.2020.mkv': 'invalidToken',
+      'Movies/B.2020.mkv': 'invalidToken',
+      'Movies/Child/C.2020.mkv': 'invalidToken',
+    });
   });
 
   test('刮削迟到结果不覆盖人工纠错，扫描取消保留已发现资源', () async {

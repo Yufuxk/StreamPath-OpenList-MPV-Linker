@@ -22,6 +22,11 @@ const _fastTaskSchema = <String>[
   'CREATE INDEX fast_jobs_pending ON fast_task_jobs(kind,state,id)',
 ];
 
+const _resetRunningFastJobs = '''
+UPDATE fast_task_jobs
+SET state=CASE state WHEN 'retry_running' THEN 'retry_pending' ELSE 'pending' END
+WHERE state IN ('running','retry_running')''';
+
 extension FilmCatalogFastTasks on FilmCatalogStore {
   Future<FilmFastTask?> fastTask() async {
     final rows = await _db.query('fast_tasks');
@@ -142,28 +147,48 @@ extension FilmCatalogFastTasks on FilmCatalogStore {
     return (await txn.rawQuery('SELECT changes() AS n')).single['n'] == 1;
   }
 
-  Future<List<FilmFastJob>> fastJobs(String kind, {int limit = 32, int? rootId}) async => [
+  Future<List<FilmFastJob>> fastJobs(
+    String kind, {
+    int limit = 32,
+    int? rootId,
+    bool retry = false,
+  }) async => [
     for (final row in await _db.rawQuery(
       '''SELECT j.* FROM fast_task_jobs j JOIN fast_task_roots r ON r.root_id=j.root_id
-      WHERE j.kind=? AND j.state='pending' ${rootId == null ? '' : 'AND j.root_id=?'} ORDER BY r.ordinal,j.id LIMIT ?''',
-      [kind, ?rootId, limit],
+      WHERE j.kind=? AND j.state=? ${rootId == null ? '' : 'AND j.root_id=?'} ORDER BY r.ordinal,j.id LIMIT ?''',
+      [kind, retry ? 'retry_pending' : 'pending', ?rootId, limit],
     ))
       FilmFastJob.fromRow(row),
   ];
 
-  Future<void> claimFastJobs(List<FilmFastJob> jobs) async {
+  Future<void> claimFastJobs(
+    List<FilmFastJob> jobs, {
+    bool retry = false,
+  }) async {
     await _db.transaction((txn) async {
       final batch = txn.batch();
       for (final job in jobs) {
         batch.update(
           'fast_task_jobs',
-          {'state': 'running'},
-          where: "id=? AND state='pending'",
-          whereArgs: [job.id],
+          {'state': retry ? 'retry_running' : 'running'},
+          where: 'id=? AND state=?',
+          whereArgs: [job.id, retry ? 'retry_pending' : 'pending'],
         );
       }
       await batch.commit(noResult: true);
     });
+  }
+
+  Future<void> deferFastScraping(
+    List<FilmFastJob> jobs, {
+    required bool retry,
+  }) async {
+    await _db.update(
+      'fast_task_jobs',
+      {'state': retry ? 'retry_failed' : 'retry_pending'},
+      where: 'id IN (${List.filled(jobs.length, '?').join(',')})',
+      whereArgs: jobs.map((job) => job.id).toList(),
+    );
   }
 
   Future<void> stageFastDirectory(
@@ -286,6 +311,7 @@ extension FilmCatalogFastTasks on FilmCatalogStore {
     String status, {
     String? error,
     int? elapsedMs,
+    bool resumeFailedScrapes = false,
   }) async {
     await _db.transaction((txn) async {
       await txn.update('fast_tasks', {
@@ -294,9 +320,11 @@ extension FilmCatalogFastTasks on FilmCatalogStore {
         'elapsed_ms': ?elapsedMs,
       }, where: 'id=1');
       if (status == 'paused') {
+        await txn.execute(_resetRunningFastJobs);
+      } else if (resumeFailedScrapes) {
         await txn.update('fast_task_jobs', {
-          'state': 'pending',
-        }, where: "state='running'");
+          'state': 'retry_pending',
+        }, where: "state='retry_failed'");
       }
     });
   }

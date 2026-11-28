@@ -41,24 +41,27 @@ void main() {
   });
   for (final fast in [false, true]) {
     test(
-      'network failure with files but no NFO retains jobs ($fast)',
+      'independent scrape drains both retries before pausing with no NFO ($fast)',
       () async {
         final f = await _Fixture.create();
         addTearDown(f.close);
         f.withFiles = true;
         f.tree['Movies'] = ['A.2020.mkv', 'B.2020.mkv'];
+        await f.c.scan(f.root);
+        await f.c.waitForScraping();
+        expect(f.metadata.calls, ['A', 'B']);
+        f.metadata.calls.clear();
+
         f.metadata.failure = 'metadataRequestFailed';
-        await f.c.scan(
-          f.root,
-          executionMode: fast
-              ? FilmTaskExecutionMode.fullSpeed
-              : FilmTaskExecutionMode.standard,
-        );
+        await f.c.scrape(f.root, executionMode: _mode(fast));
         if (fast) {
           final task = await f.c.store.fastTask();
           expect(task, isNotNull);
           expect(task!.processed, 0);
           expect(task.error, 'metadataRequestFailed');
+          expect(f.metadata.calls, hasLength(4));
+          expect(f.metadata.calls.take(2), unorderedEquals(['A', 'B']));
+          expect(f.metadata.calls.skip(2), unorderedEquals(['A', 'B']));
           f.metadata.failure = null;
           await f.c.resumeFastTask();
           expect(await f.c.store.fastTask(), isNull);
@@ -66,12 +69,132 @@ void main() {
           await _until(() => f.c.scrapePaused || !f.c.scraping);
           expect(f.c.scrapePaused, isTrue);
           expect(f.c.scrapeProcessed, 0);
+          expect(f.metadata.calls, ['A', 'B', 'A', 'B']);
           f.metadata.failure = null;
           f.c.toggleScraping();
           await f.c.waitForScraping();
           expect(f.c.scrapeProcessed, 2);
         }
-        expect(f.metadata.calls, contains('B'));
+        expect(f.metadata.calls.skip(4), unorderedEquals(['A', 'B']));
+      },
+    );
+    test(
+      'queue retry waits for later directories and first-pass jobs ($fast)',
+      () async {
+        final f = await _Fixture.create();
+        addTearDown(f.close);
+        f.metadata.reliability = true;
+        f.metadata.failAt = 1;
+        f.tree['Movies'] = ['Bench0.2020.mkv', 'Later/'];
+        f.tree['Movies/Later'] = ['Bench1.2020.mkv'];
+        f.holdChildren = Completer<void>();
+
+        final scan = f.c.scan(f.root, executionMode: _mode(fast));
+        await _until(
+          () => f.metadata.calls.isNotEmpty && f.calls.contains('Movies/Later'),
+        );
+        expect(f.metadata.calls, ['Bench0']);
+        f.holdChildren!.complete();
+        await scan;
+        await f.c.waitForScraping();
+
+        expect(f.metadata.calls, ['Bench0', 'Bench1', 'Bench0']);
+        expect(
+          (await f.c.store.resources()).map((r) => r.workId),
+          everyElement(isNotNull),
+        );
+        expect(f.c.scrapeProcessed, 2);
+        expect(f.c.scrapedCount, 2);
+        expect(f.c.scrapeCompletion, 1);
+      },
+    );
+
+    test(
+      'interrupted queue retry resumes as a retry after reopening ($fast)',
+      () async {
+        final f = await _Fixture.create();
+        addTearDown(f.close);
+        f.metadata.reliability = true;
+        f.metadata.failure = 'metadataTimeout';
+        f.metadata.failureQuery = 'Bench0';
+        f.metadata.holdAfter = 2;
+        f.metadata.hold = Completer<void>();
+        f.tree['Movies'] = ['Bench0.2020.mkv', 'Bench1.2020.mkv'];
+
+        final scan = f.c.scan(f.root, executionMode: _mode(fast));
+        await _until(() => f.metadata.calls.length == 3);
+        final close = f.closeController();
+        await Future<void>.delayed(Duration.zero);
+        f.metadata.hold!.complete();
+        await close;
+        await scan;
+        await f.open();
+        expect(f.metadata.calls.length, 3);
+        if (fast) {
+          expect((await f.c.store.fastTask())!.processed, 1);
+          await f.c.resumeFastTask();
+          expect((await f.c.store.fastTask())!.error, 'metadataTimeout');
+        } else {
+          expect(f.c.scrapePaused, isTrue);
+          f.c.toggleScraping();
+          await _until(() => f.c.scrapePaused);
+          expect(f.c.scrapeError, 'metadataTimeout');
+        }
+        expect(f.metadata.calls.take(2), unorderedEquals(['Bench0', 'Bench1']));
+        expect(f.metadata.calls.skip(2), ['Bench0', 'Bench0']);
+        expect(
+          (await f.c.store.resources()).where((r) => r.workId != null),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'retry acknowledgement failure rolls back metadata and preserves the retry ($fast)',
+      () async {
+        final f = await _Fixture.create();
+        addTearDown(f.close);
+        f.metadata.reliability = true;
+        f.metadata.failAt = 1;
+        f.tree['Movies'] = ['Bench0.2020.mkv'];
+        final db = await databaseFactoryFfi.openDatabase(
+          p.join(f.temp.path, 'catalog.db'),
+        );
+        final table = fast ? 'fast_task_jobs' : 'normal_scrape_jobs';
+        final before = fast ? 'retry_running' : 'retry_pending';
+        final after = fast ? 'done' : 'matched';
+        await db.execute(
+          "CREATE TRIGGER reject_retry BEFORE UPDATE OF state ON $table "
+          "WHEN OLD.state='$before' AND NEW.state='$after' "
+          "BEGIN SELECT RAISE(ABORT, 'fixture retry write failure'); END",
+        );
+
+        await f.c.scan(f.root, executionMode: _mode(fast));
+        if (!fast) await _until(() => f.c.scrapePaused);
+        expect(f.metadata.calls, ['Bench0', 'Bench0']);
+        expect((await f.c.store.resources()).single.workId, isNull);
+        expect(
+          fast ? (await f.c.store.fastTask())!.error : f.c.scrapeError,
+          'catalogStorageFailed',
+        );
+        if (fast) {
+          expect(await f.c.store.fastJobs('scrape', retry: true), hasLength(1));
+        } else {
+          expect(
+            (await f.c.store.pendingNormalScraping(f.root.id)).single.$2,
+            isTrue,
+          );
+        }
+        await db.execute('DROP TRIGGER reject_retry');
+        if (fast) {
+          await f.c.resumeFastTask();
+        } else {
+          f.c.toggleScraping();
+          await f.c.waitForScraping();
+        }
+        expect((await f.c.store.resources()).single.workId, isNotNull);
+        expect(f.c.scrapeProcessed, 1);
+        expect(f.c.scrapeCompletion, 1);
       },
     );
   }
@@ -84,6 +207,7 @@ void main() {
         f.withFiles = true;
         f.metadata.reliability = true;
         f.metadata.failAt = 301;
+        f.metadata.failAtCode = 'rateLimited';
         f.tree['Movies'] = List.generate(1000, (i) => 'Bench$i.2020.mkv');
         await f.c.scan(
           f.root,
@@ -135,8 +259,7 @@ void main() {
       name: '$name.2020.mkv',
       mediaKind: 'video',
     );
-    await session.prepare([entry('A')]);
-    expect(session.paused, isFalse);
+    expect(await session.prepare([entry('A')]), isEmpty);
     expect(session.matches.values.single.origin, 'nfo');
     expect(session.networkEnabled, isTrue);
     f.metadata.failure = null;
@@ -238,7 +361,7 @@ void main() {
         f.root,
         cancelled: () => false,
       );
-      await session.prepare([
+      final failures = await session.prepare([
         const FilmScanEntry(
           path: 'Movies/Container/Different.S01E01.mkv',
           parentPath: 'Movies/Container',
@@ -246,8 +369,9 @@ void main() {
           mediaKind: 'video',
         ),
       ]);
-      expect(session.paused, isTrue);
-      expect(session.error, 'invalidMetadata');
+      expect(failures, {
+        'Movies/Container/Different.S01E01.mkv': 'invalidMetadata',
+      });
       expect(session.matches, isEmpty);
       expect(f.metadata.calls, isNot(contains('Different')));
     },
@@ -922,12 +1046,16 @@ Future<void> _until(bool Function() done) async {
   expect(done(), isTrue);
 }
 
+FilmTaskExecutionMode _mode(bool fast) =>
+    fast ? FilmTaskExecutionMode.fullSpeed : FilmTaskExecutionMode.standard;
+
 class _Metadata extends TmdbMetadataService {
   final calls = <String>[];
   bool benchmark = false;
   bool available = true;
   bool reliability = false;
   int? failAt;
+  String failAtCode = 'metadataRequestFailed';
   String? failure;
   String? failureQuery;
   Completer<void>? hold;
@@ -944,7 +1072,7 @@ class _Metadata extends TmdbMetadataService {
   }) async {
     calls.add(query);
     if (calls.length == failAt) {
-      throw const FilmCatalogException('metadataRequestFailed');
+      throw FilmCatalogException(failAtCode);
     }
     if (hold != null && calls.length > holdAfter) await hold!.future;
     if (failure != null && (failureQuery == null || failureQuery == query)) {

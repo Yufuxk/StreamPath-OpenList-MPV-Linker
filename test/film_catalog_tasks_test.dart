@@ -281,14 +281,26 @@ void main() {
       }
     },
   );
-  test('任务结束释放刮削临时对象并保留结果与完成计数', () async {
+  test('最后一项提交时暂停仍会结算进度并释放刮削临时对象', () async {
     final fixture = await _Fixture.create(
       (_) async => [_file('Movies/A.2020.mkv')],
     );
     addTearDown(fixture.close);
     final c = fixture.controller;
+    var pausedAtCompletion = false;
+    void pauseAtCompletion() {
+      if (!pausedAtCompletion && c.scraping && c.scrapeProcessed == 1) {
+        pausedAtCompletion = true;
+        c.toggleScraping();
+      }
+    }
+
+    c.taskChanges.addListener(pauseAtCompletion);
     await c.scan(fixture.root);
-    await c.waitForScraping();
+    await c.waitForScraping().timeout(const Duration(seconds: 5));
+    c.taskChanges.removeListener(pauseAtCompletion);
+    expect(pausedAtCompletion, isTrue);
+    expect(c.scraping, isFalse);
     expect(c.scrapeProcessed, 1);
     expect(c.scrapedCount, 1);
     expect(c.scrapeCompletion, 1);

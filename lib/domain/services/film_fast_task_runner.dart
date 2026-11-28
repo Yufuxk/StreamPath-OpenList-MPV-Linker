@@ -180,7 +180,7 @@ class FilmFastTaskRunner {
       }
       _check();
       matcher.tmdb.beginFullSpeed();
-      await store.setFastStatus('running');
+      await store.setFastStatus('running', resumeFailedScrapes: true);
       await onProgress();
       await Future.wait([_guard(() => _scan(task)), _guard(_scrape)]);
       _check();
@@ -428,12 +428,22 @@ class FilmFastTaskRunner {
   }
 
   Future<void> _scrape() async {
+    String? retryError;
     while (!_stopping) {
       // 在查询之前挂起唤醒点，避免目录登记和等待之间遗漏通知。
       final wake = _wake ??= Completer<void>();
-      final available = await store.fastJobs('scrape', limit: 8);
+      final scanDone = _scanDone;
+      var available = await store.fastJobs('scrape', limit: 8);
+      final retry = scanDone && available.isEmpty;
+      if (retry) {
+        available = await store.fastJobs('scrape', limit: 8, retry: true);
+      }
+      _check();
       if (available.isEmpty) {
-        if (_scanDone) return;
+        if (scanDone) {
+          if (retryError != null) throw FilmCatalogException(retryError);
+          return;
+        }
         await wake.future;
         continue;
       }
@@ -454,21 +464,37 @@ class FilmFastTaskRunner {
           .takeWhile((job) => job.rootId == first.rootId)
           .toList();
       if (session.files?.localMode == true) jobs.removeRange(1, jobs.length);
-      await store.claimFastJobs(jobs);
+      await store.claimFastJobs(jobs, retry: retry);
+      final failures = <int, String>{};
+      Future<void> prepare(
+        FilmFastJob job, {
+        bool deferLocalFallback = false,
+      }) async {
+        _check();
+        final result = await session.prepare([
+          FilmScanEntry(
+            path: job.path,
+            parentPath: job.parent,
+            name: job.name,
+            mediaKind: job.mediaKind,
+          ),
+        ], deferLocalFallback: deferLocalFallback);
+        final code = result[filmPathKey(job.path, session.root.sourceKind)];
+        if (code == null) return;
+        if (!FilmScanMetadataSession.canRetryAtQueueEnd(code)) {
+          throw FilmCatalogException(code);
+        }
+        failures[job.id] = code;
+      }
+
       await Future.wait(
         jobs.map(
-          (job) => _guard(() async {
-            _check();
-            await session.prepare([
-              FilmScanEntry(
-                path: job.path,
-                parentPath: job.parent,
-                name: job.name,
-                mediaKind: job.mediaKind,
-              ),
-            ], deferLocalFallback: session.files?.localMode != true);
-            if (session.paused) throw FilmCatalogException(session.error!);
-          }),
+          (job) => _guard(
+            () => prepare(
+              job,
+              deferLocalFallback: session.files?.localMode != true,
+            ),
+          ),
         ),
       );
       _check();
@@ -476,27 +502,29 @@ class FilmFastTaskRunner {
         for (final job in jobs) {
           _check();
           final key = filmPathKey(job.path, session.root.sourceKind);
-          if (session.matches.containsKey(key)) continue;
-          await session.prepare([
-            FilmScanEntry(
-              path: job.path,
-              parentPath: job.parent,
-              name: job.name,
-              mediaKind: job.mediaKind,
-            ),
-          ]);
-          if (session.paused) throw FilmCatalogException(session.error!);
+          if (failures.containsKey(job.id) ||
+              session.matches.containsKey(key)) {
+            continue;
+          }
+          await prepare(job);
         }
       }
       _check();
       final matches = <String, FilmScanMatch>{};
+      final completedJobs = <FilmFastJob>[];
+      final failedJobs = <FilmFastJob>[];
       for (final job in jobs) {
+        if (failures.containsKey(job.id)) {
+          failedJobs.add(job);
+          continue;
+        }
+        completedJobs.add(job);
         final key = filmPathKey(job.path, session.root.sourceKind);
         final match = session.matches[key];
         if (match != null) matches[key] = match;
       }
       if (matches.values.any((match) => match.origin == 'nfo')) {
-        for (final job in jobs) {
+        for (final job in completedJobs) {
           _check();
           final key = filmPathKey(job.path, session.root.sourceKind);
           final match = matches[key];
@@ -504,8 +532,12 @@ class FilmFastTaskRunner {
             job,
           ], match == null ? {} : {key: match});
         }
-      } else {
-        await store.completeFastScraping(first.rootId, jobs, matches);
+      } else if (completedJobs.isNotEmpty) {
+        await store.completeFastScraping(first.rootId, completedJobs, matches);
+      }
+      if (failedJobs.isNotEmpty) {
+        await store.deferFastScraping(failedJobs, retry: retry);
+        if (retry) retryError ??= failures[failedJobs.first.id]!;
       }
       session.releaseCommitted(
         jobs.map((job) => filmPathKey(job.path, session.root.sourceKind)),

@@ -699,14 +699,12 @@ class FilmScanMetadataSession {
     r'^([\u3400-\u9fff][\u3400-\u9fff\s\d:：·!?！？~～–—-]*?)\s+([a-zA-Z].*)$',
   );
   String? error;
-  bool _paused = false;
   bool networkEnabled = true;
   FilmFileMetadata? files;
   int scraped = 0;
   bool staleBindings = false;
   bool lazyBindings = false;
   FilmExtraClassifier? _extraClassifier;
-  bool get paused => _paused;
 
   void releaseCommitted(Iterable<String> keys) {
     for (final key in keys) {
@@ -716,10 +714,16 @@ class FilmScanMetadataSession {
   }
 
   void resume() {
-    _paused = false;
     error = null;
     networkEnabled = files?.localMode != true;
   }
+
+  static bool canRetryAtQueueEnd(String code) => switch (code) {
+    'metadataConnectionFailed' ||
+    'metadataTimeout' ||
+    'metadataRequestFailed' => true,
+    _ => false,
+  };
 
   static String _nameKey(String name) => name
       .toLowerCase()
@@ -762,12 +766,6 @@ class FilmScanMetadataSession {
     }
     final length = a.length > b.length ? a.length : b.length;
     return 1 - distances[a.length][b.length] / length;
-  }
-
-  void _failed(FilmCatalogException cause) {
-    error ??= cause.code;
-    // 认证、限流与网络故障停止本轮后续请求，目录枚举仍继续。
-    if (cause.code != 'metadataNotFound') _paused = true;
   }
 
   Future<FilmWork> _lookup(int id) => _lookupRequests.putIfAbsent(
@@ -958,12 +956,12 @@ class FilmScanMetadataSession {
     return work;
   }
 
-  Future<void> prepare(
+  Future<Map<String, String>> prepare(
     List<FilmScanEntry> entries, {
     Map<int, FilmWork?>? workCache,
     bool deferLocalFallback = false,
   }) async {
-    if (!enabled) return;
+    if (!enabled) return const {};
     if (lazyBindings && entries.isNotEmpty) {
       _existing.addAll(
         await matcher.store.scanBindings(
@@ -975,8 +973,9 @@ class FilmScanMetadataSession {
       );
     }
     final works = workCache ?? <int, FilmWork?>{};
+    Map<String, String>? failures;
     for (final entry in entries) {
-      if (cancelled()) return;
+      if (cancelled()) break;
       if (FilmExtraClassifier.excludedPath(entry.parentPath)) continue;
       final key = filmPathKey(entry.path, root.sourceKind);
       final existing = _existing[key];
@@ -1102,7 +1101,7 @@ class FilmScanMetadataSession {
               ? null
               : await files!.load(entry, language);
           if (local == null) {
-            _failed(cause);
+            (failures ??= {})[key] = cause.code;
             continue;
           }
           work = local.work;
@@ -1118,7 +1117,7 @@ class FilmScanMetadataSession {
         }
       }
       if (work == null && !networkEnabled && files?.localMode != true) {
-        _failed(FilmCatalogException(error ?? 'noToken'));
+        (failures ??= {})[key] = error ?? 'noToken';
       }
       if (work == null || cancelled()) continue;
       Map<String, dynamic>? metadata;
@@ -1169,12 +1168,12 @@ class FilmScanMetadataSession {
           if (cause.code == 'metadataNotFound') {
             _seasons[(work.tmdbId, number)] = null;
           } else {
-            _failed(cause);
+            (failures ??= {})[key] = cause.code;
             continue;
           }
         }
       }
-      if (cancelled()) return;
+      if (cancelled()) break;
       matches[key] = FilmScanMatch(
         work: work,
         origin: origin,
@@ -1185,5 +1184,6 @@ class FilmScanMetadataSession {
       );
       scraped++;
     }
+    return failures ?? const {};
   }
 }

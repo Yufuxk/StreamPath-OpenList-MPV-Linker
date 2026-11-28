@@ -683,9 +683,7 @@ class FilmCatalogStore extends ChangeNotifier {
       await txn.update('fast_tasks', {
         'status': 'paused',
       }, where: "status IN ('running','stopping')");
-      await txn.update('fast_task_jobs', {
-        'state': 'pending',
-      }, where: "state='running'");
+      await txn.execute(_resetRunningFastJobs);
     });
     final store = FilmCatalogStore._(db);
     for (final row in await db.query(
@@ -1177,20 +1175,39 @@ class FilmCatalogStore extends ChangeNotifier {
     });
   }
 
-  Future<List<FilmScanEntry>> pendingNormalScraping(int rootId) async => [
+  Future<List<(FilmScanEntry, bool)>> pendingNormalScraping(
+    int rootId,
+  ) async => [
     for (final row in await _db.query(
       'normal_scrape_jobs',
-      where: "root_id=? AND state='pending'",
+      where:
+          "root_id=? AND state IN ('pending','retry_pending','retry_failed')",
       whereArgs: [rootId],
       orderBy: 'rowid',
     ))
-      FilmScanEntry(
-        path: row['path'] as String,
-        parentPath: row['parent'] as String,
-        name: row['name'] as String,
-        mediaKind: row['media_kind'] as String,
+      (
+        FilmScanEntry(
+          path: row['path'] as String,
+          parentPath: row['parent'] as String,
+          name: row['name'] as String,
+          mediaKind: row['media_kind'] as String,
+        ),
+        row['state'] != 'pending',
       ),
   ];
+
+  Future<void> deferNormalScraping(
+    int rootId,
+    String key, {
+    required bool retry,
+  }) async {
+    await _db.update(
+      'normal_scrape_jobs',
+      {'state': retry ? 'retry_failed' : 'retry_pending'},
+      where: 'root_id=? AND path_key=?',
+      whereArgs: [rootId, key],
+    );
+  }
 
   Future<void> completeNormalScraping(
     int rootId,

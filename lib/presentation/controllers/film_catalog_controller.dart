@@ -96,11 +96,16 @@ class FilmCatalogController extends ChangeNotifier {
       _beginScrapeInput();
       try {
         scrapePaused = true;
-        await _queueScraping(
-          await _scrapeSession(root),
-          entries,
-          persist: false,
-        );
+        final session = await _scrapeSession(root);
+        for (final retry in [false, true]) {
+          final batch = [
+            for (final (entry, isRetry) in entries)
+              if (retry == isRetry) entry,
+          ];
+          if (batch.isNotEmpty) {
+            await _queueScraping(session, batch, persist: false, retry: retry);
+          }
+        }
       } finally {
         _endScrapeInput();
       }
@@ -490,6 +495,13 @@ class FilmCatalogController extends ChangeNotifier {
   bool scrapePaused = false;
   String? scrapeError;
   final _scrapeQueue = Queue<_FilmScrapeJob>();
+  final _scrapeRetryQueue = Queue<_FilmScrapeJob>();
+  final _scrapeFailed = Queue<_FilmScrapeJob>();
+  String? _scrapeRetryError;
+  bool get _scrapeQueuesEmpty =>
+      _scrapeQueue.isEmpty &&
+      _scrapeRetryQueue.isEmpty &&
+      _scrapeFailed.isEmpty;
   final _scrapeSessions = <int, Future<FilmScanMetadataSession>>{};
   final _scrapeSeen = <(int, String)>{};
   @visibleForTesting
@@ -874,7 +886,7 @@ class FilmCatalogController extends ChangeNotifier {
   }
 
   void _releaseFinishedScraping() {
-    if (_scrapeInputs == 0 && _scrapeTask == null && _scrapeQueue.isEmpty) {
+    if (_scrapeInputs == 0 && _scrapeTask == null && _scrapeQueuesEmpty) {
       _scrapeSessions.clear();
       _scrapeSeen.clear();
     }
@@ -891,6 +903,7 @@ class FilmCatalogController extends ChangeNotifier {
     FilmScanMetadataSession session,
     List<FilmScanEntry> entries, {
     bool persist = true,
+    bool retry = false,
   }) async {
     if (_closed) return;
     if (persist) {
@@ -908,13 +921,14 @@ class FilmCatalogController extends ChangeNotifier {
       _notify();
       return;
     }
+    final queue = retry ? _scrapeRetryQueue : _scrapeQueue;
     for (final entry in entries) {
       if (_scrapeSeen.add((session.root.id, entry.path))) {
-        _scrapeQueue.add(_FilmScrapeJob(session, entry));
+        queue.add(_FilmScrapeJob(session, entry));
         scrapeTotal++;
       }
     }
-    if (_scrapeTask == null && _scrapeQueue.isNotEmpty) {
+    if (_scrapeTask == null && !_scrapeQueuesEmpty) {
       _taskOwner._normalScrapers++;
       _scrapeTask = _scrape().whenComplete(() {
         _taskOwner._normalScrapers--;
@@ -922,7 +936,7 @@ class FilmCatalogController extends ChangeNotifier {
         if (!_closed &&
             scrapeProcessed > 0 &&
             _scrapeInputs == 0 &&
-            _scrapeQueue.isEmpty) {
+            _scrapeQueuesEmpty) {
           scrapeCompletion++;
         }
         _releaseFinishedScraping();
@@ -942,8 +956,13 @@ class FilmCatalogController extends ChangeNotifier {
   /// 用户暂停和 TMDB 错误只影响刮削队列，不影响目录扫描。
   void toggleScraping() {
     if (scrapePaused) {
-      for (final job in _scrapeQueue) {
-        job.session.resume();
+      _scrapeRetryQueue.addAll(_scrapeFailed);
+      _scrapeFailed.clear();
+      _scrapeRetryError = null;
+      for (final queue in [_scrapeQueue, _scrapeRetryQueue]) {
+        for (final job in queue) {
+          job.session.resume();
+        }
       }
       scrapeError = null;
       scrapePaused = false;
@@ -957,7 +976,7 @@ class FilmCatalogController extends ChangeNotifier {
 
   Future<void> _scrape() async {
     while (!_closed) {
-      if (_scrapeQueue.isEmpty && _scrapeInputs == 0) {
+      if (_scrapeInputs == 0 && _scrapeQueuesEmpty) {
         if (scrapedCount > 0) {
           for (final rootId in _scrapeSessions.keys.toList()) {
             await matcher.resolveConflicts(rootId);
@@ -969,14 +988,23 @@ class FilmCatalogController extends ChangeNotifier {
           }
         }
         await store.reconcilePlaylists();
+        if (_scrapeInputs > 0 || !_scrapeQueuesEmpty) continue;
         return;
       }
-      if (_writesSuspended || scrapePaused || _scrapeQueue.isEmpty) {
+      final retry = _scrapeQueue.isEmpty;
+      final queue = retry ? _scrapeRetryQueue : _scrapeQueue;
+      if (_writesSuspended || scrapePaused || (retry && _scrapeInputs > 0)) {
         _scrapeWake = Completer<void>();
         await _scrapeWake!.future;
         continue;
       }
-      final job = _scrapeQueue.first;
+      if (queue.isEmpty) {
+        scrapeError = _scrapeRetryError;
+        scrapePaused = true;
+        _notify();
+        continue;
+      }
+      final job = queue.first;
       _scrapeBarrier = Completer<void>();
       try {
         final jobs = <_FilmScrapeJob>[];
@@ -989,7 +1017,8 @@ class FilmCatalogController extends ChangeNotifier {
                 job.session.files?.localMode != true
             ? 12
             : 1;
-        final candidates = _scrapeQueue.take(limit).toList();
+        final candidates = queue.take(limit).toList();
+        (String, String)? failure;
         try {
           for (final next in candidates) {
             if (next.session != job.session ||
@@ -1005,16 +1034,13 @@ class FilmCatalogController extends ChangeNotifier {
               next.entry.path,
               next.session.root.sourceKind,
             );
-            await next.session.prepare([next.entry], workCache: works);
-            if (_closed) break;
-            if (next.session.paused && next.session.error == 'cancelled') {
-              next.session.resume();
-              break;
-            }
-            if (next.session.paused) {
-              scrapeError = next.session.error;
-              scrapePaused = true;
-              _notify();
+            final failures = await next.session.prepare([
+              next.entry,
+            ], workCache: works);
+            final code = failures[key];
+            if (_closed || scrapePaused || code == 'cancelled') break;
+            if (code != null) {
+              failure = (key, code);
               break;
             }
             final match = next.session.matches[key];
@@ -1041,7 +1067,7 @@ class FilmCatalogController extends ChangeNotifier {
             );
             scrapedCount += matches.length;
             for (var i = 0; i < jobs.length; i++) {
-              _scrapeQueue.removeFirst();
+              queue.removeFirst();
             }
             job.session.releaseCommitted(
               jobs.map(
@@ -1050,8 +1076,24 @@ class FilmCatalogController extends ChangeNotifier {
               ),
             );
             scrapeProcessed += jobs.length;
-            scrapeError ??= job.session.error;
             _notifyTaskProgress();
+          }
+        }
+        if (failure case (final key, final code)) {
+          if (!FilmScanMetadataSession.canRetryAtQueueEnd(code)) {
+            throw FilmCatalogException(code);
+          }
+          await store.deferNormalScraping(
+            job.session.root.id,
+            key,
+            retry: retry,
+          );
+          final failed = queue.removeFirst();
+          if (retry) {
+            _scrapeFailed.add(failed);
+            _scrapeRetryError ??= code;
+          } else {
+            _scrapeRetryQueue.add(failed);
           }
         }
       } on DatabaseException {
@@ -1150,6 +1192,8 @@ class FilmCatalogController extends ChangeNotifier {
       await _scrapeTask;
     } finally {
       _scrapeQueue.clear();
+      _scrapeRetryQueue.clear();
+      _scrapeFailed.clear();
       _scrapeSessions.clear();
       _scrapeSeen.clear();
       if (ownsResources) await store.close();
