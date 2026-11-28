@@ -1,3 +1,4 @@
+import '../../data/models/episode_network_failure_mode.dart';
 import '../../data/models/video_playlist_mode.dart';
 import 'package:flutter/material.dart';
 
@@ -89,6 +90,8 @@ class SettingsConfigDraft {
   bool webDavFontCacheEnabled = true;
   bool externalAudioInjectionEnabled = true;
   VideoPlaylistMode videoPlaylistMode = VideoPlaylistMode.implicit;
+  EpisodeNetworkFailureMode episodeNetworkFailureMode =
+      EpisodeNetworkFailureMode.stop;
   bool videoPlaylistSimpleNaming = true;
   DiscTitleSelectionPolicy discTitleSelectionPolicy =
       DiscTitleSelectionPolicy.full;
@@ -192,6 +195,7 @@ class SettingsConfigDraft {
     webDavFontCacheEnabled = player.webDavFontCacheEnabled;
     externalAudioInjectionEnabled = player.externalAudioInjectionEnabled;
     videoPlaylistMode = player.videoPlaylistMode;
+    episodeNetworkFailureMode = player.episodeNetworkFailureMode;
     videoPlaylistSimpleNaming = player.videoPlaylistSimpleNaming;
     discTitleSelectionPolicy = player.discTitleSelectionPolicy;
     videoPlaylistInsertDecimalEpisodes =
@@ -305,6 +309,7 @@ class SettingsConfigDraft {
     webDavFontCacheEnabled: webDavFontCacheEnabled,
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
+    episodeNetworkFailureMode: episodeNetworkFailureMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../data/models/app_language.dart';
+import '../../data/models/episode_network_failure_mode.dart';
 import '../../data/models/media_entry.dart';
 import '../../data/models/subtitle_item.dart';
 import 'playback_startup_lua.dart';
@@ -580,41 +581,27 @@ end)
     );
   }
 
-  static Future<String> ensureSeasonTransition(
-    String planFile,
-    String markerFile,
-    Directory base, {
-    required String sessionId,
-  }) {
-    final script =
-        '''
-local utils = require "mp.utils"
-local PLAN = ${_luaQuote(planFile)}
-local MARKER = ${_luaQuote(markerFile)}
-local last_pos = -1
-local last_playlist = ""
-local function normalized(value)
-    return (value or ""):gsub("\\\\", "/"):lower()
+  static String _seasonTransitionLua(String planFile, String markerFile) =>
+      '''
+local SEASON_PLAN = ${_luaQuote(planFile)}
+local SEASON_MARKER = ${_luaQuote(markerFile)}
+local function normalized_playlist(value)
+    return value:gsub("\\\\", "/"):lower()
 end
-mp.register_event("start-file", function()
-    last_pos = mp.get_property_number("playlist-pos", -1)
-    last_playlist = mp.get_property("playlist-path", "")
-end)
-mp.register_event("end-file", function(event)
-    if not event or event.reason ~= "eof" then return end
+local function advance_season(last_pos, last_playlist)
     local count = mp.get_property_number("playlist-count", 0)
     if last_pos < 0 or last_pos ~= count - 1 then return end
-    local f = io.open(PLAN, "r")
+    local f = io.open(SEASON_PLAN, "r")
     local plan = nil
     if f then
         plan = utils.parse_json(f:read("*a") or "")
         f:close()
     end
-    if plan and normalized(plan.from) == normalized(last_playlist) and
+    if plan and normalized_playlist(plan.from or "") == normalized_playlist(last_playlist) and
         type(plan.to) == "string" and plan.to ~= "" then
         local ok = mp.commandv("loadlist", plan.to, "replace")
         if ok then
-            local marker = io.open(MARKER, "w")
+            local marker = io.open(SEASON_MARKER, "w")
             if marker then
                 marker:write(plan.to)
                 marker:close()
@@ -623,14 +610,8 @@ mp.register_event("end-file", function(event)
         end
     end
     mp.commandv("quit")
-end)
+end
 ''';
-    return _write(
-      base,
-      _sessionFileName('streampath-season-transition', 'lua', sessionId),
-      script,
-    );
-  }
 
   // ── 播放列表标题兜底脚本 ────────────────────────────────────
 
@@ -690,6 +671,9 @@ end)
     String? launchEpoch,
     String? reportedPath,
     bool preferPlaylistTitles = false,
+    EpisodeNetworkFailureMode? episodeFailureMode,
+    String? seasonPlanFile,
+    String? seasonMarkerFile,
   }) async {
     final resolvedProgressFile = progressFile ?? '$outFile.progress.jsonl';
     // 旧版 MPV 可能没有这个选项，按属性可用性设置。
@@ -715,6 +699,8 @@ local PROGRESS = ${_luaQuote(resolvedProgressFile)}
 local EPOCH = ${_luaQuote(launchEpoch ?? '')}
 local REPORTED_PATH = ${_luaQuote(reportedPath ?? '')}
 ${preferPlaylistTitles ? playlistTitleOption : ''}
+${seasonPlanFile == null ? 'local advance_season = nil' : _seasonTransitionLua(seasonPlanFile, seasonMarkerFile!)}
+local NETWORK_MODE = ${_luaQuote(episodeFailureMode?.name ?? '')}
 
 ${mediaInfoSnapshotLua(outputExpression: 'OUT', pathExpression: 'REPORTED_PATH ~= "" and REPORTED_PATH or mp.get_property("path", "")', epochExpression: 'EPOCH', programmeExpression: 'mp.get_property_number("edition", nil)', programmeTypeExpression: '"edition"')}
 
@@ -739,6 +725,11 @@ local function queue_position()
 end
 local last_playlist_pos = -1
 local last_loaded_playlist = ""
+local entry_playlist = ""
+local entry_end_reason, entry_network_action
+local primary_network_url
+local other_network_input, primary_open_failed, transport_failed
+local end_position, end_duration, end_fps
 local last_path = ""
 local last_time_pos = -1
 local last_duration = -1
@@ -752,7 +743,7 @@ local healthy_since = nil
 local was_stalling = false
 local restart_serial = 0
 
-local function append_progress(outcome, reason, file_error)
+local function append_progress(outcome, reason, file_error, network_action)
     -- 初次打开即失败时 path 在部分 mpv 版本中可能为空，但 playlist-pos
     -- 仍足以映射原播放项，不能因此丢失恢复事件。
     if last_playlist_pos < 0 and last_path == "" then return end
@@ -772,6 +763,10 @@ local function append_progress(outcome, reason, file_error)
     if reason ~= nil and reason ~= "" then record["reason"] = reason end
     if file_error ~= nil and file_error ~= "" then
         record["file_error"] = file_error
+    end
+    if network_action then
+        record["network_action"] = network_action
+        record["playlist_path"] = entry_playlist
     end
     local ok, line = pcall(utils.format_json, record)
     if not ok or line == nil then return end
@@ -995,6 +990,7 @@ local function matches_queue_entry(entry, item)
     end
     return true
 end
+${episodeFailureMode == null ? '' : _episodeNetworkFailureLua}
 mp.register_event("start-file", function(event)
     file_loaded_current = false
     file_generation = file_generation + 1
@@ -1027,6 +1023,11 @@ mp.register_event("start-file", function(event)
     -- 当前曲目不得继承上一集缓存的时长/进度。
     has_loaded = false
     entry_started = true
+    entry_playlist = mp.get_property("playlist-path", "")
+    entry_end_reason, entry_network_action = nil, nil
+    primary_network_url = nil
+    other_network_input, primary_open_failed, transport_failed = false, false, false
+    end_position, end_duration, end_fps = nil, nil, nil
     last_playlist_pos = -1
     last_path = ""
     last_time_pos = -1
@@ -1152,10 +1153,42 @@ mp.register_event("end-file", function(event)
     -- Lua 旧版把错误放在 error，新版使用 file_error；同时读取以兼容
     -- mpv 0.34～0.41+。不解析终端文案，不依赖特定 FFmpeg 日志格式。
     local file_error = event and (event["file_error"] or event["error"]) or nil
+    -- 提前 EOF 只采信可归属主媒体的传输错误。
+    local main_transport_failure = primary_network_url and transport_failed and
+        (not other_network_input or (reason == "error" and primary_open_failed))
+    if main_transport_failure then
+        local position = end_position or last_time_pos
+        local duration = end_duration or last_duration
+        local tolerance = math.max(0.25, end_fps and end_fps > 0 and 2 / end_fps or 0)
+        local premature_eof = reason == "eof" and position >= 0 and duration > 0 and
+            duration - position > tolerance
+        if reason == "error" or premature_eof then
+            entry_network_action = NETWORK_MODE
+            reason = "error"
+            last_time_pos = position
+            last_duration = duration
+        end
+    end
+    entry_end_reason = reason
     last_entry_completed = reason == "eof"
-    append_progress(last_entry_completed and "completed" or "position", reason, file_error)
+    append_progress(last_entry_completed and "completed" or "position", reason, file_error, entry_network_action)
     last_entry_recorded = true
 end)
+if NETWORK_MODE ~= "" or advance_season then
+    -- 先处理结束结果，再让 MPV 打开后继条目。
+    mp.add_hook("on_after_end_file", 0, function()
+        if entry_network_action == "stop" then
+            mp.commandv("quit")
+            return
+        end
+        if advance_season and (entry_end_reason == "eof" or entry_network_action == "autoSkip") then
+            advance_season(last_playlist_pos, entry_playlist)
+        elseif entry_network_action == "autoSkip" and QUEUE == "" and
+            last_playlist_pos == mp.get_property_number("playlist-count", 0) - 1 then
+            mp.commandv("quit")
+        end
+    end)
+end
 mp.register_event("shutdown", function()
     if has_loaded and not last_entry_recorded then
         append_progress("position", "shutdown", nil)
@@ -1187,6 +1220,9 @@ mp.add_periodic_timer(0.5, function()
     end
 end)
 
+mp.register_script_message("streampath-queue-stop", function()
+    if QUEUE ~= "" then mp.commandv("quit") end
+end)
 mp.register_script_message("streampath-queue-finished", function()
     if QUEUE == "" then return end
     queue_finished = true
@@ -1227,6 +1263,80 @@ end)
       script,
     );
   }
+
+  static const _episodeNetworkFailureLua = r'''
+local function network_url(value)
+    local scheme = value:match("^([%a][%w+.-]*)://")
+    if not scheme then return nil end
+    scheme = scheme:lower()
+    if scheme == "http" or scheme == "https" or scheme == "ftp" or scheme == "ftps" or
+        scheme == "smb" or scheme == "sftp" or scheme == "nfs" or
+        scheme == "rtsp" or scheme == "rtmp" then
+        return (value:gsub("://[^/@?#]*@", "://"))
+    end
+end
+mp.add_hook("on_load", 0, function()
+    primary_network_url = network_url(mp.get_property("stream-open-filename", ""))
+    other_network_input = mp.get_property_bool("options/prefetch-playlist", false)
+    for _, option in ipairs({"audio-files", "sub-files", "external-files"}) do
+        for _, filename in ipairs(mp.get_property_native("options/" .. option) or {}) do
+            if network_url(filename) then other_network_input = true end
+        end
+    end
+end)
+mp.add_hook("on_unload", 0, function()
+    if not primary_network_url or not file_loaded_current then return end
+    local position = mp.get_property_number("time-pos", -1)
+    if position > 0 or (position == 0 and last_time_pos <= 0) then end_position = position end
+    local duration = mp.get_property_number("duration", -1)
+    if duration > 0 then end_duration = duration end
+    end_fps = mp.get_property_number("estimated-vf-fps", nil) or
+        mp.get_property_number("container-fps", nil)
+end)
+local transport_errors = {
+    "could not connect to server", "couldn't connect to server", "failed to connect",
+    "could not resolve host", "couldn't resolve host", "could not resolve proxy",
+    "connection refused", "connection reset", "connection timed out", "operation timed out",
+    "timeout was reached", "network is unreachable", "no route to host",
+    "failure when receiving data from the peer", "failed sending data",
+    "server returned nothing", "transferred a partial file", "stream ends prematurely",
+    "tls certificate verification failed", "ssl connect error"
+}
+mp.enable_messages("v")
+mp.register_event("log-message", function(event)
+    if not primary_network_url then return end
+    local prefix = event.prefix or ""
+    local message = (event.text or ""):match("^%s*(.-)%s*$")
+    if prefix == "stream_callback" or prefix == "stream" or prefix == "curl" or prefix == "lavf" then
+        local url = network_url(message:match("^Opening (.+)$") or "")
+        if url and url ~= primary_network_url then other_network_input = true end
+    end
+    if prefix == "stream" then
+        local failed_url = network_url(message:match("^Failed to open (.+)%.$") or "")
+        if failed_url == primary_network_url then primary_open_failed = true end
+    end
+    if event.level ~= "warn" and event.level ~= "error" and event.level ~= "fatal" then return end
+    message = message:lower()
+    if prefix ~= "curl" then
+        if not prefix:match("^ffmpeg") then return end
+        local protocol, text = message:match("^([%w]+):%s*(.*)")
+        if not protocol or not (network_url(protocol .. "://") or protocol == "tcp" or
+            protocol == "tls" or protocol == "udp") then return end
+        message = text
+    end
+    local status = tonumber(message:match("^http error (%d%d%d)"))
+    if status and (status == 408 or status >= 500 and status < 600) then
+        transport_failed = true
+        return
+    end
+    for _, signal in ipairs(transport_errors) do
+        if message:find(signal, 1, true) then
+            transport_failed = true
+            return
+        end
+    end
+end)
+''';
 
   // ── 工具 ───────────────────────────────────────────────────
 

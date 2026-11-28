@@ -3,6 +3,7 @@ import 'dart:io';
 
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/playback_media_entry.dart';
+import '../../data/models/episode_network_failure_mode.dart';
 import '../../core/utils/url_utils.dart';
 import 'mpv_watch_later_sync.dart';
 
@@ -22,6 +23,9 @@ class MpvPlaybackFailureRecord {
     required this.durationSeconds,
     required this.error,
     this.epoch,
+    this.networkAction,
+    this.playlistPath,
+    this.catalogPath,
   });
 
   final int? playlistPos;
@@ -30,6 +34,9 @@ class MpvPlaybackFailureRecord {
   final double? durationSeconds;
   final String error;
   final String? epoch;
+  final EpisodeNetworkFailureMode? networkAction;
+  final String? playlistPath;
+  final String? catalogPath;
 
   static MpvPlaybackFailureRecord? tryParse(
     String line, {
@@ -52,6 +59,13 @@ class MpvPlaybackFailureRecord {
             ? value['file_error'].toString().trim()
             : 'unknown',
         epoch: epoch,
+        networkAction: switch (value['network_action']) {
+          'stop' => EpisodeNetworkFailureMode.stop,
+          'autoSkip' => EpisodeNetworkFailureMode.autoSkip,
+          _ => null,
+        },
+        playlistPath: value['playlist_path'] as String?,
+        catalogPath: value['catalog_path'] as String?,
       );
     } on FormatException {
       return null;
@@ -72,6 +86,7 @@ class MpvProgressJournalRecord {
     this.epoch,
     this.recordedAt,
     this.reason,
+    this.networkFailure = false,
   });
 
   final MpvProgressOutcome outcome;
@@ -82,6 +97,7 @@ class MpvProgressJournalRecord {
   final String? epoch;
   final int? recordedAt;
   final String? reason;
+  final bool networkFailure;
 
   static MpvProgressJournalRecord? tryParse(
     String line, {
@@ -108,6 +124,9 @@ class MpvProgressJournalRecord {
         epoch: epoch,
         recordedAt: (value['recorded_at'] as num?)?.toInt(),
         reason: value['reason'] as String?,
+        networkFailure:
+            value['network_action'] == 'stop' ||
+            value['network_action'] == 'autoSkip',
       );
     } on FormatException {
       return null;
@@ -330,7 +349,8 @@ class MpvPlaybackProgressSynchronizer {
           : entry.url;
       final journal = latestJournalRecords[index];
       final journalPosition = journal?.positionSeconds;
-      if (journal?.outcome == MpvProgressOutcome.completed ||
+      if (journal?.networkFailure == true ||
+          journal?.outcome == MpvProgressOutcome.completed ||
           (journal?.outcome == MpvProgressOutcome.position &&
               journalPosition != null &&
               journalPosition <= 0)) {

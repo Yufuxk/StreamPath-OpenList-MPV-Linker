@@ -9,6 +9,8 @@ import 'package:streampath/data/local/playback_progress_db.dart';
 import 'package:streampath/data/local/profile_credential_store.dart';
 import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/connection_config.dart';
+import 'package:streampath/data/models/episode_network_failure_mode.dart';
+import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/data/models/media_entry.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/player_config.dart';
@@ -239,6 +241,214 @@ void main() {
   );
 
   final realMpv = Platform.environment['STREAMPATH_PATH_MPV'];
+  for (final implicit in [false, true]) {
+    for (final scenario in ['stop', 'autoSkip', 'truncated']) {
+      final mode = scenario == 'autoSkip'
+          ? EpisodeNetworkFailureMode.autoSkip
+          : EpisodeNetworkFailureMode.stop;
+      test(
+        'real MPV episode network failure: ${implicit ? 'implicit' : 'legacy'} $scenario',
+        () async {
+          final directory = await Directory.systemTemp.createTemp(
+            'sp_episode_failure_',
+          );
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          final origin = 'http://127.0.0.1:${server.port}';
+          final progress = await PlaybackProgressService.open(
+            inMemoryDatabasePath,
+            factory: databaseFactoryFfi,
+          );
+          final store = StreamPathConfigStore.forPath(
+            p.join(directory.path, 'config.json'),
+            credentialStore: MemoryProfileCredentialStore({}),
+          );
+          final recovery = _RecordingRestarter();
+          final events = <PlaybackRecoveryEvent>[];
+          final updates = <VideoProgressUpdate>[];
+          final activated = <int>[];
+          final requests = <String>{};
+          final id = 'episode-${implicit ? 'implicit' : 'legacy'}-$scenario';
+          const profile = 'profile-a';
+          const tracks = ['first.mkv', 'second.mkv', 'third.mkv'];
+          MediaEntry entry(String path) =>
+              MediaEntry(url: '$origin/$path', catalogPath: path);
+          ExternalPlayerService? player;
+          try {
+            final clip = File(p.join(directory.path, 'sample.mkv'));
+            final encode = await Process.run('ffmpeg', [
+              '-loglevel',
+              'error',
+              '-f',
+              'lavfi',
+              '-i',
+              'color=s=160x90:r=12',
+              '-f',
+              'lavfi',
+              '-i',
+              'anullsrc=r=48000:cl=mono',
+              '-t',
+              '5',
+              '-c:v',
+              'libx264',
+              '-c:a',
+              'pcm_s16le',
+              clip.path,
+            ]);
+            expect(encode.exitCode, 0, reason: '${encode.stderr}');
+            final bytes = await clip.readAsBytes();
+            server.listen((request) async {
+              final path = request.uri.path;
+              requests.add(path);
+              if (scenario == 'truncated' && path == '/first.mkv') {
+                final socket = await request.response.detachSocket(
+                  writeHeaders: false,
+                );
+                socket.write(
+                  'HTTP/1.1 200 OK\r\nContent-Length: ${bytes.length}\r\n'
+                  'Connection: close\r\n\r\n',
+                );
+                socket.add(bytes.sublist(0, bytes.length ~/ 2));
+                await socket.flush();
+                await socket.close();
+                return;
+              }
+              if (path != '/third.mkv') {
+                request.response.statusCode = HttpStatus.serviceUnavailable;
+              } else {
+                request.response.contentLength = bytes.length;
+                request.response.add(bytes);
+              }
+              await request.response.close();
+            });
+            final config = configFor(
+              player: PlayerConfig(
+                name: 'MPV',
+                executable: realMpv!,
+                args: const [
+                  '--no-config',
+                  '--no-ytdl',
+                  '--vo=null',
+                  '--ao=null',
+                  '--force-window=no',
+                  '--keep-open=no',
+                  '--cache=no',
+                  '{url}',
+                ],
+                episodeNetworkFailureMode: mode,
+                subtitleInjectionEnabled: false,
+                autoSeasonTransitionEnabled: false,
+              ),
+              activeProfileId: profile,
+            );
+            await store.save(config);
+            final previous = entry(tracks.first).url;
+            if (scenario == 'stop') {
+              await progress.saveProgress(
+                url: previous,
+                positionMs: 4321,
+                durationMs: 120000,
+                profileId: profile,
+              );
+            }
+            player = ExternalPlayerService(
+              configStore: store,
+              progressService: progress,
+              watchLaterDir: Directory(p.join(directory.path, 'watch-later')),
+              onPlaybackRecovery: events.add,
+              onVideoProgress: (update) async => updates.add(update),
+              serverRestarter: recovery,
+            );
+            final plan = implicit
+                ? ImplicitVideoPlan(
+                    items: [
+                      for (final track in tracks)
+                        VideoQueueItem(
+                          versions: [
+                            VideoQueueVersion(path: track, name: track),
+                          ],
+                        ),
+                    ],
+                    index: 0,
+                    prepare: (version) async =>
+                        PreparedVideoItem(entry: entry(version.path)),
+                    activated: (index, _) async => activated.add(index),
+                  )
+                : null;
+            final launch = await player.launch(
+              entries: implicit
+                  ? [entry(tracks.first)]
+                  : tracks.map(entry).toList(),
+              sessionId: id,
+              resumeSeconds: scenario == 'stop' ? 4 : null,
+              webDavSourceUrl: origin,
+              webDavSourceId: profile,
+              implicitPlan: plan,
+            );
+            await player.waitForExitSync(
+              id,
+              timeout: const Duration(seconds: 22),
+            );
+            expect(await player.isPlayerRunning(id), isFalse);
+            final failure = player.videoExitNetworkFailure(
+              id,
+              launchEpoch: launch.launchEpoch,
+            );
+            final position = await progress.getResumeProgress(
+              previous,
+              profileId: profile,
+            );
+            if (mode == EpisodeNetworkFailureMode.stop) {
+              expect(requests, {'/first.mkv'});
+              expect(failure?.networkAction, EpisodeNetworkFailureMode.stop);
+              expect(events.map((event) => event.stage), [
+                PlaybackRecoveryStage.networkStopped,
+              ]);
+              if (scenario == 'stop') {
+                expect(failure?.positionSeconds, isNull);
+                expect(position?.positionMs, 4321);
+                expect(position?.durationMs, 120000);
+                expect(updates, isEmpty);
+                if (!implicit) {
+                  await player.refreshPlaybackStatus(id);
+                  expect(events, hasLength(1));
+                }
+              } else {
+                expect(failure?.positionSeconds, inInclusiveRange(1, 4));
+                expect(position?.positionMs, inInclusiveRange(1000, 4000));
+                expect(updates, isNotEmpty);
+                expect(updates.every((update) => !update.completed), isTrue);
+              }
+            } else {
+              expect(requests.toList(), [
+                '/first.mkv',
+                '/second.mkv',
+                '/third.mkv',
+              ]);
+              expect(events, isEmpty);
+              expect(failure, isNull);
+              if (implicit) expect(activated, [2]);
+              expect(
+                player.videoExitEofIndex(
+                  id,
+                  launchEpoch: launch.launchEpoch,
+                  playlistPaths: tracks,
+                  playlistLength: tracks.length,
+                ),
+                2,
+              );
+            }
+            expect(recovery.restartedBaseUrls, isEmpty);
+          } finally {
+            await player?.terminateSession(id);
+            await server.close(force: true);
+            await progress.close();
+            await directory.delete(recursive: true);
+          }
+        },
+        skip: !Platform.isWindows || realMpv == null,
+      );
+    }
+  }
   for (final failurePath in [
     '/first.mkv',
     '/middle.mkv',
@@ -278,7 +488,7 @@ void main() {
             '-t',
             '3',
             '-c:v',
-            'ffv1',
+            'libx264',
             clip.path,
           ]);
           expect(ffmpeg.exitCode, 0, reason: '${ffmpeg.stderr}');
@@ -286,7 +496,7 @@ void main() {
           server.listen((request) async {
             if (!ready && request.uri.path == failurePath) {
               failures++;
-              request.response.statusCode = HttpStatus.serviceUnavailable;
+              request.response.statusCode = HttpStatus.notFound;
             } else {
               reads.add(request.uri.path);
               request.response.headers.contentType = ContentType(

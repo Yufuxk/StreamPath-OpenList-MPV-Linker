@@ -488,6 +488,11 @@ const filmCatalogTranslations = <String, List<String>>{
   "选择播放版本": ["選擇播放版本", "再生バージョンを選択", "Choose playback version"],
   "传统完整播放列表": ["傳統完整播放清單", "従来の全項目プレイリスト", "Legacy full playlist"],
   "隐式播放列表": ["隱式播放清單", "暗黙のプレイリスト", "Implicit playlist"],
+  "剧集网络播放失败时": ["劇集網路播放失敗時", "エピソードのネットワーク再生失敗時", "When an episode fails to play over the network"],
+  "MPV 确认网络故障后，关闭播放器或尝试下一集": ["MPV 確認網路故障後，關閉播放器或嘗試下一集", "MPV がネットワーク障害を検出したら、プレーヤーを閉じるか次の話を再生します", "Close the player or try the next episode when MPV confirms a network failure"],
+  "停止播放": ["停止播放", "再生を停止", "Stop playback"],
+  "自动切集": ["自動切換集數", "自動で次の話へ", "Skip to the next episode"],
+  "网络连接异常，播放已停止": ["網路連線異常，播放已停止", "ネットワーク接続の問題により再生を停止しました", "Playback stopped because of a network connection problem"],
   "视频播放列表模式": ["影片播放清單模式", "動画プレイリストモード", "Video playlist mode"],
   '按小数集号插入番外篇': [
     '按小數集號插入番外篇',

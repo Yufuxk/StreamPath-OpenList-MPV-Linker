@@ -6,6 +6,24 @@ import 'package:streampath/presentation/localization/app_localizations.dart';
 import 'package:streampath/presentation/localization/app_text.dart';
 
 void main() {
+  test('剧集网络失败选项与通知覆盖四种语言', () {
+    const labels = [
+      '剧集网络播放失败时',
+      'MPV 确认网络故障后，关闭播放器或尝试下一集',
+      '停止播放',
+      '自动切集',
+      '网络连接异常，播放已停止',
+    ];
+    for (final language in AppLanguage.values) {
+      final l10n = AppLocalizations(language);
+      for (final label in labels) {
+        final identical =
+            language == AppLanguage.simplifiedChinese ||
+            language == AppLanguage.traditionalChinese && label == '停止播放';
+        expect(l10n.text(label), identical ? label : isNot(label));
+      }
+    }
+  });
   test('内嵌菜单快捷键设置覆盖四种语言', () {
     const labels = [
       '内嵌播放器菜单快捷键',

@@ -255,10 +255,15 @@ void main() {
     expect(result.nextSeasonPlaylistPath, isNull);
     expect(result.args, contains('--idle=yes'));
     expect(result.args.any((arg) => arg.startsWith('--playlist=')), isTrue);
-    expect(
-      result.args.any((arg) => arg.contains('streampath-season-transition')),
-      isTrue,
+    final current = result.args.singleWhere(
+      (arg) =>
+          arg.startsWith('--script=') && arg.contains('streampath-current'),
     );
+    final lua = await File(
+      current.substring('--script='.length),
+    ).readAsString();
+    expect(lua, contains('local function advance_season'));
+    expect(lua, contains('on_after_end_file'));
   });
 
   test('显式 WebDAV 来源决定候选季 M3U 的同源凭据范围', () async {

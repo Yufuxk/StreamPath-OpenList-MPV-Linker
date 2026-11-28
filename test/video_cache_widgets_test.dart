@@ -845,7 +845,7 @@ void main() {
                   find.text(
                     AppLocalizations.of(
                       tester.element(find.byType(VideoCacheOverlay)),
-                    ).text('管理视频缓存'),
+                    ).text('管理离线视频'),
                   ),
                 );
                 await tester.runAsync(

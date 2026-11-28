@@ -1202,7 +1202,7 @@ class _VideoCacheSettingsCardState extends State<VideoCacheSettingsCard> {
           builder: (context) => Theme(
             data: AppTheme.videoCachePanelTheme(Theme.of(context)),
             child: SPDialog(
-              title: const AppText('管理视频缓存'),
+              title: const AppText('管理离线视频'),
               content: SizedBox(
                 width: 620,
                 height: MediaQuery.sizeOf(context).height * .6,
@@ -1229,7 +1229,7 @@ class _VideoCacheSettingsCardState extends State<VideoCacheSettingsCard> {
     child: Builder(
       builder: (context) => SettingsGroupCard(
         icon: SPIcons.download,
-        title: '视频离线缓存',
+        title: '离线视频',
         description: '缓存完整视频及匹配附件，播放时优先使用本地文件。',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1237,7 +1237,7 @@ class _VideoCacheSettingsCardState extends State<VideoCacheSettingsCard> {
             FolderPathField(
               fieldKey: const Key('video-cache-directory-field'),
               controller: widget.directoryController,
-              label: context.l10n.text('默认缓存目录'),
+              label: context.l10n.text('离线缓存目录'),
               pickerTooltip: context.l10n.text('选择视频缓存目录'),
               onPick: _selectDirectory,
               selecting: _selecting,
@@ -1264,7 +1264,7 @@ class _VideoCacheSettingsCardState extends State<VideoCacheSettingsCard> {
                 SPButton(
                   onPressed: () => _openManagement(context),
                   icon: const Icon(SPIcons.settings),
-                  label: const Flexible(child: AppText('管理视频缓存')),
+                  label: const Flexible(child: AppText('管理离线视频')),
                 ),
               ],
             ),

@@ -11,6 +11,7 @@ import 'player_config.dart';
 import 'server_profile.dart';
 import 'disc_title_selection_policy.dart';
 import 'special_playlist_mode.dart';
+import 'episode_network_failure_mode.dart';
 import 'video_playlist_mode.dart';
 import 'video_window_mode.dart';
 import 'mpv_menu_shortcuts.dart';
@@ -97,6 +98,7 @@ class StreamPathConfig {
     this.webDavFontCacheEnabled = true,
     this.externalAudioInjectionEnabled = true,
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
+    this.episodeNetworkFailureMode = EpisodeNetworkFailureMode.stop,
     this.videoPlaylistSimpleNaming = true,
     this.discTitleSelectionPolicy = DiscTitleSelectionPolicy.full,
     this.videoPlaylistInsertDecimalEpisodes = false,
@@ -170,6 +172,7 @@ class StreamPathConfig {
   final bool webDavFontCacheEnabled;
   final bool externalAudioInjectionEnabled;
   final VideoPlaylistMode videoPlaylistMode;
+  final EpisodeNetworkFailureMode episodeNetworkFailureMode;
   final bool videoPlaylistSimpleNaming;
   final DiscTitleSelectionPolicy discTitleSelectionPolicy;
   final bool videoPlaylistInsertDecimalEpisodes;
@@ -248,6 +251,7 @@ class StreamPathConfig {
     webDavFontCacheEnabled: webDavFontCacheEnabled,
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
+    episodeNetworkFailureMode: episodeNetworkFailureMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
@@ -304,6 +308,7 @@ class StreamPathConfig {
       webDavFontCacheEnabled: player.webDavFontCacheEnabled,
       externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
       videoPlaylistMode: player.videoPlaylistMode,
+      episodeNetworkFailureMode: player.episodeNetworkFailureMode,
       videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
       discTitleSelectionPolicy: player.discTitleSelectionPolicy,
       videoPlaylistInsertDecimalEpisodes:
@@ -472,6 +477,7 @@ class StreamPathConfig {
     webDavFontCacheEnabled: player.webDavFontCacheEnabled,
     externalAudioInjectionEnabled: player.externalAudioInjectionEnabled,
     videoPlaylistMode: player.videoPlaylistMode,
+    episodeNetworkFailureMode: player.episodeNetworkFailureMode,
     videoPlaylistSimpleNaming: player.videoPlaylistSimpleNaming,
     discTitleSelectionPolicy: player.discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes:
@@ -530,6 +536,7 @@ class StreamPathConfig {
     webDavFontCacheEnabled: webDavFontCacheEnabled,
     externalAudioInjectionEnabled: externalAudioInjectionEnabled,
     videoPlaylistMode: videoPlaylistMode,
+    episodeNetworkFailureMode: episodeNetworkFailureMode,
     videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
     discTitleSelectionPolicy: discTitleSelectionPolicy,
     videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,
@@ -586,6 +593,7 @@ class StreamPathConfig {
     'webDavFontCacheEnabled': webDavFontCacheEnabled,
     'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
     'videoPlaylistMode': videoPlaylistMode.name,
+    'episodeNetworkFailureMode': episodeNetworkFailureMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
     'discTitleSelectionPolicy': discTitleSelectionPolicy.name,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
@@ -708,6 +716,9 @@ class StreamPathConfig {
       externalAudioInjectionEnabled:
           (json['externalAudioInjectionEnabled'] as bool?) ?? true,
       videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
+      episodeNetworkFailureMode: EpisodeNetworkFailureMode.fromJson(
+        json['episodeNetworkFailureMode'],
+      ),
       videoPlaylistSimpleNaming:
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
       discTitleSelectionPolicy: DiscTitleSelectionPolicy.fromJson(
@@ -793,6 +804,7 @@ class StreamPathConfig {
         webDavFontCacheEnabled: webDavFontCacheEnabled,
         externalAudioInjectionEnabled: externalAudioInjectionEnabled,
         videoPlaylistMode: videoPlaylistMode,
+        episodeNetworkFailureMode: episodeNetworkFailureMode,
         videoPlaylistSimpleNaming: videoPlaylistSimpleNaming,
         discTitleSelectionPolicy: discTitleSelectionPolicy,
         videoPlaylistInsertDecimalEpisodes: videoPlaylistInsertDecimalEpisodes,

@@ -20,6 +20,7 @@ import 'package:streampath/data/local/stream_path_config_store.dart';
 import 'package:streampath/data/models/appearance_config.dart';
 import 'package:streampath/data/models/accent_color_preset.dart';
 import 'package:streampath/data/models/app_language.dart';
+import 'package:streampath/data/models/episode_network_failure_mode.dart';
 import 'package:streampath/data/models/media_library_config.dart';
 import 'package:streampath/data/models/openlist_recovery_config.dart';
 import 'package:streampath/data/models/server_profile.dart';
@@ -282,7 +283,7 @@ void main() {
     final field = find.byKey(const Key('video-cache-directory-field'));
     final picker = find.byTooltip('选择视频缓存目录');
     final reset = find.widgetWithText(SPButton, '恢复默认目录');
-    final manage = find.widgetWithText(SPButton, '管理视频缓存');
+    final manage = find.widgetWithText(SPButton, '管理离线视频');
     String text() => tester.widget<TextFormField>(field).controller!.text;
     Future<void> open(Finder section) async {
       await tester.tap(section);
@@ -450,6 +451,10 @@ void main() {
   });
 
   testWidgets('设置左右切页仅挂载一个表单，动画帧不重建内容，快速选择定位最后目标', (tester) async {
+    tester.view.physicalSize = const Size(1120, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final builds = <SettingsSection, int>{};
     await tester.pumpWidget(
       buildSettings(
@@ -514,8 +519,31 @@ void main() {
     Finder card(String title) => find.byWidgetPredicate(
       (w) => w is SettingsGroupCard && w.title == title,
     );
+    void expectCardGap(String upper, String lower) {
+      expect(
+        tester.getRect(card(lower)).top - tester.getRect(card(upper)).bottom,
+        16,
+      );
+    }
+
+    expectCardGap('扫描与资源识别', '首页栏目');
+    expectCardGap('扫描与资源识别', '显示偏好');
+    final scanCard = card('扫描与资源识别');
+    final scanToggle = find.descendant(
+      of: scanCard,
+      matching: find.byType(Switch),
+    );
+    final scanInterval = find.descendant(
+      of: scanCard,
+      matching: find.byType(SPDropdownButtonFormField<int>),
+    );
+    expect(find.text('两次自动扫描之间的间隔'), findsNothing);
     expect(
-      tester.getTopLeft(card('全局背景')).dx,
+      tester.getCenter(scanInterval).dy,
+      closeTo(tester.getCenter(scanToggle).dy, 0.5),
+    );
+    expect(
+      tester.getTopLeft(card('显示偏好')).dx,
       greaterThan(tester.getTopLeft(card('首页栏目')).dx),
     );
     for (final language in AppLanguage.values) {
@@ -523,13 +551,113 @@ void main() {
       tester.view.physicalSize = const Size(640, 700);
       await tester.pumpWidget(buildSettings(language: language, textScale: 2));
       await settleFilmSettings(tester);
+      expectCardGap('扫描与资源识别', '首页栏目');
+      expectCardGap('首页栏目', '显示偏好');
       expect(
-        tester.getTopLeft(card('全局背景')).dx,
+        tester.getTopLeft(card('显示偏好')).dx,
         tester.getTopLeft(card('首页栏目')).dx,
       );
-      expect(find.byType(SettingsGroupCard), findsNWidgets(5));
+      expect(find.byType(SettingsGroupCard), findsNWidgets(6));
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('缓存页宽窗配对卡片，保留期限跨双栏，窄窗按顺序单列', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsPageMemory.select(SettingsSection.cache);
+    tester.view.physicalSize = const Size(1280, 800);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+
+    Rect card(String key) => tester.getRect(find.byKey(Key(key)));
+    final policy = card('cache-settings-section');
+    final intelligence = card('cache-intelligence-settings-section');
+    final retention = card('cache-expiration-settings-section');
+    final cleanup = card('cache-cleanup-settings-section');
+    final learning = card('learning-data-cleanup-settings-section');
+    expect(policy.top, intelligence.top);
+    expect(policy.right, lessThan(intelligence.left));
+    expect(retention.top, greaterThan(policy.bottom));
+    expect(retention.top, greaterThan(intelligence.bottom));
+    expect(retention.left, policy.left);
+    expect(retention.right, intelligence.right);
+    expect(
+      card('media-metadata-retention-days-field').left,
+      card('directory-freshness-minutes-field').left,
+    );
+    expect(cleanup.top, learning.top);
+    expect(cleanup.top, greaterThan(retention.bottom));
+
+    tester.view.physicalSize = const Size(680, 760);
+    await tester.pumpAndSettle();
+    const groups = [
+      'cache-settings-section',
+      'cache-intelligence-settings-section',
+      'cache-expiration-settings-section',
+      'cache-cleanup-settings-section',
+      'learning-data-cleanup-settings-section',
+    ];
+    for (var index = 1; index < groups.length; index++) {
+      final previous = card(groups[index - 1]);
+      final current = card(groups[index]);
+      expect(current.left, previous.left);
+      expect(current.top, greaterThan(previous.bottom));
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('全局背景在外观打开，目录位置记忆在通用编辑并跨分类保存', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsPageMemory.select(SettingsSection.films);
+    await tester.pumpWidget(buildSettings());
+    await settleFilmSettings(tester);
+    final background = find.byKey(const Key('global-background-button'));
+    final memory = find.byKey(const Key('directory-memory-mode'));
+    expect(background, findsNothing);
+
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    expect(memory, findsNothing);
+    await tester.tap(background);
+    await pumpUntil(
+      tester,
+      () => find.text('全局背景').evaluate().isNotEmpty,
+      reason:
+          'The appearance shortcut should open the existing background picker',
+    );
+    expect(find.text('选择本地图片'), findsOneWidget);
+    Navigator.of(tester.element(find.text('选择本地图片'))).pop();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('settings-section-general')));
+    await tester.pumpAndSettle();
+    expect(background, findsNothing);
+    await tester.ensureVisible(memory);
+    await tester.tap(find.descendant(of: memory, matching: find.text('跨次保留')));
+    await tester.pumpAndSettle();
+    expect(
+      configStore.current.appearance.directoryMemoryMode,
+      DirectoryMemoryMode.temporary,
+    );
+    await tester.tap(find.byKey(const Key('settings-section-appearance')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-settings-button')));
+    await pumpUntil(
+      tester,
+      () => find.text('全部配置已保存').evaluate().isNotEmpty,
+      reason: 'Global save should finish after leaving the edited category',
+    );
+    final saved = await tester.runAsync(configStore.load);
+    expect(
+      saved!.appearance.directoryMemoryMode,
+      DirectoryMemoryMode.persistent,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('设置固定标签在四语言、明暗主题和 1280×720 文字缩放下正常布局', (tester) async {
@@ -576,11 +704,14 @@ void main() {
     }
   });
 
-  testWidgets('播放页显示默认开启的 WebDAV 字体缓存开关', (tester) async {
+  testWidgets('播放页保留 WebDAV 音轨标注并显示默认开启的远程字体缓存', (tester) async {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('settings-section-playback')));
     await tester.pumpAndSettle();
+    expect(find.text('自动加载 WebDAV 外挂音轨'), findsOneWidget);
+    expect(find.text('缓存远程外挂字体'), findsOneWidget);
+    expect(find.text('蓝光菜单进度'), findsOneWidget);
     final toggle = find.byKey(const Key('webdav-font-cache'));
     expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
     await tester.ensureVisible(toggle);
@@ -707,6 +838,67 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('连续播放与续播的相邻开关间距一致', (tester) async {
+    SettingsPageMemory.select(SettingsSection.playback);
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+
+    final resume = find.widgetWithText(SPToggleTile, '自动续播');
+    final nextSeason = find.byKey(const Key('auto-season-transition'));
+    final skipGap = find.byKey(const Key('allow-season-gap'));
+    final firstGap =
+        tester.getRect(nextSeason).top - tester.getRect(resume).bottom;
+    final secondGap =
+        tester.getRect(skipGap).top - tester.getRect(nextSeason).bottom;
+
+    expect(firstGap, secondGap);
+  });
+
+  testWidgets('剧集网络失败设置默认停止并保存自动切集', (tester) async {
+    await tester.pumpWidget(buildSettings());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('settings-section-playback')));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('episode-network-failure-mode'));
+    await tester.ensureVisible(field);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<FormField<EpisodeNetworkFailureMode>>(field).initialValue,
+      EpisodeNetworkFailureMode.stop,
+    );
+    await tester.tap(field);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('自动切集'));
+    await tester.pumpAndSettle();
+    tester
+        .widget<FilledButton>(find.byKey(const Key('save-settings-button')))
+        .onPressed!();
+    await pumpUntil(
+      tester,
+      () => find.text('全部配置已保存').evaluate().isNotEmpty,
+      reason: 'Episode failure mode and related settings finish saving',
+    );
+    final saved = await tester.runAsync(configStore.load);
+    expect(
+      saved!.episodeNetworkFailureMode,
+      EpisodeNetworkFailureMode.autoSkip,
+    );
+    expect(
+      saved.toPlayerConfig().episodeNetworkFailureMode,
+      EpisodeNetworkFailureMode.autoSkip,
+    );
+    expect(
+      StreamPathConfig.fromJson({}).episodeNetworkFailureMode,
+      EpisodeNetworkFailureMode.stop,
+    );
+    await tester.runAsync(configStore.resetToDefaults);
+    expect(
+      configStore.current.episodeNetworkFailureMode,
+      EpisodeNetworkFailureMode.stop,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('隐式集数上限默认 2，可保存为 3 并重新加载', (tester) async {
     await tester.pumpWidget(buildSettings());
     await tester.pumpAndSettle();
@@ -773,7 +965,7 @@ void main() {
       );
       await tester.ensureVisible(toggle);
       expect(
-        find.text(AppLocalizations(language).text('按小数集号插入番外篇')),
+        find.text(AppLocalizations(language).text('按小数集号插入番外')),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull, reason: language.name);
@@ -1677,7 +1869,7 @@ void main() {
     expect(find.byKey(const Key('run-diagnostics-button')), findsOneWidget);
     expect(find.byKey(const Key('export-diagnostics-button')), findsOneWidget);
     expect(find.byKey(const Key('repair-databases-button')), findsOneWidget);
-    expect(find.textContaining('脱敏边界'), findsOneWidget);
+    expect(find.text('诊断隐私说明'), findsOneWidget);
     expect(SettingsPageMemory.selectedSection, SettingsSection.diagnostics);
     expect(tester.takeException(), isNull);
   });
@@ -2347,7 +2539,8 @@ void main() {
       find.byKey(const Key('directory-freshness-minutes-field')),
       findsOneWidget,
     );
-    expect(find.text('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'), findsOneWidget);
+    expect(find.text('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'), findsNothing);
+    expect(find.byKey(const Key('clear-learning-data-button')), findsOneWidget);
 
     await tester.enterText(playbackField, '45');
     expect(tester.widget<TextFormField>(playbackField).controller?.text, '45');

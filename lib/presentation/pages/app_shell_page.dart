@@ -8,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../core/errors/app_exception.dart';
 import '../../data/models/media_library_item.dart';
 import '../../data/models/film_catalog_item.dart';
+import '../../domain/services/external_player_service.dart';
 import '../localization/app_localizations.dart';
 import '../localization/app_text.dart';
 import '../state/app_state.dart';
@@ -44,6 +45,7 @@ class _AppShellPageState extends State<AppShellPage>
   FilmCatalogController? _filmTasks;
   int _filmCompletion = 0;
   bool _watchingFilms = false;
+  StreamSubscription<PlaybackRecoveryEvent>? _playbackNoticeSub;
 
   Future<void> _watchFilmTasks() async {
     if (_watchingFilms) return;
@@ -121,6 +123,11 @@ class _AppShellPageState extends State<AppShellPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         final app = context.read<AppState>();
+        _playbackNoticeSub = app.playbackRecoveryEvents
+            .where(
+              (event) => event.stage == PlaybackRecoveryStage.networkStopped,
+            )
+            .listen((event) => _notice(event.message));
         app.onImplicitVideoError = _notice;
         if (app.videoCacheRestoreError != null) {
           _notice(app.videoCacheRestoreError!);
@@ -143,6 +150,7 @@ class _AppShellPageState extends State<AppShellPage>
       chrome.dispose();
     }
     _filmTasks?.taskChanges.removeListener(_filmTasksChanged);
+    _playbackNoticeSub?.cancel();
     _hideTimer?.cancel();
     _slideProgress.dispose();
     _slideController.dispose();

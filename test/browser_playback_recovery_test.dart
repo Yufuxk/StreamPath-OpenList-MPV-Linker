@@ -32,6 +32,7 @@ import 'package:streampath/domain/services/mpv_watch_later_sync.dart';
 import 'package:streampath/domain/services/openlist_recovery_service.dart';
 import 'package:streampath/domain/services/player_process_controller.dart';
 import 'package:streampath/domain/services/webdav_service.dart';
+import 'package:streampath/presentation/pages/app_shell_page.dart';
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/pages/film_detail_page.dart';
 import 'package:streampath/presentation/pages/global_media_library_page.dart';
@@ -44,6 +45,7 @@ import 'helpers/shell_test_app_state.dart';
 const _profile = 'recovery-source';
 const _base = 'http://127.0.0.1:1/dav';
 const _url = '$_base/Movie.mkv';
+const _nextUrl = '$_base/Next.mkv';
 const _id = 'recovery-movie';
 
 class _Recovery implements PlaybackLinkRecoveryProvider {
@@ -176,8 +178,9 @@ class _App extends ShellTestAppState {
 Future<void> _append(
   PlayerLaunchResult result, {
   required String reason,
-  required int position,
+  required num position,
   String? epoch,
+  bool networkStop = false,
 }) async {
   final record = {
     'epoch': epoch ?? result.launchEpoch,
@@ -187,6 +190,7 @@ Future<void> _append(
     'position': position,
     'duration': 600,
     'reason': reason,
+    if (networkStop) 'network_action': 'stop',
     'queue_generation': 0,
     'recorded_at': DateTime.now().millisecondsSinceEpoch,
   };
@@ -211,9 +215,89 @@ Future<T> _withFrames<T>(
 }
 
 void main() {
-  for (final scenario in ['eof', 'quit', 'failed-recovery']) {
+  testWidgets('应用外壳在当前页显示一次网络停止提示', (tester) async {
+    final events = StreamController<PlaybackRecoveryEvent>.broadcast();
+    final (directory, app) = (await tester.runAsync(() async {
+      final directory = await Directory.systemTemp.createTemp(
+        'sp_network_notice_',
+      );
+      final config = StreamPathConfigStore.forPath(
+        p.join(directory.path, 'config.json'),
+        credentialStore: MemoryProfileCredentialStore({}),
+      );
+      final app = _App(
+        configStore: config,
+        playbackHistoryStore: PlaybackHistoryStore.forPath(
+          p.join(directory.path, 'history.json'),
+        ),
+        progressService: await PlaybackProgressService.open(
+          p.join(directory.path, 'progress.db'),
+        ),
+        mediaLibraryStore: MediaLibraryStore.forPath(
+          p.join(directory.path, 'records.json'),
+        ),
+        playerService: ExternalPlayerService(configStore: config),
+        directoryCache: DirectoryCache(
+          boxOpener: (name) => Hive.openBox<Map>(name, path: directory.path),
+        ),
+        recoveryEvents: events.stream,
+      );
+      await app.directoryCache.init();
+      await app.getFilmCatalog();
+      return (directory, app);
+    }))!;
+    try {
+      await tester.pumpWidget(
+        ChangeNotifierProvider<AppState>.value(
+          value: app,
+          child: const MaterialApp(home: AppShellPage()),
+        ),
+      );
+      await tester.pump();
+      const message = '网络连接异常，播放已停止';
+      events.add(
+        PlaybackRecoveryEvent(
+          player: app.playerService,
+          sessionId: _id,
+          launchEpoch: 'fixture',
+          stage: PlaybackRecoveryStage.networkStopped,
+          message: message,
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text(message).evaluate().length == 1,
+        reason: 'The shell shows one network stop notice',
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(find.text(message), findsNothing);
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() async {
+        await events.close();
+        app.dispose();
+        await app.closeTestStores();
+        await app.directoryCache.close();
+        await app.progressService.close();
+        await directory.delete(recursive: true);
+      });
+    }
+  });
+
+  for (final scenario in [
+    'eof',
+    'quit',
+    'failed-recovery',
+    'stop-at-98.9%',
+    'stop-at-99%',
+  ]) {
     final eof = scenario == 'eof';
-    final implicit = scenario == 'quit';
+    final networkStop = scenario.startsWith('stop-at-');
+    final reachedThreshold = scenario == 'stop-at-99%';
+    final implicit = scenario == 'quit' || reachedThreshold;
     testWidgets(
       'network movie keeps both pages consistent after $scenario',
       (tester) async {
@@ -309,8 +393,18 @@ void main() {
           await directoryCache.init();
           directoryCache.write(
             'fixture-root',
-            const [
-              WebDavFile(name: 'Movie.mkv', href: _url, isDirectory: false),
+            [
+              const WebDavFile(
+                name: 'Movie.mkv',
+                href: _url,
+                isDirectory: false,
+              ),
+              if (networkStop)
+                const WebDavFile(
+                  name: 'Next.mkv',
+                  href: _nextUrl,
+                  isDirectory: false,
+                ),
             ],
             sourceId: _profile,
             path: '',
@@ -372,15 +466,23 @@ void main() {
             title: 'Movie.mkv',
             catalogPath: 'Movie.mkv',
           );
-          const queue = [
-            VideoQueueItem(
+          const next = MediaEntry(url: _nextUrl, catalogPath: 'Next.mkv');
+          final queue = [
+            const VideoQueueItem(
               versions: [
                 VideoQueueVersion(path: 'Movie.mkv', name: 'Movie.mkv'),
               ],
             ),
+            if (networkStop)
+              const VideoQueueItem(
+                versions: [
+                  VideoQueueVersion(path: 'Next.mkv', name: 'Next.mkv'),
+                ],
+              ),
           ];
+          final playlist = ['Movie.mkv', if (networkStop) 'Next.mkv'];
           final first = await app.filmPlayerService.launch(
-            entries: const [entry],
+            entries: [entry, if (networkStop && !implicit) next],
             sessionId: _id,
             webDavSourceUrl: _base,
             webDavSourceId: _profile,
@@ -388,7 +490,9 @@ void main() {
                 ? ImplicitVideoPlan(
                     items: queue,
                     index: 0,
-                    prepare: (_) async => const PreparedVideoItem(entry: entry),
+                    prepare: (version) async => PreparedVideoItem(
+                      entry: version.path == next.catalogPath ? next : entry,
+                    ),
                     activated: (_, _) async {},
                   )
                 : null,
@@ -401,8 +505,8 @@ void main() {
               updatedAt: DateTime.now(),
               sessionId: _id,
               sourceId: _profile,
-              playlistFileNames: const ['Movie.mkv'],
-              playlistRelativePaths: const ['Movie.mkv'],
+              playlistFileNames: playlist,
+              playlistRelativePaths: playlist,
               playerPid: first.process.pid,
               ipcPipeName: first.ipcPipeName,
               playerExecutablePath: first.processIdentity!.executablePath,
@@ -466,6 +570,51 @@ void main() {
             reason: 'Initial resume card is visible',
           );
           expect(find.text('继续播放'), findsOneWidget);
+          if (networkStop) {
+            final position = reachedThreshold ? 594.0 : 593.4;
+            await tester.runAsync(() async {
+              await _append(
+                first,
+                reason: 'error',
+                position: position,
+                networkStop: true,
+              );
+              processes.exited.add(first.process.pid);
+            });
+            await pumpUntil(
+              tester,
+              () =>
+                  app.filmPlaybackHistoryStore.sessions.single.playerPid ==
+                  null,
+              reason: 'Network stop keeps the history and clears the player',
+            );
+            final (progress, records) = await _withFrames(
+              tester,
+              () async => (
+                await app.filmProgressService.getResumeProgress(
+                  _url,
+                  profileId: _profile,
+                ),
+                await app.filmMediaLibraryStore!.playbackHistory(
+                  _profile,
+                  audio: false,
+                ),
+              ),
+            );
+            final history = app.filmPlaybackHistoryStore.sessions.single;
+            expect(history.videoIndex, reachedThreshold ? 1 : 0);
+            expect(
+              history.fileName,
+              reachedThreshold ? 'Next.mkv' : 'Movie.mkv',
+            );
+            expect(history.ipcPipeName, isNull);
+            expect(progress?.positionMs, (position * 1000).round());
+            expect(records.any((record) => record.continueCompleted), isFalse);
+            expect(recovery.requested.isCompleted, isFalse);
+            expect(second, isNull);
+            expect(tester.takeException(), isNull);
+            return;
+          }
           final delayedProbe = Completer<bool>();
           if (eof) {
             final player = app.filmPlayerService as _Player;

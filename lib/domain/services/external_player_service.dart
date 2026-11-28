@@ -15,6 +15,7 @@ import '../../core/utils/url_utils.dart';
 import '../../data/local/stream_path_config_store.dart';
 import '../../data/local/playback_progress_db.dart';
 import '../../data/models/media_entry.dart';
+import '../../data/models/episode_network_failure_mode.dart';
 import '../../data/models/media_source.dart';
 import '../../data/models/subtitle_item.dart';
 import '../../data/models/playback_media_entry.dart';
@@ -148,6 +149,7 @@ class _PlaybackLaunchContext {
         videoPlaylistInsertDecimalEpisodes:
             player.videoPlaylistInsertDecimalEpisodes,
         implicitPlaylistWindowSize: player.implicitPlaylistWindowSize,
+        episodeNetworkFailureMode: player.episodeNetworkFailureMode,
         autoSeasonTransitionEnabled: player.autoSeasonTransitionEnabled,
         allowSeasonGap: player.allowSeasonGap,
         hiddenExtensionsEnabled: player.hiddenExtensionsEnabled,
@@ -206,7 +208,7 @@ class _PlaybackLaunchContext {
   final bool isLocal;
 }
 
-enum PlaybackRecoveryStage { preparing, relaunched, failed }
+enum PlaybackRecoveryStage { preparing, relaunched, failed, networkStopped }
 
 /// MPV 播放失败自动恢复状态，供界面更新提示和新进程身份。
 class PlaybackRecoveryEvent {
@@ -405,6 +407,8 @@ class _PlayerSessionRuntime {
   bool exitSyncPending = false;
   bool exitProgressSynced = false;
   int? exitEofIndex;
+  MpvPlaybackFailureRecord? exitNetworkFailure;
+  bool networkStopNotified = false;
   Future<PlayerTerminationOutcome>? terminationFuture;
 }
 
@@ -956,6 +960,10 @@ class ExternalPlayerService {
         isMpv && !implicit && config.autoSeasonTransitionEnabled;
     final hasNextSeason =
         seasonTransition && nextSeason != null && nextSeason.entries.isNotEmpty;
+    final episodeFailureMode =
+        (implicitPlan?.items.length ?? entries.length) > 1 || hasNextSeason
+        ? config.episodeNetworkFailureMode
+        : null;
     final recoverySeason = seasonTransition
         ? SeasonPlaybackEntries(
             entries: entries,
@@ -1470,14 +1478,7 @@ class ExternalPlayerService {
             flush: true,
           );
           artifactPaths.addAll([seasonPlanFilePath, seasonMarkerFilePath]);
-          final transitionScript = await MpvScripts.ensureSeasonTransition(
-            seasonPlanFilePath,
-            seasonMarkerFilePath,
-            scriptBase!,
-            sessionId: artifactSessionId,
-          );
-          artifactPaths.add(transitionScript);
-          args.addAll(['--idle=yes', '--script=$transitionScript']);
+          args.add('--idle=yes');
         }
         try {
           final progressFile = File(progressFilePath);
@@ -1499,6 +1500,9 @@ class ExternalPlayerService {
           launchEpoch: launchEpoch,
           queueFile: queueFile,
           preferPlaylistTitles: true,
+          episodeFailureMode: episodeFailureMode,
+          seasonPlanFile: seasonPlanFilePath,
+          seasonMarkerFile: seasonMarkerFilePath,
         );
         await ensureOwned();
         artifactPaths.add(currentScript);
@@ -2831,12 +2835,28 @@ class ExternalPlayerService {
     if (runtime.isMpv) {
       runtime.exitProgressSynced = true;
       try {
-        runtime.exitEofIndex = await _syncProgress(runtime, runtime.entries);
+        runtime.exitEofIndex = await _syncProgress(
+          runtime,
+          runtime.entries,
+          onExit: true,
+        );
       } catch (e) {
         // ignore: avoid_print
         print(
           'Playback progress synchronization failed '
           '(error-type=${e.runtimeType})',
+        );
+      }
+      if (!runtime.networkStopNotified &&
+          runtime.exitNetworkFailure?.networkAction ==
+              EpisodeNetworkFailureMode.stop &&
+          identical(_sessions[runtime.sessionId], runtime) &&
+          _ownsLaunch(runtime.sessionId, runtime.ownershipGeneration)) {
+        runtime.networkStopNotified = true;
+        _emitPlaybackRecovery(
+          runtime,
+          PlaybackRecoveryStage.networkStopped,
+          '网络连接异常，播放已停止',
         );
       }
     }
@@ -2920,7 +2940,7 @@ class ExternalPlayerService {
         !identical(_sessions[runtime.sessionId], runtime)) {
       return true;
     }
-    if (failure == null) return false;
+    if (failure == null || failure.networkAction != null) return false;
     if (runtime.entries[_failureEntryIndex(runtime, failure)].progressTarget !=
         null) {
       return false;
@@ -3305,8 +3325,9 @@ class ExternalPlayerService {
   /// 合并 Lua 逐媒体结果与 watch_later，写回播放进度库。
   Future<int?> _syncProgress(
     _PlayerSessionRuntime runtime,
-    List<MediaEntry> entries,
-  ) => _progressSyncCoordinator.run<int?>(
+    List<MediaEntry> entries, {
+    bool onExit = false,
+  }) => _progressSyncCoordinator.run<int?>(
     sessionId: runtime.sessionId,
     generation: runtime.progressGeneration,
     action: () async {
@@ -3320,6 +3341,12 @@ class ExternalPlayerService {
         if (record['epoch'] == runtime.launchEpoch &&
             (record['outcome'] == 'position' ||
                 record['outcome'] == 'completed')) {
+          if (onExit) {
+            final failure = MpvPlaybackFailureRecord.tryParse(line);
+            runtime.exitNetworkFailure = failure?.networkAction == null
+                ? null
+                : failure;
+          }
           await _reportJournalProgress(runtime, record);
         }
       }
@@ -3996,6 +4023,29 @@ class ExternalPlayerService {
               return;
             }
           } else if (record['outcome'] == 'position') {
+            if (record['network_action'] == 'stop') return;
+            if (record['network_action'] == 'autoSkip') {
+              await _reportJournalProgress(runtime, record);
+              while (runtime.queueWindowBusy && _queueControlEnabled) {
+                await Future<void>.delayed(const Duration(milliseconds: 10));
+              }
+              if (!_queueControlEnabled ||
+                  !identical(_sessions[runtime.sessionId], runtime) ||
+                  generation != runtime.queueGeneration) {
+                continue;
+              }
+              final next = index + 1;
+              if (next == plan.items.length) {
+                await _sendQueueMessage(runtime, ['streampath-queue-stop']);
+                return;
+              }
+              if (!runtime.queueEntries.values.any(
+                (entry) => entry.index == next && entry.entryId != null,
+              )) {
+                await _selectImplicitEntry(runtime, next);
+              }
+              continue;
+            }
             if (record['reason'] == 'error') {
               runtime.pendingQueueIndex = index;
               await plan.pending?.call(index);
@@ -4210,6 +4260,8 @@ class ExternalPlayerService {
     _PlayerSessionRuntime runtime,
     Map<String, dynamic> record,
   ) async {
+    final position = record['position'] as num?;
+    if (record['network_action'] != null && position == null) return;
     final index = (record['playlist_pos'] as num?)?.toInt();
     if (index == null || index < 0 || index >= runtime.entries.length) return;
     final physical = record['path'] as String? ?? '';
@@ -4226,7 +4278,7 @@ class ExternalPlayerService {
       VideoProgressUpdate(
         sourceId: runtime.profileId,
         path: path,
-        positionMs: (((record['position'] as num?) ?? 0) * 1000).round(),
+        positionMs: ((position ?? 0) * 1000).round(),
         durationMs: record['duration'] is num
             ? ((record['duration'] as num) * 1000).round()
             : null,
@@ -5105,6 +5157,23 @@ class ExternalPlayerService {
         }
       },
     );
+  }
+
+  MpvPlaybackFailureRecord? videoExitNetworkFailure(
+    String sessionId, {
+    required String? launchEpoch,
+  }) {
+    final runtime = _sessions[sessionId];
+    if (runtime == null ||
+        runtime.exitSyncPending ||
+        runtime.launchEpoch != launchEpoch ||
+        !_progressSyncCoordinator.isCurrent(
+          sessionId,
+          runtime.progressGeneration,
+        )) {
+      return null;
+    }
+    return runtime.exitNetworkFailure;
   }
 
   /// 只接受进程退出同步确认的 EOF，并绑定原播放代次与队列。

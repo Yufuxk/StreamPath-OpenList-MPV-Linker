@@ -1628,7 +1628,11 @@ class BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _handlePlaybackRecoveryEvent(PlaybackRecoveryEvent event) async {
-    if (!mounted || !identical(event.player, _playerService)) return;
+    if (!mounted ||
+        event.stage == PlaybackRecoveryStage.networkStopped ||
+        !identical(event.player, _playerService)) {
+      return;
+    }
     final session = _sessionById(event.sessionId);
     final appState = context.read<AppState>();
     if (session != null) {
@@ -1739,6 +1743,8 @@ class BrowserPageState extends State<BrowserPage> {
             _refreshPlaybackMonitor();
           }
           break;
+        case PlaybackRecoveryStage.networkStopped:
+          return;
         case PlaybackRecoveryStage.failed:
           setState(() {
             session.activationGuard.reset();
@@ -5862,7 +5868,18 @@ class BrowserPageState extends State<BrowserPage> {
       playlistPaths: session.history.playlistRelativePaths,
       playlistLength: names.length,
     );
-    if (guard.isWaiting && !running && exitEofIndex() != null) {
+    if (guard.isWaiting && !running && !hasLoadedCurrentMedia) {
+      await playerService.waitForExitSync(sessionId);
+      if (!isCurrent() || playerService.videoExitSyncPending(sessionId)) return;
+    }
+    if (guard.isWaiting &&
+        !running &&
+        (exitEofIndex() != null ||
+            playerService.videoExitNetworkFailure(
+                  sessionId,
+                  launchEpoch: launchEpoch,
+                ) !=
+                null)) {
       guard.confirmActivation();
     } else if (guard.isWaiting && hasLoadedCurrentMedia) {
       guard.confirmActivation();
@@ -5892,8 +5909,28 @@ class BrowserPageState extends State<BrowserPage> {
       await playerService.waitForExitSync(sessionId);
       if (!isCurrent()) return;
       if (playerService.videoExitSyncPending(sessionId)) return;
+      final failure = playerService.videoExitNetworkFailure(
+        sessionId,
+        launchEpoch: launchEpoch,
+      );
+      final failedPos = failure?.playlistPos;
+      final failurePlaylist = failure?.playlistPath;
+      final pendingSeason = session.history.nextSeasonPlaylistPath;
+      if (failedPos != null &&
+          pendingSeason != null &&
+          failurePlaylist != null &&
+          _sameSeasonPlaylist(failurePlaylist, pendingSeason)) {
+        await _activateNextSeason(
+          session,
+          failedPos,
+          isCurrent,
+          stageNext: false,
+        );
+        if (!isCurrent()) return;
+        names = session.playlistFileNames;
+      }
       final journalEof = exitEofIndex();
-      final pendingPos =
+      var pendingPos =
           session.history.videoPlaylistMode == VideoPlaylistMode.implicit
           ? session.history.pendingVideoIndex
           : null;
@@ -5924,21 +5961,53 @@ class BrowserPageState extends State<BrowserPage> {
         await _completeFilmBoundary(session);
         return;
       }
+      final hasFailedPos =
+          failedPos != null && failedPos >= 0 && failedPos < names.length;
       final currentPos =
           journalEof ??
-          (pos != null && pos >= 0 && pos < names.length
+          (hasFailedPos
+              ? failedPos
+              : pos != null && pos >= 0 && pos < names.length
               ? pos
               : session.lastSyncedPos);
       final isLastItem = currentPos == names.length - 1;
-      var reachedCompletion =
-          journalEof != null || _hasReachedCompletionThreshold(session, lines);
-      if (!reachedCompletion) {
+      final matchesFailureSample =
+          failure != null &&
+          failure.path.isNotEmpty &&
+          stripUserInfo(failure.path) == session.lastReportedUrl;
+      var reachedCompletion = failure == null
+          ? journalEof != null || _hasReachedCompletionThreshold(session, lines)
+          : hasFailedPos &&
+                hasReachedExitCompletion(
+                  positionSeconds: failure.positionSeconds,
+                  durationSeconds: failure.durationSeconds,
+                  fallbackPositionSeconds: matchesFailureSample
+                      ? session.lastReportedPositionSeconds
+                      : null,
+                  fallbackDurationSeconds: matchesFailureSample
+                      ? session.lastReportedDurationSeconds
+                      : null,
+                );
+      final matchingExitStatus =
+          hasFailedPos &&
+          failure != null &&
+          failure.path.isNotEmpty &&
+          lines != null &&
+          lines.length >= 2 &&
+          stripUserInfo(lines[1].trim()) == stripUserInfo(failure.path);
+      if (!reachedCompletion && (failure == null || matchingExitStatus)) {
         reachedCompletion = await _hasPersistedCompletionThreshold(
           session,
           lines,
         );
       }
       if (!isCurrent()) return;
+      if (failure != null && reachedCompletion && pendingPos == currentPos) {
+        session.history = session.history.copyWith(
+          clearPendingVideoIndex: true,
+        );
+        pendingPos = null;
+      }
       if (pendingPos == null &&
           (naturallyFinished || (isLastItem && reachedCompletion))) {
         await _removePlaybackSession(
@@ -5957,9 +6026,14 @@ class BrowserPageState extends State<BrowserPage> {
               (v) =>
                   v.path == history.playlistRelativePaths[history.videoIndex],
             );
-        final target = history.queueItems[pendingPos]
-            .orderedVersions(previous)
-            .first;
+        final item = history.queueItems[pendingPos];
+        final target =
+            (pendingPos == failedPos
+                ? item.versions
+                      .where((version) => version.path == failure?.catalogPath)
+                      .firstOrNull
+                : null) ??
+            item.orderedVersions(previous).first;
         final paths = List<String>.of(history.playlistRelativePaths);
         final names = List<String>.of(history.playlistFileNames);
         paths[pendingPos] = target.path;
@@ -5973,12 +6047,24 @@ class BrowserPageState extends State<BrowserPage> {
         await _advanceCompletedVideoSession(session, pendingPos, isCurrent);
       } else if (reachedCompletion) {
         await _advanceCompletedVideoSession(session, currentPos + 1, isCurrent);
-      } else if (mediaChanged) {
+      } else if (hasFailedPos && failedPos != session.history.videoIndex) {
+        await _advanceCompletedVideoSession(session, failedPos, isCurrent);
+      } else if (failure == null && mediaChanged) {
         await _updateVideoPlaybackHistory(session, loadedPos, isCurrent);
       }
       if (!isCurrent()) return;
       session.finishPending = 0;
-      await _saveStrmPlaybackProgress(session);
+      final failurePosition = failure?.positionSeconds;
+      if (failurePosition != null && failedPos == session.history.videoIndex) {
+        final duration = failure?.durationSeconds;
+        await _saveStrmPlaybackProgress(
+          session,
+          positionMs: (failurePosition * 1000).round(),
+          durationMs: duration == null ? null : (duration * 1000).round(),
+        );
+      } else {
+        await _saveStrmPlaybackProgress(session);
+      }
       if (!isCurrent()) return;
       final needsHistoryUpdate =
           session.history.playerPid != null ||
@@ -6200,8 +6286,9 @@ class BrowserPageState extends State<BrowserPage> {
   Future<void> _activateNextSeason(
     PlaybackUiSession session,
     int pos,
-    bool Function() isCurrent,
-  ) async {
+    bool Function() isCurrent, {
+    bool stageNext = true,
+  }) async {
     final old = session.history;
     final root = old.nextSeasonRootPath;
     final playlist = old.nextSeasonPlaylistPath;
@@ -6250,7 +6337,9 @@ class BrowserPageState extends State<BrowserPage> {
     );
     if (!isCurrent()) return;
     setState(() {});
-    unawaited(_stageFollowingSeason(session, root, playlist).then((_) {}));
+    if (stageNext) {
+      unawaited(_stageFollowingSeason(session, root, playlist).then((_) {}));
+    }
   }
 
   Future<String?> _stageFollowingSeason(

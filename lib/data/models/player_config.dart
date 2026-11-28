@@ -7,6 +7,7 @@ import '../../core/utils/file_sort.dart';
 import 'playback_media_info.dart';
 import 'disc_title_selection_policy.dart';
 import 'special_playlist_mode.dart';
+import 'episode_network_failure_mode.dart';
 import 'video_playlist_mode.dart';
 import 'video_window_mode.dart';
 import 'mpv_menu_shortcuts.dart';
@@ -70,6 +71,7 @@ class PlayerConfig {
     this.webDavFontCacheEnabled = true,
     this.externalAudioInjectionEnabled = true,
     this.videoPlaylistMode = VideoPlaylistMode.implicit,
+    this.episodeNetworkFailureMode = EpisodeNetworkFailureMode.stop,
     this.videoPlaylistSimpleNaming = true,
     this.discTitleSelectionPolicy = DiscTitleSelectionPolicy.full,
     this.videoPlaylistInsertDecimalEpisodes = false,
@@ -146,6 +148,7 @@ class PlayerConfig {
   final bool webDavFontCacheEnabled;
   final bool externalAudioInjectionEnabled;
   final VideoPlaylistMode videoPlaylistMode;
+  final EpisodeNetworkFailureMode episodeNetworkFailureMode;
   final bool videoPlaylistSimpleNaming;
   final DiscTitleSelectionPolicy discTitleSelectionPolicy;
   final bool videoPlaylistInsertDecimalEpisodes;
@@ -239,6 +242,7 @@ class PlayerConfig {
     'webDavFontCacheEnabled': webDavFontCacheEnabled,
     'externalAudioInjectionEnabled': externalAudioInjectionEnabled,
     'videoPlaylistMode': videoPlaylistMode.name,
+    'episodeNetworkFailureMode': episodeNetworkFailureMode.name,
     'videoPlaylistSimpleNaming': videoPlaylistSimpleNaming,
     'discTitleSelectionPolicy': discTitleSelectionPolicy.name,
     'videoPlaylistInsertDecimalEpisodes': videoPlaylistInsertDecimalEpisodes,
@@ -306,6 +310,9 @@ class PlayerConfig {
       externalAudioInjectionEnabled:
           (json['externalAudioInjectionEnabled'] as bool?) ?? true,
       videoPlaylistMode: VideoPlaylistMode.fromJson(json['videoPlaylistMode']),
+      episodeNetworkFailureMode: EpisodeNetworkFailureMode.fromJson(
+        json['episodeNetworkFailureMode'],
+      ),
       videoPlaylistSimpleNaming:
           (json['videoPlaylistSimpleNaming'] as bool?) ?? true,
       discTitleSelectionPolicy: DiscTitleSelectionPolicy.fromJson(

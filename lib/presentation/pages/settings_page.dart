@@ -3,6 +3,7 @@ import '../widgets/section_switcher.dart';
 import '../widgets/sp_menu.dart';
 import '../../domain/services/app_update_service.dart';
 import '../widgets/app_update_settings_card.dart';
+import '../../data/models/episode_network_failure_mode.dart';
 import '../../data/models/video_playlist_mode.dart';
 import '../../data/models/disc_title_selection_policy.dart';
 import '../widgets/settings_group_card.dart';
@@ -57,6 +58,7 @@ import '../theme/app_theme.dart';
 import '../widgets/directory_scroll_view.dart';
 import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
+import '../widgets/film_artwork_picker.dart';
 import '../widgets/settings_category_forms.dart';
 import '../widgets/settings_columns.dart';
 import '../widgets/sp_font_picker.dart';
@@ -1473,7 +1475,7 @@ class SettingsPageState extends State<SettingsPage> {
     return [
       _SettingsSectionDefinition(
         section: SettingsSection.server,
-        label: '服务器',
+        label: '服务与连接',
         description: 'WebDAV 连接与服务恢复',
         icon: 0xE753,
         builder: () => ValueListenableBuilder<int>(
@@ -1486,7 +1488,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.playback,
-        label: '播放',
+        label: '播放设置',
         description: '播放器、字幕与续播',
         icon: 0xE714,
         builder: () => _observeSectionBuild(
@@ -1496,7 +1498,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.mediaLibrary,
-        label: '媒体中心',
+        label: '媒体记录',
         description: '容量限制与个人资产清理',
         icon: 0xE8F1,
         builder: () => _observeSectionBuild(
@@ -1527,7 +1529,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.cache,
-        label: '缓存',
+        label: '缓存与存储',
         description: '基础策略与智能优化',
         icon: 0xE74E,
         builder: () =>
@@ -1535,7 +1537,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.diagnostics,
-        label: '诊断',
+        label: '诊断与维护',
         description: '连接、存储与数据可靠性',
         icon: 0xE9D9,
         builder: () => _observeSectionBuild(
@@ -1545,7 +1547,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.appearance,
-        label: '界面',
+        label: '外观',
         description: '界面样式与窗口背景',
         icon: 0xE771,
         builder: () => ValueListenableBuilder<int>(
@@ -1555,7 +1557,7 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       _SettingsSectionDefinition(
         section: SettingsSection.general,
-        label: '基础设置',
+        label: '通用',
         description: '文件显示与默认排序',
         icon: 0xE713,
         builder: () => _observeSectionBuild(
@@ -1587,7 +1589,7 @@ class SettingsPageState extends State<SettingsPage> {
           enabled: enabled,
           contextMenuBuilder: buildClipboardHistoryMenu,
           decoration: InputDecoration(
-            labelText: context.l10n.text('屏蔽文件夹名称'),
+            labelText: context.l10n.text('排除的文件夹名称'),
             helperText: context.l10n.text('使用英文逗号分隔，区分大小写；命中后跳过整个子目录'),
             helperMaxLines: 3,
             prefixIcon: const Icon(SPIcons.hide),
@@ -1602,18 +1604,12 @@ class SettingsPageState extends State<SettingsPage> {
             menuIcon: SPIcons.manageSearch,
             isExpanded: true,
             decoration: InputDecoration(
-              labelText: context.l10n.text('文件夹名称匹配模式'),
+              labelText: context.l10n.text('文件夹排除匹配方式'),
               prefixIcon: const Icon(SPIcons.manageSearch),
             ),
             items: const [
-              DropdownMenuItem(
-                value: false,
-                child: AppText('模糊匹配（包含连续关键字）'),
-              ),
-              DropdownMenuItem(
-                value: true,
-                child: AppText('精确匹配（完整名称相同）'),
-              ),
+              DropdownMenuItem(value: false, child: AppText('模糊匹配（包含连续关键字）')),
+              DropdownMenuItem(value: true, child: AppText('精确匹配（完整名称相同）')),
             ],
             onChanged: enabled
                 ? (value) => _draft.exactFolderExclusions.value = value!
@@ -1632,292 +1628,309 @@ class SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildServerSettings() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SettingsColumns(
-          firstFraction: 0.5,
-          children: [
-            SettingsGroupCard(
-              icon: SPIcons.health,
-              title: 'OpenList/AList 后台与自动恢复',
-              description: '管理员凭据供播放恢复和索引更新共用。',
-              child: Column(
-                children: [
-                  SPToggleTile(
-                    key: const Key('openlist-recovery-switch'),
-                    title: const AppText('启用播放失败自动恢复'),
-                    subtitle: AppText(
-                      _openListStorageRecoveryUnavailable
-                          ? '当前后台缺少存储恢复端点，自动恢复已禁用'
-                          : '默认关闭，不会改变普通 WebDAV 播放行为',
+  Widget _buildServerSettings() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SettingsColumns(
+        children: [
+          SettingsGroupCard(
+            icon: SPIcons.health,
+            title: 'OpenList/AList 后台',
+            description: '管理员凭据供播放恢复和索引更新共用。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _SettingsLabeledField(
+                  label: context.l10n.text('服务地址'),
+                  child: TextFormField(
+                    key: const Key('openlist-recovery-base-url'),
+                    controller: _openListBaseUrlController,
+                    onChanged: _handleOpenListAdminConfigChanged,
+                    keyboardType: TextInputType.url,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      hintText: context.l10n.text('http://192.168.2.124:5244'),
+                      helperText: context.l10n.text(
+                        '基础 WebDAV 可独立连接；搜索、索引更新和存储恢复按实际端点能力分别判断。',
+                      ),
+                      prefixIcon: Icon(SPIcons.network),
+                      border: OutlineInputBorder(),
                     ),
-                    value: _openListRecoveryEnabled,
-                    onChanged: _openListStorageRecoveryUnavailable
-                        ? null
-                        : (value) =>
-                              setState(() => _openListRecoveryEnabled = value),
+                    validator: (value) {
+                      if (!_requiresOpenListAdminConfig) return null;
+                      if (OpenListRecoveryService.normalizeBaseUri(
+                            value ?? '',
+                          ) ==
+                          null) {
+                        return context.l10n.text('请输入有效的 HTTP/HTTPS 后台地址');
+                      }
+                      return null;
+                    },
                   ),
-                  const SizedBox(height: 4),
+                ),
+                const SizedBox(height: 12),
+                _SettingsLabeledField(
+                  label: context.l10n.text('管理员 Token'),
+                  child: TextFormField(
+                    key: const Key('openlist-recovery-token'),
+                    controller: _openListTokenController,
+                    onChanged: _handleOpenListAdminConfigChanged,
+                    obscureText: true,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '优先使用 Token；Authorization 不会添加 Bearer。',
+                      ),
+                      prefixIcon: Icon(SPIcons.permissions),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _buildFieldPair(
                   _SettingsLabeledField(
-                    label: context.l10n.text('后台地址'),
+                    label: context.l10n.text('管理员用户名'),
                     child: TextFormField(
-                      key: const Key('openlist-recovery-base-url'),
-                      controller: _openListBaseUrlController,
+                      key: const Key('openlist-recovery-username'),
+                      controller: _openListUsernameController,
                       onChanged: _handleOpenListAdminConfigChanged,
-                      keyboardType: TextInputType.url,
                       contextMenuBuilder: buildClipboardHistoryMenu,
                       decoration: InputDecoration(
-                        hintText: context.l10n.text(
-                          'http://192.168.2.124:5244',
-                        ),
-                        helperText: context.l10n.text(
-                          '基础 WebDAV 可独立连接；搜索、索引更新和存储恢复按实际端点能力分别判断。',
-                        ),
-                        prefixIcon: Icon(SPIcons.network),
+                        helperText: context.l10n.text('填写 Token 时可留空'),
+                        prefixIcon: Icon(SPIcons.shield),
                         border: OutlineInputBorder(),
                       ),
                       validator: (value) {
-                        if (!_requiresOpenListAdminConfig) return null;
-                        if (OpenListRecoveryService.normalizeBaseUri(
-                              value ?? '',
-                            ) ==
-                            null) {
-                          return context.l10n.text('请输入有效的 HTTP/HTTPS 后台地址');
+                        if (!_requiresOpenListAdminConfig ||
+                            _openListTokenController.text.trim().isNotEmpty) {
+                          return null;
                         }
-                        return null;
+                        return (value ?? '').trim().isEmpty
+                            ? context.l10n.text('请输入管理员用户名或填写 Token')
+                            : null;
                       },
                     ),
                   ),
-                  const SizedBox(height: 12),
                   _SettingsLabeledField(
-                    label: context.l10n.text('管理员 Token（推荐）'),
+                    label: context.l10n.text('管理员密码'),
                     child: TextFormField(
-                      key: const Key('openlist-recovery-token'),
-                      controller: _openListTokenController,
+                      key: const Key('openlist-recovery-password'),
+                      controller: _openListPasswordController,
                       onChanged: _handleOpenListAdminConfigChanged,
                       obscureText: true,
                       contextMenuBuilder: buildClipboardHistoryMenu,
                       decoration: InputDecoration(
-                        helperText: context.l10n.text(
-                          '优先使用 Token；Authorization 不会添加 Bearer。',
-                        ),
-                        prefixIcon: Icon(SPIcons.permissions),
+                        helperText: context.l10n.text('启用 2FA 时请使用 Token'),
+                        prefixIcon: Icon(SPIcons.lock),
                         border: OutlineInputBorder(),
                       ),
+                      validator: (value) {
+                        if (!_requiresOpenListAdminConfig ||
+                            _openListTokenController.text.trim().isNotEmpty) {
+                          return null;
+                        }
+                        return (value ?? '').isEmpty
+                            ? context.l10n.text('请输入管理员密码或填写 Token')
+                            : null;
+                      },
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  _buildFieldPair(
-                    _SettingsLabeledField(
-                      label: context.l10n.text('管理员用户名'),
-                      child: TextFormField(
-                        key: const Key('openlist-recovery-username'),
-                        controller: _openListUsernameController,
-                        onChanged: _handleOpenListAdminConfigChanged,
-                        contextMenuBuilder: buildClipboardHistoryMenu,
-                        decoration: InputDecoration(
-                          helperText: context.l10n.text('填写 Token 时可留空'),
-                          prefixIcon: Icon(SPIcons.shield),
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (!_requiresOpenListAdminConfig ||
-                              _openListTokenController.text.trim().isNotEmpty) {
-                            return null;
-                          }
-                          return (value ?? '').trim().isEmpty
-                              ? context.l10n.text('请输入管理员用户名或填写 Token')
-                              : null;
-                        },
-                      ),
-                    ),
-                    _SettingsLabeledField(
-                      label: context.l10n.text('管理员密码'),
-                      child: TextFormField(
-                        key: const Key('openlist-recovery-password'),
-                        controller: _openListPasswordController,
-                        onChanged: _handleOpenListAdminConfigChanged,
-                        obscureText: true,
-                        contextMenuBuilder: buildClipboardHistoryMenu,
-                        decoration: InputDecoration(
-                          helperText: context.l10n.text('启用 2FA 时请使用 Token'),
-                          prefixIcon: Icon(SPIcons.lock),
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          if (!_requiresOpenListAdminConfig ||
-                              _openListTokenController.text.trim().isNotEmpty) {
-                            return null;
-                          }
-                          return (value ?? '').isEmpty
-                              ? context.l10n.text('请输入管理员密码或填写 Token')
-                              : null;
-                        },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('本机服务重启目录'),
-                    child: SPDropdownButtonFormField<OpenListRestartDirectory>(
-                      key: ValueKey(
-                        'openlist-restart-directory-${_selectedProfileId ?? "new"}',
-                      ),
-                      initialValue: _draft.openListRestartDirectory,
-                      isExpanded: true,
-                      dropdownColor: _dropdownMenuColor,
-                      borderRadius: AppTheme.dropdownBorderRadius,
-                      decoration: InputDecoration(
-                        helperText: context.l10n.text(
-                          '默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。',
-                        ),
-                        prefixIcon: const Icon(SPIcons.folderOpen),
-                      ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: OpenListRestartDirectory.userProfile,
-                          child: AppText('默认路径（用户目录）'),
-                        ),
-                        DropdownMenuItem(
-                          value: OpenListRestartDirectory.installation,
-                          child: AppText('安装路径（程序所在目录）'),
-                        ),
-                      ],
-                      onChanged: (value) => setState(
-                        () => _draft.openListRestartDirectory = value!,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (_openListCapabilitySummary != null) ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: AppText(
-                        _openListCapabilitySummary!,
-                        key: const Key('openlist-capability-summary'),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: AppText(
-                      '安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-            SettingsGroupCard(
-              icon: SPIcons.manageSearch,
-              title: 'OpenList/AList 索引',
-              description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
-              child: Column(
-                children: [
-                  _SettingsLabeledField(
-                    label: context.l10n.text('普通用户 Token（推荐用于 2FA）'),
-                    child: TextFormField(
-                      key: const Key('openlist-index-user-token'),
-                      controller: _openListIndexUserTokenController,
-                      enabled: !_openListSearchUnavailable,
-                      obscureText: true,
-                      contextMenuBuilder: buildClipboardHistoryMenu,
-                      decoration: InputDecoration(
-                        helperText: context.l10n.text(
-                          '只用于索引搜索，请使用最小权限普通用户 Token；不会复用管理员 Token。',
-                        ),
-                        prefixIcon: const Icon(SPIcons.person),
-                        border: const OutlineInputBorder(),
+          ),
+          SettingsGroupCard(
+            icon: SPIcons.manageSearch,
+            title: '索引搜索与更新',
+            description: '搜索只读取服务端本地索引；更新索引时才可能访问挂载源。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _SettingsLabeledField(
+                  label: context.l10n.text('搜索 Token（普通用户）'),
+                  child: TextFormField(
+                    key: const Key('openlist-index-user-token'),
+                    controller: _openListIndexUserTokenController,
+                    enabled: !_openListSearchUnavailable,
+                    obscureText: true,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '索引搜索使用独立的最小权限普通用户 Token。账号启用 2FA 时请填写。',
                       ),
+                      prefixIcon: const Icon(SPIcons.person),
+                      border: const OutlineInputBorder(),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  SPToggleTile(
-                    key: const Key('openlist-index-auto-update-switch'),
-                    title: const AppText('定时更新全部索引'),
-                    subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
-                    value: _openListIndexAutoUpdateEnabled,
-                    onChanged: _openListIndexUpdateUnavailable
+                ),
+                const SizedBox(height: 12),
+                SPToggleTile(
+                  key: const Key('openlist-index-auto-update-switch'),
+                  title: const AppText('定时更新索引'),
+                  subtitle: const AppText('默认关闭；启动后先等待完整间隔，不会立即更新'),
+                  value: _openListIndexAutoUpdateEnabled,
+                  onChanged: _openListIndexUpdateUnavailable
+                      ? null
+                      : (value) => setState(
+                          () => _openListIndexAutoUpdateEnabled = value,
+                        ),
+                ),
+                const SizedBox(height: 4),
+                _SettingsLabeledField(
+                  label: context.l10n.text('更新间隔'),
+                  child: TextFormField(
+                    key: const Key('openlist-index-update-interval'),
+                    controller: _openListIndexIntervalController,
+                    enabled:
+                        _openListIndexAutoUpdateEnabled &&
+                        !_openListIndexUpdateUnavailable,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '最短 5 分钟，最长 7 天；低于最短值的外部配置会自动按 5 分钟执行。',
+                      ),
+                      prefixIcon: Icon(SPIcons.clock),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: (value) => !_openListIndexAutoUpdateEnabled
                         ? null
-                        : (value) => setState(
-                            () => _openListIndexAutoUpdateEnabled = value,
+                        : _validateNumber(
+                            value,
+                            min: OpenListIndexConfig.minUpdateIntervalMinutes
+                                .toDouble(),
+                            max: OpenListIndexConfig.maxUpdateIntervalMinutes
+                                .toDouble(),
+                            unit: '分钟',
+                            integer: true,
                           ),
                   ),
-                  const SizedBox(height: 4),
-                  _SettingsLabeledField(
-                    label: context.l10n.text('更新间隔（分钟）'),
-                    child: TextFormField(
-                      key: const Key('openlist-index-update-interval'),
-                      controller: _openListIndexIntervalController,
-                      enabled:
-                          _openListIndexAutoUpdateEnabled &&
-                          !_openListIndexUpdateUnavailable,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                        helperText: context.l10n.text(
-                          '最短 5 分钟，最长 7 天；低于最短值的外部配置会自动按 5 分钟执行。',
-                        ),
-                        prefixIcon: Icon(SPIcons.clock),
-                        border: OutlineInputBorder(),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.icon(
+                    key: const Key('openlist-index-update-now'),
+                    onPressed:
+                        _updatingOpenListIndex ||
+                            _openListIndexUpdateUnavailable
+                        ? null
+                        : _updateOpenListIndexNow,
+                    icon: _updatingOpenListIndex
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(SPIcons.refresh),
+                    label: AppText(_updatingOpenListIndex ? '正在提交…' : '立即更新索引'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: AppText(
+                    _openListIndexUpdateUnavailable
+                        ? '当前后台缺少索引更新所需端点，手动与定时更新已禁用；不会回退为全量构建。'
+                        : '保护规则：手动与定时请求互斥；若服务端正在构建索引则直接跳过；StreamPath 不会递归扫描 WebDAV。需先在 OpenList/AList 启用数据库索引与自动更新能力。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      SettingsColumns(
+        children: [
+          SettingsGroupCard(
+            icon: SPIcons.restore,
+            title: '播放故障恢复',
+            description: '管理 OpenList/AList 播放恢复与本机服务重启。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SPToggleTile(
+                  key: const Key('openlist-recovery-switch'),
+                  title: const AppText('播放失败时自动恢复'),
+                  subtitle: AppText(
+                    _openListStorageRecoveryUnavailable
+                        ? '当前后台缺少存储恢复端点，自动恢复已禁用'
+                        : '默认关闭，不会改变普通 WebDAV 播放行为',
+                  ),
+                  value: _openListRecoveryEnabled,
+                  onChanged: _openListStorageRecoveryUnavailable
+                      ? null
+                      : (value) =>
+                            setState(() => _openListRecoveryEnabled = value),
+                ),
+                const SizedBox(height: 12),
+                _SettingsLabeledField(
+                  label: context.l10n.text('本机服务重启目录'),
+                  child: SPDropdownButtonFormField<OpenListRestartDirectory>(
+                    key: ValueKey(
+                      'openlist-restart-directory-${_selectedProfileId ?? "new"}',
+                    ),
+                    initialValue: _draft.openListRestartDirectory,
+                    isExpanded: true,
+                    dropdownColor: _dropdownMenuColor,
+                    borderRadius: AppTheme.dropdownBorderRadius,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '默认使用 Windows 用户目录；安装目录在连接本机服务后自动识别并记录。',
                       ),
-                      validator: (value) => !_openListIndexAutoUpdateEnabled
-                          ? null
-                          : _validateNumber(
-                              value,
-                              min: OpenListIndexConfig.minUpdateIntervalMinutes
-                                  .toDouble(),
-                              max: OpenListIndexConfig.maxUpdateIntervalMinutes
-                                  .toDouble(),
-                              unit: '分钟',
-                              integer: true,
-                            ),
+                      prefixIcon: const Icon(SPIcons.folderOpen),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: OpenListRestartDirectory.userProfile,
+                        child: AppText('默认路径（用户目录）'),
+                      ),
+                      DropdownMenuItem(
+                        value: OpenListRestartDirectory.installation,
+                        child: AppText('安装路径（程序所在目录）'),
+                      ),
+                    ],
+                    onChanged: (value) => setState(
+                      () => _draft.openListRestartDirectory = value!,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: FilledButton.icon(
-                      key: const Key('openlist-index-update-now'),
-                      onPressed:
-                          _updatingOpenListIndex ||
-                              _openListIndexUpdateUnavailable
-                          ? null
-                          : _updateOpenListIndexNow,
-                      icon: _updatingOpenListIndex
-                          ? const SizedBox.square(
-                              dimension: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(SPIcons.refresh),
-                      label: AppText(
-                        _updatingOpenListIndex ? '正在提交…' : '立即更新索引',
-                      ),
-                    ),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: AppText(
+                    '安全限制：每个会话最多自动恢复 3 次；第三次仅对身份已确认的本机进程执行优雅关闭和重启，绝不强制结束。全存储刷新至少间隔 5 分钟。',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  const SizedBox(height: 12),
-                  _buildOpenListIndexProgressPanel(),
-                  const SizedBox(height: 8),
+                ),
+              ],
+            ),
+          ),
+          SettingsGroupCard(
+            icon: SPIcons.diagnostic,
+            title: '服务与索引状态',
+            description: '查看后台能力、索引进度与最近更新时间。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_openListCapabilitySummary != null) ...[
                   Align(
                     alignment: Alignment.centerLeft,
                     child: AppText(
-                      _openListIndexUpdateUnavailable
-                          ? '当前后台缺少索引更新所需端点，手动与定时更新已禁用；不会回退为全量构建。'
-                          : '保护规则：手动与定时请求互斥；若服务端正在构建索引则直接跳过；StreamPath 不会递归扫描 WebDAV。需先在 OpenList/AList 启用数据库索引与自动更新能力。',
+                      _openListCapabilitySummary!,
+                      key: const Key('openlist-capability-summary'),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
+                  const SizedBox(height: 12),
                 ],
-              ),
+                _buildOpenListIndexProgressPanel(),
+              ],
             ),
-          ],
-        ),
-      ],
-    );
-  }
+          ),
+        ],
+      ),
+    ],
+  );
 
   Widget _buildOpenListIndexProgressPanel() {
     final scheme = Theme.of(context).colorScheme;
@@ -2075,539 +2088,637 @@ class SettingsPageState extends State<SettingsPage> {
     return null;
   }
 
-  Widget _buildPlaybackSettings() {
-    return SettingsColumns(
-      firstFraction: 0.55,
-      children: [
-        SettingsGroupCard(
-          icon: SPIcons.playerSettings,
-          title: '外部播放器',
-          description: '配置播放器程序及每行一个的启动参数。',
-          child: Column(
-            children: [
-              SPToggleTile(
-                key: const Key('embedded-mpv-enabled'),
-                title: const AppText('内嵌播放器模式'),
-                subtitle: const AppText('保存后用于新视频；不兼容时使用独立窗口。音频和光盘菜单保持独立窗口。'),
-                value: _draft.videoWindowMode == VideoWindowMode.embedded,
-                onChanged: (value) => setState(
-                  () => _draft.videoWindowMode = value
-                      ? VideoWindowMode.embedded
-                      : VideoWindowMode.external,
+  Widget _buildPlaybackSettings() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SettingsGroupCard(
+        icon: SPIcons.playerSettings,
+        title: '播放器',
+        description: '选择播放器程序及窗口模式。',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SettingsLabeledField(
+              label: context.l10n.text('播放器名称'),
+              child: TextFormField(
+                key: const Key('player-name-field'),
+                controller: _nameController,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: InputDecoration(
+                  hintText: context.l10n.text('mpv / PotPlayer / VLC'),
+                  prefixIcon: Icon(SPIcons.movies),
+                  border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  '内嵌播放器菜单快捷键',
-                  style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 12),
+            _SettingsLabeledField(
+              label: context.l10n.text('播放器程序路径'),
+              child: TextFormField(
+                key: const Key('player-executable-field'),
+                controller: _executableController,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: InputDecoration(
+                  hintText: context.l10n.text(
+                    'mpv 或 C:\\Program Files\\mpv\\mpv.exe',
+                  ),
+                  prefixIcon: Icon(SPIcons.apps),
+                  border: OutlineInputBorder(),
                 ),
+                validator: (value) {
+                  final executable = value?.trim() ?? '';
+                  if (executable.isEmpty) {
+                    return context.l10n.text('请输入播放器路径');
+                  }
+                  return ExternalPlayerService(
+                    configStore: context.read<AppState>().configStore,
+                  ).validateExecutable(
+                    PlayerConfig(
+                      name: _nameController.text,
+                      executable: executable,
+                      args: const [],
+                    ),
+                  );
+                },
               ),
-              const SizedBox(height: 4),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  '保存后用于新视频；使用 MPV 按键名称，如 Ctrl+Alt+m。自定义菜单操作键时使用内置菜单。首次编辑前，MPV 中原有的呼出键设置优先。',
-                ),
-              ),
-              const SizedBox(height: 12),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final labels = ['呼出菜单', '向上选择', '向下选择', '确认选择', '关闭菜单'];
-                  return Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: List.generate(
-                      labels.length,
-                      (index) => SizedBox(
-                        width: constraints.maxWidth < 380
-                            ? constraints.maxWidth
-                            : (constraints.maxWidth - 12) / 2,
-                        child: _SettingsLabeledField(
-                          label: context.l10n.text(labels[index]),
-                          child: TextFormField(
-                            key: Key('mpv-menu-shortcut-$index'),
-                            controller: _draft.menuShortcutControllers[index],
-                            contextMenuBuilder: buildClipboardHistoryMenu,
-                            decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
-                            ),
-                            onChanged: (_) =>
-                                _draft.menuShortcutsChanged = true,
-                            validator: (_) => _menuShortcutError(index),
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SPButton(
+                controlKey: const Key('mpv-manager-button'),
+                onPressed: () {
+                  final store = context.read<AppState>().configStore;
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => MpvManagerPage(
+                        player: store.current.toPlayerConfig(),
+                        store: MpvFileStore(
+                          p.join(
+                            p.dirname(store.configFilePath),
+                            'mpv_manager_history',
                           ),
                         ),
                       ),
                     ),
                   );
                 },
+                label: const Flexible(child: AppText('管理 MPV 配置')),
+                icon: Icon(SPIcons.playerSettings),
               ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('播放器名称'),
-                child: TextFormField(
-                  key: const Key('player-name-field'),
-                  controller: _nameController,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    hintText: context.l10n.text('mpv / PotPlayer / VLC'),
-                    prefixIcon: Icon(SPIcons.movies),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+            ),
+            const SizedBox(height: 12),
+            SPToggleTile(
+              key: const Key('embedded-mpv-enabled'),
+              title: const AppText('内嵌视频播放'),
+              subtitle: const AppText('保存后用于新视频；不兼容时使用独立窗口。音频和光盘菜单保持独立窗口。'),
+              value: _draft.videoWindowMode == VideoWindowMode.embedded,
+              onChanged: (value) => setState(
+                () => _draft.videoWindowMode = value
+                    ? VideoWindowMode.embedded
+                    : VideoWindowMode.external,
               ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('可执行文件路径'),
-                child: TextFormField(
-                  key: const Key('player-executable-field'),
-                  controller: _executableController,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      SettingsColumns(
+        children: [
+          SettingsGroupCard(
+            icon: SPIcons.list,
+            title: '播放列表',
+            description: '设置列表的生成方式、命名与剧集顺序。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SPDropdownButtonFormField<VideoPlaylistMode>(
+                  initialValue: _draft.videoPlaylistMode,
+                  isExpanded: true,
                   decoration: InputDecoration(
-                    hintText: context.l10n.text(
-                      'mpv 或 C:\\Program Files\\mpv\\mpv.exe',
+                    labelText: context.l10n.text('播放列表模式'),
+                    helperText: context.l10n.text(
+                      '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频',
                     ),
-                    prefixIcon: Icon(SPIcons.apps),
-                    border: OutlineInputBorder(),
+                    prefixIcon: const Icon(SPIcons.list),
                   ),
-                  validator: (value) {
-                    final executable = value?.trim() ?? '';
-                    if (executable.isEmpty) {
-                      return context.l10n.text('请输入播放器路径');
-                    }
-                    return ExternalPlayerService(
-                      configStore: context.read<AppState>().configStore,
-                    ).validateExecutable(
-                      PlayerConfig(
-                        name: _nameController.text,
-                        executable: executable,
-                        args: const [],
+                  items: [
+                    for (final mode in VideoPlaylistMode.values)
+                      DropdownMenuItem(
+                        value: mode,
+                        child: AppText(
+                          mode == VideoPlaylistMode.implicit
+                              ? '隐式播放列表'
+                              : '传统完整播放列表',
+                        ),
                       ),
-                    );
+                  ],
+                  onChanged: (mode) {
+                    if (mode != null) {
+                      setState(() => _draft.videoPlaylistMode = mode);
+                    }
                   },
                 ),
+                const SizedBox(height: 12),
+                _SettingsLabeledField(
+                  label: context.l10n.text('隐式列表集数上限'),
+                  child: TextFormField(
+                    key: const Key('implicit-playlist-window-size'),
+                    controller: _implicitPlaylistWindowController,
+                    keyboardType: TextInputType.number,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '包含当前正在播放的集数；2～10，默认 2，仅作用于隐式播放列表',
+                      ),
+                      suffixText: context.l10n.text('集'),
+                      prefixIcon: const Icon(SPIcons.list),
+                      border: const OutlineInputBorder(),
+                    ),
+                    validator: (value) => _validateNumber(
+                      value,
+                      min: PlayerConfig.minImplicitPlaylistWindowSize
+                          .toDouble(),
+                      max: PlayerConfig.maxImplicitPlaylistWindowSize
+                          .toDouble(),
+                      unit: '集',
+                      integer: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SPToggleTile(
+                  key: const Key('video-playlist-simple-naming'),
+                  title: const AppText('简洁列表名称'),
+                  subtitle: const AppText('按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名'),
+                  value: _draft.videoPlaylistSimpleNaming,
+                  onChanged: (value) =>
+                      setState(() => _draft.videoPlaylistSimpleNaming = value),
+                ),
+                SPToggleTile(
+                  key: const Key('video-playlist-insert-decimal-episodes'),
+                  title: const AppText('按小数集号插入番外'),
+                  subtitle: const AppText(
+                    '仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期',
+                  ),
+                  value: _draft.videoPlaylistInsertDecimalEpisodes,
+                  onChanged:
+                      _draft.videoPlaylistMode != VideoPlaylistMode.implicit
+                      ? null
+                      : (value) => setState(
+                          () =>
+                              _draft.videoPlaylistInsertDecimalEpisodes = value,
+                        ),
+                ),
+              ],
+            ),
+          ),
+          SettingsGroupCard(
+            icon: SPIcons.progress,
+            title: '连续播放与续播',
+            description: '设置续播、切季和剧集网络故障处理。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SPToggleTile(
+                  title: const AppText('自动续播'),
+                  subtitle: const AppText('视频或音频存在播放进度时从上次位置继续'),
+                  value: _resumeEnabled,
+                  onChanged: (value) => setState(() => _resumeEnabled = value),
+                ),
+                SPToggleTile(
+                  key: const Key('auto-season-transition'),
+                  title: const AppText('自动切季'),
+                  subtitle: const AppText('当前季播放列表结束后接续同级目录中的下一季'),
+                  value: _draft.autoSeasonTransitionEnabled,
+                  onChanged: (value) => setState(
+                    () => _draft.autoSeasonTransitionEnabled = value,
+                  ),
+                ),
+                SPToggleTile(
+                  key: const Key('allow-season-gap'),
+                  title: const AppText('跳过缺失季'),
+                  subtitle: const AppText('找不到相邻下一季时，接续最小的更高季数'),
+                  value: _draft.allowSeasonGap,
+                  onChanged: !_draft.autoSeasonTransitionEnabled
+                      ? null
+                      : (value) =>
+                            setState(() => _draft.allowSeasonGap = value),
+                ),
+                const SizedBox(height: 12),
+                SPDropdownButtonFormField<EpisodeNetworkFailureMode>(
+                  key: const Key('episode-network-failure-mode'),
+                  initialValue: _draft.episodeNetworkFailureMode,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: context.l10n.text('剧集网络播放失败时'),
+                    helperText: context.l10n.text('MPV 确认网络故障后，关闭播放器或尝试下一集'),
+                    helperMaxLines: 3,
+                    prefixIcon: const Icon(SPIcons.list),
+                  ),
+                  menuIcon: SPIcons.list,
+                  items: const [
+                    DropdownMenuItem(
+                      value: EpisodeNetworkFailureMode.stop,
+                      child: AppText('停止播放'),
+                    ),
+                    DropdownMenuItem(
+                      value: EpisodeNetworkFailureMode.autoSkip,
+                      child: AppText('自动切集'),
+                    ),
+                  ],
+                  onChanged: (mode) {
+                    if (mode != null) {
+                      setState(() => _draft.episodeNetworkFailureMode = mode);
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      SettingsColumns(
+        children: [
+          SettingsGroupCard(
+            icon: SPIcons.subtitles,
+            title: '外挂资源',
+            description: '管理外挂字幕、字体、音轨与 LRC。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SPToggleTile(
+                  title: const AppText('自动加载外挂字幕、字体与 LRC'),
+                  subtitle: const AppText('匹配同级字幕和歌词，并加载同级已识别字体目录中的直属字体'),
+                  value: _subtitleInjectionEnabled,
+                  onChanged: (value) =>
+                      setState(() => _subtitleInjectionEnabled = value),
+                ),
+                SPToggleTile(
+                  title: const AppText('优先选用外挂字幕与 LRC'),
+                  subtitle: const AppText('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
+                  value:
+                      _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
+                  onChanged: !_subtitleInjectionEnabled
+                      ? null
+                      : (value) =>
+                            setState(() => _subtitleAutoSelectEnabled = value),
+                ),
+                SPToggleTile(
+                  key: const Key('external-audio-injection'),
+                  title: const AppText('自动加载 WebDAV 外挂音轨'),
+                  subtitle: const AppText('流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV'),
+                  value: _draft.externalAudioInjectionEnabled,
+                  onChanged: (value) => setState(
+                    () => _draft.externalAudioInjectionEnabled = value,
+                  ),
+                ),
+                SPToggleTile(
+                  key: const Key('webdav-font-cache'),
+                  title: const AppText('缓存远程外挂字体'),
+                  subtitle: const AppText('保留续播媒体所需字体，重播时直接使用已下载文件'),
+                  value: _draft.webDavFontCacheEnabled,
+                  onChanged: !_subtitleInjectionEnabled
+                      ? null
+                      : (value) => setState(
+                          () => _draft.webDavFontCacheEnabled = value,
+                        ),
+                ),
+              ],
+            ),
+          ),
+          SettingsGroupCard(
+            icon: SPIcons.video,
+            title: '特典',
+            description: '选择加入列表的特典范围，以及扫描和字体共享方式。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _SettingsLabeledField(
+                  label: context.l10n.text('特典加入范围'),
+                  child: SPDropdownButtonFormField<SpecialPlaylistMode>(
+                    key: const Key('special-playlist-mode'),
+                    initialValue: _draft.specialPlaylistMode,
+                    isExpanded: true,
+                    dropdownColor: _dropdownMenuColor,
+                    borderRadius: AppTheme.dropdownBorderRadius,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text('决定特典视频加入播放列表的范围；关闭时只包含正片'),
+                      prefixIcon: const Icon(SPIcons.video),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: SpecialPlaylistMode.off,
+                        child: AppText('仅正片'),
+                      ),
+                      DropdownMenuItem(
+                        value: SpecialPlaylistMode.ovaOnly,
+                        child: AppText('仅 OVA 与番外'),
+                      ),
+                      DropdownMenuItem(
+                        value: SpecialPlaylistMode.all,
+                        child: AppText('全部特典视频'),
+                      ),
+                    ],
+                    onChanged: (value) =>
+                        setState(() => _draft.specialPlaylistMode = value!),
+                  ),
+                ),
+                SPToggleTile(
+                  key: const Key('special-child-folders'),
+                  title: const AppText('扫描子级特典目录'),
+                  subtitle: const AppText('扫描正片目录内的特典子目录（SPs、PVs 等）'),
+                  value: _draft.scanSpecialChildFolders,
+                  onChanged: (value) =>
+                      setState(() => _draft.scanSpecialChildFolders = value),
+                ),
+                SPToggleTile(
+                  key: const Key('special-sibling-folders'),
+                  title: const AppText('扫描同级特典目录'),
+                  subtitle: const AppText('扫描与正片目录并列的特典文件夹'),
+                  value: _draft.scanSpecialSiblingFolders,
+                  onChanged: (value) =>
+                      setState(() => _draft.scanSpecialSiblingFolders = value),
+                ),
+                SPToggleTile(
+                  title: const AppText('特典共享字体'),
+                  subtitle: const AppText('当前视频没有同目录字体时，使用播放列表根目录的字体'),
+                  value: _draft.sharePlaylistFonts,
+                  onChanged: !_subtitleInjectionEnabled
+                      ? null
+                      : (value) =>
+                            setState(() => _draft.sharePlaylistFonts = value),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      SettingsGroupCard(
+        icon: SPIcons.movies,
+        title: '蓝光播放',
+        description: '设置蓝光标题选择与菜单进度的共享方式。',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SPDropdownButtonFormField<DiscTitleSelectionPolicy>(
+              key: const Key('disc-title-selection-policy'),
+              initialValue: _draft.discTitleSelectionPolicy,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: context.l10n.text('蓝光标题选择'),
+                prefixIcon: const Icon(SPIcons.list),
               ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SPButton(
-                  controlKey: const Key('mpv-manager-button'),
-                  onPressed: () {
-                    final store = context.read<AppState>().configStore;
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => MpvManagerPage(
-                          player: store.current.toPlayerConfig(),
-                          store: MpvFileStore(
-                            p.join(
-                              p.dirname(store.configFilePath),
-                              'mpv_manager_history',
+              items: [
+                for (final policy in DiscTitleSelectionPolicy.values)
+                  DropdownMenuItem(
+                    value: policy,
+                    child: AppText(switch (policy) {
+                      DiscTitleSelectionPolicy.full => '完整播放列表',
+                      DiscTitleSelectionPolicy.single => '单一播放列表',
+                      DiscTitleSelectionPolicy.adaptive => '智能选择',
+                    }),
+                  ),
+              ],
+              onChanged: (policy) {
+                if (policy != null) {
+                  setState(() => _draft.discTitleSelectionPolicy = policy);
+                }
+              },
+            ),
+            const SizedBox(height: 12),
+            _SettingsLabeledField(
+              label: context.l10n.text('蓝光菜单进度'),
+              child: SPDropdownButtonFormField<bool>(
+                key: const Key('menu-progress-sharing'),
+                isExpanded: true,
+                initialValue: _draft.menuProgressSharingEnabled,
+                dropdownColor: _dropdownMenuColor,
+                borderRadius: AppTheme.dropdownBorderRadius,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(SPIcons.progress),
+                ),
+                items: const [
+                  DropdownMenuItem(value: false, child: AppText('独立（不记录进度）')),
+                  DropdownMenuItem(value: true, child: AppText('共享（供标题模式续播）')),
+                ],
+                onChanged: (value) =>
+                    setState(() => _draft.menuProgressSharingEnabled = value!),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const AppText('菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。'),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      SettingsGroupCard(
+        icon: SPIcons.playerSettings,
+        title: '播放器启动参数',
+        description: '每行输入一个参数，并选择附加参数的适用范围。',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SettingsLabeledField(
+              label: context.l10n.text('启动参数'),
+              child: TextFormField(
+                key: const Key('player-args-field'),
+                controller: _argsController,
+                minLines: 5,
+                maxLines: 8,
+                contextMenuBuilder: buildClipboardHistoryMenu,
+                decoration: InputDecoration(
+                  helperText: context.l10n.text(
+                    '占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除',
+                  ),
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SPToggleTile(
+              key: const Key('arg-injection-all'),
+              title: const AppText('全部注入'),
+              subtitle: const AppText('每次播放都注入启动参数；关闭后改为按分类注入'),
+              value: _draft.argInjectionAllEnabled,
+              onChanged: (value) =>
+                  setState(() => _draft.argInjectionAllEnabled = value),
+            ),
+            SPToggleTile(
+              key: const Key('arg-injection-anime'),
+              title: const AppText('动漫注入'),
+              subtitle: const AppText('影片元数据包含动画类型时注入'),
+              value: _draft.argInjectionAnimeEnabled,
+              onChanged: _draft.argInjectionAllEnabled
+                  ? null
+                  : (value) =>
+                        setState(() => _draft.argInjectionAnimeEnabled = value),
+            ),
+            SPToggleTile(
+              key: const Key('arg-injection-movie'),
+              title: const AppText('电影注入'),
+              subtitle: const AppText('影片元数据为电影时注入'),
+              value: _draft.argInjectionMovieEnabled,
+              onChanged: _draft.argInjectionAllEnabled
+                  ? null
+                  : (value) =>
+                        setState(() => _draft.argInjectionMovieEnabled = value),
+            ),
+            SPToggleTile(
+              key: const Key('arg-injection-series'),
+              title: const AppText('剧集注入'),
+              subtitle: const AppText('影片元数据为剧集时注入'),
+              value: _draft.argInjectionSeriesEnabled,
+              onChanged: _draft.argInjectionAllEnabled
+                  ? null
+                  : (value) => setState(
+                      () => _draft.argInjectionSeriesEnabled = value,
+                    ),
+            ),
+            const SizedBox(height: 8),
+            const AppText('关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。'),
+            const AppText(
+              '含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。',
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _resetToDefault,
+                icon: const Icon(SPIcons.restore, size: 20),
+                label: const AppText('恢复默认模板'),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      SettingsColumns(
+        children: [
+          SettingsGroupCard(
+            icon: SPIcons.settings,
+            title: '内嵌播放器菜单快捷键',
+            description: '新视频使用 MPV 按键名称，例如 Ctrl+Alt+m。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: AppText(
+                    '保存后应用于新视频。自定义菜单操作键后使用内置菜单。首次编辑前，MPV 原有的呼出键优先。',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final labels = ['呼出菜单', '向上选择', '向下选择', '确认选择', '关闭菜单'];
+                    return Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: List.generate(
+                        labels.length,
+                        (index) => SizedBox(
+                          width: constraints.maxWidth < 380
+                              ? constraints.maxWidth
+                              : (constraints.maxWidth - 12) / 2,
+                          child: _SettingsLabeledField(
+                            label: context.l10n.text(labels[index]),
+                            child: TextFormField(
+                              key: Key('mpv-menu-shortcut-$index'),
+                              controller: _draft.menuShortcutControllers[index],
+                              contextMenuBuilder: buildClipboardHistoryMenu,
+                              decoration: const InputDecoration(
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (_) =>
+                                  _draft.menuShortcutsChanged = true,
+                              validator: (_) => _menuShortcutError(index),
                             ),
                           ),
                         ),
                       ),
                     );
                   },
-                  label: const Flexible(child: AppText('管理已保存的 MPV 配置')),
-                  icon: Icon(SPIcons.playerSettings),
                 ),
-              ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('启动参数（每行一个）'),
-                child: TextFormField(
-                  key: const Key('player-args-field'),
-                  controller: _argsController,
-                  minLines: 5,
-                  maxLines: 8,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    helperText: context.l10n.text(
-                      '占位符：{url} 视频地址 · {subfile} 字幕地址 · {start} 续播秒数\n无值的占位符所在行会自动移除',
-                    ),
-                    alignLabelWithHint: true,
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SPToggleTile(
-                key: const Key('arg-injection-all'),
-                title: const AppText('全部注入'),
-                subtitle: const AppText('每次播放都注入启动参数；关闭后改为按分类注入'),
-                value: _draft.argInjectionAllEnabled,
-                onChanged: (value) =>
-                    setState(() => _draft.argInjectionAllEnabled = value),
-              ),
-              SPToggleTile(
-                key: const Key('arg-injection-anime'),
-                title: const AppText('动漫注入'),
-                subtitle: const AppText('影片元数据包含动画类型时注入'),
-                value: _draft.argInjectionAnimeEnabled,
-                onChanged: _draft.argInjectionAllEnabled
-                    ? null
-                    : (value) => setState(
-                        () => _draft.argInjectionAnimeEnabled = value,
-                      ),
-              ),
-              SPToggleTile(
-                key: const Key('arg-injection-movie'),
-                title: const AppText('电影注入'),
-                subtitle: const AppText('影片元数据为电影时注入'),
-                value: _draft.argInjectionMovieEnabled,
-                onChanged: _draft.argInjectionAllEnabled
-                    ? null
-                    : (value) => setState(
-                        () => _draft.argInjectionMovieEnabled = value,
-                      ),
-              ),
-              SPToggleTile(
-                key: const Key('arg-injection-series'),
-                title: const AppText('剧集注入'),
-                subtitle: const AppText('影片元数据为剧集时注入'),
-                value: _draft.argInjectionSeriesEnabled,
-                onChanged: _draft.argInjectionAllEnabled
-                    ? null
-                    : (value) => setState(
-                        () => _draft.argInjectionSeriesEnabled = value,
-                      ),
-              ),
-              const SizedBox(height: 8),
-              const AppText('关闭「全部注入」后，仅在影片元数据命中已开启的分类时注入附加参数。'),
-              const AppText(
-                '含 {url}、{subfile}、{start} 的行始终注入；没有影视库元数据的播放不注入附加参数。',
-              ),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: _resetToDefault,
-                  icon: const Icon(SPIcons.restore, size: 20),
-                  label: const AppText('恢复默认播放器模板'),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        SettingsGroupCard(
-          icon: SPIcons.subtitles,
-          title: '播放行为',
-          description: '控制外挂字幕、外挂字体与 LRC 注入、轨道选择和续播。',
-          child: Column(
-            children: [
-              SPDropdownButtonFormField<VideoPlaylistMode>(
-                initialValue: _draft.videoPlaylistMode,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('视频播放列表模式'),
-                  helperText: context.l10n.text(
-                    '隐式列表只包含当前集附近的集数；完整列表包含目录内全部视频',
+          SettingsGroupCard(
+            key: const Key('audio-lyrics-settings'),
+            icon: SPIcons.music,
+            title: '歌词显示',
+            description: '设置 MPV 窗口内歌词的动态显示和样式。',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SPToggleTile(
+                  title: const AppText('MPV 动态歌词'),
+                  subtitle: const AppText(
+                    '在 MPV 窗口中滚动显示音频歌词；逐字时间戳用于高亮，译文和罗马音按文件顺序显示',
                   ),
-                  prefixIcon: const Icon(SPIcons.list),
-                ),
-                items: [
-                  for (final mode in VideoPlaylistMode.values)
-                    DropdownMenuItem(
-                      value: mode,
-                      child: AppText(
-                        mode == VideoPlaylistMode.implicit
-                            ? '隐式播放列表'
-                            : '传统完整播放列表',
-                      ),
-                    ),
-                ],
-                onChanged: (mode) {
-                  if (mode != null) {
-                    setState(() => _draft.videoPlaylistMode = mode);
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('隐式播放列表集数上限'),
-                child: TextFormField(
-                  key: const Key('implicit-playlist-window-size'),
-                  controller: _implicitPlaylistWindowController,
-                  keyboardType: TextInputType.number,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    helperText: context.l10n.text(
-                      '包含当前正在播放的集数；2～10，默认 2，仅作用于隐式播放列表',
-                    ),
-                    suffixText: context.l10n.text('集'),
-                    prefixIcon: const Icon(SPIcons.list),
-                    border: const OutlineInputBorder(),
-                  ),
-                  validator: (value) => _validateNumber(
-                    value,
-                    min: PlayerConfig.minImplicitPlaylistWindowSize.toDouble(),
-                    max: PlayerConfig.maxImplicitPlaylistWindowSize.toDouble(),
-                    unit: '集',
-                    integer: true,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              SPToggleTile(
-                key: const Key('video-playlist-simple-naming'),
-                title: const AppText('播放列表简洁命名'),
-                subtitle: const AppText('按当前语言显示从文件名提取的片名、年份与季集；识别不足时保留原名'),
-                value: _draft.videoPlaylistSimpleNaming,
-                onChanged: (value) =>
-                    setState(() => _draft.videoPlaylistSimpleNaming = value),
-              ),
-              SPToggleTile(
-                key: const Key('video-playlist-insert-decimal-episodes'),
-                title: const AppText('按小数集号插入番外篇'),
-                subtitle: const AppText('仅对已识别剧集的隐式播放列表生效；季归属明确且在集数范围内时忽略首播日期'),
-                value: _draft.videoPlaylistInsertDecimalEpisodes,
-                onChanged:
-                    _draft.videoPlaylistMode != VideoPlaylistMode.implicit
-                    ? null
-                    : (value) => setState(
-                        () => _draft.videoPlaylistInsertDecimalEpisodes = value,
-                      ),
-              ),
-              const SizedBox(height: 12),
-              SPDropdownButtonFormField<DiscTitleSelectionPolicy>(
-                key: const Key('disc-title-selection-policy'),
-                initialValue: _draft.discTitleSelectionPolicy,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: context.l10n.text('蓝光标题选择策略'),
-                  prefixIcon: const Icon(SPIcons.list),
-                ),
-                items: [
-                  for (final policy in DiscTitleSelectionPolicy.values)
-                    DropdownMenuItem(
-                      value: policy,
-                      child: AppText(switch (policy) {
-                        DiscTitleSelectionPolicy.full => '完整播放列表',
-                        DiscTitleSelectionPolicy.single => '单一播放列表',
-                        DiscTitleSelectionPolicy.adaptive => '智能选择',
-                      }),
-                    ),
-                ],
-                onChanged: (policy) {
-                  if (policy != null) {
-                    setState(() => _draft.discTitleSelectionPolicy = policy);
-                  }
-                },
-              ),
-              SPToggleTile(
-                key: const Key('external-audio-injection'),
-                title: const AppText('自动加载 WebDAV 外挂音轨'),
-                subtitle: const AppText('流式加载同目录同名前缀的音轨，保留当前音轨选择，仅支持 MPV'),
-                value: _draft.externalAudioInjectionEnabled,
-                onChanged: (value) => setState(
-                  () => _draft.externalAudioInjectionEnabled = value,
-                ),
-              ),
-              SPToggleTile(
-                title: const AppText('自动注入匹配的外挂字幕、外挂字体与 LRC'),
-                subtitle: const AppText('匹配同级字幕和歌词，并加载同级已识别字体目录中的直属字体'),
-                value: _subtitleInjectionEnabled,
-                onChanged: (value) =>
-                    setState(() => _subtitleInjectionEnabled = value),
-              ),
-              SPToggleTile(
-                title: const AppText('自动选择已注入的外挂字幕与 LRC'),
-                subtitle: const AppText('关闭时保留播放器原有的内封字幕或歌词轨道选择'),
-                value: _subtitleInjectionEnabled && _subtitleAutoSelectEnabled,
-                onChanged: !_subtitleInjectionEnabled
-                    ? null
-                    : (value) =>
-                          setState(() => _subtitleAutoSelectEnabled = value),
-              ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('特典播放列表'),
-                child: SPDropdownButtonFormField<SpecialPlaylistMode>(
-                  key: const Key('special-playlist-mode'),
-                  initialValue: _draft.specialPlaylistMode,
-                  isExpanded: true,
-                  dropdownColor: _dropdownMenuColor,
-                  borderRadius: AppTheme.dropdownBorderRadius,
-                  decoration: InputDecoration(
-                    helperText: context.l10n.text('决定特典视频加入播放列表的范围；关闭时只包含正片'),
-                    prefixIcon: const Icon(SPIcons.video),
-                  ),
-                  items: const [
-                    DropdownMenuItem(
-                      value: SpecialPlaylistMode.off,
-                      child: AppText('关闭特典递归'),
-                    ),
-                    DropdownMenuItem(
-                      value: SpecialPlaylistMode.ovaOnly,
-                      child: AppText('仅 OVA 与番外'),
-                    ),
-                    DropdownMenuItem(
-                      value: SpecialPlaylistMode.all,
-                      child: AppText('全部特典视频'),
-                    ),
-                  ],
+                  value: _audioDynamicLyricsEnabled,
                   onChanged: (value) =>
-                      setState(() => _draft.specialPlaylistMode = value!),
+                      setState(() => _audioDynamicLyricsEnabled = value),
                 ),
-              ),
-              SPToggleTile(
-                key: const Key('auto-season-transition'),
-                title: const AppText('自动切季'),
-                subtitle: const AppText('当前季播放列表结束后接续同级目录中的下一季'),
-                value: _draft.autoSeasonTransitionEnabled,
-                onChanged: (value) =>
-                    setState(() => _draft.autoSeasonTransitionEnabled = value),
-              ),
-              SPToggleTile(
-                key: const Key('allow-season-gap'),
-                title: const AppText('允许跳过缺失季'),
-                subtitle: const AppText('找不到相邻下一季时，接续最小的更高季数'),
-                value: _draft.allowSeasonGap,
-                onChanged: !_draft.autoSeasonTransitionEnabled
-                    ? null
-                    : (value) => setState(() => _draft.allowSeasonGap = value),
-              ),
-              SPToggleTile(
-                key: const Key('special-child-folders'),
-                title: const AppText('扫描视频文件夹内的特典目录'),
-                subtitle: const AppText('扫描正片目录内的特典子目录（SPs、PVs 等）'),
-                value: _draft.scanSpecialChildFolders,
-                onChanged: (value) =>
-                    setState(() => _draft.scanSpecialChildFolders = value),
-              ),
-              SPToggleTile(
-                key: const Key('special-sibling-folders'),
-                title: const AppText('扫描与视频文件夹同级的特典目录'),
-                subtitle: const AppText('扫描与正片目录并列的特典文件夹'),
-                value: _draft.scanSpecialSiblingFolders,
-                onChanged: (value) =>
-                    setState(() => _draft.scanSpecialSiblingFolders = value),
-              ),
-              SPToggleTile(
-                title: const AppText('特典字体串用'),
-                subtitle: const AppText('当前视频没有同目录字体时，使用播放列表根目录的字体'),
-                value: _draft.sharePlaylistFonts,
-                onChanged: !_subtitleInjectionEnabled
-                    ? null
-                    : (value) =>
-                          setState(() => _draft.sharePlaylistFonts = value),
-              ),
-              SPToggleTile(
-                key: const Key('webdav-font-cache'),
-                title: const AppText('缓存 WebDAV 外挂字体'),
-                subtitle: const AppText('保留续播媒体所需字体，重播时直接使用已下载文件'),
-                value: _draft.webDavFontCacheEnabled,
-                onChanged: !_subtitleInjectionEnabled
-                    ? null
-                    : (value) =>
-                          setState(() => _draft.webDavFontCacheEnabled = value),
-              ),
-              SPToggleTile(
-                title: const AppText('自动续播'),
-                subtitle: const AppText('视频或音频存在播放进度时从上次位置继续'),
-                value: _resumeEnabled,
-                onChanged: (value) => setState(() => _resumeEnabled = value),
-              ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('WebDAV 蓝光菜单进度'),
-                child: SPDropdownButtonFormField<bool>(
-                  key: const Key('menu-progress-sharing'),
-                  isExpanded: true,
-                  initialValue: _draft.menuProgressSharingEnabled,
-                  dropdownColor: _dropdownMenuColor,
-                  borderRadius: AppTheme.dropdownBorderRadius,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(SPIcons.progress),
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: false, child: AppText('独立（不记录进度）')),
-                    DropdownMenuItem(
-                      value: true,
-                      child: AppText('共享（供标题模式续播）'),
+                const SizedBox(height: 12),
+                _SettingsLabeledField(
+                  label: context.l10n.text('歌词字体'),
+                  child: TextFormField(
+                    key: const Key('audio-lyrics-font-family'),
+                    controller: _draft.audioLyricsFontFamilyController,
+                    contextMenuBuilder: buildClipboardHistoryMenu,
+                    decoration: InputDecoration(
+                      helperText: context.l10n.text(
+                        '填写 MPV 可用的字体名称；留空使用 Arial。',
+                      ),
+                      prefixIcon: const Icon(SPIcons.lyrics),
+                      border: const OutlineInputBorder(),
                     ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Expanded(child: AppText('歌词描边')),
+                    Text(_draft.audioLyricsOutlineWidth.toStringAsFixed(1)),
                   ],
-                  onChanged: (value) => setState(
-                    () => _draft.menuProgressSharingEnabled = value!,
-                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              const AppText('菜单始终从头启动；共享时记录正片进度供标题模式使用。更改对新会话生效。'),
-            ],
+                Slider(
+                  key: const Key('audio-lyrics-outline-width'),
+                  min: 0,
+                  max: PlayerConfig.maxAudioLyricsOutlineWidth,
+                  divisions: 16,
+                  label: _draft.audioLyricsOutlineWidth.toStringAsFixed(1),
+                  value: _draft.audioLyricsOutlineWidth,
+                  onChanged: (value) =>
+                      setState(() => _draft.audioLyricsOutlineWidth = value),
+                ),
+                Row(
+                  children: [
+                    const Expanded(child: AppText('歌词透明度')),
+                    Text('${(_draft.audioLyricsTransparency * 100).round()}%'),
+                  ],
+                ),
+                Slider(
+                  key: const Key('audio-lyrics-transparency'),
+                  min: 0,
+                  max: 1,
+                  divisions: 20,
+                  label: '${(_draft.audioLyricsTransparency * 100).round()}%',
+                  value: _draft.audioLyricsTransparency,
+                  onChanged: (value) =>
+                      setState(() => _draft.audioLyricsTransparency = value),
+                ),
+              ],
+            ),
           ),
-        ),
-        SettingsGroupCard(
-          key: const Key('audio-lyrics-settings'),
-          icon: SPIcons.music,
-          title: '音频歌词',
-          description: '设置 MPV 窗口内歌词的动态显示和样式。',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SPToggleTile(
-                title: const AppText('MPV 动态歌词'),
-                subtitle: const AppText(
-                  '在 MPV 窗口中滚动显示音频歌词；逐字时间戳用于高亮，译文和罗马音按文件顺序显示',
-                ),
-                value: _audioDynamicLyricsEnabled,
-                onChanged: (value) =>
-                    setState(() => _audioDynamicLyricsEnabled = value),
-              ),
-              const SizedBox(height: 12),
-              _SettingsLabeledField(
-                label: context.l10n.text('歌词字体'),
-                child: TextFormField(
-                  key: const Key('audio-lyrics-font-family'),
-                  controller: _draft.audioLyricsFontFamilyController,
-                  contextMenuBuilder: buildClipboardHistoryMenu,
-                  decoration: InputDecoration(
-                    helperText: context.l10n.text('填写 MPV 可用的字体名称；留空使用 Arial。'),
-                    prefixIcon: const Icon(SPIcons.lyrics),
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  const Expanded(child: AppText('歌词描边粗细')),
-                  Text(_draft.audioLyricsOutlineWidth.toStringAsFixed(1)),
-                ],
-              ),
-              Slider(
-                key: const Key('audio-lyrics-outline-width'),
-                min: 0,
-                max: PlayerConfig.maxAudioLyricsOutlineWidth,
-                divisions: 16,
-                label: _draft.audioLyricsOutlineWidth.toStringAsFixed(1),
-                value: _draft.audioLyricsOutlineWidth,
-                onChanged: (value) =>
-                    setState(() => _draft.audioLyricsOutlineWidth = value),
-              ),
-              Row(
-                children: [
-                  const Expanded(child: AppText('歌词整体透明度')),
-                  Text('${(_draft.audioLyricsTransparency * 100).round()}%'),
-                ],
-              ),
-              Slider(
-                key: const Key('audio-lyrics-transparency'),
-                min: 0,
-                max: 1,
-                divisions: 20,
-                label: '${(_draft.audioLyricsTransparency * 100).round()}%',
-                value: _draft.audioLyricsTransparency,
-                onChanged: (value) =>
-                    setState(() => _draft.audioLyricsTransparency = value),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+        ],
+      ),
+    ],
+  );
 
   Widget _buildMediaLibraryLimitField({
     required Key key,
@@ -2695,30 +2806,12 @@ class SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SettingsGroupCard(
-          key: const Key('media-library-capacity-section'),
-          icon: SPIcons.package,
-          title: '容量限制',
-          description: '数量按当前来源隔离；超过限制时优先淘汰最旧记录。',
+          icon: SPIcons.folderOpen,
+          title: '来源共享范围',
+          description: '决定各来源的记录共享范围，以及媒体中心可用的来源分组。',
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  '数据展示模式',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: AppText(
-                  '决定文件夹中的共享范围，以及媒体中心可用的来源分组。',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Wrap(
@@ -2745,7 +2838,7 @@ class SettingsPageState extends State<SettingsPage> {
                     ),
                     sharingButton(
                       'sharing-local',
-                      '本地挂载文件夹共享',
+                      '本地文件夹共享',
                       localShared,
                       localShared
                           ? (networkShared
@@ -2757,19 +2850,29 @@ class SettingsPageState extends State<SettingsPage> {
                     ),
                     sharingButton(
                       'sharing-all',
-                      '本地与网络存储共享',
+                      '全部来源共享',
                       sharingMode == MediaLibrarySharingMode.allShared,
                       MediaLibrarySharingMode.allShared,
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SettingsGroupCard(
+          key: const Key('media-library-capacity-section'),
+          icon: SPIcons.package,
+          title: '记录数量',
+          description: '数量按当前来源隔离；超过限制时优先淘汰最旧记录。',
+          child: Column(
+            children: [
               _buildFieldPair(
                 _buildMediaLibraryLimitField(
                   key: const Key('media-library-favorites-limit-field'),
                   controller: _mediaLibraryFavoritesController,
-                  label: '收藏保存上限',
+                  label: '收藏数量上限',
                   icon: SPIcons.favorite,
                   helperText: context.l10n.format(
                     '影视作品收藏与旧版收藏分别计算，每个来源最多 {max} 条。',
@@ -2794,7 +2897,7 @@ class SettingsPageState extends State<SettingsPage> {
                 _buildMediaLibraryLimitField(
                   key: const Key('media-library-recent-playback-limit-field'),
                   controller: _mediaLibraryRecentPlaybackController,
-                  label: '最近播放保存上限',
+                  label: '最近播放保留上限',
                   icon: SPIcons.history,
                   helperText: context.l10n.format(
                     '视频、音频、ISO 各自计算；系统最高 {max} 条',
@@ -2807,7 +2910,7 @@ class SettingsPageState extends State<SettingsPage> {
                     'media-library-recent-directories-limit-field',
                   ),
                   controller: _mediaLibraryRecentDirectoriesController,
-                  label: '最近目录保存上限',
+                  label: '最近目录保留上限',
                   icon: SPIcons.folderOpen,
                   helperText: context.l10n.format('用于旧媒体中心，每个来源最多 {max} 条。', {
                     'max':
@@ -2854,13 +2957,13 @@ class SettingsPageState extends State<SettingsPage> {
                 cleanupButton(
                   key: const Key('clear-media-library-recent-button'),
                   icon: SPIcons.history,
-                  label: '清空最近播放',
+                  label: '清空播放历史',
                   target: _MediaLibraryCleanupTarget.recentPlayback,
                 ),
                 cleanupButton(
                   key: const Key('clear-media-library-directories-button'),
                   icon: SPIcons.delete,
-                  label: '清空最近目录',
+                  label: '清空目录历史',
                   target: _MediaLibraryCleanupTarget.recentDirectories,
                 ),
               ],
@@ -2881,18 +2984,10 @@ class SettingsPageState extends State<SettingsPage> {
       ),
       const SizedBox(height: 16),
       SettingsColumns(
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildCacheSettings(),
-              const SizedBox(height: 16),
-              _buildCacheExpirationSettings(),
-            ],
-          ),
-          _buildIntelligenceSettings(),
-        ],
+        children: [_buildCacheSettings(), _buildIntelligenceSettings()],
       ),
+      const SizedBox(height: 16),
+      _buildCacheExpirationSettings(),
       const SizedBox(height: 16),
       SettingsColumns(
         children: [
@@ -2910,7 +3005,7 @@ class SettingsPageState extends State<SettingsPage> {
       children: [
         SettingsGroupCard(
           icon: SPIcons.checklist,
-          title: '诊断中心',
+          title: '系统诊断',
           description: '逐项检查外部连接、播放器、数据目录、SQLite 和缓存。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2934,7 +3029,7 @@ class SettingsPageState extends State<SettingsPage> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(SPIcons.play),
-                    label: AppText(_runningDiagnostics ? '检查中…' : '运行全部检查'),
+                    label: AppText(_runningDiagnostics ? '检查中…' : '运行诊断'),
                   ),
                   OutlinedButton.icon(
                     key: const Key('export-diagnostics-button'),
@@ -2965,7 +3060,7 @@ class SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         SettingsGroupCard(
           icon: SPIcons.hardDrive,
-          title: 'SQLite 非破坏性维护',
+          title: '数据库维护',
           description: '只在完整性检查通过后创建一致性备份并重建索引。',
           child: Align(
             alignment: Alignment.centerLeft,
@@ -2985,7 +3080,7 @@ class SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 16),
         SettingsGroupCard(
           icon: SPIcons.shield,
-          title: '脱敏边界',
+          title: '诊断隐私说明',
           description: '诊断包用于排障，不复制原始配置和运行数据。',
           child: const AppText(
             '服务器 URL 仅导出来源和路径 SHA-256；密码、Token、Authorization、URL userinfo、查询参数与签名参数不会写入诊断包。迁移记录只保留版本、结果和备份文件名。',
@@ -2999,19 +3094,19 @@ class SettingsPageState extends State<SettingsPage> {
     return SettingsGroupCard(
       key: const Key('cache-settings-section'),
       icon: SPIcons.hardDrive,
-      title: '基础缓存策略',
+      title: '播放缓存',
       description: '根据媒体、内存和网络条件生成播放器缓存参数。',
       child: Column(
         children: [
           SPToggleTile(
             key: const Key('cache-enabled-switch'),
-            title: const AppText('启用自动缓存策略'),
+            title: const AppText('自动配置播放缓存'),
             subtitle: const AppText('关闭后不向播放器注入自动缓存参数'),
             value: _cacheEnabled,
             onChanged: (value) => setState(() => _cacheEnabled = value),
           ),
           _SettingsLabeledField(
-            label: context.l10n.text('策略模式'),
+            label: context.l10n.text('缓存模式'),
             child: SPDropdownButtonFormField<CachePolicyMode>(
               key: const Key('cache-mode-dropdown'),
               initialValue: _cacheMode,
@@ -3039,7 +3134,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           _buildFieldPair(
             _SettingsLabeledField(
-              label: context.l10n.text('内存预算比例'),
+              label: context.l10n.text('缓存内存预算'),
               child: TextFormField(
                 key: const Key('cache-memory-ratio-field'),
                 controller: _cacheMemoryRatioController,
@@ -3058,7 +3153,7 @@ class SettingsPageState extends State<SettingsPage> {
               ),
             ),
             _SettingsLabeledField(
-              label: context.l10n.text('基准缓存时间'),
+              label: context.l10n.text('目标缓存时长'),
               child: TextFormField(
                 key: const Key('cache-base-secs-field'),
                 controller: _cacheBaseSecsController,
@@ -3083,7 +3178,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           _buildFieldPair(
             _SettingsLabeledField(
-              label: context.l10n.text('小文件全量缓存阈值'),
+              label: context.l10n.text('小文件完整缓存阈值'),
               child: TextFormField(
                 key: const Key('cache-small-file-field'),
                 controller: _cacheSmallFileController,
@@ -3104,7 +3199,7 @@ class SettingsPageState extends State<SettingsPage> {
               ),
             ),
             _SettingsLabeledField(
-              label: context.l10n.text('假定下行带宽（可留空）'),
+              label: context.l10n.text('预估下行带宽（可留空）'),
               child: TextFormField(
                 key: const Key('cache-bandwidth-field'),
                 controller: _cacheBandwidthController,
@@ -3129,8 +3224,8 @@ class SettingsPageState extends State<SettingsPage> {
           ),
           SPToggleTile(
             key: const Key('cache-override-user-args-switch'),
-            title: const AppText('覆盖播放器模板中的手工缓存参数'),
-            subtitle: const AppText('建议保持关闭；开启后自动策略的优先级高于手工参数'),
+            title: const AppText('覆盖手动缓存参数'),
+            subtitle: const AppText('开启后自动策略优先于播放器模板中的手动缓存参数。'),
             value: _overrideUserCacheArgs,
             onChanged: !_cacheEnabled
                 ? null
@@ -3145,9 +3240,10 @@ class SettingsPageState extends State<SettingsPage> {
     return SettingsGroupCard(
       key: const Key('cache-expiration-settings-section'),
       icon: SPIcons.stopwatch,
-      title: '缓存过期时间',
-      description: '按最后访问或最后更新时间自动淘汰可重建缓存。',
+      title: '缓存保留期限',
+      description: '设置目录刷新间隔，以及缓存、播放历史和进度的保留期限。',
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildFieldPair(
             _SettingsLabeledField(
@@ -3196,7 +3292,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           _buildFieldPair(
             _SettingsLabeledField(
-              label: context.l10n.text('目录快照保留时间'),
+              label: context.l10n.text('目录快照保留期限'),
               child: TextFormField(
                 key: const Key('directory-retention-days-field'),
                 controller: _directoryRetentionController,
@@ -3217,7 +3313,7 @@ class SettingsPageState extends State<SettingsPage> {
               ),
             ),
             _SettingsLabeledField(
-              label: context.l10n.text('续播记录保留时间'),
+              label: context.l10n.text('播放记录与进度保留期限'),
               child: TextFormField(
                 key: const Key('playback-retention-days-field'),
                 controller: _playbackRetentionController,
@@ -3239,31 +3335,28 @@ class SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 12),
-          _SettingsLabeledField(
-            label: context.l10n.text('媒体元数据保留时间'),
-            child: TextFormField(
-              key: const Key('media-metadata-retention-days-field'),
-              controller: _mediaMetadataRetentionController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                helperText: context.l10n.text('适用于文件大小、时长、码率和资源验证器缓存'),
-                suffixText: context.l10n.text('天'),
-                prefixIcon: const Icon(SPIcons.document),
-                border: OutlineInputBorder(),
-              ),
-              validator: (value) => _validateNumber(
-                value,
-                min: CacheExpirationConfig.minDays.toDouble(),
-                max: CacheExpirationConfig.maxDays.toDouble(),
-                unit: '天',
-                integer: true,
+          _buildFieldPair(
+            _SettingsLabeledField(
+              label: context.l10n.text('媒体信息缓存保留期限'),
+              child: TextFormField(
+                key: const Key('media-metadata-retention-days-field'),
+                controller: _mediaMetadataRetentionController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  helperText: context.l10n.text('适用于文件大小、时长、码率和资源验证器缓存'),
+                  suffixText: context.l10n.text('天'),
+                  prefixIcon: const Icon(SPIcons.document),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) => _validateNumber(
+                  value,
+                  min: CacheExpirationConfig.minDays.toDouble(),
+                  max: CacheExpirationConfig.maxDays.toDouble(),
+                  unit: '天',
+                  integer: true,
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: AppText('缓存学习数据不自动过期，只能通过下方独立按钮主动清理。'),
           ),
         ],
       ),
@@ -3274,20 +3367,20 @@ class SettingsPageState extends State<SettingsPage> {
     return SettingsGroupCard(
       key: const Key('cache-intelligence-settings-section'),
       icon: SPIcons.sparkle,
-      title: '智能缓存优化',
+      title: '智能缓存',
       description: '使用本机匿名聚合数据，在安全边界内修正缓存目标。',
       child: Column(
         children: [
           SPToggleTile(
             key: const Key('cache-intelligence-enabled-switch'),
-            title: const AppText('启用本地智能层'),
+            title: const AppText('本地缓存学习'),
             subtitle: const AppText('仅使用本机聚合数据，不上传媒体地址或播放记录'),
             value: _intelligenceEnabled,
             onChanged: (value) => setState(() => _intelligenceEnabled = value),
           ),
           SPToggleTile(
             key: const Key('cache-intelligence-apply-switch'),
-            title: const AppText('应用智能优化'),
+            title: const AppText('应用学习结果'),
             subtitle: AppText(
               _applyIntelligence ? '建议会在安全边界内修正缓存目标' : '影子模式：只学习和记录建议，不改变原策略',
             ),
@@ -3391,16 +3484,16 @@ class SettingsPageState extends State<SettingsPage> {
         appState.canClearCache;
     const labels = {
       CacheCleanupScope.all: '全部清理',
-      CacheCleanupScope.directory: '目录缓存清理',
-      CacheCleanupScope.metadata: '元数据与图片清理',
-      CacheCleanupScope.playback: '播放进度清理',
-      CacheCleanupScope.temporary: '临时文件清理',
+      CacheCleanupScope.directory: '清理目录缓存',
+      CacheCleanupScope.metadata: '清理元数据与图片',
+      CacheCleanupScope.playback: '清理播放进度',
+      CacheCleanupScope.temporary: '清理临时文件',
     };
     return SettingsGroupCard(
       key: const Key('cache-cleanup-settings-section'),
       icon: SPIcons.delete,
       title: '缓存文件清理',
-      description: '按类别清理；媒体中心数据由媒体中心原有清理按钮管理。',
+      description: '按类别清理缓存与播放进度，已下载的离线视频会保留。',
       child: Wrap(
         spacing: 12,
         runSpacing: 12,
@@ -3433,7 +3526,7 @@ class SettingsPageState extends State<SettingsPage> {
     return SettingsGroupCard(
       key: const Key('learning-data-cleanup-settings-section'),
       icon: SPIcons.idea,
-      title: '学习数据清理',
+      title: '缓存学习数据',
       description: '清除智能缓存积累的学习数据。',
       child: Align(
         alignment: Alignment.centerLeft,
@@ -3462,6 +3555,24 @@ class SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Future<void> _openGlobalBackground(BuildContext context) async {
+    final FilmCatalogController catalog;
+    try {
+      catalog = await context.read<AppState>().getFilmCatalog();
+    } on Exception catch (error) {
+      debugPrint(
+        'Failed to load film catalog (error-type=${error.runtimeType})',
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SPNotice(content: AppText('影视目录库操作失败')));
+      }
+      return;
+    }
+    if (context.mounted) await showFilmArtworkPicker(context, catalog);
+  }
+
   Widget _buildAppearanceSettings() {
     return Consumer<AppearanceController>(
       builder: (context, appearanceController, child) => _observeSectionBuild(
@@ -3484,44 +3595,64 @@ class SettingsPageState extends State<SettingsPage> {
     final capabilities = appearanceController.capabilities;
     final result = appearanceController.lastResult;
     final capabilityError = appearanceController.capabilityError;
-    return SettingsColumns(
-      firstFraction: 0.5,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        SettingsGroupCard(
+          icon: SPIcons.layers,
+          title: '主题与背景',
+          description: '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<InterfaceStyle>(
+                  key: const Key('interface-style-selector'),
+                  segments: const [
+                    ButtonSegment(
+                      value: InterfaceStyle.classic,
+                      icon: Icon(SPIcons.square),
+                      label: AppText('默认'),
+                    ),
+                    ButtonSegment(
+                      value: InterfaceStyle.glass,
+                      icon: Icon(SPIcons.blur),
+                      label: AppText('Windows 材质'),
+                    ),
+                  ],
+                  selected: {_interfaceStyle},
+                  onSelectionChanged: (selection) {
+                    if (selection.isNotEmpty) {
+                      setState(() => _interfaceStyle = selection.first);
+                    }
+                  },
+                ),
+              ),
+              const Divider(height: 24),
+              const AppText('背景应用于整个界面，可选择本地图片或已缓存封面；默认跟随软件界面样式'),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const Key('global-background-button'),
+                  onPressed: () => _openGlobalBackground(context),
+                  child: const AppText('设置全局背景'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SettingsColumns(
           children: [
             SettingsGroupCard(
-              icon: SPIcons.layers,
-              title: '界面样式',
-              description: '默认样式为不透明界面；Windows 材质使用 Acrylic 或 Mica 背景。',
+              icon: SPIcons.font,
+              title: '字体与强调色',
+              description: '调整界面字体、字重和主要交互控件的颜色。',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SegmentedButton<InterfaceStyle>(
-                      key: const Key('interface-style-selector'),
-                      segments: const [
-                        ButtonSegment(
-                          value: InterfaceStyle.classic,
-                          icon: Icon(SPIcons.square),
-                          label: AppText('默认'),
-                        ),
-                        ButtonSegment(
-                          value: InterfaceStyle.glass,
-                          icon: Icon(SPIcons.blur),
-                          label: AppText('Windows 材质'),
-                        ),
-                      ],
-                      selected: {_interfaceStyle},
-                      onSelectionChanged: (selection) {
-                        if (selection.isNotEmpty) {
-                          setState(() => _interfaceStyle = selection.first);
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 16),
                   SPFontPicker(
                     selectedFamily: _interfaceFontFamily,
                     onChanged: (family) =>
@@ -3537,7 +3668,7 @@ class SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 16),
                   Row(
                     children: [
-                      const Expanded(child: AppText('软件字重')),
+                      const Expanded(child: AppText('字体粗细')),
                       Text(
                         weightLabel(
                           _draft.interfaceFontWeightOffset.toDouble(),
@@ -3547,7 +3678,7 @@ class SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                   Semantics(
-                    label: context.l10n.text('软件字重'),
+                    label: context.l10n.text('字体粗细'),
                     child: Slider(
                       key: const Key('interface-font-weight-slider'),
                       min: AppearanceConfig.minFontWeightOffset.toDouble(),
@@ -3612,50 +3743,18 @@ class SettingsPageState extends State<SettingsPage> {
                       }
                     },
                   ),
-                  const SizedBox(height: 16),
-                  const AppText('上次浏览目录'),
-                  const SizedBox(height: 8),
-                  SegmentedButton<DirectoryMemoryMode>(
-                    key: const Key('directory-memory-mode'),
-                    segments: const [
-                      ButtonSegment(
-                        value: DirectoryMemoryMode.temporary,
-                        label: AppText('临时缓存'),
-                      ),
-                      ButtonSegment(
-                        value: DirectoryMemoryMode.persistent,
-                        label: AppText('持久缓存'),
-                      ),
-                    ],
-                    selected: {_draft.directoryMemoryMode},
-                    onSelectionChanged: (selection) {
-                      if (selection.isNotEmpty) {
-                        setState(
-                          () => _draft.directoryMemoryMode = selection.first,
-                        );
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 6),
-                  AppText(
-                    '临时缓存只保留本次运行；持久缓存保存到本地文件',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
             SettingsGroupCard(
               icon: SPIcons.color,
-              title: 'Windows 系统材质',
+              title: '窗口材质',
               description: '参数在保存时应用，拖动滑块不会刷新窗口特效。',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   AppText(
-                    '材质模式',
+                    '材质类型',
                     style: Theme.of(context).textTheme.labelLarge,
                   ),
                   const SizedBox(height: 10),
@@ -3703,7 +3802,7 @@ class SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 20),
                   Row(
                     children: [
-                      const Expanded(child: AppText('界面背景密度')),
+                      const Expanded(child: AppText('界面背景不透明度')),
                       AppText(
                         '$opacityPercent%',
                         key: const Key('glass-opacity-value'),
@@ -3737,10 +3836,11 @@ class SettingsPageState extends State<SettingsPage> {
             ),
           ],
         ),
+        const SizedBox(height: 16),
         SettingsGroupCard(
           key: const Key('windows-appearance-capabilities-section'),
           icon: SPIcons.diagnostic,
-          title: 'Windows 外观兼容性',
+          title: '材质兼容性',
           description: '只读取系统能力与窗口实际材质，用于说明磨砂效果是否生效。',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3880,12 +3980,13 @@ class SettingsPageState extends State<SettingsPage> {
         SettingsGroupCard(
           icon: SPIcons.folderOpen,
           title: '文件浏览',
-          description: '这些选项只改变界面显示，不影响稳定播放列表和字幕匹配。',
+          description: '设置文件列表的显示、排序和目录位置记忆。',
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SPToggleTile(
                 key: const Key('hidden-extensions-enabled-switch'),
-                title: const AppText('启用隐藏文件后缀'),
+                title: const AppText('按后缀隐藏文件'),
                 subtitle: const AppText('关闭后停止过滤，但保留并允许编辑下方后缀内容'),
                 value: _hiddenExtensionsEnabled,
                 onChanged: (value) =>
@@ -3893,7 +3994,7 @@ class SettingsPageState extends State<SettingsPage> {
               ),
               const SizedBox(height: 4),
               _SettingsLabeledField(
-                label: context.l10n.text('隐藏文件后缀（仅界面隐藏）'),
+                label: context.l10n.text('隐藏的文件后缀'),
                 child: TextFormField(
                   key: const Key('hidden-extensions-field'),
                   controller: _hiddenExtensionsController,
@@ -3918,7 +4019,7 @@ class SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 12),
               _buildFieldPair(
                 _SettingsLabeledField(
-                  label: context.l10n.text('默认排序方式'),
+                  label: context.l10n.text('默认排序'),
                   child: SPDropdownButtonFormField<FileSortMode>(
                     key: const Key('default-sort-mode-field'),
                     initialValue: _defaultSortMode,
@@ -3941,7 +4042,7 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
                 _SettingsLabeledField(
-                  label: context.l10n.text('默认排序顺序'),
+                  label: context.l10n.text('排序方向'),
                   child: SPDropdownButtonFormField<FileSortDirection>(
                     key: const Key('default-sort-direction-field'),
                     initialValue: _defaultSortDirection,
@@ -3966,6 +4067,40 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
+              const Divider(height: 24),
+              AppText('目录位置记忆', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<DirectoryMemoryMode>(
+                  key: const Key('directory-memory-mode'),
+                  segments: const [
+                    ButtonSegment(
+                      value: DirectoryMemoryMode.temporary,
+                      label: AppText('仅本次运行'),
+                    ),
+                    ButtonSegment(
+                      value: DirectoryMemoryMode.persistent,
+                      label: AppText('跨次保留'),
+                    ),
+                  ],
+                  selected: {_draft.directoryMemoryMode},
+                  onSelectionChanged: (selection) {
+                    if (selection.isNotEmpty) {
+                      setState(
+                        () => _draft.directoryMemoryMode = selection.first,
+                      );
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 6),
+              AppText(
+                '选择是否在下次启动时恢复上次浏览的目录。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
             ],
           ),
         ),
@@ -3973,7 +4108,7 @@ class SettingsPageState extends State<SettingsPage> {
         SettingsGroupCard(
           key: const Key('settings-maintenance-section'),
           icon: SPIcons.restore,
-          title: '配置维护',
+          title: '配置管理',
           description: '仅重置用户设置，不清理缓存或中断当前会话。',
           child: Align(
             alignment: Alignment.centerLeft,
@@ -4003,7 +4138,7 @@ class SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _buildFieldPair(Widget first, Widget second) => LayoutBuilder(
+  Widget _buildFieldPair(Widget first, [Widget? second]) => LayoutBuilder(
     builder: (context, constraints) {
       final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
       final width = constraints.maxWidth >= 620 * scale
@@ -4014,7 +4149,7 @@ class SettingsPageState extends State<SettingsPage> {
         runSpacing: 12,
         children: [
           SizedBox(width: width, child: first),
-          SizedBox(width: width, child: second),
+          if (second != null) SizedBox(width: width, child: second),
         ],
       );
     },
@@ -4260,7 +4395,7 @@ class _SettingsSectionBuildProbe extends StatelessWidget {
   }
 }
 
-class _SettingsNavigationButton extends StatelessWidget {
+class _SettingsNavigationButton extends StatefulWidget {
   const _SettingsNavigationButton({
     super.key,
     required this.definition,
@@ -4273,15 +4408,51 @@ class _SettingsNavigationButton extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_SettingsNavigationButton> createState() =>
+      _SettingsNavigationButtonState();
+}
+
+class _SettingsNavigationButtonState extends State<_SettingsNavigationButton> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.selected) _revealSelection();
+  }
+
+  @override
+  void didUpdateWidget(_SettingsNavigationButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selected && !oldWidget.selected) _revealSelection();
+  }
+
+  void _revealSelection() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.selected) return;
+      final position = Scrollable.of(context).position;
+      final button = context.findRenderObject()!;
+      position.ensureVisible(
+        button,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+      );
+      position.ensureVisible(
+        button,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final selected = widget.selected;
+    final definition = widget.definition;
     return Semantics(
       selected: selected,
       button: true,
       child: SPTile(
         selected: selected,
         selectedColor: scheme.primary,
-        onTap: onTap,
+        onTap: widget.onTap,
         borderRadius: AppTheme.controlRadius,
         child: ConstrainedBox(
           constraints: BoxConstraints(

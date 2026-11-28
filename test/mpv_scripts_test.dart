@@ -181,7 +181,9 @@ mp.add_timeout(3, function() mp.commandv('quit', '1') end)
     expect(script, contains('local PROGRESS ='));
     expect(
       script,
-      contains('local function append_progress(outcome, reason, file_error)'),
+      contains(
+        'local function append_progress(outcome, reason, file_error, network_action)',
+      ),
     );
     expect(script, contains('mp.register_event("start-file"'));
     expect(script, contains('mp.register_event("playback-restart"'));
