@@ -872,6 +872,11 @@ class BrowserPageState extends State<BrowserPage> {
                   (i) => i.versions.any((v) => v.path == item.targetPath),
                 )
               : history.playlistRelativePaths.indexOf(item.targetPath);
+          if (index < 0 &&
+              history.videoPlaylistMode == VideoPlaylistMode.implicit) {
+            await _openLibraryItem(item);
+            return;
+          }
           if (index == history.videoIndex &&
               history.playlistRelativePaths[index] == item.targetPath &&
               !_playerService.hasPendingVideo(history.sessionId)) {
@@ -3626,6 +3631,7 @@ class BrowserPageState extends State<BrowserPage> {
     String? sessionId,
     String? playlistRootPath,
     String? resumeTargetPath,
+    String? queuedResumePath,
     VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
     FilmPlaybackContext? filmVersionContext,
   }) => context.read<AppState>().withMediaPlaybackPriority(
@@ -3634,6 +3640,7 @@ class BrowserPageState extends State<BrowserPage> {
       sessionId: sessionId,
       playlistRootPath: playlistRootPath,
       resumeTargetPath: resumeTargetPath,
+      queuedResumePath: queuedResumePath,
       playbackScope: playbackScope,
       filmVersionContext: filmVersionContext,
     ),
@@ -3644,6 +3651,7 @@ class BrowserPageState extends State<BrowserPage> {
     String? sessionId,
     String? playlistRootPath,
     String? resumeTargetPath,
+    String? queuedResumePath,
     VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
     FilmPlaybackContext? filmVersionContext,
   }) async {
@@ -3653,6 +3661,7 @@ class BrowserPageState extends State<BrowserPage> {
         sessionId: sessionId,
         playlistRootPath: playlistRootPath,
         resumeTargetPath: resumeTargetPath,
+        queuedResumePath: queuedResumePath,
         playbackScope: playbackScope,
         filmVersionContext: filmVersionContext,
       );
@@ -3671,6 +3680,7 @@ class BrowserPageState extends State<BrowserPage> {
               sessionId: sessionId,
               playlistRootPath: playlistRootPath,
               resumeTargetPath: resumeTargetPath,
+              queuedResumePath: queuedResumePath,
               playbackScope: playbackScope,
               filmVersionContext: filmVersionContext,
               report: report,
@@ -3864,6 +3874,9 @@ class BrowserPageState extends State<BrowserPage> {
     int? playlistIndex,
     bool playlistLoop = false,
     FilmPlaybackContext? filmVersionContext,
+    FilmResource? mappedEpisode,
+    bool movie = false,
+    String? queuedResumePath,
     void Function(String stage, WebDavFontLocalizationProgress? font)? report,
   }) async {
     final app = context.read<AppState>();
@@ -3912,34 +3925,33 @@ class BrowserPageState extends State<BrowserPage> {
         allowGap: config.allowSeasonGap,
         insertDecimalEpisodes: config.videoPlaylistInsertDecimalEpisodes,
         specialPlaylistMode: config.specialPlaylistMode,
+        scanSpecialChildFolders: config.scanSpecialChildFolders,
+        scanSpecialSiblingFolders: config.scanSpecialSiblingFolders,
       );
       items = selected.items;
       filmNextItem = selected.next?.playbackItem.withFilmVersion(
         versionContext,
       );
     }
-    final mapped = await store.resourceAt(sourceId, targetPath);
-    if (!custom &&
-        versionContext == null &&
-        scope == VideoPlaybackScope.directory &&
-        mapped?.type == FilmMediaType.tv &&
-        mapped?.workId != null &&
-        mapped?.season != null &&
-        mapped?.episode != null) {
+    if (mappedEpisode != null) {
+      final workId = mappedEpisode.workId!;
       final resources = await store.resources(
         sourceId: sourceId,
-        workId: mapped!.workId!,
+        workId: workId,
         enabledOnly: widget.playbackOnly,
       );
-      final seasons = await store.seasons(mapped.workId!);
+      final seasons = await store.seasons(workId);
       items = buildFilmVideoTimeline(
         resources,
         seasons,
         selectedPath: targetPath,
+        selectedSourceId: sourceId,
         autoSeason: config.autoSeasonTransitionEnabled,
         allowGap: config.allowSeasonGap,
         insertDecimalEpisodes: config.videoPlaylistInsertDecimalEpisodes,
         specialPlaylistMode: config.specialPlaylistMode,
+        scanSpecialChildFolders: config.scanSpecialChildFolders,
+        scanSpecialSiblingFolders: config.scanSpecialSiblingFolders,
       );
     }
     if (!custom &&
@@ -3947,10 +3959,8 @@ class BrowserPageState extends State<BrowserPage> {
         !cachedStart &&
         scope == VideoPlaybackScope.directory &&
         config.autoSeasonTransitionEnabled &&
-        mapped?.type != FilmMediaType.movie &&
-        !(mapped?.type == FilmMediaType.tv &&
-            mapped?.season != null &&
-            mapped?.episode != null)) {
+        mappedEpisode == null &&
+        !movie) {
       var path = rootPath;
       var files = rootFiles;
       final seen = <String>{rootPath};
@@ -4009,12 +4019,50 @@ class BrowserPageState extends State<BrowserPage> {
           ),
       ];
     }
-    final index =
+    var index =
         playlistIndex ??
         items.indexWhere(
           (item) => item.versions.any((v) => v.path == targetPath),
         );
     if (index < 0) throw AppException.config('未找到上次播放的视频，请检查文件或特典设置');
+    var startPath = targetPath;
+    if (queuedResumePath != null) {
+      final pending = items.indexWhere(
+        (item) => item.versions.any((v) => v.path == queuedResumePath),
+      );
+      index = pending >= 0 ? pending : index + 1;
+      if (index == items.length) {
+        if (!mounted || existingSession == null) return;
+        if (filmNextItem == null) {
+          await _removePlaybackSession(
+            existingSession,
+            terminateProcess: false,
+            completed: true,
+          );
+        } else {
+          existingSession.history = existingSession.history.copyWith(
+            filmNextItem: filmNextItem,
+            filmBoundaryReady: true,
+            clearPendingVideoIndex: true,
+          );
+          await histories.upsert(existingSession.history);
+          if (mounted) {
+            await _completeFilmBoundary(existingSession, explicit: true);
+          }
+        }
+        return;
+      }
+      startPath = pending >= 0
+          ? queuedResumePath
+          : items[index]
+                .orderedVersions(
+                  items[index - 1].versions.firstWhere(
+                    (v) => v.path == targetPath,
+                  ),
+                )
+                .first
+                .path;
+    }
     if (items[index].unavailable) {
       throw AppException.config('播放列表条目不可用，请检查来源或资源');
     }
@@ -4050,11 +4098,11 @@ class BrowserPageState extends State<BrowserPage> {
       await preparer.prepareSharedFonts(
         rootPath,
         siblings: rootFiles,
-        startPath: targetPath,
+        startPath: startPath,
       );
     }
     var requestedVersion = items[index].versions.firstWhere(
-      (v) => v.path == targetPath,
+      (v) => v.path == startPath,
     );
     if (playlistSnapshot?.entries[index].pinnedPath == null && custom) {
       for (final candidate in items[index].versions) {
@@ -4090,7 +4138,12 @@ class BrowserPageState extends State<BrowserPage> {
       filmVersionContext: versionContext,
       filmNextItem: filmNextItem,
       sourceId: sourceId,
-      dirCrumbs: rootPath.isEmpty ? [] : rootPath.split('/'),
+      dirCrumbs: queuedResumePath == null
+          ? (rootPath.isEmpty ? [] : rootPath.split('/'))
+          : p.posix
+                .split(p.posix.dirname(version.path))
+                .where((part) => part != '.')
+                .toList(),
       fileName: version.name,
       videoIndex: index,
       updatedAt: now,
@@ -4278,6 +4331,7 @@ class BrowserPageState extends State<BrowserPage> {
     String? sessionId,
     String? playlistRootPath,
     String? resumeTargetPath,
+    String? queuedResumePath,
     VideoPlaybackScope playbackScope = VideoPlaybackScope.directory,
     FilmPlaybackContext? filmVersionContext,
     void Function(String stage, WebDavFontLocalizationProgress? font)? report,
@@ -4350,13 +4404,29 @@ class BrowserPageState extends State<BrowserPage> {
                 video,
               ));
     final config = appState.configStore.current;
-    final movieResource = targetPath == null || !widget.playbackOnly
+    final mode =
+        existingSession?.history.videoPlaylistMode ?? config.videoPlaylistMode;
+    final implicit =
+        mode == VideoPlaylistMode.implicit &&
+        p.basename(config.playerExecutable).toLowerCase().contains('mpv');
+    final mapped = targetPath == null || (!widget.playbackOnly && !implicit)
         ? null
         : await (await appState.getFilmCatalogStore()).resourceAt(
             _sourceId,
             targetPath,
           );
-    final moviePlayback = movieResource?.type == FilmMediaType.movie;
+    final moviePlayback =
+        widget.playbackOnly && mapped?.type == FilmMediaType.movie;
+    final mappedEpisode =
+        implicit &&
+            filmVersionContext == null &&
+            playbackScope == VideoPlaybackScope.directory &&
+            mapped?.type == FilmMediaType.tv &&
+            mapped?.workId != null &&
+            mapped?.season != null &&
+            mapped?.episode != null
+        ? mapped
+        : null;
     final cachedStart =
         targetPath != null &&
         await appState.cachedTarget(
@@ -4369,7 +4439,8 @@ class BrowserPageState extends State<BrowserPage> {
         playbackScope == VideoPlaybackScope.singleItem ||
             moviePlayback ||
             cachedStart ||
-            filmVersionContext != null
+            filmVersionContext != null ||
+            mappedEpisode != null
         ? const SpecialVideoScanResult([], false)
         : await const SpecialVideoPlaylistCollector().collect(
             source: _source,
@@ -4383,9 +4454,9 @@ class BrowserPageState extends State<BrowserPage> {
         ? rootVideos.where((item) => item.path == targetPath).toList()
         : [...rootVideos, ...scan.items];
     if (moviePlayback) {
-      final allowed = movieResource!.isMovieMain
+      final allowed = mapped!.isMovieMain
           ? (await (await appState.getFilmCatalogStore()).resources(
-              workId: movieResource.workId,
+              workId: mapped.workId,
               sourceId: _sourceId,
               enabledOnly: true,
             )).where((r) => r.isMovieMain).map((r) => r.path).toSet()
@@ -4399,10 +4470,7 @@ class BrowserPageState extends State<BrowserPage> {
       _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
       return;
     }
-    final mode =
-        existingSession?.history.videoPlaylistMode ?? config.videoPlaylistMode;
-    if (mode == VideoPlaylistMode.implicit &&
-        p.basename(config.playerExecutable).toLowerCase().contains('mpv')) {
+    if (implicit) {
       await _playImplicitVideo(
         ordered,
         targetPath,
@@ -4412,6 +4480,9 @@ class BrowserPageState extends State<BrowserPage> {
         existingSession,
         playbackScope,
         filmVersionContext: filmVersionContext,
+        mappedEpisode: mappedEpisode,
+        movie: mapped?.type == FilmMediaType.movie,
+        queuedResumePath: queuedResumePath,
         report: report,
       );
       return;
@@ -6868,7 +6939,7 @@ class BrowserPageState extends State<BrowserPage> {
       return;
     }
     if (!mounted) return;
-    final index = history.pendingVideoIndex ?? history.videoIndex;
+    var index = history.pendingVideoIndex ?? history.videoIndex;
     if (index < 0 || index >= history.playlistRelativePaths.length) {
       _showLibraryError('未找到上次播放的视频，请检查文件或特典设置');
       return;
@@ -6888,6 +6959,32 @@ class BrowserPageState extends State<BrowserPage> {
             )
             .firstOrNull;
         target = item.orderedVersions(previous).first.path;
+      }
+    }
+    String? queuedResumePath;
+    final pending = history.queueItems.elementAtOrNull(index);
+    if (history.videoPlaylistMode == VideoPlaylistMode.implicit &&
+        history.playbackScope == VideoPlaybackScope.directory &&
+        history.pendingVideoIndex != null &&
+        pending?.season == 0 &&
+        pending?.episode != null &&
+        index > 0) {
+      final app = context.read<AppState>();
+      final store = await app.getFilmCatalogStore();
+      final previous = index > history.videoIndex
+          ? history.videoIndex
+          : index - 1;
+      final previousPath = history.playlistRelativePaths[previous];
+      final anchor = await store.resourceAt(_sourceId, previousPath);
+      if (!mounted) return;
+      if (anchor?.type == FilmMediaType.tv &&
+          anchor?.workId != null &&
+          anchor?.season != null &&
+          anchor?.episode != null &&
+          anchor?.availability == 'present') {
+        queuedResumePath = target;
+        index = previous;
+        target = previousPath;
       }
     }
     if (widget.playbackOnly) {
@@ -6930,7 +7027,9 @@ class BrowserPageState extends State<BrowserPage> {
         sessionId: history.sessionId,
         playlistRootPath: rootPath,
         resumeTargetPath: target,
+        queuedResumePath: queuedResumePath,
         playbackScope: history.playbackScope,
+        filmVersionContext: history.filmVersionContext,
       );
     } on AppException catch (error) {
       _showLibraryError(error.message);

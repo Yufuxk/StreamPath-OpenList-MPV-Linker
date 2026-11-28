@@ -1,44 +1,73 @@
+import 'package:path/path.dart' as p;
+
 import '../../data/models/film_catalog_item.dart';
+import '../../data/models/media_source.dart';
 import '../../data/models/special_playlist_mode.dart';
 import '../../data/models/video_queue.dart';
 import 'season_video_playlist_collector.dart';
+import 'special_video_playlist_collector.dart';
 
-/// 按首播日期排序，可将季归属明确的小数番外插入正片之间。
+/// 正季按季集推进，按首播日期和小数集号插入符合范围的番外。
 List<VideoQueueItem> buildFilmVideoTimeline(
   List<FilmResource> resources,
   Map<int, Map<String, dynamic>> seasons, {
   required String selectedPath,
+  String? selectedSourceId,
   required bool autoSeason,
   required bool allowGap,
   bool insertDecimalEpisodes = false,
   SpecialPlaylistMode specialPlaylistMode = SpecialPlaylistMode.all,
+  bool scanSpecialChildFolders = true,
+  bool scanSpecialSiblingFolders = true,
+  bool legacyOrder = false,
 }) {
+  final selected = resources.firstWhere(
+    (r) =>
+        r.path == selectedPath &&
+        (selectedSourceId == null || r.sourceId == selectedSourceId),
+  );
   final listedSpecials = (seasons[0]?['episodes'] as List? ?? const [])
       .whereType<Map>()
       .map((row) => row['episode_number'])
       .whereType<int>()
       .toSet();
+  final regularDirectories = <(String, int), Set<String>>{};
+  for (final r in resources.where(_isMappedVideo)) {
+    if (r.season! <= 0) continue;
+    regularDirectories
+        .putIfAbsent((r.sourceId, r.rootId), () => {})
+        .add(filmPathKey(r.parentPath, r.sourceKind));
+  }
   final eligible = resources.where((resource) {
-    if (resource.season != 0 || resource.path == selectedPath) return true;
-    return switch (specialPlaylistMode) {
+    if (resource.season != 0 || identical(resource, selected)) return true;
+    final allowed = switch (specialPlaylistMode) {
       SpecialPlaylistMode.off => false,
       SpecialPlaylistMode.all => true,
-      SpecialPlaylistMode.ovaOnly => switch (resource.extraKind) {
-        'ova' || 'sp' => true,
-        null || 'other' => listedSpecials.contains(resource.episode),
-        _ => false,
-      },
+      SpecialPlaylistMode.ovaOnly =>
+        listedSpecials.contains(resource.episode) &&
+            const {null, 'other', 'ova', 'sp'}.contains(resource.extraKind),
     };
+    return allowed &&
+        (legacyOrder ||
+            _inSpecialDirectoryRange(
+              resource,
+              regularDirectories[(resource.sourceId, resource.rootId)] ??
+                  const {},
+              child: scanSpecialChildFolders,
+              sibling: scanSpecialSiblingFolders,
+            ));
   }).toList();
-  final ordered = buildFilmVideoOrder(eligible, seasons);
+  final datedOrder = buildFilmVideoOrder(eligible, seasons);
+  final ordered = legacyOrder
+      ? datedOrder
+      : _keepRegularEpisodeOrder(datedOrder);
   final placements = insertDecimalEpisodes
       ? _decimalEpisodePlacements(ordered, seasons)
       : <VideoQueueItem, (int, double)>{};
   final filtered = _filterFilmVideoTimeline(
     ordered,
-    eligible,
+    selected,
     seasons,
-    selectedPath: selectedPath,
     autoSeason: autoSeason,
     allowGap: allowGap,
     decimalSeasons: {
@@ -82,6 +111,69 @@ List<VideoQueueItem> buildFilmVideoTimeline(
     result.insert(insertion, item);
   }
   return result;
+}
+
+bool _isMappedVideo(FilmResource resource) =>
+    resource.availability == 'present' &&
+    resource.season != null &&
+    resource.episode != null &&
+    (resource.mediaKind == 'video' || resource.mediaKind == 'strm');
+
+bool _inSpecialDirectoryRange(
+  FilmResource resource,
+  Set<String> regularDirectories, {
+  required bool child,
+  required bool sibling,
+}) {
+  final directory = filmPathKey(resource.parentPath, resource.sourceKind);
+  if (regularDirectories.contains(directory)) return true;
+  if (resource.sourceKind.isMediaServer) return false;
+
+  bool underSpecialFolder(String base) {
+    if (!filmPathWithin(directory, base) || directory == base) return false;
+    final relative = base.isEmpty
+        ? directory
+        : directory.substring(base.length + 1);
+    final folders = relative.split('/');
+    return folders.length <= SpecialVideoPlaylistCollector.maxDepth &&
+        SpecialVideoPlaylistCollector.isSpecialName(folders.first) &&
+        !folders.any(SpecialVideoPlaylistCollector.isExcludedDirectory);
+  }
+
+  return regularDirectories.any(
+    (regular) =>
+        (child && underSpecialFolder(regular)) ||
+        (sibling &&
+            regular.isNotEmpty &&
+            !filmPathWithin(directory, regular) &&
+            underSpecialFolder(
+              p.posix.dirname(regular) == '.' ? '' : p.posix.dirname(regular),
+            )),
+  );
+}
+
+List<VideoQueueItem> _keepRegularEpisodeOrder(List<VideoQueueItem> datedOrder) {
+  final regular = datedOrder.where((item) => item.season! > 0).toList()
+    ..sort(_compareSeasonEpisode);
+  final specials = datedOrder.where((item) => item.season == 0).toList();
+  final result = <VideoQueueItem>[];
+  var nextSpecial = 0;
+  for (final item in regular) {
+    final date = item.airDate;
+    while (date != null && nextSpecial < specials.length) {
+      final specialDate = specials[nextSpecial].airDate;
+      if (specialDate == null || specialDate.isAfter(date)) break;
+      result.add(specials[nextSpecial++]);
+    }
+    result.add(item);
+  }
+  result.addAll(specials.skip(nextSpecial));
+  return result;
+}
+
+int _compareSeasonEpisode(VideoQueueItem a, VideoQueueItem b) {
+  final season = a.season!.compareTo(b.season!);
+  return season != 0 ? season : a.episode!.compareTo(b.episode!);
 }
 
 final _decimalEpisodeNumber = RegExp(
@@ -138,19 +230,13 @@ Map<VideoQueueItem, (int, double)> _decimalEpisodePlacements(
   return result;
 }
 
-/// 自定义范围与隐式队列共用季集分组和首播顺序。
+/// 按季集归组版本，并按首播日期生成基础顺序。
 List<VideoQueueItem> buildFilmVideoOrder(
   List<FilmResource> resources,
   Map<int, Map<String, dynamic>> seasons,
 ) {
   final groups = <(int, int), List<FilmResource>>{};
-  for (final r in resources) {
-    if (r.availability != 'present' ||
-        r.season == null ||
-        r.episode == null ||
-        r.mediaKind != 'video' && r.mediaKind != 'strm') {
-      continue;
-    }
+  for (final r in resources.where(_isMappedVideo)) {
     groups.putIfAbsent((r.season!, r.episode!), () => []).add(r);
   }
   DateTime? date(int s, int e) {
@@ -194,17 +280,15 @@ List<VideoQueueItem> buildFilmVideoOrder(
       if (a.season == 0) return 1;
       if (b.season == 0) return -1;
     }
-    final season = a.season!.compareTo(b.season!);
-    return season != 0 ? season : a.episode!.compareTo(b.episode!);
+    return _compareSeasonEpisode(a, b);
   });
   return result;
 }
 
 List<VideoQueueItem> _filterFilmVideoTimeline(
   List<VideoQueueItem> ordered,
-  List<FilmResource> resources,
+  FilmResource selected,
   Map<int, Map<String, dynamic>> seasons, {
-  required String selectedPath,
   required bool autoSeason,
   required bool allowGap,
   required Map<VideoQueueItem, int> decimalSeasons,
@@ -238,7 +322,6 @@ List<VideoQueueItem> _filterFilmVideoTimeline(
     return eligible.isEmpty ? positives.first : eligible.last;
   }
 
-  final selected = resources.firstWhere((r) => r.path == selectedPath);
   final anchor = selected.season == 0
       ? decimalSeasons[groups[(0, selected.episode!)]] ??
             specialSeason(date(0, selected.episode!))

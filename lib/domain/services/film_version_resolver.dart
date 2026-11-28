@@ -216,7 +216,9 @@ class FilmVersionIndex {
   required bool autoSeason,
   required bool allowGap,
   required bool insertDecimalEpisodes,
-  SpecialPlaylistMode specialPlaylistMode = SpecialPlaylistMode.all,
+  SpecialPlaylistMode? specialPlaylistMode,
+  bool scanSpecialChildFolders = true,
+  bool scanSpecialSiblingFolders = true,
 }) {
   final selected = FilmVersionIndex(resources).selected(context.selection);
   if (!selected.any((r) => r.sourceId == sourceId && r.path == targetPath)) {
@@ -226,10 +228,14 @@ class FilmVersionIndex {
     selected,
     seasons,
     selectedPath: targetPath,
+    selectedSourceId: sourceId,
     autoSeason: autoSeason,
     allowGap: allowGap,
     insertDecimalEpisodes: insertDecimalEpisodes,
-    specialPlaylistMode: specialPlaylistMode,
+    specialPlaylistMode: specialPlaylistMode ?? SpecialPlaylistMode.all,
+    scanSpecialChildFolders: scanSpecialChildFolders,
+    scanSpecialSiblingFolders: scanSpecialSiblingFolders,
+    legacyOrder: specialPlaylistMode == null,
   );
   final byPath = {for (final r in selected) (r.season, r.episode): r};
   final index = timeline.indexWhere(

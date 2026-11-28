@@ -23,29 +23,34 @@ import 'package:streampath/data/models/video_playlist_mode.dart';
 import 'package:streampath/data/models/video_queue.dart';
 import 'package:streampath/domain/services/film_video_timeline.dart';
 
-FilmResource resource(int season, int episode, {String? path, String? extra}) =>
-    FilmResource.fromRow({
-      'id': episode,
-      'root_id': 1,
-      'source_id': 'dav',
-      'source_kind': 'webdav',
-      'media_type': 'tv',
-      'root_path': 'Show',
-      'display_name': 'Show',
-      'relative_path': path ?? 'Show/S${season}E$episode.mkv',
-      'path_key': path ?? 'Show/S${season}E$episode.mkv',
-      'parent_path': 'Show',
-      'name': path ?? 'S${season}E$episode.mkv',
-      'media_kind': 'video',
-      'availability': 'present',
-      'work_id': 1,
-      'binding_origin': 'manual',
-      'binding_version': 1,
-      'season_number': season,
-      'episode_number': episode,
-      'episode_mapping_origin': 'manual',
-      'extra_kind': extra,
-    });
+FilmResource resource(
+  int season,
+  int episode, {
+  String? path,
+  String? extra,
+  String source = 'dav',
+}) => FilmResource.fromRow({
+  'id': episode,
+  'root_id': 1,
+  'source_id': source,
+  'source_kind': 'webdav',
+  'media_type': 'tv',
+  'root_path': 'Show',
+  'display_name': 'Show',
+  'relative_path': path ?? 'Show/S${season}E$episode.mkv',
+  'path_key': path ?? 'Show/S${season}E$episode.mkv',
+  'parent_path': path == null ? 'Show' : p.posix.dirname(path),
+  'name': path ?? 'S${season}E$episode.mkv',
+  'media_kind': path?.endsWith('.strm') == true ? 'strm' : 'video',
+  'availability': 'present',
+  'work_id': 1,
+  'binding_origin': 'manual',
+  'binding_version': 1,
+  'season_number': season,
+  'episode_number': episode,
+  'episode_mapping_origin': 'manual',
+  'extra_kind': extra,
+});
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -283,7 +288,6 @@ void main() {
     expect(order(SpecialPlaylistMode.ovaOnly, resources.first.path), [
       (0, 4),
       ...regular,
-      (0, 8),
       (0, 9),
     ]);
     expect(order(SpecialPlaylistMode.off, resources.first.path), regular);
@@ -300,6 +304,92 @@ void main() {
       (0, 8),
       (0, 9),
     ]);
+  });
+  test('白色相簿2 队列按正式分集和目录范围准入，全部特典按集号连续', () {
+    final resources = [
+      for (var e = 1; e <= 13; e++)
+        resource(1, e, path: 'Show/Season 1/S01E$e.strm'),
+      for (var e = 1; e <= 32; e++)
+        resource(
+          0,
+          e,
+          extra: switch (e) {
+            4 || 5 => 'ncop',
+            6 => 'nced',
+            _ => 'sp',
+          },
+          path:
+              'Show/Specials/${e >= 4 && e <= 6 ? 'NCOP&ED' : 'Extras'}/S00E$e.strm',
+        ),
+    ];
+    final seasons = {
+      0: {
+        'episodes': [
+          {'episode_number': 1, 'air_date': '2014-05-28'},
+          {'episode_number': 2, 'air_date': '2014-05-28'},
+        ],
+      },
+      1: {
+        'episodes': [
+          {'episode_number': 1, 'air_date': '2013-10-06'},
+          {'episode_number': 3, 'air_date': '2013-10-20'},
+        ],
+      },
+    };
+    List<(int?, int?)> order(SpecialPlaylistMode mode, {bool sibling = true}) =>
+        buildFilmVideoTimeline(
+          resources,
+          seasons,
+          selectedPath: resources.first.path,
+          autoSeason: true,
+          allowGap: true,
+          specialPlaylistMode: mode,
+          scanSpecialSiblingFolders: sibling,
+        ).map((i) => (i.season, i.episode)).toList();
+
+    final regular = [for (var e = 1; e <= 13; e++) (1, e)];
+    expect(order(SpecialPlaylistMode.off), regular);
+    expect(order(SpecialPlaylistMode.ovaOnly), [...regular, (0, 1), (0, 2)]);
+    expect(order(SpecialPlaylistMode.ovaOnly, sibling: false), regular);
+    expect(order(SpecialPlaylistMode.all), [
+      ...regular,
+      for (var e = 1; e <= 32; e++) (0, e),
+    ]);
+  });
+  test('范围分别匹配同目录、特典子目录和同级特典目录', () {
+    final main = resource(1, 1, path: 'Show/Season 1/E1.mkv');
+    final child = resource(0, 2, path: 'Show/Season 1/SP/Extras/E2.mkv');
+    final sibling = resource(0, 3, path: 'Show/Specials/E3.mkv');
+    final resources = [
+      main,
+      resource(0, 1, path: 'Show/Season 1/E1-special.mkv'),
+      child,
+      sibling,
+      resource(0, 4, path: 'Other/Season 1/SP/E4.mkv'),
+      resource(0, 5, path: 'Show/Season 10/SP/E5.mkv'),
+      resource(0, 6, path: 'Show/Season 1/SP/BDMV/E6.mkv'),
+      resource(0, 7, path: child.path, source: 'other'),
+      resource(0, 8, path: 'Show/Season 1/SP/A/B/C/D/E/E8.mkv'),
+    ];
+    List<int?> specials(bool child, bool sibling, {FilmResource? selected}) =>
+        buildFilmVideoTimeline(
+              resources,
+              {},
+              selectedPath: (selected ?? main).path,
+              selectedSourceId: 'dav',
+              autoSeason: true,
+              allowGap: false,
+              scanSpecialChildFolders: child,
+              scanSpecialSiblingFolders: sibling,
+            )
+            .where((item) => item.season == 0)
+            .map((item) => item.episode)
+            .toList();
+    expect(specials(false, false), [1]);
+    expect(specials(true, false), [1, 2]);
+    expect(specials(false, true), [1, 3]);
+    expect(specials(true, true), [1, 2, 3]);
+    expect(specials(false, false, selected: child), [1, 2]);
   });
   test('关闭切季和禁止缺季限制正季段，S00 按开播季归属', () {
     final resources = [

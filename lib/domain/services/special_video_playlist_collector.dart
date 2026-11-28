@@ -87,7 +87,7 @@ class SpecialVideoPlaylistCollector {
     return _ovaEnglish.hasMatch(value) || _ovaCjk.any(value.contains);
   }
 
-  static bool _excludedDirectory(String name) {
+  static bool isExcludedDirectory(String name) {
     final value = _normalized(name).trim();
     return value == 'bdmv' || value == 'certificate';
   }
@@ -177,7 +177,7 @@ class SpecialVideoPlaylistCollector {
     ) {
       for (final entry in entries) {
         if (!entry.isDirectory ||
-            _excludedDirectory(entry.name) ||
+            isExcludedDirectory(entry.name) ||
             !isSpecialName(entry.name)) {
           continue;
         }
@@ -267,7 +267,7 @@ class SpecialVideoPlaylistCollector {
           final path = directChildPath(source, job.path, entry);
           if (path == null) continue;
           if (entry.isDirectory) {
-            if (_excludedDirectory(entry.name)) continue;
+            if (isExcludedDirectory(entry.name)) continue;
             if (job.depth < maxDepth) {
               queue.add(
                 _DirectoryJob(

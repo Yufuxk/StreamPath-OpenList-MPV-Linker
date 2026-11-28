@@ -4324,10 +4324,12 @@ class ExternalPlayerService {
       var preferred = versionPath == null
           ? plan.selected[plan.index]
           : item.versions.firstWhere((v) => v.path == versionPath);
+      var hasCachedCandidate = false;
       if (versionPath == null && plan.isCached != null) {
         for (final candidate in item.orderedVersions(preferred)) {
           if (await plan.isCached!(candidate)) {
             preferred = candidate;
+            hasCachedCandidate = true;
             break;
           }
         }
@@ -4339,7 +4341,7 @@ class ExternalPlayerService {
           runtime.launchContext?.isLocal != true &&
           current != null &&
           !['http', 'https'].contains(Uri.tryParse(current.url)?.scheme) &&
-          !await plan.isCached!(preferred ?? item.versions.first)) {
+          !hasCachedCandidate) {
         return false;
       }
       final (version, ready) = await item.prepareVersion(

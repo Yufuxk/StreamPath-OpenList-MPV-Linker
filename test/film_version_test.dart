@@ -11,6 +11,7 @@ import 'package:streampath/data/models/film_version.dart';
 import 'package:streampath/data/models/media_library_item.dart';
 import 'package:streampath/data/models/media_source.dart';
 import 'package:streampath/data/models/playback_history.dart';
+import 'package:streampath/data/models/special_playlist_mode.dart';
 import 'package:streampath/domain/services/film_version_resolver.dart';
 
 FilmResource versionResource(
@@ -277,6 +278,66 @@ void main() {
       insertDecimalEpisodes: false,
     );
     expect(noAuto.next, isNull);
+  });
+
+  test('指定版本的隐式队列先应用递归范围与正式分集规则，再切分来源段', () {
+    final rows = [
+      versionResource(1, 1, 1, 'TV/A/S01/E1.mkv'),
+      versionResource(2, 0, 1, 'TV/A/Specials/E1.mkv'),
+      versionResource(3, 0, 2, 'TV/A/Specials/E2.mkv'),
+      versionResource(
+        4,
+        2,
+        1,
+        'TV/B/S02/E1.mkv',
+        source: 'dav',
+        kind: 'webdav',
+      ),
+    ];
+    final keys = FilmVersionIndex(rows).resourceKeys;
+    final context = FilmPlaybackContext(
+      workId: 1,
+      identity: 'tmdb:tv:1',
+      selection: FilmVersionSelection(
+        defaultKey: keys[1]!,
+        seasons: {2: keys[4]!},
+      ),
+    );
+    for (final sibling in [false, true]) {
+      final result = selectedFilmPlayback(
+        rows,
+        {
+          1: {
+            'episodes': [
+              {'episode_number': 1, 'air_date': '2024-01-01'},
+            ],
+          },
+          0: {
+            'episodes': [
+              {'episode_number': 1, 'air_date': '2024-02-01'},
+            ],
+          },
+          2: {
+            'episodes': [
+              {'episode_number': 1, 'air_date': '2024-03-01'},
+            ],
+          },
+        },
+        context,
+        sourceId: rows.first.sourceId,
+        targetPath: rows.first.path,
+        autoSeason: true,
+        allowGap: false,
+        insertDecimalEpisodes: false,
+        specialPlaylistMode: SpecialPlaylistMode.ovaOnly,
+        scanSpecialSiblingFolders: sibling,
+      );
+      expect(result.items.map((i) => (i.season, i.episode)), [
+        (1, 1),
+        if (sibling) (0, 1),
+      ]);
+      expect(result.next?.id, 4);
+    }
   });
 
   test('上下文与待切季目标往返保存，媒体稳定身份不变', () {

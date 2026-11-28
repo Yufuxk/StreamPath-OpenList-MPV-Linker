@@ -341,6 +341,114 @@ end)
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
+  test(
+    '真实 MPV 缓存集结束后按顺序接续未缓存剧集并补齐五项窗口',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('implicit_cached_eof_');
+      final wave = _silentWave(seconds: 3);
+      final cached = await File(
+        p.join(dir.path, 'cached.wav'),
+      ).writeAsBytes(wave);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType('audio', 'wav');
+        request.response.contentLength = wave.length;
+        if (request.method != 'HEAD') request.response.add(wave);
+        await request.response.close();
+      });
+      final base = 'http://127.0.0.1:${server.port}';
+      final config = StreamPathConfigStore.forPath(
+        p.join(dir.path, 'config.json'),
+      );
+      await config.save(
+        StreamPathConfig(
+          playerExecutable: mpv!,
+          playerArgs: [
+            '--no-config',
+            '--vo=null',
+            '--ao=null',
+            '--pause=yes',
+            '{url}',
+          ],
+          implicitPlaylistWindowSize: 5,
+          subtitleInjectionEnabled: false,
+        ),
+      );
+      final player = ExternalPlayerService(
+        configStore: config,
+        watchLaterDir: Directory(p.join(dir.path, 'watch')),
+      );
+      const session = 'cache-window-five';
+      final active = <int>[];
+      final errors = <String>[];
+      final cacheChecks = <String>[];
+      MediaEntry entry(int index) => MediaEntry(
+        url: index == 0 ? cached.path : '$base/$index.wav',
+        progressTarget: index == 0 ? '$base/0.wav' : null,
+        catalogPath: '$index.wav',
+        title: 'Episode $index',
+      );
+      final plan = ImplicitVideoPlan(
+        index: 0,
+        items: [
+          for (var i = 0; i < 6; i++)
+            VideoQueueItem(
+              versions: [VideoQueueVersion(path: '$i.wav', name: '$i.wav')],
+            ),
+        ],
+        isCached: (version) async {
+          cacheChecks.add(version.path);
+          return version.path == '0.wav';
+        },
+        prepare: (version) async => PreparedVideoItem(
+          entry: entry(int.parse(p.basenameWithoutExtension(version.path))),
+        ),
+        activated: (index, _) async => active.add(index),
+        failed: errors.add,
+      );
+      MpvSessionController? controller;
+      try {
+        final launched = await player.launch(
+          entries: [entry(0)],
+          sessionId: session,
+          webDavSourceUrl: base,
+          webDavSourceId: 'fixture',
+          implicitPlan: plan,
+        );
+        final ipc = MpvSessionController(pipeName: launched.ipcPipeName!);
+        controller = ipc;
+        expect(await ipc.connect(), isTrue);
+        await _waitUntil(
+          () => active.contains(0) && cacheChecks.contains('1.wav'),
+        );
+        expect(await ipc.getProperty('playlist-count'), 1);
+        await ipc.setProperty('pause', false);
+        await _waitUntil(() => active.contains(1));
+        await ipc.setProperty('pause', true);
+        await _waitForProperty(ipc, 'playlist-count', (value) => value == 5);
+        final physical = await ipc.getProperty('playlist') as List;
+        expect(physical.map((e) => (e as Map)['title']), [
+          for (var i = 1; i <= 5; i++) 'Episode $i',
+        ]);
+        expect(physical.map((e) => (e as Map)['id']).toSet().length, 5);
+        expect(await ipc.getProperty('pid'), launched.process.pid);
+        await ipc.setProperty('pause', false);
+        await _waitUntil(() => active.contains(3));
+        await _waitUntil(() => active.contains(5));
+        expect(active, [0, 1, 2, 3, 4, 5]);
+        expect(cacheChecks, isNot(contains('0.wav')));
+        expect(errors, isEmpty);
+      } finally {
+        await controller?.dispose();
+        await player.terminateSession(session);
+        await server.close(force: true);
+        await dir.delete(recursive: true);
+      }
+    },
+    skip: mpv == null ? 'Set STREAMPATH_PATH_MPV' : false,
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
   for (final scenario in ['打开失败切源', '预取后停用', '全部失败']) {
     test(
       '自动同源续播保持 PID：$scenario',

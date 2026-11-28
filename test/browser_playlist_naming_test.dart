@@ -222,10 +222,13 @@ void main() {
       true,
     );
   });
-  for (final scenario in [(false, false), (true, false), (true, true)]) {
-    testWidgets('影视库元数据标题小数插入：开关 ${scenario.$1}，另一季缓存 ${scenario.$2}', (
-      tester,
-    ) async {
+  for (final scenario in [
+    (false, false, true),
+    (true, false, true),
+    (true, true, true),
+    (true, false, false),
+  ]) {
+    testWidgets('影视库小数番外和同级特典范围 $scenario', (tester) async {
       final fixture = await tester.runAsync(() async {
         final temp = await Directory.systemTemp.createTemp('sp_decimal_queue_');
         final root = LocalRootConfig(
@@ -241,6 +244,7 @@ void main() {
             localRoots: [root],
             playerExecutable: 'mpv.exe',
             videoPlaylistInsertDecimalEpisodes: scenario.$1,
+            scanSpecialSiblingFolders: scenario.$3,
             subtitleInjectionEnabled: false,
             autoSeasonTransitionEnabled: false,
           ),
@@ -267,17 +271,23 @@ void main() {
           name: 'Show',
         );
         final generation = await store.beginScan(id);
-        await Directory(p.join(temp.path, 'Show')).create();
-        const names = ['regular-11.mkv', 'regular-12.mkv', 'special.mkv'];
-        for (final name in names) {
-          await File(p.join(temp.path, 'Show', name)).writeAsBytes([0]);
+        const paths = [
+          'Show/S01/regular-11.mkv',
+          'Show/S01/regular-12.mkv',
+          'Show/Specials/special.mkv',
+          'Show/Specials/S00E02.SP.mkv',
+        ];
+        for (final path in paths) {
+          final file = File(p.join(temp.path, path));
+          await file.parent.create(recursive: true);
+          await file.writeAsBytes([0]);
         }
         await store.stage((await store.root(id))!, generation, [
-          for (final name in names)
+          for (final path in paths)
             FilmScanEntry(
-              path: 'Show/$name',
-              parentPath: 'Show',
-              name: name,
+              path: path,
+              parentPath: p.posix.dirname(path),
+              name: p.posix.basename(path),
               mediaKind: 'video',
             ),
         ]);
@@ -298,7 +308,8 @@ void main() {
             resource: switch (resource.name) {
               'regular-11.mkv' => (1, 11),
               'regular-12.mkv' => (1, 12),
-              _ => (0, 1),
+              'special.mkv' => (0, 1),
+              _ => (0, 2),
             },
         });
         final workId = (await store.resources()).first.workId!;
@@ -369,15 +380,56 @@ void main() {
       expect(player.plan, isNotNull);
       expect(
         player.plan!.items.map((item) => (item.season, item.episode)),
-        scenario.$1 && !scenario.$2
+        !scenario.$3
+            ? [(1, 11), (1, 12)]
+            : scenario.$1 && !scenario.$2
             ? [(1, 11), (0, 1), (1, 12)]
             : [(1, 11), (1, 12), (0, 1)],
       );
       final store = await tester.runAsync(app.getFilmCatalogStore);
       final special = await tester.runAsync(
-        () => store!.resourceAt(root.sourceId, 'Show/special.mkv'),
+        () => store!.resourceAt(root.sourceId, 'Show/Specials/special.mkv'),
       );
       expect((special!.season, special.episode), (0, 1));
+      if (scenario == (false, false, true)) {
+        final history = app.filmPlaybackHistoryStore.sessions.single;
+        const excluded = VideoQueueVersion(
+          path: 'Show/Specials/S00E02.SP.mkv',
+          name: 'S00E02.SP.mkv',
+        );
+        final stale = history.copyWith(
+          dirCrumbs: ['Show', 'Specials'],
+          fileName: excluded.name,
+          videoIndex: 3,
+          pendingVideoIndex: 3,
+          playlistRelativePaths: [
+            ...history.playlistRelativePaths,
+            excluded.path,
+          ],
+          playlistFileNames: [...history.playlistFileNames, excluded.name],
+          queueItems: [
+            ...history.queueItems,
+            const VideoQueueItem(versions: [excluded], season: 0, episode: 2),
+          ],
+        );
+        await tester.runAsync(() => app.filmPlaybackHistoryStore.upsert(stale));
+        var resumed = false;
+        await tester.runAsync(() async {
+          key.currentState!
+              .playLibraryItem(
+                first.playbackItem,
+                resumeSessionId: history.sessionId,
+              )
+              .then((_) => resumed = true);
+        });
+        await pumpUntil(
+          tester,
+          () => resumed,
+          reason: 'Stale special resume completes',
+        );
+        expect(player.sessionIds, [history.sessionId]);
+        expect(app.filmPlaybackHistoryStore.sessions, isEmpty);
+      }
     });
   }
 
