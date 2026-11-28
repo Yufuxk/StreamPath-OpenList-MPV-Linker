@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
@@ -12,94 +10,64 @@ class FilmPosterWall extends StatelessWidget {
   const FilmPosterWall({
     super.key,
     required this.itemCount,
-    this.itemBuilder,
-    this.loadingPlaceholder,
+    required this.itemBuilder,
     this.emptyBuilder,
     this.controller,
     this.padding = 16,
     this.itemHeight = 350,
-  }) : assert(itemCount == 0 || itemBuilder != null);
+  });
 
   final int itemCount;
-  final IndexedWidgetBuilder? itemBuilder;
-  final Widget? loadingPlaceholder;
+  final IndexedWidgetBuilder itemBuilder;
   final Widget Function(ScrollController)? emptyBuilder;
   final ScrollController? controller;
   final double padding, itemHeight;
 
   @override
   Widget build(BuildContext context) {
-    final placeholder = loadingPlaceholder;
-    final waiting = placeholder != null && itemCount == 0;
-    final grid = SliverGridDelegateWithMaxCrossAxisExtent(
-      maxCrossAxisExtent: 220,
-      mainAxisExtent: itemHeight,
-      crossAxisSpacing: 16,
-      mainAxisSpacing: 16,
+    final scrollView = DirectoryScrollView(
+      controller: controller,
+      builder: (scrollController) {
+        if (itemCount == 0 && emptyBuilder != null) {
+          return emptyBuilder!(scrollController);
+        }
+        return SkeletonInteractionBoundary(
+          child: GridView.builder(
+            controller: scrollController,
+            padding: EdgeInsets.all(padding),
+            gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisExtent: itemHeight,
+              crossAxisSpacing: 16,
+              mainAxisSpacing: 16,
+            ),
+            itemCount: itemCount,
+            itemBuilder: itemBuilder,
+          ),
+        );
+      },
     );
+    if (itemCount == 0) return scrollView;
     return SkeletonScope(
-      ready: !waiting,
+      ready: true,
       enabled: !StreamPathTransitionScope.of(context),
       waitForArtwork: false,
       minimumDuration: const Duration(milliseconds: 120),
-      child: DirectoryScrollView(
-        controller: controller,
-        hideScrollbar: waiting,
-        builder: (scrollController) {
-          if (!waiting && itemCount == 0 && emptyBuilder != null) {
-            return emptyBuilder!(scrollController);
-          }
-          return LayoutBuilder(
-            builder: (_, constraints) {
-              final count = waiting
-                  ? (constraints.maxHeight /
-                                (itemHeight + grid.mainAxisSpacing))
-                            .ceil() *
-                        math.max<int>(
-                          1,
-                          ((constraints.maxWidth - 2 * padding) /
-                                  (grid.maxCrossAxisExtent +
-                                      grid.crossAxisSpacing))
-                              .ceil(),
-                        )
-                  : itemCount;
-              return SkeletonInteractionBoundary(
-                child: GridView.builder(
-                  controller: scrollController,
-                  padding: EdgeInsets.all(padding),
-                  gridDelegate: grid,
-                  physics: waiting
-                      ? const NeverScrollableScrollPhysics()
-                      : null,
-                  itemCount: count,
-                  itemBuilder: (context, index) =>
-                      waiting ? placeholder : itemBuilder!(context, index),
-                ),
-              );
-            },
-          );
-        },
-      ),
+      child: scrollView,
     );
   }
 }
 
 /// 保留原文字行框及宽度，在线框中间绘制短条。
 class FilmPosterLabel extends StatelessWidget {
-  const FilmPosterLabel({
-    super.key,
-    required this.child,
-    this.placeholderOnly = false,
-  });
+  const FilmPosterLabel({super.key, required this.child});
 
   final Widget child;
-  final bool placeholderOnly;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SkeletonRegion(
-      placeholderOnly: placeholderOnly,
       placeholder: FractionallySizedBox(
         heightFactor: .6,
         child: DecoratedBox(

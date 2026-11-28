@@ -22,16 +22,6 @@ import 'package:streampath/presentation/widgets/skeleton_scope.dart';
 void main() {
   final tmdb = TmdbMetadataService(credentials: _NoCredentials());
   final images = FilmCatalogImageCache(Directory.systemTemp, tmdb);
-  const work = FilmWork(
-    id: 1,
-    type: FilmMediaType.movie,
-    title: 'Poster title',
-    originalTitle: 'Poster title',
-    overview: '',
-    language: 'en',
-    year: 2026,
-  );
-
   Widget frame(
     Widget wall, {
     double scale = 1,
@@ -69,19 +59,32 @@ void main() {
     }
   }
 
-  for (final (size, scale, dark) in [
-    (const Size(1920, 900), 1.0, true),
-    (const Size(540, 600), 2.0, false),
+  for (final (size, scale, dark, count) in [
+    (const Size(1920, 900), 1.0, true, 1),
+    (const Size(1920, 900), 1.0, true, 3),
+    (const Size(540, 600), 2.0, false, 3),
   ]) {
-    testWidgets('作品墙使用原封面和文字框 $size / $scale', (tester) async {
+    testWidgets('$count 部作品从首帧按实际封面和标注占位 $size / $scale', (tester) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
+      final works = [
+        for (var i = 0; i < count; i++)
+          FilmWork(
+            id: i + 1,
+            type: FilmMediaType.movie,
+            title: 'Poster ${i + 1}',
+            originalTitle: 'Poster ${i + 1}',
+            overview: '',
+            language: 'en',
+            year: i.isEven ? 2026 : null,
+          ),
+      ];
       var opened = 0;
       Widget wall({required bool loading}) => frame(
         FilmPosterGrid(
-          works: loading ? const [] : const [work],
+          works: loading ? const [] : works,
           loading: loading,
           cache: images,
           onOpen: (_) => opened++,
@@ -93,23 +96,53 @@ void main() {
 
       await tester.pumpWidget(wall(loading: true));
       final skeleton = find.byType(CinematicSkeleton);
-      expect(skeleton, findsWidgets);
-      final initial = tester.getRect(skeleton.first);
+      expect(skeleton, findsNothing);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(skeleton, findsNothing);
+
       await tester.pumpWidget(wall(loading: false));
       final poster = find.byType(FilmArtwork);
-      final rect = tester.getRect(poster);
-      expect(rect, initial);
-      expect(tester.getRect(skeleton), rect);
-      expectLabelsMatch(tester, 2);
-      await tester.tap(poster, warnIfMissed: false);
+      expect(skeleton, findsNWidgets(count));
+      final rects = [
+        for (var i = 0; i < count; i++) tester.getRect(poster.at(i)),
+      ];
+      for (var i = 0; i < count; i++) {
+        expect(tester.getRect(skeleton.at(i)), rects[i]);
+      }
+      expectLabelsMatch(tester, count + (count + 1) ~/ 2);
+      await tester.tap(poster.first, warnIfMissed: false);
       expect(opened, 0);
+      await tester.pump(const Duration(milliseconds: 119));
+      expect(skeleton, findsNWidgets(count));
       await tester.pumpAndSettle();
       expect(skeleton, findsNothing);
-      expect(tester.getRect(poster), rect);
-      await tester.tap(poster);
+      for (var i = 0; i < count; i++) {
+        expect(tester.getRect(poster.at(i)), rects[i]);
+      }
+      await tester.tap(poster.first);
       expect(opened, 1);
     });
   }
+
+  testWidgets('空查询在等待与完成后都没有骨架', (tester) async {
+    Widget wall({required bool loading}) => frame(
+      FilmPosterGrid(
+        works: const [],
+        loading: loading,
+        cache: images,
+        onOpen: (_) {},
+        onMenu: (_, _) {},
+        emptyBuilder: (_) => const Center(child: Text('Empty results')),
+      ),
+    );
+
+    await tester.pumpWidget(wall(loading: true));
+    expect(find.byType(CinematicSkeleton), findsNothing);
+    expect(find.text('Empty results'), findsNothing);
+    await tester.pumpWidget(wall(loading: false));
+    expect(find.byType(CinematicSkeleton), findsNothing);
+    expect(find.text('Empty results'), findsOneWidget);
+  });
 
   testWidgets('合集保留单行标注，关闭动画时直接替换', (tester) async {
     await tester.pumpWidget(

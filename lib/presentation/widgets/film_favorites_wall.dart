@@ -49,7 +49,7 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
     widget.loadCatalog().then(
       (catalog) {
         if (!mounted) return;
-        setState(() => _catalog = catalog);
+        _catalog = catalog;
         catalog.store.addListener(_load);
         _load();
       },

@@ -175,18 +175,14 @@ class SkeletonRegion extends StatelessWidget {
     required this.child,
     this.borderRadius = AppTheme.controlRadius,
     this.placeholder,
-    this.placeholderOnly = false,
   });
   final Widget child;
   final BorderRadius borderRadius;
   final Widget? placeholder;
-  final bool placeholderOnly;
 
   @override
   Widget build(BuildContext context) {
-    final reveal = placeholderOnly
-        ? kAlwaysDismissedAnimation
-        : _SkeletonData.of(context)?.reveal;
+    final reveal = _SkeletonData.of(context)?.reveal;
     if (reveal == null) return child;
     return AnimatedBuilder(
       animation: reveal,

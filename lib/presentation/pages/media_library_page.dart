@@ -1083,11 +1083,8 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
 
   Widget _buildContent() {
     if (_loading) {
-      return widget.filmCenter && _selectedTab == 0
-          ? const FilmPosterWall(
-              itemCount: 0,
-              loadingPlaceholder: FilmWorkCardPlaceholder(),
-            )
+      return widget.filmCenter
+          ? const SizedBox.expand()
           : const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {

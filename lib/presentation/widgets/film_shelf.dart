@@ -531,29 +531,15 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
   );
 }
 
-class FilmWorkCardPlaceholder extends StatelessWidget {
-  const FilmWorkCardPlaceholder({super.key});
-
-  @override
-  Widget build(BuildContext context) => const _FilmWorkCardLayout(
-    title: '0000000000',
-    subtitle: '00000',
-    placeholderOnly: true,
-    artwork: AspectRatio(aspectRatio: 2 / 3, child: SizedBox.expand()),
-  );
-}
-
 class _FilmWorkCardLayout extends StatelessWidget {
   const _FilmWorkCardLayout({
     required this.title,
     required this.subtitle,
     required this.artwork,
-    this.placeholderOnly = false,
   });
 
   final String title, subtitle;
   final Widget artwork;
-  final bool placeholderOnly;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -591,7 +577,6 @@ class _FilmWorkCardLayout extends StatelessWidget {
         const radius = BorderRadius.all(Radius.circular(8));
         final poster = SkeletonRegion(
           borderRadius: radius,
-          placeholderOnly: placeholderOnly,
           child: ClipRRect(borderRadius: radius, child: artwork),
         );
         return Center(
@@ -601,15 +586,10 @@ class _FilmWorkCardLayout extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Center(
-                    child: placeholderOnly
-                        ? poster
-                        : FilmPosterHoverSurface(child: poster),
-                  ),
+                  child: Center(child: FilmPosterHoverSurface(child: poster)),
                 ),
                 const SizedBox(height: 8),
                 FilmPosterLabel(
-                  placeholderOnly: placeholderOnly,
                   child: Text(
                     title,
                     maxLines: 1,
@@ -619,7 +599,6 @@ class _FilmWorkCardLayout extends StatelessWidget {
                 ),
                 if (subtitle.isNotEmpty)
                   FilmPosterLabel(
-                    placeholderOnly: placeholderOnly,
                     child: Text(
                       subtitle,
                       maxLines: 1,
@@ -664,23 +643,25 @@ class FilmPosterGrid extends StatelessWidget {
   final Widget Function(ScrollController)? emptyBuilder;
 
   @override
-  Widget build(BuildContext context) => FilmPosterWall(
-    controller: controller,
-    loadingPlaceholder: loading ? const FilmWorkCardPlaceholder() : null,
-    emptyBuilder: emptyBuilder,
-    itemCount: works.length,
-    itemBuilder: (_, i) => FilmWorkCard(
-      key: ValueKey(works[i].id),
-      store: store,
-      rootId: rootId,
-      sourceIds: sourceIds,
-      work: works[i],
-      cache: cache,
-      onTap: () => onOpen(works[i]),
-      onOpenPoster: onOpenPoster == null
-          ? null
-          : (poster) => onOpenPoster!(works[i], poster),
-      onMenu: (position) => onMenu(works[i], position),
-    ),
-  );
+  Widget build(BuildContext context) {
+    if (loading && works.isEmpty) return const SizedBox.expand();
+    return FilmPosterWall(
+      controller: controller,
+      emptyBuilder: emptyBuilder,
+      itemCount: works.length,
+      itemBuilder: (_, i) => FilmWorkCard(
+        key: ValueKey(works[i].id),
+        store: store,
+        rootId: rootId,
+        sourceIds: sourceIds,
+        work: works[i],
+        cache: cache,
+        onTap: () => onOpen(works[i]),
+        onOpenPoster: onOpenPoster == null
+            ? null
+            : (poster) => onOpenPoster!(works[i], poster),
+        onMenu: (position) => onMenu(works[i], position),
+      ),
+    );
+  }
 }
