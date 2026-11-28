@@ -900,55 +900,56 @@ class _FilmLibraryPageState extends State<FilmLibraryPage>
                                         ],
                                       ),
                                     ),
-                                    !_browse
-                                        ? const SizedBox.shrink()
-                                        : c.works.isEmpty && c.loading
-                                        ? const SizedBox.shrink()
-                                        : c.works.isEmpty
-                                        ? DirectoryScrollView(
-                                            controller: _scroll,
-                                            builder: (controller) => ListView(
-                                              controller: controller,
-                                              children: const [
-                                                ImmersiveEmptyState(
-                                                  icon: SPIcons.movies,
-                                                  title: '暂无已匹配作品',
-                                                  description:
-                                                      '暂无已匹配作品，请添加影视目录并整理文件',
-                                                ),
-                                              ],
-                                            ),
-                                          )
-                                        : NotificationListener<
-                                            ScrollMetricsNotification
-                                          >(
-                                            onNotification: (_) {
-                                              _schedulePrefetch();
-                                              return false;
-                                            },
-                                            child: FilmPosterGrid(
-                                              store: c.store,
-                                              rootId: c.rootId,
-                                              works: c.works,
-                                              cache: c.images,
-                                              controller: _scroll,
-                                              onOpen: (work) =>
-                                                  _openWork(c, work),
-                                              onOpenPoster: (work, poster) =>
-                                                  _openWork(
-                                                    c,
-                                                    work,
-                                                    poster: poster,
+                                    if (_browse)
+                                      NotificationListener<
+                                        ScrollMetricsNotification
+                                      >(
+                                        onNotification: (_) {
+                                          _schedulePrefetch();
+                                          return false;
+                                        },
+                                        child: FilmPosterGrid(
+                                          key: ValueKey((
+                                            c,
+                                            c.type,
+                                            c.sectionId,
+                                            c.rootId,
+                                            c.query,
+                                          )),
+                                          loading: c.loading,
+                                          emptyBuilder: (controller) =>
+                                              ListView(
+                                                controller: controller,
+                                                children: const [
+                                                  ImmersiveEmptyState(
+                                                    icon: SPIcons.movies,
+                                                    title: '暂无已匹配作品',
+                                                    description:
+                                                        '暂无已匹配作品，请添加影视目录并整理文件',
                                                   ),
-                                              onMenu: (work, position) =>
-                                                  showFilmWorkMenu(
-                                                    context,
-                                                    catalog: c,
-                                                    work: work,
-                                                    position: position,
-                                                  ),
-                                            ),
-                                          ),
+                                                ],
+                                              ),
+                                          store: c.store,
+                                          rootId: c.rootId,
+                                          works: c.works,
+                                          cache: c.images,
+                                          controller: _scroll,
+                                          onOpen: (work) => _openWork(c, work),
+                                          onOpenPoster: (work, poster) =>
+                                              _openWork(
+                                                c,
+                                                work,
+                                                poster: poster,
+                                              ),
+                                          onMenu: (work, position) =>
+                                              showFilmWorkMenu(
+                                                context,
+                                                catalog: c,
+                                                work: work,
+                                                position: position,
+                                              ),
+                                        ),
+                                      ),
                                   ],
                                 ),
                               ),

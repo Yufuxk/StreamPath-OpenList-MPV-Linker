@@ -1,7 +1,6 @@
 import 'transition_content.dart';
 import 'cinematic_states.dart';
 import 'sp_icons.dart';
-import 'directory_scroll_view.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -50,7 +49,7 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
     widget.loadCatalog().then(
       (catalog) {
         if (!mounted) return;
-        _catalog = catalog;
+        setState(() => _catalog = catalog);
         catalog.store.addListener(_load);
         _load();
       },
@@ -113,25 +112,19 @@ class _FilmFavoritesWallState extends State<FilmFavoritesWall> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) return Center(child: AppText(_error!));
-    if (_loading && _works.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    if (_works.isEmpty) {
-      return DirectoryScrollView(
-        controller: _scroll,
-        builder: (controller) => ListView(
-          controller: controller,
-          children: const [
-            ImmersiveEmptyState(
-              icon: SPIcons.favorite,
-              title: '还没有收藏媒体',
-              description: '右键作品封面，将喜欢的影片加入收藏。',
-            ),
-          ],
-        ),
-      );
-    }
+    if (_catalog == null) return const SizedBox.shrink();
     return FilmPosterGrid(
+      loading: _loading,
+      emptyBuilder: (controller) => ListView(
+        controller: controller,
+        children: const [
+          ImmersiveEmptyState(
+            icon: SPIcons.favorite,
+            title: '还没有收藏媒体',
+            description: '右键作品封面，将喜欢的影片加入收藏。',
+          ),
+        ],
+      ),
       store: _catalog!.store,
       sourceIds: widget.sourceIds,
       works: _works,

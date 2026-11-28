@@ -419,6 +419,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
                   !state.hasError) {
                 return const SkeletonLoadBoundary(
                   ready: false,
+                  artwork: true,
                   child: SizedBox.expand(),
                 );
               }
@@ -427,11 +428,13 @@ class _FilmArtworkState extends State<FilmArtwork> {
                   !state.hasError) {
                 return const SkeletonLoadBoundary(
                   ready: false,
+                  artwork: true,
                   child: CinematicSkeleton(showLines: false),
                 );
               }
               return SkeletonLoadBoundary(
                 ready: widget.path == null || state.hasError,
+                artwork: true,
                 child: _placeholder(retry: state.hasError),
               );
             },
@@ -507,6 +510,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (!widget.transparent && frame == null && fallback == null) {
           return const SkeletonLoadBoundary(
             ready: false,
+            artwork: true,
             child: CinematicSkeleton(showLines: false),
           );
         }
@@ -521,6 +525,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (widget.transparent) {
           return SkeletonLoadBoundary(
             ready: frame != null,
+            artwork: true,
             child: widget.logoInkTint
                 ? _InkAdaptiveLogo(
                     key: ValueKey((widget.cache, widget.path, widget.target)),
@@ -534,6 +539,7 @@ class _FilmArtworkState extends State<FilmArtwork> {
         if (widget.showCachedImmediately && fallback != null) return image;
         return SkeletonLoadBoundary(
           ready: frame != null || fallback != null,
+          artwork: true,
           child:
               (widget.showCachedImmediately
               ? filmPosterFrameBuilder

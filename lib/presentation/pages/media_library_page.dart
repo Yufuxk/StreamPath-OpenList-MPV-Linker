@@ -32,6 +32,7 @@ import '../widgets/clipboard_history_menu.dart';
 import '../widgets/glass_dialog.dart';
 import '../widgets/glass_surface.dart';
 import '../widgets/film_favorites_wall.dart';
+import '../widgets/film_poster_wall.dart';
 import '../widgets/film_library_layout.dart';
 import '../widgets/film_shelf.dart';
 import '../widgets/film_continue_card.dart';
@@ -1081,7 +1082,14 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
   );
 
   Widget _buildContent() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) {
+      return widget.filmCenter && _selectedTab == 0
+          ? const FilmPosterWall(
+              itemCount: 0,
+              loadingPlaceholder: FilmWorkCardPlaceholder(),
+            )
+          : const Center(child: CircularProgressIndicator());
+    }
     if (_error != null) {
       return _EmptyState(
         icon: SPIcons.error,
@@ -1253,19 +1261,11 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
           description: '开始播放影片或光盘后，这里会显示可以继续播放的内容。',
         );
       }
-      return DirectoryScrollView(
-        builder: (scrollController) => GridView.builder(
-          controller: scrollController,
-          padding: const EdgeInsets.all(20),
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 220,
-            mainAxisExtent: 400,
-            crossAxisSpacing: 16,
-            mainAxisSpacing: 16,
-          ),
-          itemCount: records.length,
-          itemBuilder: (_, i) => card(records[i]),
-        ),
+      return FilmPosterWall(
+        padding: 20,
+        itemHeight: 400,
+        itemCount: records.length,
+        itemBuilder: (_, i) => card(records[i]),
       );
     }
     final catalog = widget.filmCatalog!;
@@ -1422,25 +1422,16 @@ class _MediaLibraryPageState extends State<MediaLibraryPage>
         description: '播放过的影片和光盘会记录在这里。',
       );
     }
-    return DirectoryScrollView(
-      builder: (scrollController) => GridView.builder(
-        controller: scrollController,
-        padding: const EdgeInsets.all(20),
-        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 220,
-          mainAxisExtent: 400,
-          crossAxisSpacing: 16,
-          mainAxisSpacing: 16,
-        ),
-        itemCount: records.length,
-        itemBuilder: (_, i) => FilmContinueCard(
-          catalog: widget.filmCatalog!,
-          record: records[i],
-          poster: true,
-          onTap: () => _selectItem(records[i].item),
-          onMenu: (position) =>
-              widget.onContinueMenu?.call(records[i], position),
-        ),
+    return FilmPosterWall(
+      padding: 20,
+      itemHeight: 400,
+      itemCount: records.length,
+      itemBuilder: (_, i) => FilmContinueCard(
+        catalog: widget.filmCatalog!,
+        record: records[i],
+        poster: true,
+        onTap: () => _selectItem(records[i].item),
+        onMenu: (position) => widget.onContinueMenu?.call(records[i], position),
       ),
     );
   }

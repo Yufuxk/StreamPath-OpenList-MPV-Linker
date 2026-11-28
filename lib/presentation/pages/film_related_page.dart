@@ -13,7 +13,7 @@ import '../widgets/film_work_menu.dart';
 import 'package:provider/provider.dart';
 import '../widgets/film_library_background.dart';
 import '../widgets/window_title_bar.dart';
-import '../widgets/directory_scroll_view.dart';
+import '../widgets/film_poster_wall.dart';
 import 'film_detail_page.dart';
 
 /// 关联页面只查询当前库内作品，保留上一页面的状态树和滚动位置。
@@ -51,6 +51,7 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
   final _scroll = ScrollController();
   List<FilmWork> _works = [];
   bool _loading = false, _more = true;
+  bool _loadFailed = false;
   int _generation = 0;
   Timer? _reloadTimer;
   bool _reloadPending = false;
@@ -86,19 +87,23 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
     if (widget.showCollections) return;
     final generation = ++_generation;
     _loading = true;
-    final rows = await widget.catalog.store.works(
-      type: null,
-      collectionId: widget.collection?.id,
-      personId: widget.personId,
-      sourceId: widget.catalog.sourceId,
-      offset: more ? _works.length : 0,
-      limit: more ? 60 : (_works.length < 60 ? 60 : _works.length),
-    );
+    List<FilmWork> rows = [];
+    final ok = await widget.catalog.run(() async {
+      rows = await widget.catalog.store.works(
+        type: null,
+        collectionId: widget.collection?.id,
+        personId: widget.personId,
+        sourceId: widget.catalog.sourceId,
+        offset: more ? _works.length : 0,
+        limit: more ? 60 : (_works.length < 60 ? 60 : _works.length),
+      );
+    }, clearError: false);
     if (!mounted || generation != _generation) return;
     setState(() {
-      _works = more ? [..._works, ...rows] : rows;
-      _more = rows.length >= 60;
+      if (ok) _works = more ? [..._works, ...rows] : rows;
+      _more = ok && rows.length >= 60;
       _loading = false;
+      _loadFailed = !ok;
     });
     if (_reloadPending) {
       _reloadPending = false;
@@ -134,9 +139,7 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
         ),
         Padding(
           padding: EdgeInsets.only(left: widget.sidebarInset),
-          child: !widget.showCollections && _loading && _works.isEmpty
-              ? const SizedBox.shrink()
-              : _page(context),
+          child: _page(context),
         ),
       ],
     ),
@@ -176,53 +179,45 @@ class _FilmRelatedPageState extends State<FilmRelatedPage>
         ),
         Expanded(
           child: widget.showCollections
-              ? DirectoryScrollView(
+              ? FilmPosterWall(
                   controller: _scroll,
-                  builder: (controller) => GridView.builder(
-                    controller: controller,
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                          maxCrossAxisExtent: 220,
-                          mainAxisExtent: 350,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                        ),
-                    itemCount: widget.catalog.collections.length,
-                    itemBuilder: (_, index) {
-                      final collection = widget.catalog.collections[index];
-                      return FilmCollectionCard(
-                        collection: collection,
-                        cache: widget.catalog.images,
-                        path: widget.catalog.collectionCovers[collection.id],
-                        onMenu: collection.readOnly
-                            ? null
-                            : (position) => widget.onCollectionMenu?.call(
-                                collection,
-                                position,
-                              ),
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => StreamPathTransitionContent(
-                              shellBuilder: (_) => const StreamPathPageShell(),
-                              contentBuilder: (_) => FilmRelatedPage(
-                                catalog: widget.catalog,
-                                title: collection.name,
-                                collection: collection,
-                                sidebarInset: widget.sidebarInset,
-                                onOpenItem: widget.onOpenItem,
-                                onContinueSelected: widget.onContinueSelected,
-                                onContinueMenu: widget.onContinueMenu,
-                              ),
+                  itemCount: widget.catalog.collections.length,
+                  itemBuilder: (_, index) {
+                    final collection = widget.catalog.collections[index];
+                    return FilmCollectionCard(
+                      collection: collection,
+                      cache: widget.catalog.images,
+                      path: widget.catalog.collectionCovers[collection.id],
+                      onMenu: collection.readOnly
+                          ? null
+                          : (position) => widget.onCollectionMenu?.call(
+                              collection,
+                              position,
+                            ),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => StreamPathTransitionContent(
+                            shellBuilder: (_) => const StreamPathPageShell(),
+                            contentBuilder: (_) => FilmRelatedPage(
+                              catalog: widget.catalog,
+                              title: collection.name,
+                              collection: collection,
+                              sidebarInset: widget.sidebarInset,
+                              onOpenItem: widget.onOpenItem,
+                              onContinueSelected: widget.onContinueSelected,
+                              onContinueMenu: widget.onContinueMenu,
                             ),
                           ),
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                    );
+                  },
                 )
+              : _loadFailed && _works.isEmpty
+              ? const Center(child: AppText('影视目录库操作失败'))
               : FilmPosterGrid(
                   controller: _scroll,
+                  loading: _loading,
                   store: widget.catalog.store,
                   rootId: widget.catalog.rootId,
                   sourceIds: widget.catalog.sourceId == null

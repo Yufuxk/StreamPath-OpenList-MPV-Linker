@@ -593,17 +593,14 @@ void main() {
       tester.getRect(find.byKey(const Key('sidebar-header-extension'))).bottom,
       tester.getRect(find.byType(AppBar)).bottom,
     );
-    for (
-      var i = 0;
-      i < 40 && find.byType(FilmWorkCard).evaluate().isEmpty;
-      i++
-    ) {
+    final favoritePoster = find.byType(FilmWorkCard).first.hitTestable();
+    for (var i = 0; i < 40 && favoritePoster.evaluate().isEmpty; i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 50)),
       );
       await tester.pump(const Duration(milliseconds: 100));
     }
-    await tester.tap(find.byType(FilmWorkCard).first);
+    await tester.tap(favoritePoster);
     await settle();
     expect(app.filmDetailChrome.value, 0);
     expect(find.byKey(const Key('film-detail-play')), findsOneWidget);

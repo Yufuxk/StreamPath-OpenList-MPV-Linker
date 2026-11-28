@@ -12,11 +12,12 @@ class SkeletonScope extends StatefulWidget {
     required this.ready,
     required this.child,
     this.enabled = true,
+    this.waitForArtwork = true,
     this.minimumDuration = const Duration(milliseconds: 700),
     this.revealDuration = const Duration(milliseconds: 240),
   });
 
-  final bool ready, enabled;
+  final bool ready, enabled, waitForArtwork;
   final Duration minimumDuration, revealDuration;
   final Widget child;
 
@@ -27,7 +28,11 @@ class SkeletonScope extends StatefulWidget {
 class _SkeletonScopeState extends State<SkeletonScope>
     with SingleTickerProviderStateMixin {
   late final _reveal = AnimationController(vsync: this);
-  late final _controller = _SkeletonController(_reveal, _scheduleCheck);
+  late final _controller = _SkeletonController(
+    _reveal,
+    _scheduleCheck,
+    () => widget.waitForArtwork,
+  );
   Timer? _minimumTimer;
   bool _minimumElapsed = false, _checkScheduled = false;
 
@@ -78,14 +83,15 @@ class _SkeletonScopeState extends State<SkeletonScope>
 }
 
 class _SkeletonController {
-  _SkeletonController(this.reveal, this.changed);
+  _SkeletonController(this.reveal, this.changed, this.waitForArtwork);
   final Animation<double> reveal;
   final VoidCallback changed;
+  final bool Function() waitForArtwork;
   final pending = <Object>{};
   bool revealed = false;
 
-  VoidCallback? hold() {
-    if (revealed) return null;
+  VoidCallback? hold({required bool artwork}) {
+    if (revealed || (artwork && !waitForArtwork())) return null;
     final token = Object();
     pending.add(token);
     return () {
@@ -112,8 +118,9 @@ class SkeletonLoadBoundary extends StatefulWidget {
     super.key,
     required this.ready,
     required this.child,
+    this.artwork = false,
   });
-  final bool ready;
+  final bool ready, artwork;
   final Widget child;
 
   @override
@@ -147,7 +154,7 @@ class _SkeletonLoadBoundaryState extends State<SkeletonLoadBoundary> {
       _release?.call();
       _release = null;
     } else {
-      _release ??= _controller?.hold();
+      _release ??= _controller?.hold(artwork: widget.artwork);
     }
   }
 
@@ -167,19 +174,25 @@ class SkeletonRegion extends StatelessWidget {
     super.key,
     required this.child,
     this.borderRadius = AppTheme.controlRadius,
+    this.placeholder,
+    this.placeholderOnly = false,
   });
   final Widget child;
   final BorderRadius borderRadius;
+  final Widget? placeholder;
+  final bool placeholderOnly;
 
   @override
   Widget build(BuildContext context) {
-    final controller = _SkeletonData.of(context);
-    if (controller == null) return child;
+    final reveal = placeholderOnly
+        ? kAlwaysDismissedAnimation
+        : _SkeletonData.of(context)?.reveal;
+    if (reveal == null) return child;
     return AnimatedBuilder(
-      animation: controller.reveal,
+      animation: reveal,
       child: child,
       builder: (_, child) {
-        final progress = controller.reveal.value;
+        final progress = reveal.value;
         final opacity = Curves.easeOutCubic.transform(progress);
         return Stack(
           fit: StackFit.passthrough,
@@ -195,13 +208,42 @@ class SkeletonRegion extends StatelessWidget {
               Positioned.fill(
                 child: Opacity(
                   opacity: 1 - opacity,
-                  child: CinematicSkeleton(
-                    showLines: false,
-                    borderRadius: borderRadius,
-                  ),
+                  child:
+                      placeholder ??
+                      CinematicSkeleton(
+                        showLines: false,
+                        borderRadius: borderRadius,
+                      ),
                 ),
               ),
           ],
+        );
+      },
+    );
+  }
+}
+
+/// 骨架覆盖局部区域时，整张卡片的操作仍随正文一同启用。
+class SkeletonInteractionBoundary extends StatelessWidget {
+  const SkeletonInteractionBoundary({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final reveal = _SkeletonData.of(context)?.reveal;
+    if (reveal == null) return child;
+    return AnimatedBuilder(
+      animation: reveal,
+      child: child,
+      builder: (_, child) {
+        final hidden = !reveal.isCompleted;
+        return ExcludeFocus(
+          excluding: hidden,
+          child: ExcludeSemantics(
+            excluding: hidden,
+            child: IgnorePointer(ignoring: hidden, child: child),
+          ),
         );
       },
     );

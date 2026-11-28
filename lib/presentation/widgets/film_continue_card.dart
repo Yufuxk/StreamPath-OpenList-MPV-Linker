@@ -12,6 +12,7 @@ import 'film_library_layout.dart';
 import '../theme/app_theme.dart';
 import 'sp_icons.dart';
 import 'film_play_icon.dart';
+import 'film_poster_wall.dart';
 
 class FilmContinueCard extends StatefulWidget {
   static const landscapeWidth = 300.0;
@@ -224,6 +225,9 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
           ],
         ),
       );
+      Widget label(Widget child) =>
+          widget.poster ? FilmPosterLabel(child: child) : child;
+
       return SkeletonLoadBoundary(
         ready: snapshot.connectionState == ConnectionState.done,
         child: GestureDetector(
@@ -243,31 +247,44 @@ class _FilmContinueCardState extends State<FilmContinueCard> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(child: cover),
+                    Expanded(
+                      child: widget.poster
+                          ? SkeletonRegion(
+                              borderRadius: AppTheme.panelRadius,
+                              child: cover,
+                            )
+                          : cover,
+                    ),
                     Padding(
                       padding: const EdgeInsets.all(10),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            data['title'] as String,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleSmall,
+                          label(
+                            Text(
+                              data['title'] as String,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
                           ),
                           if (episode != null)
-                            Text(
-                              episode,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall,
+                            label(
+                              Text(
+                                episode,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
                             ),
                           if (played != null)
-                            Text(
-                              played,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall,
+                            label(
+                              Text(
+                                played,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
                             ),
                         ],
                       ),

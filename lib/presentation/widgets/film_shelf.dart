@@ -18,6 +18,8 @@ import '../localization/app_text.dart';
 import '../theme/app_theme.dart';
 import 'film_artwork.dart';
 import 'film_navigation_button.dart';
+import 'film_poster_wall.dart';
+import 'skeleton_scope.dart';
 
 /// 主页支持鼠标拖动，默认最多 15 项；分类入口和演职人员可展示全部。
 class FilmShelf extends StatefulWidget {
@@ -356,30 +358,35 @@ class FilmCollectionCard extends StatelessWidget {
         children: [
           Expanded(
             child: FilmPosterHoverSurface(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: collection.customPath == null
-                    ? FilmArtwork(
-                        cache: cache,
-                        path: path,
-                        showCachedImmediately: true,
-                      )
-                    : Image.file(
-                        File(collection.customPath!),
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        cacheWidth: 342,
-                        frameBuilder: filmPosterFrameBuilder,
-                      ),
+              child: SkeletonRegion(
+                borderRadius: const BorderRadius.all(Radius.circular(8)),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: collection.customPath == null
+                      ? FilmArtwork(
+                          cache: cache,
+                          path: path,
+                          showCachedImmediately: true,
+                        )
+                      : Image.file(
+                          File(collection.customPath!),
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          cacheWidth: 342,
+                          frameBuilder: filmPosterFrameBuilder,
+                        ),
+                ),
               ),
             ),
           ),
           const SizedBox(height: 8),
-          Text(
-            collection.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleSmall,
+          FilmPosterLabel(
+            child: Text(
+              collection.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
           ),
         ],
       ),
@@ -500,91 +507,131 @@ class _FilmWorkCardState extends State<FilmWorkCard> {
           hoverColor: Colors.transparent,
           borderRadius: BorderRadius.circular(8),
           onTap: _open,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final work = widget.work;
-                final subtitle = [
-                  if (work.year != null) '${work.year}',
-                  if (widget.store?.showPosterContentCount == true)
-                    context.l10n.format(
-                      work.type == FilmMediaType.tv ? '{count}季' : '{count}项内容',
-                      {
-                        'count': work.type == FilmMediaType.tv
-                            ? work.seasonCount
-                            : work.resourceCount,
-                      },
-                    ),
-                ].join(' · ');
-                final defaults = DefaultTextStyle.of(context).style;
-                final theme = Theme.of(context);
-                // 副标题降为更轻的 12px／400 辅助色，拉开与主标题的层级。
-                final titleStyle = defaults
-                    .merge(theme.textTheme.titleSmall)
-                    .copyWith(
-                      fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
-                    );
-                final captionStyle = defaults.merge(theme.textTheme.bodySmall);
-                double textHeight(String text, TextStyle style) {
-                  final painter = TextPainter(
-                    text: TextSpan(text: text, style: style),
-                    textDirection: Directionality.of(context),
-                    textScaler: MediaQuery.textScalerOf(context),
-                    maxLines: 1,
-                  )..layout(maxWidth: constraints.maxWidth);
-                  final height = painter.height;
-                  painter.dispose();
-                  return height;
-                }
-
-                final textSpace =
-                    8 +
-                    textHeight(widget.work.title, titleStyle) +
-                    (subtitle.isEmpty ? 0 : textHeight(subtitle, captionStyle));
-                final posterWidth = math.min(
-                  constraints.maxWidth,
-                  math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
-                );
-                return Center(
-                  child: SizedBox(
-                    width: posterWidth,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Center(
-                            child: FilmPosterHoverSurface(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: _artwork(),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          widget.work.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: titleStyle,
-                        ),
-                        if (subtitle.isNotEmpty)
-                          Text(
-                            subtitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: captionStyle,
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+          child: _FilmWorkCardLayout(
+            title: widget.work.title,
+            subtitle: [
+              if (widget.work.year != null) '${widget.work.year}',
+              if (widget.store?.showPosterContentCount == true)
+                context.l10n.format(
+                  widget.work.type == FilmMediaType.tv
+                      ? '{count}季'
+                      : '{count}项内容',
+                  {
+                    'count': widget.work.type == FilmMediaType.tv
+                        ? widget.work.seasonCount
+                        : widget.work.resourceCount,
+                  },
+                ),
+            ].join(' · '),
+            artwork: _artwork(),
           ),
         ),
       ),
+    ),
+  );
+}
+
+class FilmWorkCardPlaceholder extends StatelessWidget {
+  const FilmWorkCardPlaceholder({super.key});
+
+  @override
+  Widget build(BuildContext context) => const _FilmWorkCardLayout(
+    title: '0000000000',
+    subtitle: '00000',
+    placeholderOnly: true,
+    artwork: AspectRatio(aspectRatio: 2 / 3, child: SizedBox.expand()),
+  );
+}
+
+class _FilmWorkCardLayout extends StatelessWidget {
+  const _FilmWorkCardLayout({
+    required this.title,
+    required this.subtitle,
+    required this.artwork,
+    this.placeholderOnly = false,
+  });
+
+  final String title, subtitle;
+  final Widget artwork;
+  final bool placeholderOnly;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final defaults = DefaultTextStyle.of(context).style;
+        final theme = Theme.of(context);
+        final titleStyle = defaults
+            .merge(theme.textTheme.titleSmall)
+            .copyWith(
+              fontWeight: AppTheme.fontWeight(context, FontWeight.w500),
+            );
+        final captionStyle = defaults.merge(theme.textTheme.bodySmall);
+        double textHeight(String text, TextStyle style) {
+          final painter = TextPainter(
+            text: TextSpan(text: text, style: style),
+            textDirection: Directionality.of(context),
+            textScaler: MediaQuery.textScalerOf(context),
+            maxLines: 1,
+          )..layout(maxWidth: constraints.maxWidth);
+          final height = painter.height;
+          painter.dispose();
+          return height;
+        }
+
+        final textSpace =
+            8 +
+            textHeight(title, titleStyle) +
+            (subtitle.isEmpty ? 0 : textHeight(subtitle, captionStyle));
+        final posterWidth = math.min(
+          constraints.maxWidth,
+          math.max(0.0, (constraints.maxHeight - textSpace) * 2 / 3),
+        );
+        const radius = BorderRadius.all(Radius.circular(8));
+        final poster = SkeletonRegion(
+          borderRadius: radius,
+          placeholderOnly: placeholderOnly,
+          child: ClipRRect(borderRadius: radius, child: artwork),
+        );
+        return Center(
+          child: SizedBox(
+            width: posterWidth,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Center(
+                    child: placeholderOnly
+                        ? poster
+                        : FilmPosterHoverSurface(child: poster),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                FilmPosterLabel(
+                  placeholderOnly: placeholderOnly,
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: titleStyle,
+                  ),
+                ),
+                if (subtitle.isNotEmpty)
+                  FilmPosterLabel(
+                    placeholderOnly: placeholderOnly,
+                    child: Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: captionStyle,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     ),
   );
 }
@@ -601,6 +648,8 @@ class FilmPosterGrid extends StatelessWidget {
     required this.onMenu,
     this.controller,
     this.onOpenPoster,
+    this.loading = false,
+    this.emptyBuilder,
   });
   final FilmCatalogStore? store;
   final int? rootId;
@@ -611,32 +660,27 @@ class FilmPosterGrid extends StatelessWidget {
   final void Function(FilmWork, Offset) onMenu;
   final ScrollController? controller;
   final void Function(FilmWork, FilmPosterAnchor?)? onOpenPoster;
+  final bool loading;
+  final Widget Function(ScrollController)? emptyBuilder;
+
   @override
-  Widget build(BuildContext context) => DirectoryScrollView(
+  Widget build(BuildContext context) => FilmPosterWall(
     controller: controller,
-    builder: (scrollController) => GridView.builder(
-      controller: scrollController,
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 220,
-        mainAxisExtent: 350,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-      ),
-      itemCount: works.length,
-      itemBuilder: (_, i) => FilmWorkCard(
-        key: ValueKey(works[i].id),
-        store: store,
-        rootId: rootId,
-        sourceIds: sourceIds,
-        work: works[i],
-        cache: cache,
-        onTap: () => onOpen(works[i]),
-        onOpenPoster: onOpenPoster == null
-            ? null
-            : (poster) => onOpenPoster!(works[i], poster),
-        onMenu: (position) => onMenu(works[i], position),
-      ),
+    loadingPlaceholder: loading ? const FilmWorkCardPlaceholder() : null,
+    emptyBuilder: emptyBuilder,
+    itemCount: works.length,
+    itemBuilder: (_, i) => FilmWorkCard(
+      key: ValueKey(works[i].id),
+      store: store,
+      rootId: rootId,
+      sourceIds: sourceIds,
+      work: works[i],
+      cache: cache,
+      onTap: () => onOpen(works[i]),
+      onOpenPoster: onOpenPoster == null
+          ? null
+          : (poster) => onOpenPoster!(works[i], poster),
+      onMenu: (position) => onMenu(works[i], position),
     ),
   );
 }
