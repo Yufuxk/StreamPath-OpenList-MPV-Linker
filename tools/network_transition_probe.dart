@@ -22,6 +22,7 @@ import 'package:streampath/data/models/stream_path_config.dart';
 import 'package:streampath/main.dart' show StreamPathApp;
 import 'package:streampath/presentation/pages/browser_page.dart';
 import 'package:streampath/presentation/theme/appearance_controller.dart';
+import 'package:streampath/presentation/widgets/sp_controls.dart';
 
 import '../test/helpers/shell_test_app_state.dart';
 
@@ -55,7 +56,7 @@ class _ProbeAppState extends ShellTestAppState {
   }
 }
 
-Element _find(bool Function(Widget) matches) {
+Element _find(bool Function(Widget) matches, {Element? within}) {
   Element? result;
   void visit(Element element) {
     if (result != null) return;
@@ -66,7 +67,7 @@ Element _find(bool Function(Widget) matches) {
     element.visitChildElements(visit);
   }
 
-  visit(_rootKey.currentContext! as Element);
+  visit(within ?? _rootKey.currentContext! as Element);
   return result ?? (throw StateError('Probe widget was not found'));
 }
 
@@ -75,7 +76,21 @@ Future<void> _settle([int milliseconds = 450]) async {
   await WidgetsBinding.instance.endOfFrame;
 }
 
+void _selectSidebar(String section) {
+  final icon = _find((widget) => widget.key == Key('sidebar-$section'));
+  icon.findAncestorWidgetOfExactType<TextButton>()!.onPressed!();
+}
+
 Future<void> main(List<String> arguments) async {
+  try {
+    await _run(arguments);
+  } catch (error, stack) {
+    stderr.writeln('$error\n$stack');
+    exit(1);
+  }
+}
+
+Future<void> _run(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   final executableDirectory = p.dirname(Platform.resolvedExecutable);
   if (!p.equals(AppPaths.projectRoot(), executableDirectory) ||
@@ -187,15 +202,11 @@ Future<void> main(List<String> arguments) async {
     ),
   );
   await _settle(1500);
-  (_find(
-            (widget) =>
-                widget is InkWell && widget.key == const Key('sidebar-folders'),
-          ).widget
-          as InkWell)
-      .onTap!();
+  _selectSidebar('folders');
   await _settle(1000);
   final viewport = WidgetsBinding.instance.platformDispatcher.views.first;
-  for (var group = 0; group < 3; group++) {
+  final groups = arguments.length > 4 ? int.parse(arguments[4]) : 3;
+  for (var group = 0; group < groups; group++) {
     for (var iteration = 0; iteration < 20; iteration++) {
       _phase = 'enter-$group-$iteration';
       final requestStart = _requests;
@@ -226,6 +237,25 @@ Future<void> main(List<String> arguments) async {
       });
     }
   }
+  _selectSidebar('settings');
+  await _settle(1000);
+  for (var iteration = 0; iteration < 20; iteration++) {
+    _phase = 'settings-$iteration';
+    final start = developer.Timeline.now;
+    final section = iteration.isEven ? 'playback' : 'server';
+    final navigation = _find(
+      (widget) => widget.key == Key('settings-section-$section'),
+    );
+    final tile = _find((widget) => widget is SPTile, within: navigation);
+    (tile.widget as SPTile).onTap!();
+    await _settle(300);
+    _find((widget) => widget.key == PageStorageKey('settings-page-$section'));
+    _operations.add({
+      'phase': _phase,
+      'startUs': start,
+      'endUs': developer.Timeline.now,
+    });
+  }
   _phase = 'idle';
   await _settle(1500);
   final output = File(
@@ -238,6 +268,7 @@ Future<void> main(List<String> arguments) async {
       'mode': 'profile',
       'viewport': [viewport.physicalSize.width, viewport.physicalSize.height],
       'dpr': viewport.devicePixelRatio,
+      'refreshRate': viewport.display.refreshRate,
       'glassActive': appearanceController.glassActive,
       'backdrop': appearanceController.lastResult?.actualBackdrop.name,
       'requests': _requests,

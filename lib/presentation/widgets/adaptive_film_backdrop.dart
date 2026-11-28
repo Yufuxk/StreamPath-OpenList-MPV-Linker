@@ -54,6 +54,7 @@ class AdaptiveFilmBackdrop extends StatefulWidget {
 class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
     with SingleTickerProviderStateMixin {
   late final AnimationController _transition;
+  late final Animation<double> _opacity;
   ImageStream? _stream;
   ImageStreamListener? _listener;
   _BackdropFrame? _current, _previous;
@@ -82,6 +83,7 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
             });
           }
         });
+    _opacity = _transition.drive(CurveTween(curve: Curves.easeOutSine));
   }
 
   @override
@@ -427,18 +429,15 @@ class _AdaptiveFilmBackdropState extends State<AdaptiveFilmBackdrop>
                     previousMode: old.mode,
                   );
             if (old != null) old.mode = oldLayout!.mode;
-            Widget content = AnimatedBuilder(
-              animation: _transition,
-              builder: (_, _) => Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (old != null) _visual(old, oldLayout!),
-                  Opacity(
-                    opacity: Curves.easeOutSine.transform(_transition.value),
-                    child: _visual(frame, _layout!),
-                  ),
-                ],
-              ),
+            Widget content = Stack(
+              fit: StackFit.expand,
+              children: [
+                if (old != null) _visual(old, oldLayout!),
+                FadeTransition(
+                  opacity: _opacity,
+                  child: _visual(frame, _layout!),
+                ),
+              ],
             );
             if (widget.workId != null) {
               content = FilmWatchOverlay(

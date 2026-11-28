@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -127,6 +128,24 @@ Future<void> _run(String root, List<String> args) async {
   final count = int.parse(args[0]);
   final run = args[1];
   final folder = await Directory(p.join(root, 'fixture-$count-$run')).create();
+  final trace = args.contains('trace');
+  final traceClient = trace ? HttpClient() : null;
+  final traceUri = trace ? (await Service.getInfo()).serverUri! : null;
+  Future<void> writeTrace(
+    String method,
+    Map<String, String> parameters, {
+    String? output,
+  }) async {
+    final uri = traceUri!.resolve(method).replace(queryParameters: parameters);
+    final response = await (await traceClient!.getUrl(uri)).close();
+    final body = await utf8.decoder.bind(response).join();
+    final result = jsonDecode(body) as Map;
+    if (result.containsKey('error')) throw StateError('$method: $body');
+    if (output != null) {
+      await File(p.join(folder.path, output)).writeAsString(body);
+    }
+  }
+
   sqfliteFfiInit();
   final store = await FilmCatalogStore.open(p.join(folder.path, 'catalog.db'));
   await store.waitForExtraBackfill();
@@ -241,17 +260,26 @@ Future<void> _run(String root, List<String> args) async {
     progressService: progress,
     catalog: catalog,
   );
-  WidgetsBinding.instance.addTimingsCallback((timings) {
+  void recordTimings(List<ui.FrameTiming> timings) {
     for (final f in timings) {
       _frames.add({
         'phase': _phase,
+        'number': f.frameNumber,
         'startUs': f.timestampInMicroseconds(ui.FramePhase.buildStart),
         'uiUs': f.buildDuration.inMicroseconds,
         'rasterUs': f.rasterDuration.inMicroseconds,
         'totalUs': f.totalSpan.inMicroseconds,
+        'waitUs': f.vsyncOverhead.inMicroseconds,
       });
     }
-  });
+  }
+
+  WidgetsBinding.instance.addTimingsCallback(recordTimings);
+  if (trace) {
+    await writeTrace('setVMTimelineFlags', {
+      'recordedStreams': '[Dart,GC,Embedder]',
+    });
+  }
   await _operation('enter', () async {
     runApp(
       ChangeNotifierProvider<AppState>.value(
@@ -283,11 +311,38 @@ Future<void> _run(String root, List<String> args) async {
     if (stable < 25) throw StateError('Detail fixture did not become ready');
     await store.resourceWatchState(resources.last);
   });
+  if (trace) {
+    final enter = _operations.last;
+    final start = enter['startUs'] as int;
+    await writeTrace('getVMTimeline', {
+      'timeOriginMicros': '$start',
+      'timeExtentMicros': '${(enter['endUs'] as int) - start}',
+    }, output: 'cold-timeline.json');
+  }
   final scroll = _find((w) => w is Scrollable)
       .map((e) => (e as StatefulElement).state)
       .whereType<ScrollableState>()
       .firstWhere((s) => s.position.axis == Axis.vertical)
       .position;
+  await _operation('title-scroll20', () async {
+    for (var i = 0; i < 20; i++) {
+      await scroll.animateTo(
+        i.isEven ? 120 : 0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.linear,
+      );
+    }
+  });
+  if (trace) {
+    final scroll = _operations.last;
+    final start = scroll['startUs'] as int;
+    await writeTrace('getCpuSamples', {
+      'isolateId': Service.getIsolateId(Isolate.current)!,
+      'timeOriginMicros': '$start',
+      'timeExtentMicros': '${(scroll['endUs'] as int) - start}',
+    }, output: 'title-scroll-cpu.json');
+    traceClient!.close();
+  }
   await _operation('position', () async {
     scroll.jumpTo(450);
     await _wait(500);
@@ -379,6 +434,17 @@ Future<void> _run(String root, List<String> args) async {
     );
   });
   await _operation('batch', () => store.markWatched(resources, true));
+  await _wait(700);
+  await _operation('normal-scroll20', () async {
+    final far = (450 + 630.0).clamp(0.0, scroll.maxScrollExtent);
+    for (var i = 0; i < 20; i++) {
+      await scroll.animateTo(
+        i.isEven ? far : 450,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.linear,
+      );
+    }
+  });
   await _operation('scroll20', () async {
     final far = (450 + 1800.0).clamp(0.0, scroll.maxScrollExtent);
     for (var i = 0; i < 20; i++) {
@@ -435,15 +501,19 @@ Future<void> _run(String root, List<String> args) async {
     ),
   );
   await _wait(350);
-  final capture =
-      await (_root.currentContext!.findRenderObject()! as RenderRepaintBoundary)
-          .toImage();
-  final png = await capture.toByteData(format: ui.ImageByteFormat.png);
-  capture.dispose();
-  await File(
-    p.join(root, '$count-$run.png'),
-  ).writeAsBytes(png!.buffer.asUint8List());
   await _wait(1200);
+  WidgetsBinding.instance.removeTimingsCallback(recordTimings);
+  if (!args.contains('no-capture')) {
+    final capture =
+        await (_root.currentContext!.findRenderObject()!
+                as RenderRepaintBoundary)
+            .toImage();
+    final png = await capture.toByteData(format: ui.ImageByteFormat.png);
+    capture.dispose();
+    await File(
+      p.join(root, '$count-$run.png'),
+    ).writeAsBytes(png!.buffer.asUint8List());
+  }
   for (final frame in _frames) {
     final timestamp = frame['startUs'] as int;
     frame['phase'] =

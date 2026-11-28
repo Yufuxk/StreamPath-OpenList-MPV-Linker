@@ -5,6 +5,8 @@ param(
     [int[]]$Sizes = @(24, 100, 300, 1000),
     [int]$Repeats = 3,
     [int]$RunOffset = 0,
+    [switch]$NoCapture,
+    [switch]$AlternateOrder,
     [ValidateSet('baseline', 'candidate')][string[]]$Labels = @('baseline', 'candidate')
 )
 $ErrorActionPreference = 'Stop'
@@ -15,12 +17,18 @@ foreach ($bundle in $bundles.Values) {
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 foreach ($size in $Sizes) {
     for ($repeat = 1; $repeat -le $Repeats; $repeat++) {
-        foreach ($label in $Labels) {
+        $orderedLabels = $Labels
+        if ($AlternateOrder -and ($repeat + $RunOffset) % 2 -eq 0 -and $Labels.Count -eq 2) {
+            $orderedLabels = @($Labels[1], $Labels[0])
+        }
+        foreach ($label in $orderedLabels) {
             $bundle = $bundles[$label]
             $run = "r$($repeat + $RunOffset)"
             $result = Join-Path $bundle "$size-$run.json"
             if (Test-Path -LiteralPath $result) { throw "Result already exists: $result" }
-            $process = Start-Process -FilePath (Join-Path $bundle 'streampath.exe') -ArgumentList "$size", $run -WorkingDirectory $bundle -WindowStyle Hidden -PassThru
+            $probeArgs = @("$size", $run)
+            if ($NoCapture) { $probeArgs += 'no-capture' }
+            $process = Start-Process -FilePath (Join-Path $bundle 'streampath.exe') -ArgumentList $probeArgs -WorkingDirectory $bundle -WindowStyle Hidden -PassThru
             $samples = [System.Collections.Generic.List[object]]::new()
             $timer = [System.Diagnostics.Stopwatch]::StartNew()
             while (-not $process.HasExited) {
@@ -40,7 +48,9 @@ foreach ($size in $Sizes) {
                 throw "Probe failed: $label $size $run exit=$($process.ExitCode)"
             }
             Copy-Item -LiteralPath $result -Destination (Join-Path $Output "$label-$size-$run.json")
-            Copy-Item -LiteralPath (Join-Path $bundle "$size-$run.png") -Destination (Join-Path $Output "$label-$size-$run.png")
+            if (-not $NoCapture) {
+                Copy-Item -LiteralPath (Join-Path $bundle "$size-$run.png") -Destination (Join-Path $Output "$label-$size-$run.png")
+            }
             $samples | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Output "$label-$size-$run-process.json") -Encoding UTF8
             Write-Output "Completed $label count=$size run=$run samples=$($samples.Count)"
         }
