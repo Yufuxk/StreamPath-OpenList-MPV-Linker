@@ -44,6 +44,13 @@ String _env(String name, {String? fallback}) {
   return value;
 }
 
+class _OfflineTmdbCredentials extends TmdbCredentialStore {
+  const _OfflineTmdbCredentials();
+
+  @override
+  Future<String> read() async => 'offline-fixture';
+}
+
 /// 使用清单构造只读的 PROPFIND 应答，不访问真实服务器。
 Dio _fixtureDio(Map<String, Map<String, bool>> tree, Set<String> listed) {
   final dio = Dio();
@@ -138,7 +145,9 @@ void main() {
       );
       final adapter = RecordingHttpAdapter(cacheDirectory, offline: offline);
       final tmdb = TmdbMetadataService(
-        credentials: const TmdbCredentialStore(),
+        credentials: offline
+            ? const _OfflineTmdbCredentials()
+            : const TmdbCredentialStore(),
         dio: Dio()..httpClientAdapter = adapter,
       );
       final images = FilmCatalogImageCache(
@@ -202,16 +211,30 @@ void main() {
                 root,
                 source,
                 onEntries: (entries) async {
-                  await session.prepare(entries);
-                  // 传输故障会暂停 session；探针在恢复连接后重试当前批次。
-                  if (session.paused) {
-                    final code = session.error;
-                    session.resume();
-                    await session.prepare(entries);
-                    if (session.paused) {
-                      stdout.writeln(
-                        'ACCURACY_PAUSED ${root.path} ${code ?? session.error}',
-                      );
+                  final failures = await session.prepare(entries);
+                  if (failures.isNotEmpty) {
+                    final retryEntries = entries.where((entry) {
+                      final code =
+                          failures[filmPathKey(entry.path, root.sourceKind)];
+                      return code != null &&
+                          FilmScanMetadataSession.canRetryAtQueueEnd(code);
+                    }).toList();
+                    final retryFailures = retryEntries.isEmpty
+                        ? const <String, String>{}
+                        : await session.prepare(retryEntries);
+                    final code =
+                        failures.values
+                            .where(
+                              (code) =>
+                                  !FilmScanMetadataSession.canRetryAtQueueEnd(
+                                    code,
+                                  ),
+                            )
+                            .firstOrNull ??
+                        retryFailures.values.firstOrNull;
+                    if (code != null) {
+                      error ??= code;
+                      stdout.writeln('ACCURACY_MATCH_ERROR ${root.path} $code');
                     }
                   }
                   final matches = <String, FilmScanMatch>{};
@@ -228,7 +251,6 @@ void main() {
                   );
                 },
               );
-              error ??= session.error;
             } on FilmCatalogException catch (cause) {
               error = cause.code;
               stdout.writeln('ACCURACY_SCAN_ERROR ${root.path} ${cause.code}');
